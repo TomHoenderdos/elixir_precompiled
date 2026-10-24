@@ -22,6 +22,7 @@ defmodule ElixirPrecompiled.Match do
           system: {String.t(), String.t()},
           elixir: String.t(),
           otp: String.t(),
+          dep_env: String.t(),
           config: (String.t(), [String.t()] -> {:ok, term()} | :error)
         }
 
@@ -71,96 +72,143 @@ defmodule ElixirPrecompiled.Match do
   @spec select(map(), ctx()) :: {:ok, map(), String.t()} | {:miss, String.t()}
   def select(manifest, ctx) do
     {system, system_version} = ctx.system
-    systems = targets(get_in(manifest, ["versions", ctx.version]))
 
-    if systems == %{} do
-      {:miss, "not built for #{ctx.version}"}
-    else
-      select_entry(systems["pure_elixir"], systems[system], system, system_version, ctx)
-    end
-  end
+    case get_in(manifest, ["versions", ctx.version, "builds"]) || [] do
+      [] ->
+        {:miss, "not built for #{ctx.version}"}
 
-  # Shim until select/2 reads build lists: a format-2 version's builds,
-  # keyed by target the way a format-1 version keyed its entries.
-  defp targets(%{"builds" => builds}) when is_list(builds),
-    do: Map.new(builds, &{&1["target"], &1})
+      builds ->
+        results = Enum.map(builds, &{&1, check(&1, ctx)})
 
-  defp targets(nil), do: %{}
-  defp targets(entries), do: entries
+        case Enum.filter(results, &match?({_, {:ok, _}}, &1)) do
+          [] ->
+            {:miss, furthest_reason(results, system, system_version)}
 
-  # A pure_elixir entry is the host build of a package whose whole closure
-  # is pure Elixir, the same for every system, so it is tried first; the
-  # system entry is the fallback. On a double miss, the system entry's
-  # reason wins unless only the pure_elixir entry carries build inputs
-  # (see `prefer_reason/2`) — a stale entry's "running X" reason is less
-  # useful than a fresh entry's real miss.
-  defp select_entry(pe, sys, system, system_version, ctx) do
-    pe_result = if pe, do: check(pe, "pure_elixir", ctx)
-
-    cond do
-      match?({:ok, _, _}, pe_result) ->
-        pe_result
-
-      sys ->
-        sys_result = check(sys, system, ctx)
-
-        case sys_result do
-          {:ok, _, _} -> sys_result
-          _ -> if prefer_reason(pe, sys) == :pure_elixir, do: pe_result, else: sys_result
+          ok ->
+            {build, _} = Enum.min_by(ok, fn {b, _} -> rank(b, ctx) end)
+            {:ok, build, build["target"]}
         end
-
-      pe_result ->
-        pe_result
-
-      true ->
-        {:miss, "not built for #{system} #{system_version}"}
     end
   end
 
-  # On a double miss, picks whose reason to report: the entry whose build
-  # map carries build inputs (a non-nil package_checksum) is informative;
-  # one that predates those fields only says it ran a different toolchain.
-  # A tie — both carry them, or neither does — keeps the system entry.
-  @spec prefer_reason(map() | nil, map() | nil) :: :pure_elixir | :system
-  defp prefer_reason(pe, sys) do
-    if carries_inputs?(pe) and not carries_inputs?(sys), do: :pure_elixir, else: :system
+  # Smaller is better: exact Elixir patch, then the smallest patch gap below
+  # the running one, then pure_elixir before a system build, then the
+  # newest run (run ids sort newest-first by inverting the string).
+  defp rank(build, ctx) do
+    {_, _, built_patch} = parse3(build["build"]["elixir"])
+    {_, _, run_patch} = parse3(ctx.elixir)
+    pure = if build["target"] == "pure_elixir", do: 0, else: 1
+    {run_patch - built_patch, pure, inverted(build["build"]["run_id"])}
   end
 
-  defp carries_inputs?(entry),
-    do: entry != nil and not is_nil(get_in(entry, ["build", "package_checksum"]))
+  # Negated bytes plus a trailing 1 make a larger id compare smaller,
+  # including an id that extends another ("ab" < "abc" gives abc first).
+  # A missing run id ranks after every real one.
+  defp inverted(id) when is_binary(id), do: for(<<c <- id>>, do: -c) ++ [1]
+  defp inverted(_), do: [2]
 
-  defp check(entry, system_key, ctx) do
-    build = entry["build"] || %{}
-    {_, _system_version} = ctx.system
+  # When every build missed on its target and none is pure_elixir or for
+  # this system, the version simply was not built here; otherwise the
+  # build that passed the most rules explains the miss best (ties keep the
+  # first).
+  defp furthest_reason(results, system, system_version) do
+    if Enum.all?(results, &foreign?(&1, system)) do
+      "not built for #{system} #{system_version}"
+    else
+      {_, {:miss, reason, _}} =
+        Enum.reduce(results, fn {_, {:miss, _, n}} = r, {_, {:miss, _, best}} = acc ->
+          if n > best, do: r, else: acc
+        end)
+
+      reason
+    end
+  end
+
+  defp foreign?({%{"target" => t}, {:miss, _, 0}}, system),
+    do: t not in ["pure_elixir", system]
+
+  defp foreign?(_, _), do: false
+
+  defp check(build, ctx) do
+    build
+    |> rules(ctx)
+    |> Enum.reduce_while({:ok, 0}, fn rule, {:ok, n} ->
+      case rule.() do
+        :ok -> {:cont, {:ok, n + 1}}
+        {:miss, reason} -> {:halt, {:miss, reason, n}}
+      end
+    end)
+  catch
+    _, _ -> {:miss, "malformed entry", 0}
+  end
+
+  defp rules(build, ctx) do
+    b = build["build"] || %{}
     {:hex, _, _, _, _, _, _, outer} = ctx.lock_entry
 
-    with :ok <- eq(build["elixir"], ctx.elixir, &"built with Elixir #{&1}, running #{&2}"),
-         :ok <- eq(build["otp"], ctx.otp, &"built with OTP #{&1}, running #{&2}"),
-         :ok <- system_ok(system_key, build["system_version"], ctx.system),
-         :ok <- present(build, "package_checksum"),
-         :ok <-
-           eq(build["package_checksum"], outer, fn _, _ ->
-             "package checksum differs from mix.lock"
-           end),
-         :ok <- present(build, "deps"),
-         :ok <- deps_ok(build["deps"], ctx.lock),
-         :ok <- declared_deps_ok(ctx.lock_entry, build["deps"], ctx.lock),
-         :ok <- present(build, "compile_env"),
-         :ok <- compile_env_ok(build["compile_env"], ctx.config) do
-      {:ok, entry, system_key}
-    end
-  catch
-    _, _ -> {:miss, "malformed entry"}
+    [
+      fn -> target_ok(build["target"], b["system_version"], ctx.system) end,
+      fn -> toolchain_present(b) end,
+      fn -> elixir_ok(b["elixir"], ctx.elixir) end,
+      fn -> otp_ok(b["otp"], ctx.otp) end,
+      fn ->
+        eq(b["dep_env"], ctx.dep_env, &"built with env #{&1}, dependency compiles as #{&2}")
+      end,
+      fn -> present(b, "package_checksum") end,
+      fn ->
+        eq(b["package_checksum"], outer, fn _, _ -> "package checksum differs from mix.lock" end)
+      end,
+      fn -> present(b, "deps") end,
+      fn -> deps_ok(b["deps"], ctx.lock) end,
+      fn -> declared_deps_ok(ctx.lock_entry, b["deps"], ctx.lock) end,
+      fn -> present(b, "compile_env") end,
+      fn -> compile_env_ok(b["compile_env"], ctx.config) end
+    ]
   end
+
+  defp target_ok("pure_elixir", _, _), do: :ok
+  defp target_ok(t, built, {t, project}) when built == project, do: :ok
+
+  defp target_ok(t, built, {t, project}),
+    do: {:miss, "built for #{t} #{built}, project has #{project}"}
+
+  defp target_ok(t, _, _), do: {:miss, "not built for this system (#{t})"}
+
+  defp toolchain_present(%{"elixir" => e, "otp" => o}) when is_binary(e) and is_binary(o),
+    do: :ok
+
+  defp toolchain_present(_), do: {:miss, "build predates toolchain"}
+
+  # Elixir's promise is backward within a minor: code compiled on x.y.N runs
+  # on x.y.M for M >= N. Hex builds its own archive on x.y.0 for the same
+  # reason; the portal builds on the oldest patch its audience runs.
+  defp elixir_ok(built, running) do
+    {bmaj, bmin, bpatch} = parse3(built)
+    {rmaj, rmin, rpatch} = parse3(running)
+
+    if bmaj > 0 and {bmaj, bmin} == {rmaj, rmin} and rpatch >= bpatch,
+      do: :ok,
+      else: {:miss, "built with Elixir #{built}, running #{running}"}
+  end
+
+  # OTP's forward guarantee covers bytecode, not what compile time inlines:
+  # Record.extract from OTP headers bakes in layouts that change between
+  # majors (public_key.hrl between 27 and 28), so majors must match.
+  defp otp_ok(built, running) when built == running, do: :ok
+  defp otp_ok(built, running), do: {:miss, "built on OTP #{built}, running #{running}"}
+
+  # {0, 0, 0} for a value that does not parse, which elixir_ok rejects.
+  defp parse3(v) when is_binary(v) do
+    case Version.parse(v) do
+      {:ok, %Version{major: maj, minor: min, patch: patch}} -> {maj, min, patch}
+      :error -> {0, 0, 0}
+    end
+  end
+
+  defp parse3(_), do: {0, 0, 0}
 
   defp eq(a, b, _fmt) when a == b, do: :ok
   defp eq(a, b, fmt), do: {:miss, fmt.(a, b)}
-
-  defp system_ok("pure_elixir", _, _), do: :ok
-  defp system_ok(_key, built, {_system, project}) when built == project, do: :ok
-
-  defp system_ok(_key, built, {system, project}),
-    do: {:miss, "built for #{system} #{built}, project has #{project}"}
 
   @field_names %{
     "package_checksum" => "package_checksum",

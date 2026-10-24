@@ -23,7 +23,7 @@ defmodule ElixirPrecompiled.MatchTest do
     gitdep: @git
   }
 
-  defp ctx(over \\ %{}) do
+  defp ctx(over \\ []) do
     Map.merge(
       %{
         name: "ash",
@@ -33,15 +33,30 @@ defmodule ElixirPrecompiled.MatchTest do
         system: {"nerves_system_rpi4", "1.31.0"},
         elixir: "1.20.3",
         otp: "29",
+        dep_env: "prod",
         config: fn _app, _path -> :error end
       },
-      over
+      Map.new(over)
     )
   end
+
+  @build %{
+    "elixir" => "1.20.3",
+    "otp" => "29",
+    "dep_env" => "prod",
+    "system_version" => nil,
+    "deps" => %{"spark" => %{"version" => "2.7.8", "checksum" => "SPARKOUTER"}},
+    "compile_env" => [],
+    "package_checksum" => "ASHOUTER"
+  }
+
+  defp doc(builds), do: %{"format" => 2, "versions" => %{"3.5.2" => %{"builds" => builds}}}
+  defp pe(build), do: %{"target" => "pure_elixir", "ebin" => [], "priv" => [], "build" => build}
 
   defp entry(over \\ %{}) do
     Map.merge(
       %{
+        "target" => "nerves_system_rpi4",
         "ebin" => [
           %{
             "path" => "ebin/Elixir.Ash.beam",
@@ -54,6 +69,7 @@ defmodule ElixirPrecompiled.MatchTest do
         "build" => %{
           "elixir" => "1.20.3",
           "otp" => "29",
+          "dep_env" => "prod",
           "system_version" => "1.31.0",
           "run_id" => "r",
           "image_digest" => "d",
@@ -67,7 +83,101 @@ defmodule ElixirPrecompiled.MatchTest do
   end
 
   defp manifest(system \\ "nerves_system_rpi4", e \\ entry()),
-    do: %{"versions" => %{"3.5.2" => %{system => e}}}
+    do: doc([Map.put(e, "target", system)])
+
+  describe "the toolchain and env rules" do
+    for {label, build_over, ctx_over, expect} <- [
+          {"exact toolchain hits", [], [], :ok},
+          {"older running patch misses", [], [elixir: "1.20.1"],
+           {:miss, "built with Elixir 1.20.3, running 1.20.1"}},
+          {"newer running patch hits", [], [elixir: "1.20.4"], :ok},
+          {"other minor misses", [], [elixir: "1.21.0"],
+           {:miss, "built with Elixir 1.20.3, running 1.21.0"}},
+          {"older OTP misses", [], [otp: "28"], {:miss, "built on OTP 29, running 28"}},
+          {"newer OTP misses", [{"otp", "27"}], [], {:miss, "built on OTP 27, running 29"}},
+          {"env override misses", [], [dep_env: "dev"],
+           {:miss, "built with env prod, dependency compiles as dev"}},
+          {"no toolchain recorded misses", [{"elixir", nil}, {"otp", nil}], [],
+           {:miss, "build predates toolchain"}},
+          {"unparsable Elixir version misses", [{"elixir", "garbage"}], [],
+           {:miss, "built with Elixir garbage, running 1.20.3"}}
+        ] do
+      test label do
+        build =
+          Enum.reduce(unquote(Macro.escape(build_over)), @build, fn {k, v}, b ->
+            Map.put(b, k, v)
+          end)
+
+        result = Match.select(doc([pe(build)]), ctx(unquote(ctx_over)))
+
+        case unquote(Macro.escape(expect)) do
+          :ok -> assert {:ok, _, "pure_elixir"} = result
+          miss -> assert ^miss = result
+        end
+      end
+    end
+
+    test "selection: exact patch first, then closest older patch, then pure before system, then newest run" do
+      sys = %{
+        "target" => "nerves_system_rpi4",
+        "ebin" => [],
+        "priv" => [],
+        "build" => Map.merge(@build, %{"system_version" => "1.31.0", "run_id" => "s"})
+      }
+
+      older = pe(Map.merge(@build, %{"elixir" => "1.20.1", "run_id" => "o"}))
+      exact = pe(Map.merge(@build, %{"run_id" => "e"}))
+
+      assert {:ok, %{"build" => %{"run_id" => "e"}}, _} =
+               Match.select(doc([sys, older, exact]), ctx())
+
+      assert {:ok, %{"build" => %{"run_id" => "o"}}, _} =
+               Match.select(doc([sys, older]), ctx(elixir: "1.20.2"))
+
+      assert {:ok, %{"build" => %{"run_id" => "s"}}, "nerves_system_rpi4"} =
+               Match.select(doc([sys]), ctx())
+    end
+
+    test "among otherwise equal builds the newest run wins" do
+      a = pe(Map.put(@build, "run_id", "2026-10-01"))
+      b = pe(Map.put(@build, "run_id", "2026-10-20"))
+      c = pe(Map.put(@build, "run_id", "2026-10-20-x"))
+
+      assert {:ok, %{"build" => %{"run_id" => "2026-10-20-x"}}, _} =
+               Match.select(doc([a, c, b]), ctx())
+
+      assert {:ok, %{"build" => %{"run_id" => "2026-10-20"}}, _} =
+               Match.select(doc([b, a]), ctx())
+    end
+
+    test "the reported miss is the one that got furthest" do
+      far = pe(Map.put(@build, "package_checksum", "OTHER"))
+      near = pe(Map.put(@build, "otp", "27"))
+
+      assert {:miss, "package checksum differs from mix.lock"} =
+               Match.select(doc([near, far]), ctx())
+    end
+
+    test "empty builds and unknown targets are misses" do
+      assert {:miss, "not built for 3.5.2"} = Match.select(doc([]), ctx())
+
+      other = %{
+        "target" => "nerves_system_bbb",
+        "ebin" => [],
+        "priv" => [],
+        "build" => Map.put(@build, "system_version", "1.0.0")
+      }
+
+      assert {:miss, "not built for nerves_system_rpi4 1.31.0"} =
+               Match.select(doc([other]), ctx())
+    end
+
+    test "a malformed build is a miss, and a good one beside it still hits" do
+      bad = %{"target" => "pure_elixir", "build" => ["not", "a", "map"]}
+      assert {:miss, "malformed entry"} = Match.select(doc([bad]), ctx())
+      assert {:ok, _, "pure_elixir"} = Match.select(doc([bad, pe(@build)]), ctx())
+    end
+  end
 
   describe "candidate?/3" do
     test "hex deps are candidates, tooling and nerves' children are not" do
@@ -103,7 +213,8 @@ defmodule ElixirPrecompiled.MatchTest do
     end
 
     test "missing version or system is a miss" do
-      assert {:miss, "not built for 3.5.2"} = Match.select(%{"versions" => %{}}, ctx())
+      assert {:miss, "not built for 3.5.2"} =
+               Match.select(%{"format" => 2, "versions" => %{}}, ctx())
 
       assert {:miss, "not built for nerves_system_rpi4 1.31.0"} =
                Match.select(manifest("nerves_system_bbb"), ctx())
@@ -119,7 +230,7 @@ defmodule ElixirPrecompiled.MatchTest do
                  ctx()
                )
 
-      assert {:miss, "built with OTP 28, running 29"} =
+      assert {:miss, "built on OTP 28, running 29"} =
                Match.select(
                  manifest(
                    "nerves_system_rpi4",
@@ -294,8 +405,7 @@ defmodule ElixirPrecompiled.MatchTest do
     defp pure(over \\ %{}),
       do: entry(%{"build" => Map.merge(entry()["build"], Map.put(over, "system_version", nil))})
 
-    defp both(pe, sys),
-      do: %{"versions" => %{"3.5.2" => %{"pure_elixir" => pe, "nerves_system_rpi4" => sys}}}
+    defp both(pe, sys), do: doc([Map.put(pe, "target", "pure_elixir"), sys])
 
     @wrong_env [%{"app" => "ash", "path" => ["mode"], "value" => "g3cEZmFzdA"}]
 
@@ -308,10 +418,10 @@ defmodule ElixirPrecompiled.MatchTest do
                Match.select(both(pure(%{"compile_env" => @wrong_env}), entry()), ctx())
     end
 
-    test "when both fail and both carry build inputs, the system entry's reason is returned" do
+    test "when both fail, the reason of the build that got further is returned" do
       sys = entry(%{"build" => Map.put(entry()["build"], "otp", "28")})
 
-      assert {:miss, "built with OTP 28, running 29"} =
+      assert {:miss, "compile_env differs: ash [:mode]"} =
                Match.select(both(pure(%{"compile_env" => @wrong_env}), sys), ctx())
     end
 
@@ -320,15 +430,15 @@ defmodule ElixirPrecompiled.MatchTest do
                Match.select(both(pure(%{"compile_env" => @wrong_env}), stale()), ctx())
     end
 
-    test "a fresh system entry's reason wins over a stale pure_elixir entry on a double miss" do
+    test "a stale pure_elixir entry that got further than a system entry gives its reason" do
       pe = pure(%{"package_checksum" => nil})
       sys = entry(%{"build" => Map.put(entry()["build"], "otp", "28")})
 
-      assert {:miss, "built with OTP 28, running 29"} = Match.select(both(pe, sys), ctx())
+      assert {:miss, "build predates package_checksum"} = Match.select(both(pe, sys), ctx())
     end
 
     test "only a failing pure_elixir entry returns its reason" do
-      m = %{"versions" => %{"3.5.2" => %{"pure_elixir" => pure(%{"compile_env" => @wrong_env})}}}
+      m = doc([Map.put(pure(%{"compile_env" => @wrong_env}), "target", "pure_elixir")])
       assert {:miss, "compile_env differs: ash [:mode]"} = Match.select(m, ctx())
     end
   end

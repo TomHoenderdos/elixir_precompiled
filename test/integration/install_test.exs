@@ -23,8 +23,9 @@ defmodule ElixirPrecompiled.Integration.InstallTest do
   """
 
   # jason 1.4.5 and decimal 3.2.0 have pure_elixir entries built with
-  # Elixir 1.20.3 / OTP 29 (checked 2026-10-24); another toolchain MISSes
-  # on the version rule, which is correct, so the HIT assertion is gated.
+  # Elixir 1.20.3 / OTP 29 (checked 2026-10-24). They HIT on 1.20.x with
+  # x >= 3 on OTP 29; another toolchain MISSes on the version rule, which is
+  # correct, so the HIT assertion is gated.
   test "install/2 in a fresh VM hits production and the dir formula matches Mix", %{tmp_dir: dir} do
     script = Path.join(dir, "install.exs")
     File.write!(script, @script)
@@ -45,7 +46,8 @@ defmodule ElixirPrecompiled.Integration.InstallTest do
     mix_dir = line!(out, "mix_dir")
     assert mix_dir == line!(out, "our_dir")
 
-    if System.version() == "1.20.3" and :erlang.system_info(:otp_release) == ~c"29" do
+    if Version.match?(System.version(), "~> 1.20.3") and
+         :erlang.system_info(:otp_release) == ~c"29" do
       assert out =~ ~r/precompiled: jason 1\.4\.5\s+HIT/
       assert out =~ ~r/precompiled: decimal 3\.2\.0\s+HIT/
       assert out =~ "precompiled: 2 hit, 0 miss, 0 fail of 2 deps"

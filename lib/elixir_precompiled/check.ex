@@ -104,7 +104,7 @@ defmodule ElixirPrecompiled.Check do
   end
 
   defp one(
-         %{name: name, version: version, lock_entry: lock_entry},
+         %{name: name, version: version, lock_entry: lock_entry} = candidate,
          config,
          batch,
          env,
@@ -128,6 +128,7 @@ defmodule ElixirPrecompiled.Check do
                  system: env.system || {"host", ""},
                  elixir: System.version(),
                  otp: to_string(:erlang.system_info(:otp_release)),
+                 dep_env: Map.get(candidate, :dep_env, "prod"),
                  config: config_fun
                }),
              {:ok, stats} <-
