@@ -71,7 +71,7 @@ defmodule ElixirPrecompiled.Match do
   @spec select(map(), ctx()) :: {:ok, map(), String.t()} | {:miss, String.t()}
   def select(manifest, ctx) do
     {system, system_version} = ctx.system
-    systems = get_in(manifest, ["versions", ctx.version]) || %{}
+    systems = targets(get_in(manifest, ["versions", ctx.version]))
 
     if systems == %{} do
       {:miss, "not built for #{ctx.version}"}
@@ -79,6 +79,14 @@ defmodule ElixirPrecompiled.Match do
       select_entry(systems["pure_elixir"], systems[system], system, system_version, ctx)
     end
   end
+
+  # Shim until select/2 reads build lists: a format-2 version's builds,
+  # keyed by target the way a format-1 version keyed its entries.
+  defp targets(%{"builds" => builds}) when is_list(builds),
+    do: Map.new(builds, &{&1["target"], &1})
+
+  defp targets(nil), do: %{}
+  defp targets(entries), do: entries
 
   # A pure_elixir entry is the host build of a package whose whole closure
   # is pure Elixir, the same for every system, so it is tried first; the

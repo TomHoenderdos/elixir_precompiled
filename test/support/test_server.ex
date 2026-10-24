@@ -85,6 +85,15 @@ defmodule ElixirPrecompiled.TestServer do
     end
   end
 
+  get "/precompiled/v2/manifests/:name" do
+    name = String.replace_suffix(name, ".json", "")
+
+    case get_in(ElixirPrecompiled.Fixture.get(:manifests_v2) || %{}, [name]) do
+      nil -> send_resp(conn, 404, "not found")
+      bytes -> conn |> put_resp_content_type("application/json") |> send_resp(200, bytes)
+    end
+  end
+
   get "/precompiled/files/:sha" do
     case get_in(ElixirPrecompiled.Fixture.get(:files) || %{}, [sha]) do
       nil -> send_resp(conn, 404, "not found")

@@ -66,7 +66,7 @@ defmodule ElixirPrecompiled.FetchTest do
   end
 
   test "manifest: miss on 404, fail on hash mismatch, ok when it matches", %{f: f, config: config} do
-    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{}}}})
+    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{}}}}, format: 1)
 
     sha =
       F.get(:batch)
@@ -85,11 +85,17 @@ defmodule ElixirPrecompiled.FetchTest do
     f: f,
     config: config
   } do
-    F.publish(f, %{
-      "ash" => %{
-        "versions" => %{"3.5.2" => %{"pad" => String.duplicate("a", 9 * 1024 * 1024)}}
-      }
-    })
+    F.publish(
+      f,
+      %{
+        "ash" => %{
+          "versions" => %{
+            "3.5.2" => %{"pad" => %{"pad" => String.duplicate("a", 9 * 1024 * 1024)}}
+          }
+        }
+      },
+      format: 1
+    )
 
     sha =
       F.get(:batch)

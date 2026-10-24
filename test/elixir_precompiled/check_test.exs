@@ -70,12 +70,13 @@ defmodule ElixirPrecompiled.CheckTest do
     end
   end
 
-  defp good_entry(f, dep, system_version) do
+  defp good_entry(f, dep, system_version, target \\ "nerves_system_rpi4") do
     beam = "beam #{dep}"
     vsn = if dep == "ash", do: "3.5.2", else: "1.4.5"
     app = "{application, #{dep}, [{vsn, \"#{vsn}\"}]}.\n"
 
     %{
+      "target" => target,
       "ebin" => [
         %{
           "path" => "ebin/Elixir.X.beam",
@@ -99,7 +100,8 @@ defmodule ElixirPrecompiled.CheckTest do
         "image_digest" => "d",
         "deps" => %{},
         "compile_env" => [],
-        "package_checksum" => elem(if(dep == "ash", do: @ash, else: @jason), 7)
+        "package_checksum" => elem(if(dep == "ash", do: @ash, else: @jason), 7),
+        "dep_env" => "prod"
       }
     }
   end
@@ -107,7 +109,7 @@ defmodule ElixirPrecompiled.CheckTest do
   test "hits, misses and the summary line", %{f: f, config: config, env: env, lib: lib} do
     F.publish(f, %{
       "ash" => %{
-        "versions" => %{"3.5.2" => %{"nerves_system_rpi4" => good_entry(f, "ash", "1.31.0")}}
+        "versions" => %{"3.5.2" => %{"builds" => [good_entry(f, "ash", "1.31.0")]}}
       }
     })
 
@@ -124,6 +126,37 @@ defmodule ElixirPrecompiled.CheckTest do
              report_file["lines"]
   end
 
+  test "a format-1 manifest still hits", %{f: f, config: config, env: env, lib: lib} do
+    e = Map.delete(good_entry(f, "ash", "1.31.0"), "target")
+    e = update_in(e["build"], &Map.delete(&1, "dep_env"))
+
+    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"nerves_system_rpi4" => e}}}},
+      format: 1
+    )
+
+    batch = F.get(:batch)["payload"] |> Base.url_decode64!(padding: false) |> :json.decode()
+    refute Map.has_key?(batch, "manifests_v2")
+    assert Map.has_key?(batch["manifests"], "ash")
+
+    out = run_capturing(config, env)
+    assert_received {:report, {:ok, %{hits: 1}}}
+    assert out =~ ~r/precompiled: ash 3\.5\.2\s+HIT/
+    assert File.exists?(Path.join(lib, "ash/.mix/compile.elixir_scm"))
+  end
+
+  test "a batch with manifests_v2 fetches the v2 document", %{f: f, config: config, env: env} do
+    F.publish(f, %{
+      "ash" => %{"versions" => %{"3.5.2" => %{"builds" => [good_entry(f, "ash", "1.31.0")]}}}
+    })
+
+    # Nothing under /precompiled/manifests: a fetch there would be a MISS.
+    assert F.get(:manifests) == %{}
+
+    out = run_capturing(config, env)
+    assert_received {:report, {:ok, %{hits: 1}}}
+    assert out =~ ~r/precompiled: ash 3\.5\.2\s+HIT/
+  end
+
   test "a tampered manifest is a FAIL and installs nothing", %{
     f: f,
     config: config,
@@ -132,7 +165,7 @@ defmodule ElixirPrecompiled.CheckTest do
   } do
     F.publish(f, %{
       "ash" => %{
-        "versions" => %{"3.5.2" => %{"nerves_system_rpi4" => good_entry(f, "ash", "1.31.0")}}
+        "versions" => %{"3.5.2" => %{"builds" => [good_entry(f, "ash", "1.31.0")]}}
       }
     })
 
@@ -163,7 +196,7 @@ defmodule ElixirPrecompiled.CheckTest do
         end)
       end)
 
-    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"nerves_system_rpi4" => e}}}})
+    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [e]}}}})
     out = run_capturing(config, env)
     assert_received {:report, {:ok, %{fails: 1}}}
     assert out =~ ~r/ash 3\.5\.2\s+FAIL\s+downloaded \.app: compile_env differs: ash \[:mode\]/
@@ -186,7 +219,7 @@ defmodule ElixirPrecompiled.CheckTest do
     F.publish(f, %{"ash" => %{"versions" => ["oops"]}})
     out = run_capturing(config, env)
     assert_received {:report, {:ok, %{fails: 1, misses: 1}}}
-    assert out =~ ~r/ash 3\.5\.2\s+FAIL\s+candidate crashed: /
+    assert out =~ ~r/ash 3\.5\.2\s+FAIL\s+manifest malformed/
     assert File.exists?(Path.join(lib, ".precompiled/report.json"))
   end
 
@@ -197,7 +230,7 @@ defmodule ElixirPrecompiled.CheckTest do
 
     F.publish(f, %{
       "decimal" => %{
-        "versions" => %{"2.3.0" => %{"nerves_system_rpi4" => good_entry(f, "ash", "1.31.0")}}
+        "versions" => %{"2.3.0" => %{"builds" => [good_entry(f, "ash", "1.31.0")]}}
       }
     })
 
@@ -247,7 +280,7 @@ defmodule ElixirPrecompiled.CheckTest do
   } do
     F.publish(f, %{
       "ash" => %{
-        "versions" => %{"3.5.2" => %{"nerves_system_rpi4" => good_entry(f, "ash", "1.31.0")}}
+        "versions" => %{"3.5.2" => %{"builds" => [good_entry(f, "ash", "1.31.0")]}}
       }
     })
 
@@ -282,7 +315,7 @@ defmodule ElixirPrecompiled.CheckTest do
         end)
       end)
 
-    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"nerves_system_rpi4" => e}}}})
+    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [e]}}}})
     out = run_capturing(config, env, config_fun: fn _, _ -> throw(:boom) end)
     assert_received {:report, {:ok, %{fails: 1, misses: 1}}}
     assert out =~ ~r/ash 3\.5\.2\s+FAIL\s+candidate crashed: :boom/
@@ -304,7 +337,7 @@ defmodule ElixirPrecompiled.CheckTest do
 
   test "HITs whose beams carry no debug_info are counted once", %{f: f, config: config, env: env} do
     e = with_beam(f, good_entry(f, "ash", "1.31.0"), "beam bytes")
-    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"nerves_system_rpi4" => e}}}})
+    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [e]}}}})
 
     out = run_capturing(config, env)
     assert_received {:report, {:ok, %{hits: 1}}}
@@ -323,7 +356,7 @@ defmodule ElixirPrecompiled.CheckTest do
       end
 
     e = with_beam(f, good_entry(f, "ash", "1.31.0"), beam)
-    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"nerves_system_rpi4" => e}}}})
+    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [e]}}}})
 
     out = run_capturing(config, env)
     assert_received {:report, {:ok, %{hits: 1}}}
@@ -354,7 +387,7 @@ defmodule ElixirPrecompiled.CheckTest do
           end)
         end)
 
-      F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"nerves_system_rpi4" => e}}}})
+      F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [e]}}}})
       out = run_capturing(config, env)
       assert_received {:report, {:ok, %{fails: 1}}}
       assert out =~ "FAIL  downloaded .app names #{unquote(label)}"

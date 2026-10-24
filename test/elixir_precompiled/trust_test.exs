@@ -57,13 +57,33 @@ defmodule ElixirPrecompiled.TrustTest do
   end
 
   test "fetches a valid batch and stores the sequence", %{config: config, f: f, fetch: fetch} do
-    F.publish(f, %{"ash" => %{"versions" => %{}}}, sequence: 5)
+    F.publish(f, %{"ash" => %{"versions" => %{}}}, sequence: 5, format: 1)
     {:ok, root} = Trust.load_root(config)
 
-    assert {:ok, %{sequence: 5, manifests: %{"ash" => _}}} =
+    assert {:ok, %{sequence: 5, manifests: %{"ash" => _}, manifests_v2: nil}} =
              Trust.fetch_batch(config, root, fetch)
 
     assert File.read!(Path.join(state_dir(config), "state")) =~ "5"
+  end
+
+  test "a batch with manifests_v2 returns it", %{config: config, f: f, fetch: fetch} do
+    F.publish(f, %{"ash" => %{"versions" => %{}}})
+    {:ok, root} = Trust.load_root(config)
+
+    assert {:ok, %{manifests: %{}, manifests_v2: %{"ash" => sha}}} =
+             Trust.fetch_batch(config, root, fetch)
+
+    assert sha =~ ~r/\A[0-9a-f]{64}\z/
+  end
+
+  test "a batch whose manifests_v2 is not a map is malformed", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    F.publish(f, %{}, format: 1, batch_extra: %{"manifests_v2" => ["ash"]})
+    {:ok, root} = Trust.load_root(config)
+    assert {:error, "batch malformed"} = Trust.fetch_batch(config, root, fetch)
   end
 
   test "an expired batch is refused", %{config: config, f: f, fetch: fetch} do

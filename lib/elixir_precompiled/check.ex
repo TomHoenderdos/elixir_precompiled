@@ -113,10 +113,12 @@ defmodule ElixirPrecompiled.Check do
     sname = Atom.to_string(name)
     base = %{name: sname, version: version, bytes: 0}
 
+    {sha, path} = manifest_ref(batch, sname)
+
     try do
       result =
-        with sha when is_binary(sha) <- batch.manifests[sname] || {:miss, "not in batch"},
-             {:ok, manifest} <- Fetch.manifest(config, sname, sha),
+        with sha when is_binary(sha) <- sha || {:miss, "not in batch"},
+             {:ok, manifest} <- Fetch.manifest(config, sname, sha, path),
              {:ok, entry, _system_key} <-
                Match.select(manifest, %{
                  name: sname,
@@ -157,6 +159,17 @@ defmodule ElixirPrecompiled.Check do
         }
     end
   end
+
+  # A batch that carries the v2 map names the format-2 document; otherwise
+  # the format-1 one, which Manifest translates.
+  defp manifest_ref(%{manifests_v2: v2} = batch, name) when is_map(v2) do
+    case v2[name] do
+      nil -> {batch.manifests[name], "manifests"}
+      sha -> {sha, "v2/manifests"}
+    end
+  end
+
+  defp manifest_ref(batch, name), do: {batch.manifests[name], "manifests"}
 
   # Release-stripped beams (no debug_info chunk) still load and run, but
   # Mix cannot consolidate the protocols they define. Judged by the first

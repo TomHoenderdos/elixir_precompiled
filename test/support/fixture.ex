@@ -42,23 +42,41 @@ defmodule ElixirPrecompiled.Fixture do
   @spec serve_root(map(), map()) :: map()
   def serve_root(fixture, root_env), do: put(:root, root_env) && fixture
 
+  # `format: 2` (the default) stores each package as a format-2 document
+  # under :manifests_v2, named by the batch's "manifests_v2" map next to an
+  # empty "manifests"; `format: 1` stores today's documents under :manifests
+  # and the batch carries no "manifests_v2".
   @spec publish(map(), map(), keyword()) :: map()
   def publish(fixture, packages, opts \\ []) do
-    manifests =
-      Map.new(packages, fn {name, manifest} ->
+    {store, docs} =
+      case Keyword.get(opts, :format, 2) do
+        2 -> {:manifests_v2, Map.new(packages, fn {n, m} -> {n, Map.put_new(m, "format", 2)} end)}
+        1 -> {:manifests, packages}
+      end
+
+    hashes =
+      Map.new(docs, fn {name, manifest} ->
         bytes = manifest |> :json.encode() |> IO.iodata_to_binary()
-        put_in_map(:manifests, name, bytes)
+        put_in_map(store, name, bytes)
         {name, sha(bytes)}
       end)
 
+    maps =
+      case store do
+        :manifests_v2 -> %{"manifests" => %{}, "manifests_v2" => hashes}
+        :manifests -> %{"manifests" => hashes}
+      end
+
     payload =
-      :json.encode(%{
+      %{
         "version" => 1,
         "sequence" => Keyword.get(opts, :sequence, 1),
         "issued" => "2026-10-21T00:00:00Z",
-        "expires" => Keyword.get(opts, :expires, "2030-01-01T00:00:00Z"),
-        "manifests" => manifests
-      })
+        "expires" => Keyword.get(opts, :expires, "2030-01-01T00:00:00Z")
+      }
+      |> Map.merge(maps)
+      |> Map.merge(Keyword.get(opts, :batch_extra, %{}))
+      |> :json.encode()
       |> IO.iodata_to_binary()
 
     put(:batch, sign(payload, Keyword.get(opts, :signers, [fixture.key])))
@@ -74,15 +92,16 @@ defmodule ElixirPrecompiled.Fixture do
 
   @spec tamper_manifest(map(), String.t()) :: :ok
   def tamper_manifest(_fixture, name) do
-    case Agent.get(__MODULE__, &get_in(&1, [:manifests, name])) do
-      nil ->
-        raise ArgumentError, "no manifest #{name} to tamper"
+    store =
+      Enum.find([:manifests_v2, :manifests], fn store ->
+        Agent.get(__MODULE__, &get_in(&1, [store, name])) != nil
+      end)
 
-      _bytes ->
-        Agent.update(__MODULE__, fn st ->
-          update_in(st, [:manifests, name], fn <<c, rest::binary>> -> <<c + 1, rest::binary>> end)
-        end)
-    end
+    if store == nil, do: raise(ArgumentError, "no manifest #{name} to tamper")
+
+    Agent.update(__MODULE__, fn st ->
+      update_in(st, [store, name], fn <<c, rest::binary>> -> <<c + 1, rest::binary>> end)
+    end)
   end
 
   @spec sign(iodata(), list(map())) :: map()
@@ -112,7 +131,8 @@ defmodule ElixirPrecompiled.Fixture do
   def base_url(), do: "http://127.0.0.1:#{ElixirPrecompiled.TestServer.port()}/precompiled"
 
   @spec reset() :: :ok
-  defp reset(), do: Agent.update(__MODULE__, fn _ -> %{manifests: %{}, files: %{}} end)
+  defp reset(),
+    do: Agent.update(__MODULE__, fn _ -> %{manifests: %{}, manifests_v2: %{}, files: %{}} end)
 
   @spec put(atom(), term()) :: :ok
   defp put(k, v), do: Agent.update(__MODULE__, &Map.put(&1, k, v))

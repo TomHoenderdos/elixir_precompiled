@@ -266,7 +266,12 @@ defmodule ElixirPrecompiled.Trust do
   end
 
   @spec fetch_batch(map(), root(), (String.t() -> {:ok, binary()} | {:error, term()})) ::
-          {:ok, %{sequence: integer(), manifests: %{String.t() => String.t()}}}
+          {:ok,
+           %{
+             sequence: integer(),
+             manifests: %{String.t() => String.t()},
+             manifests_v2: %{String.t() => String.t()} | nil
+           }}
           | {:error, String.t()}
   def fetch_batch(config, root, fetch) do
     {keys, t} = root_keys(root, "batch")
@@ -274,12 +279,12 @@ defmodule ElixirPrecompiled.Trust do
     with {:ok, body} <- fetch.(config.source <> "/batch.json") |> or_error("batch unavailable"),
          {:ok, payload} <- verify_envelope(body, keys, t) |> or_error("batch signature invalid"),
          {:ok, decoded} <- safe_decode(payload) |> or_error("batch malformed"),
-         {:ok, seq, exp, manifests} <- batch_fields(decoded),
+         {:ok, seq, exp, manifests, v2} <- batch_fields(decoded),
          :ok <- not_expired(exp),
          dir = state_dir(config),
          :ok <- monotonic(dir, seq),
          :ok <- write_state(dir, seq) do
-      {:ok, %{sequence: seq, manifests: manifests}}
+      {:ok, %{sequence: seq, manifests: manifests, manifests_v2: v2}}
     end
   rescue
     _ -> {:error, "batch malformed"}
@@ -293,14 +298,21 @@ defmodule ElixirPrecompiled.Trust do
     e in File.Error -> {:error, "state dir unwritable: #{inspect(e.reason)}"}
   end
 
-  defp batch_fields(%{
-         "version" => 1,
-         "sequence" => seq,
-         "expires" => exp,
-         "manifests" => manifests
-       })
+  # "manifests" names format-1 documents; "manifests_v2", when present,
+  # names format-2 ones under v2/manifests. Both live in a version-1 batch.
+  defp batch_fields(
+         %{
+           "version" => 1,
+           "sequence" => seq,
+           "expires" => exp,
+           "manifests" => manifests
+         } = decoded
+       )
        when is_integer(seq) and is_binary(exp) and is_map(manifests) do
-    {:ok, seq, exp, manifests}
+    case Map.get(decoded, "manifests_v2") do
+      v2 when is_map(v2) or is_nil(v2) -> {:ok, seq, exp, manifests, v2}
+      _ -> {:error, "batch malformed"}
+    end
   end
 
   defp batch_fields(_), do: {:error, "batch malformed"}

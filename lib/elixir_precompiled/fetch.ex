@@ -11,6 +11,8 @@ defmodule ElixirPrecompiled.Fetch do
   into place with Mix's "already compiled" marker.
   """
 
+  alias ElixirPrecompiled.Manifest
+
   # 8 MiB: root, batch and any other document
   @max_body_bytes 8_388_608
   # 64 MiB: manifests of packages with many versions and systems run past 8 MiB
@@ -35,13 +37,18 @@ defmodule ElixirPrecompiled.Fetch do
   defp describe_error(reason) when is_binary(reason), do: reason
   defp describe_error(reason), do: inspect(reason)
 
-  @spec manifest(map(), String.t(), String.t()) ::
+  @doc """
+  The manifest the batch names by `expected_sha`, under `path`: "manifests"
+  for a format-1 document, "v2/manifests" for a format-2 one. Either comes
+  back as format 2 (see `ElixirPrecompiled.Manifest`).
+  """
+  @spec manifest(map(), String.t(), String.t(), String.t()) ::
           {:ok, map()} | {:miss, String.t()} | {:fail, String.t()}
-  def manifest(config, name, expected_sha) do
-    case get_body("#{config.source}/manifests/#{name}.json", max_bytes: @max_manifest_bytes) do
+  def manifest(config, name, expected_sha, path \\ "manifests") do
+    case get_body("#{config.source}/#{path}/#{name}.json", max_bytes: @max_manifest_bytes) do
       {:ok, bytes} ->
         if sha256(bytes) == expected_sha,
-          do: decode(bytes),
+          do: with({:ok, map} <- decode(bytes), do: Manifest.normalize(map)),
           else: {:fail, "manifest hash differs from batch"}
 
       {:error, "Status 404 Not Found"} ->
