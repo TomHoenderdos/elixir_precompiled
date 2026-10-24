@@ -19,8 +19,14 @@ defmodule NervesPrecompiled.HTTP do
   @max_redirects 5
   @profile :nerves_precompiled
   @user_agent ~c"nerves_precompiled/#{Mix.Project.config()[:version]}"
+  @connect_timeout 30_000
+  @inactivity_ms 60_000
 
-  @type opts :: [max_bytes: pos_integer() | :infinity, same_origin: boolean()]
+  @type opts :: [
+          max_bytes: pos_integer() | :infinity,
+          same_origin: boolean(),
+          inactivity_ms: pos_integer()
+        ]
   @type error ::
           String.t()
           | :too_many_redirects
@@ -30,7 +36,7 @@ defmodule NervesPrecompiled.HTTP do
 
   @spec get(String.t(), opts()) :: {:ok, binary()} | {:error, error()}
   def get(url, opts \\ []) when is_binary(url) do
-    _ = Keyword.validate!(opts, [:max_bytes, :same_origin])
+    _ = Keyword.validate!(opts, [:max_bytes, :same_origin, :inactivity_ms])
 
     with :ok <- start_httpc(),
          {:ok, cacerts} <- cacerts() do
@@ -58,6 +64,7 @@ defmodule NervesPrecompiled.HTTP do
     http_opts =
       [
         timeout: :infinity,
+        connect_timeout: @connect_timeout,
         autoredirect: false,
         ssl: [
           verify: :verify_peer,
@@ -84,6 +91,7 @@ defmodule NervesPrecompiled.HTTP do
            content_length: 0,
            max_bytes: Keyword.get(opts, :max_bytes, :infinity),
            same_origin: Keyword.get(opts, :same_origin, false),
+           inactivity_ms: Keyword.get(opts, :inactivity_ms, @inactivity_ms),
            opts: opts,
            cacerts: cacerts,
            redirects: redirects,
@@ -103,11 +111,17 @@ defmodule NervesPrecompiled.HTTP do
         err
 
       {:http, {^request_ref, :stream_start, headers}} ->
-        content_length = content_length(headers)
+        case content_length(headers) do
+          {:ok, content_length} ->
+            if exceeds?(content_length, state.max_bytes),
+              do: too_large(request_ref, state),
+              else:
+                await_response({:await, request_ref, %{state | content_length: content_length}})
 
-        if exceeds?(content_length, state.max_bytes),
-          do: too_large(request_ref, state),
-          else: await_response({:await, request_ref, %{state | content_length: content_length}})
+          :error ->
+            cancel_and_drain(request_ref)
+            {:error, "invalid content-length"}
+        end
 
       {:http, {^request_ref, :stream, data}} ->
         size = byte_size(data) + state.received
@@ -128,6 +142,10 @@ defmodule NervesPrecompiled.HTTP do
 
       {:http, {^request_ref, {{_, status_code, reason}, _headers, _body}}} ->
         {:error, format_error(status_code, reason)}
+    after
+      state.inactivity_ms ->
+        cancel_and_drain(request_ref)
+        {:error, "no data for #{format_seconds(state.inactivity_ms)} s"}
     end
   end
 
@@ -151,16 +169,24 @@ defmodule NervesPrecompiled.HTTP do
   end
 
   defp too_large(request_ref, state) do
+    cancel_and_drain(request_ref)
+    {:error, {:too_large, state.max_bytes}}
+  end
+
+  # httpc keeps delivering messages it already queued for a few moments after
+  # :httpc.cancel_request/2 returns; wait until the mailbox has been quiet for
+  # 100 ms rather than draining once, so none of them reach the caller.
+  defp cancel_and_drain(request_ref) do
     :httpc.cancel_request(request_ref, @profile)
     drain(request_ref)
-    {:error, {:too_large, state.max_bytes}}
   end
 
   defp drain(request_ref) do
     receive do
-      {:http, {^request_ref, _}} -> drain(request_ref)
+      {:http, msg} when is_tuple(msg) and elem(msg, 0) == request_ref ->
+        drain(request_ref)
     after
-      0 -> :ok
+      100 -> :ok
     end
   end
 
@@ -172,14 +198,26 @@ defmodule NervesPrecompiled.HTTP do
 
   defp cross_origin?(_from, _to), do: true
 
-  defp content_length(headers) do
+  @doc false
+  # A content-length that doesn't parse as a non-negative integer is a
+  # malformed or hostile response; the caller gets an error, not a crash.
+  @spec content_length([{charlist(), charlist()}]) :: {:ok, non_neg_integer()} | :error
+  def content_length(headers) do
     case List.keyfind(headers, ~c"content-length", 0) do
-      nil -> 0
-      {_, value} -> value |> to_string() |> Integer.parse() |> elem(0)
+      nil ->
+        {:ok, 0}
+
+      {_, value} ->
+        case value |> to_string() |> Integer.parse() do
+          {n, ""} when n >= 0 -> {:ok, n}
+          _ -> :error
+        end
     end
   end
 
   defp format_error(status_code, reason), do: "Status #{status_code} #{reason}"
+
+  defp format_seconds(ms), do: :erlang.float_to_binary(ms / 1000, decimals: 1)
 
   # :inets.start/2 answers {:ok, pid} or {:error, {:already_started, pid}} on
   # the happy paths and {:error, other} when inets itself is broken; the

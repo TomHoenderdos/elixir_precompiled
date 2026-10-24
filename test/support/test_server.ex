@@ -42,6 +42,13 @@ defmodule NervesPrecompiled.TestServer do
     |> send_resp(200, body)
   end
 
+  get "/stall" do
+    conn = send_chunked(conn, 200)
+    Process.sleep(2000)
+    {:ok, conn} = chunk(conn, "done")
+    conn
+  end
+
   get "/precompiled/root.json" do
     serve_json(conn, NervesPrecompiled.Fixture.get(:root))
   end
