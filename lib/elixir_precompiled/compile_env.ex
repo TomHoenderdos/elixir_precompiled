@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.CompileEnv do
+defmodule ElixirPrecompiled.CompileEnv do
   @moduledoc false
   # The project's compile-time config, as a build entry's compile_env list
   # names it: application, then a key path. The running application env is

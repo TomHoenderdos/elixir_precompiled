@@ -1,4 +1,4 @@
-# nerves_precompiled
+# elixir_precompiled
 
 Install signed, verified precompiled dependency builds instead of compiling
 them. Builds come from the [Nerves compatibility portal](https://compatibility.nerves-project.org),
@@ -21,10 +21,10 @@ on the branch:
 ```elixir
 # mix.exs
 {:nerves, github: "TomHoenderdos/nerves", branch: "feat/precompiled", runtime: false},
-{:nerves_precompiled, github: "TomHoenderdos/nerves_precompiled"},
+{:elixir_precompiled, github: "TomHoenderdos/elixir_precompiled"},
 
 # config/config.exs
-config :nerves_precompiled,
+config :elixir_precompiled,
   source: "https://compatibility.nerves-project.org/api/precompiled"
 ```
 
@@ -46,20 +46,23 @@ precompiled: 40 hit, 5 miss, 0 fail of 45 deps, 61.2 MB, 8.3 s
 | `:source` | The portal's precompiled API URL. Without it nothing is installed. `https` only, `http` only on loopback. |
 | `:except` | Dependencies never installed precompiled, for example `[:ash]`. |
 | `:root` | Path to a `root.json` used instead of the one the library ships. |
-| `:home` | The file and trust-state cache (default `~/.nerves/precompiled`). |
-| `NERVES_PRECOMPILED=0` | Disables a run (`false` and `no` work too). |
-| `NERVES_PRECOMPILED_HOME` | The cache directory when `:home` is not set. |
-| `NERVES_PRECOMPILED_DEBUG=1` | Also prints each dependency that was not a candidate, with the reason (tooling, `except`, not from Hex, ...). |
+| `:home` | The file and trust-state cache (default the user cache dir Mix uses for its own, `:filename.basedir(:user_cache, "elixir_precompiled")`). |
+| `ELIXIR_PRECOMPILED=0` | Disables a run (`false` and `no` work too). |
+| `ELIXIR_PRECOMPILED_HOME` | The cache directory when `:home` is not set. |
+| `ELIXIR_PRECOMPILED_DEBUG=1` | Also prints each dependency that was not a candidate, with the reason (tooling, `except`, not from Hex, ...). |
 
-The keys go in `config :nerves_precompiled, ...` or, on a device, as
-options to `NervesPrecompiled.install/2`. When `:nerves_precompiled` has no
-application config at all, the `config :nerves, :precompiled, source: ...`
-form from nerves#1220 is read instead.
+The keys go in `config :elixir_precompiled, ...` or, on a device, as
+options to `ElixirPrecompiled.install/2`. When `:elixir_precompiled` has no
+application config at all, `config :nerves_precompiled, ...` (the name this
+library had before) is read, then `config :nerves, :precompiled, source: ...`
+form from nerves#1220. The `NERVES_PRECOMPILED*` env var names also still
+work when the `ELIXIR_PRECOMPILED*` ones are unset. Both old forms are kept
+for one release.
 
 ## On a device
 
 ```elixir
-NervesPrecompiled.install([{:jason, "1.4.5"}],
+ElixirPrecompiled.install([{:jason, "1.4.5"}],
   source: "https://compatibility.nerves-project.org/api/precompiled")
 ```
 

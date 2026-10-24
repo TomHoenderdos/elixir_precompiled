@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.InstallTest do
+defmodule ElixirPrecompiled.InstallTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureIO
-  alias NervesPrecompiled.Install
+  alias ElixirPrecompiled.Install
   @moduletag :tmp_dir
 
   setup %{tmp_dir: dir} do
@@ -86,16 +86,16 @@ defmodule NervesPrecompiled.InstallTest do
 
   test "the kill switch names itself in the warning" do
     installer = fn _deps, _opts -> :ok end
-    System.put_env("NERVES_PRECOMPILED", "0")
+    System.put_env("ELIXIR_PRECOMPILED", "0")
 
     try do
       out =
         capture_io(fn -> assert Install.run([:jason], [], nil, installer: installer) == :ok end)
 
-      assert out =~ "precompiled: disabled by NERVES_PRECOMPILED"
+      assert out =~ "precompiled: disabled by ELIXIR_PRECOMPILED"
       refute out =~ "no source configured"
     after
-      System.delete_env("NERVES_PRECOMPILED")
+      System.delete_env("ELIXIR_PRECOMPILED")
     end
   end
 

@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.Check do
+defmodule ElixirPrecompiled.Check do
   @moduledoc false
   # The shared engine: every candidate becomes a HIT, MISS or FAIL line with
   # a reason; the same list lands in `<build_lib>/.precompiled/report.json`.
 
-  alias NervesPrecompiled.{CompileEnv, Env, Fetch, Match, Output, Trust}
+  alias ElixirPrecompiled.{CompileEnv, Config, Env, Fetch, Match, Output, Trust}
 
   @type line :: %{
           name: String.t(),
@@ -70,12 +70,10 @@ defmodule NervesPrecompiled.Check do
     end
   end
 
-  defp debug?(), do: System.get_env("NERVES_PRECOMPILED_DEBUG") == "1"
-
-  defp debug(msg), do: if(debug?(), do: Output.info(msg))
+  defp debug(msg), do: if(Config.debug?(), do: Output.info(msg))
 
   defp debug_skipped(skipped) do
-    if debug?() do
+    if Config.debug?() do
       Enum.each(skipped, fn {name, why} ->
         Output.info(line(%{name: name, version: "", detail: why}, "skip"))
       end)

@@ -2,14 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.TrustTest do
+defmodule ElixirPrecompiled.TrustTest do
   use ExUnit.Case, async: false
-  alias NervesPrecompiled.Fixture, as: F
-  alias NervesPrecompiled.Trust
+  alias ElixirPrecompiled.Fixture, as: F
+  alias ElixirPrecompiled.Trust
   @moduletag :tmp_dir
 
   setup_all do
-    start_supervised!(NervesPrecompiled.TestServer)
+    start_supervised!(ElixirPrecompiled.TestServer)
     :ok
   end
 
@@ -38,7 +38,7 @@ defmodule NervesPrecompiled.TrustTest do
   defp state_dir(config), do: Trust.state_dir(config, shipped(config))
 
   defp fetch(url) do
-    case NervesPrecompiled.HTTP.get(url) do
+    case ElixirPrecompiled.HTTP.get(url) do
       {:ok, body} -> {:ok, body}
       other -> other
     end
@@ -279,7 +279,7 @@ defmodule NervesPrecompiled.TrustTest do
   } do
     other = %{
       config
-      | source: "http://localhost:#{NervesPrecompiled.TestServer.port()}/precompiled"
+      | source: "http://localhost:#{ElixirPrecompiled.TestServer.port()}/precompiled"
     }
 
     {:ok, root} = Trust.load_root(config)

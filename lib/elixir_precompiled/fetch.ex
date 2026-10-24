@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.Fetch do
+defmodule ElixirPrecompiled.Fetch do
   @moduledoc """
   Bytes in, verified files in the project's `_build` out. Manifests are checked against
   the hash the batch names; files against the hash the manifest names,
@@ -19,7 +19,7 @@ defmodule NervesPrecompiled.Fetch do
 
   @spec get_body(String.t(), keyword()) :: {:ok, binary()} | {:error, String.t()}
   def get_body(url, opts \\ []) do
-    case NervesPrecompiled.HTTP.get(url,
+    case ElixirPrecompiled.HTTP.get(url,
            max_bytes: Keyword.get(opts, :max_bytes, @max_body_bytes),
            same_origin: true
          ) do

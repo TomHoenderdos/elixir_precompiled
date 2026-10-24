@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.Match do
+defmodule ElixirPrecompiled.Match do
   @moduledoc """
   The key: when a precompiled build may stand in for a local compile. Pure
   functions over the project's lock, the manifest entry and the toolchain,
@@ -10,9 +10,9 @@ defmodule NervesPrecompiled.Match do
   """
 
   @tooling_prefixes ["nerves_system_", "nerves_toolchain_"]
-  # nerves_precompiled itself: the client must never install a portal build
+  # elixir_precompiled itself: the client must never install a portal build
   # of itself.
-  @tooling_names ["nerves", "nerves_system_br", "nerves_bootstrap", "nerves_precompiled"]
+  @tooling_names ["nerves", "nerves_system_br", "nerves_bootstrap", "elixir_precompiled"]
 
   @type ctx :: %{
           name: String.t(),

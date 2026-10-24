@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-NervesPrecompiled.Fixture.start_link()
+ElixirPrecompiled.Fixture.start_link()
 
 ExUnit.start()
 

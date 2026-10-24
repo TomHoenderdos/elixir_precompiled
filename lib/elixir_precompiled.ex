@@ -2,19 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled do
+defmodule ElixirPrecompiled do
   @moduledoc """
   Install signed, verified precompiled dependency builds instead of
   compiling them.
 
-  Opt in with `config :nerves_precompiled, source: url`. At build time
+  Opt in with `config :elixir_precompiled, source: url`. At build time
   `nerves` calls `run/0` before Mix compiles the dependencies; on a device
   `install/2` wraps `Mix.install/2`. Every candidate dependency prints HIT,
   MISS or FAIL with a reason, and the same list lands in
   `_build/<target>_<env>/lib/.precompiled/report.json`.
   """
 
-  alias NervesPrecompiled.{Check, Config, Env, Install}
+  alias ElixirPrecompiled.{Check, Config, Env, Install}
 
   @doc """
   The build-time step: check every dependency Mix is about to compile and
@@ -45,7 +45,7 @@ defmodule NervesPrecompiled do
   `Mix.install/2` with precompiled builds: resolves `deps`, installs every
   matching build into the install project, then calls `Mix.install/2`,
   which compiles only the rest. Takes `Mix.install/2`'s options plus
-  `:source`, `:except`, `:root` and `:home` (see `NervesPrecompiled.Config`);
+  `:source`, `:except`, `:root` and `:home` (see `ElixirPrecompiled.Config`);
   without a source, configured or given, it is a plain `Mix.install/2`.
 
   Needs Mix on the device (`:mix` in `extra_applications`), a writable

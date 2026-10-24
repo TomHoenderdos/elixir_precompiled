@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.TestServer do
+defmodule ElixirPrecompiled.TestServer do
   @moduledoc false
   use Plug.Router
 
@@ -69,24 +69,24 @@ defmodule NervesPrecompiled.TestServer do
   end
 
   get "/precompiled/root.json" do
-    serve_json(conn, NervesPrecompiled.Fixture.get(:root))
+    serve_json(conn, ElixirPrecompiled.Fixture.get(:root))
   end
 
   get "/precompiled/batch.json" do
-    serve_json(conn, NervesPrecompiled.Fixture.get(:batch))
+    serve_json(conn, ElixirPrecompiled.Fixture.get(:batch))
   end
 
   get "/precompiled/manifests/:name" do
     name = String.replace_suffix(name, ".json", "")
 
-    case get_in(NervesPrecompiled.Fixture.get(:manifests) || %{}, [name]) do
+    case get_in(ElixirPrecompiled.Fixture.get(:manifests) || %{}, [name]) do
       nil -> send_resp(conn, 404, "not found")
       bytes -> conn |> put_resp_content_type("application/json") |> send_resp(200, bytes)
     end
   end
 
   get "/precompiled/files/:sha" do
-    case get_in(NervesPrecompiled.Fixture.get(:files) || %{}, [sha]) do
+    case get_in(ElixirPrecompiled.Fixture.get(:files) || %{}, [sha]) do
       nil -> send_resp(conn, 404, "not found")
       bytes -> conn |> put_resp_content_type("application/octet-stream") |> send_resp(200, bytes)
     end

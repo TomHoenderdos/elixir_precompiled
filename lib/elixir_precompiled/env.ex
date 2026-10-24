@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.Env do
+defmodule ElixirPrecompiled.Env do
   @moduledoc """
   What the two places the client runs answer differently: a Mix project at
-  build time (`NervesPrecompiled.Env.MixProject`) and the project
-  `Mix.install/2` keeps on a device (`NervesPrecompiled.Env.MixInstall`).
+  build time (`ElixirPrecompiled.Env.MixProject`) and the project
+  `Mix.install/2` keeps on a device (`ElixirPrecompiled.Env.MixInstall`).
   Everything else in the client is shared.
   """
 

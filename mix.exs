@@ -2,20 +2,20 @@
 #
 # SPDX-License-Identifier: CC0-1.0
 #
-defmodule NervesPrecompiled.MixProject do
+defmodule ElixirPrecompiled.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/TomHoenderdos/nerves_precompiled"
+  @source_url "https://github.com/TomHoenderdos/elixir_precompiled"
 
   @otp_release :erlang.system_info(:otp_release) |> List.to_integer()
   if @otp_release < 27 do
-    raise "nerves_precompiled requires OTP 27 or later. Current OTP version: #{@otp_release}"
+    raise "elixir_precompiled requires OTP 27 or later. Current OTP version: #{@otp_release}"
   end
 
   def project do
     [
-      app: :nerves_precompiled,
+      app: :elixir_precompiled,
       version: @version,
       elixir: "~> 1.17",
       elixirc_paths: elixirc_paths(Mix.env()),

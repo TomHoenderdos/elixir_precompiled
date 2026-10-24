@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.MatchTest do
+defmodule ElixirPrecompiled.MatchTest do
   use ExUnit.Case, async: true
-  alias NervesPrecompiled.Match
+  alias ElixirPrecompiled.Match
 
   @spark {:hex, :spark, "2.7.8", "inner", [:mix], [], "hexpm", "SPARKOUTER"}
   @ash {:hex, :ash, "3.5.2", "inner", [:mix],
@@ -80,9 +80,9 @@ defmodule NervesPrecompiled.MatchTest do
       refute Match.candidate?(:unknown, @lock, [])
 
       # The client never installs a portal build of itself.
-      self_lock = Map.put(@lock, :nerves_precompiled, put_elem(@ash, 1, :nerves_precompiled))
-      assert Match.tooling?("nerves_precompiled")
-      refute Match.candidate?(:nerves_precompiled, self_lock, [])
+      self_lock = Map.put(@lock, :elixir_precompiled, put_elem(@ash, 1, :elixir_precompiled))
+      assert Match.tooling?("elixir_precompiled")
+      refute Match.candidate?(:elixir_precompiled, self_lock, [])
     end
   end
 

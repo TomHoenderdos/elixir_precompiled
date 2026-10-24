@@ -2,19 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.ConfigTest do
+defmodule ElixirPrecompiled.ConfigTest do
   use ExUnit.Case, async: false
-  alias NervesPrecompiled.Config
+  alias ElixirPrecompiled.Config
 
   setup do
-    old = Application.get_all_env(:nerves_precompiled)
+    old = Application.get_all_env(:elixir_precompiled)
     old_nerves = Application.get_env(:nerves, :precompiled)
 
     on_exit(fn ->
-      for {k, _} <- Application.get_all_env(:nerves_precompiled),
-          do: Application.delete_env(:nerves_precompiled, k)
+      for {k, _} <- Application.get_all_env(:elixir_precompiled),
+          do: Application.delete_env(:elixir_precompiled, k)
 
-      Application.put_all_env([{:nerves_precompiled, old}])
+      Application.put_all_env([{:elixir_precompiled, old}])
 
       if is_nil(old_nerves) do
         Application.delete_env(:nerves, :precompiled)
@@ -22,16 +22,16 @@ defmodule NervesPrecompiled.ConfigTest do
         Application.put_env(:nerves, :precompiled, old_nerves)
       end
 
-      System.delete_env("NERVES_PRECOMPILED")
-      System.delete_env("NERVES_PRECOMPILED_HOME")
+      System.delete_env("ELIXIR_PRECOMPILED")
+      System.delete_env("ELIXIR_PRECOMPILED_HOME")
     end)
   end
 
   defp configure(opts) do
-    for {k, _} <- Application.get_all_env(:nerves_precompiled),
-        do: Application.delete_env(:nerves_precompiled, k)
+    for {k, _} <- Application.get_all_env(:elixir_precompiled),
+        do: Application.delete_env(:elixir_precompiled, k)
 
-    Application.put_all_env([{:nerves_precompiled, opts}])
+    Application.put_all_env([{:elixir_precompiled, opts}])
   end
 
   test "no source means nil" do
@@ -48,9 +48,9 @@ defmodule NervesPrecompiled.ConfigTest do
     assert c.except == []
 
     assert c.root_path ==
-             Path.join(to_string(:code.priv_dir(:nerves_precompiled)), "precompiled/root.json")
+             Path.join(to_string(:code.priv_dir(:elixir_precompiled)), "precompiled/root.json")
 
-    assert c.home == Path.expand("~/.nerves/precompiled")
+    assert c.home == to_string(:filename.basedir(:user_cache, "elixir_precompiled"))
   end
 
   test "without the library on the code path its root cannot be found" do
@@ -66,9 +66,9 @@ defmodule NervesPrecompiled.ConfigTest do
       root: "/tmp/root.json"
     )
 
-    System.put_env("NERVES_PRECOMPILED_HOME", "/tmp/pc")
+    System.put_env("ELIXIR_PRECOMPILED_HOME", "/tmp/pc")
     assert %{except: [:ash], root_path: "/tmp/root.json", home: "/tmp/pc"} = Config.load()
-    System.put_env("NERVES_PRECOMPILED", "0")
+    System.put_env("ELIXIR_PRECOMPILED", "0")
     assert Config.load() == nil
   end
 
@@ -84,6 +84,37 @@ defmodule NervesPrecompiled.ConfigTest do
     configure([])
     Application.put_env(:nerves, :precompiled, source: "https://old.test/x")
     assert %{source: "https://old.test/x"} = Config.load()
+  end
+
+  test "the two old config keys still work, newest name wins" do
+    configure([])
+    Application.put_env(:nerves, :precompiled, source: "https://old.test/x")
+    assert %{source: "https://old.test/x"} = Config.load()
+    Application.put_all_env([{:nerves_precompiled, [source: "https://mid.test/x"]}])
+    assert %{source: "https://mid.test/x"} = Config.load()
+    configure(source: "https://new.test/x")
+    assert %{source: "https://new.test/x"} = Config.load()
+  after
+    for {k, _} <- Application.get_all_env(:nerves_precompiled),
+        do: Application.delete_env(:nerves_precompiled, k)
+  end
+
+  test "old env var names are read when the new ones are unset" do
+    configure(source: "https://x")
+    System.put_env("NERVES_PRECOMPILED_HOME", "/tmp/old-home")
+    assert %{home: "/tmp/old-home"} = Config.load()
+    System.put_env("ELIXIR_PRECOMPILED_HOME", "/tmp/new-home")
+    assert %{home: "/tmp/new-home"} = Config.load()
+    System.put_env("NERVES_PRECOMPILED", "0")
+    assert Config.load() == nil
+  after
+    for v <- ~w(NERVES_PRECOMPILED_HOME ELIXIR_PRECOMPILED_HOME NERVES_PRECOMPILED),
+        do: System.delete_env(v)
+  end
+
+  test "the default cache dir is the user cache" do
+    configure(source: "https://x")
+    assert Config.load().home == to_string(:filename.basedir(:user_cache, "elixir_precompiled"))
   end
 
   test "overrides win over config, and home can be given" do

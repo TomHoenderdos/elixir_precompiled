@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.Env.MixInstall do
+defmodule ElixirPrecompiled.Env.MixInstall do
   @moduledoc false
   # On a device, inside the project Mix.install/2 keeps under MIX_INSTALL_DIR:
   # every Hex entry of its lock that is not compiled there yet is a
@@ -12,7 +12,7 @@ defmodule NervesPrecompiled.Env.MixInstall do
   # project is left to Mix, so a second boot with a cached install needs no
   # network and re-places nothing.
 
-  alias NervesPrecompiled.Env
+  alias ElixirPrecompiled.Env
 
   @spec load(Path.t()) :: Env.t()
   def load(project_dir) do

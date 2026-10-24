@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.CompileEnvTest do
+defmodule ElixirPrecompiled.CompileEnvTest do
   use ExUnit.Case, async: false
-  alias NervesPrecompiled.CompileEnv
+  alias ElixirPrecompiled.CompileEnv
 
   test "lookup follows compile_env semantics" do
     Application.put_env(:precompiled_test_app, :mode, fast: true)

@@ -2,16 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.FetchTest do
+defmodule ElixirPrecompiled.FetchTest do
   use ExUnit.Case, async: false
-  alias NervesPrecompiled.Fetch
-  alias NervesPrecompiled.Fixture, as: F
+  alias ElixirPrecompiled.Fetch
+  alias ElixirPrecompiled.Fixture, as: F
 
   @moduletag :tmp_dir
   @lock_entry {:hex, :ash, "3.5.2", "i", [:mix], [], "hexpm", "OUTER"}
 
   setup_all do
-    start_supervised!(NervesPrecompiled.TestServer)
+    start_supervised!(ElixirPrecompiled.TestServer)
     :ok
   end
 
@@ -45,7 +45,7 @@ defmodule NervesPrecompiled.FetchTest do
   end
 
   test "get_body caps size and refuses cross-host redirects", %{config: config} do
-    port = NervesPrecompiled.TestServer.port()
+    port = ElixirPrecompiled.TestServer.port()
 
     assert {:error, "redirect to another host refused"} =
              Fetch.get_body(config.source <> "/redirect/batch.json")
@@ -58,7 +58,7 @@ defmodule NervesPrecompiled.FetchTest do
   end
 
   test "get_body streams the body and assembles it correctly under the cap" do
-    port = NervesPrecompiled.TestServer.port()
+    port = ElixirPrecompiled.TestServer.port()
 
     assert {:ok, body} = Fetch.get_body("http://127.0.0.1:#{port}/binary", max_bytes: 2048)
     assert byte_size(body) == 1024

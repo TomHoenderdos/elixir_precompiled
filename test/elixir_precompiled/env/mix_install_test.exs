@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.Env.MixInstallTest do
+defmodule ElixirPrecompiled.Env.MixInstallTest do
   use ExUnit.Case, async: true
-  alias NervesPrecompiled.Env.MixInstall
+  alias ElixirPrecompiled.Env.MixInstall
   @moduletag :tmp_dir
 
   @jason {:hex, :jason, "1.4.5", "i", [:mix], [], "hexpm", "JOUTER"}

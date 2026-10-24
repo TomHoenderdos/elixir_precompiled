@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.Output do
+defmodule ElixirPrecompiled.Output do
   @moduledoc false
   # Lines for the person watching: Mix's shell when Mix is running (a build
   # host, or Mix.install/2 on a device), plain IO otherwise.

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.Install do
+defmodule ElixirPrecompiled.Install do
   @moduledoc false
   # Mix.install/2 with the precompiled step in front of it. Mix offers no
   # hook between its deps.get and deps.loadpaths, and its install project
@@ -12,7 +12,7 @@ defmodule NervesPrecompiled.Install do
   # Mix finds the project, skips deps.get because _build exists, and
   # deps.loadpaths compiles only what carries no marker.
 
-  alias NervesPrecompiled.{Check, Config, Env, Output}
+  alias ElixirPrecompiled.{Check, Config, Env, Output}
 
   @mix_install_app :mix_install
 
@@ -27,7 +27,7 @@ defmodule NervesPrecompiled.Install do
         Output.warning(
           if Config.disabled?(),
             do:
-              "precompiled: disabled by NERVES_PRECOMPILED, installing without precompiled builds",
+              "precompiled: disabled by ELIXIR_PRECOMPILED, installing without precompiled builds",
             else: "precompiled: no source configured, installing without precompiled builds"
         )
 
@@ -45,7 +45,7 @@ defmodule NervesPrecompiled.Install do
   defp install_precompiled(deps, mix_opts, config, installer, test_opts) do
     # Mix.install/2 refuses inside a Mix project; refuse before any work.
     if Keyword.get_lazy(test_opts, :in_project?, fn -> Mix.Project.get() != nil end) do
-      Mix.raise("NervesPrecompiled.install/2 cannot be used inside a Mix project")
+      Mix.raise("ElixirPrecompiled.install/2 cannot be used inside a Mix project")
     end
 
     {forced?, mix_opts} = take_force(mix_opts)
@@ -64,7 +64,7 @@ defmodule NervesPrecompiled.Install do
 
   def ensure_mix!(false) do
     raise RuntimeError,
-          "NervesPrecompiled.install/2 needs Mix on this device: " <>
+          "ElixirPrecompiled.install/2 needs Mix on this device: " <>
             "add :mix to extra_applications in mix.exs and rebuild the firmware"
   end
 
@@ -148,7 +148,7 @@ defmodule NervesPrecompiled.Install do
     # deliberately not Mix.InstallProject, so Mix's {:cached_deps, module}
     # cache is not shared with the real install that follows.
     File.cd!(dir, fn ->
-      :ok = Mix.ProjectStack.push(NervesPrecompiled.InstallProject, config, "nofile")
+      :ok = Mix.ProjectStack.push(ElixirPrecompiled.InstallProject, config, "nofile")
 
       try do
         Mix.Task.rerun("deps.get")
@@ -160,7 +160,7 @@ defmodule NervesPrecompiled.Install do
   end
 end
 
-defmodule NervesPrecompiled.InstallProject do
+defmodule ElixirPrecompiled.InstallProject do
   @moduledoc false
   # The project module Install.resolve/3 pushes for its deps.get.
 end

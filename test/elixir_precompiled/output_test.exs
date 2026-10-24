@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.OutputTest do
+defmodule ElixirPrecompiled.OutputTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureIO
-  alias NervesPrecompiled.Output
+  alias ElixirPrecompiled.Output
 
   test "info, success and warning print on stdio; error on stderr" do
     assert capture_io(fn -> Output.info("a") end) =~ "a"

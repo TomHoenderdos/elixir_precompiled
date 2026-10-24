@@ -9,7 +9,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.HTTP do
+defmodule ElixirPrecompiled.HTTP do
   @moduledoc false
   # A streaming :httpc GET with a byte cap and an optional same-origin rule
   # for redirects, on its own httpc profile. Derived from Nerves.HTTPClient
@@ -28,8 +28,8 @@ defmodule NervesPrecompiled.HTTP do
   # ignored"). Such a body is still bounded by the deadline.
 
   @max_redirects 5
-  @profile :nerves_precompiled
-  @user_agent ~c"nerves_precompiled/#{Mix.Project.config()[:version]}"
+  @profile :elixir_precompiled
+  @user_agent ~c"elixir_precompiled/#{Mix.Project.config()[:version]}"
   @connect_timeout 30_000
   @inactivity_ms 60_000
   @deadline_ms 300_000

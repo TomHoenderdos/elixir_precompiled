@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.Integration.InstallTest do
+defmodule ElixirPrecompiled.Integration.InstallTest do
   use ExUnit.Case, async: false
   @moduletag :integration
   @moduletag :tmp_dir
@@ -12,10 +12,10 @@ defmodule NervesPrecompiled.Integration.InstallTest do
   @script """
   deps = [{:jason, "1.4.5"}, {:decimal, "3.2.0"}]
   opts = [source: "#{@source}"]
-  NervesPrecompiled.install(deps, opts)
+  ElixirPrecompiled.install(deps, opts)
   IO.puts("encoded=" <> Jason.encode!(%{a: 1}))
   IO.puts("mix_dir=" <> Mix.install_project_dir())
-  IO.puts("our_dir=" <> NervesPrecompiled.Install.project_dir(deps, []))
+  IO.puts("our_dir=" <> ElixirPrecompiled.Install.project_dir(deps, []))
 
   beam = Path.join(Mix.install_project_dir(), "_build/dev/lib/jason/ebin/Elixir.Jason.beam")
   sha = :crypto.hash(:sha256, File.read!(beam)) |> Base.encode16(case: :lower)
@@ -28,13 +28,13 @@ defmodule NervesPrecompiled.Integration.InstallTest do
   test "install/2 in a fresh VM hits production and the dir formula matches Mix", %{tmp_dir: dir} do
     script = Path.join(dir, "install.exs")
     File.write!(script, @script)
-    ebin = Path.join(Mix.Project.build_path(), "lib/nerves_precompiled/ebin")
+    ebin = Path.join(Mix.Project.build_path(), "lib/elixir_precompiled/ebin")
 
     {out, status} =
       System.cmd("elixir", ["-pa", ebin, script],
         env: [
           {"MIX_INSTALL_DIR", Path.join(dir, "installs")},
-          {"NERVES_PRECOMPILED_HOME", Path.join(dir, "home")},
+          {"ELIXIR_PRECOMPILED_HOME", Path.join(dir, "home")},
           {"MIX_ENV", nil}
         ],
         stderr_to_stdout: true
@@ -57,7 +57,7 @@ defmodule NervesPrecompiled.Integration.InstallTest do
       refute out =~ ~r/==> decimal/, out
       sha = line!(out, "jason_beam_sha")
 
-      {:ok, body} = NervesPrecompiled.HTTP.get(@source <> "/manifests/jason.json")
+      {:ok, body} = ElixirPrecompiled.HTTP.get(@source <> "/manifests/jason.json")
       ebin = get_in(:json.decode(body), ["versions", "1.4.5", "pure_elixir", "ebin"])
       assert sha in Enum.map(ebin, & &1["sha256"]), out
     end

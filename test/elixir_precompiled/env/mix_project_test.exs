@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.Env.MixProjectTest do
+defmodule ElixirPrecompiled.Env.MixProjectTest do
   use ExUnit.Case, async: true
-  alias NervesPrecompiled.Env.MixProject
+  alias ElixirPrecompiled.Env.MixProject
 
   @ash {:hex, :ash, "3.5.2", "i", [:mix], [], "hexpm", "ASHOUTER"}
   @jason {:hex, :jason, "1.4.5", "i", [:mix], [], "hexpm", "JOUTER"}

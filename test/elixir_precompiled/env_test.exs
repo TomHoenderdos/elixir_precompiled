@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.EnvTest do
+defmodule ElixirPrecompiled.EnvTest do
   use ExUnit.Case, async: true
-  alias NervesPrecompiled.Env
+  alias ElixirPrecompiled.Env
 
   @ash {:hex, :ash, "3.5.2", "i", [:mix], [], "hexpm", "ASHOUTER"}
   @git {:git, "https://example.test/x.git", "abc", []}

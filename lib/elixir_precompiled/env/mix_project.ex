@@ -2,13 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.Env.MixProject do
+defmodule ElixirPrecompiled.Env.MixProject do
   @moduledoc false
   # Build time, inside a Mix project: the deps Mix is about to compile, the
   # project's lock and build dir, and the Nerves system from the build plan
   # when nerves is loaded.
 
-  alias NervesPrecompiled.Env
+  alias ElixirPrecompiled.Env
 
   # nerves is not a dependency; its build plan is read only when the module
   # is there, so the compiler must not warn about the remote call.

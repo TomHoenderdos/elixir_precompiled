@@ -2,16 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.HTTPTest do
+defmodule ElixirPrecompiled.HTTPTest do
   use ExUnit.Case, async: false
-  alias NervesPrecompiled.HTTP
+  alias ElixirPrecompiled.HTTP
 
   setup_all do
-    start_supervised!(NervesPrecompiled.TestServer)
+    start_supervised!(ElixirPrecompiled.TestServer)
     :ok
   end
 
-  defp url(path), do: "http://127.0.0.1:#{NervesPrecompiled.TestServer.port()}" <> path
+  defp url(path), do: "http://127.0.0.1:#{ElixirPrecompiled.TestServer.port()}" <> path
 
   test "collects a body" do
     assert {:ok, "hello nerves"} = HTTP.get(url("/text"))

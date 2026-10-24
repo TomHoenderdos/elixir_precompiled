@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.Trust do
+defmodule ElixirPrecompiled.Trust do
   @moduledoc """
   The trust chain's top: a root document shipped with `nerves` names the
   keys allowed to sign batches; a batch names every manifest by hash. Both

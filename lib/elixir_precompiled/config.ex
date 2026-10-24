@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.Config do
+defmodule ElixirPrecompiled.Config do
   @moduledoc """
-  The client's configuration: `config :nerves_precompiled, source: url` plus
-  `except: [dep, ...]` and `root: path`; `NervesPrecompiled.install/2` passes
-  the same keys as options. `NERVES_PRECOMPILED=0` disables a run and
-  `NERVES_PRECOMPILED_HOME` moves the cache.
+  The client's configuration: `config :elixir_precompiled, source: url` plus
+  `except: [dep, ...]` and `root: path`; `ElixirPrecompiled.install/2` passes
+  the same keys as options. `ELIXIR_PRECOMPILED=0` disables a run and
+  `ELIXIR_PRECOMPILED_HOME` moves the cache.
   """
 
   @type t :: %{source: String.t(), except: [atom()], root_path: Path.t(), home: Path.t()}
@@ -23,33 +23,50 @@ defmodule NervesPrecompiled.Config do
         source: String.trim_trailing(source, "/"),
         except: except(opts[:except]),
         root_path: opts[:root] || Path.join(priv_dir(), "precompiled/root.json"),
-        home:
-          opts[:home] || System.get_env("NERVES_PRECOMPILED_HOME") ||
-            Path.expand("~/.nerves/precompiled")
+        home: opts[:home] || env_var("_HOME") || default_home()
       }
     else
       _ -> nil
     end
   end
 
-  @doc "True when `NERVES_PRECOMPILED` is `0`, `false` or `no`."
+  @doc "True when `ELIXIR_PRECOMPILED` (or the old `NERVES_PRECOMPILED`) is `0`, `false` or `no`."
   @spec disabled?() :: boolean()
-  def disabled?(), do: System.get_env("NERVES_PRECOMPILED") in ["0", "false", "no"]
+  def disabled?(), do: env_var("") in ["0", "false", "no"]
 
-  # `config :nerves_precompiled, source: ...` is this library's key; the
-  # `config :nerves, :precompiled, ...` form from nerves PR #1220 still works.
+  @doc "True when `ELIXIR_PRECOMPILED_DEBUG` (or the old `NERVES_PRECOMPILED_DEBUG`) is `1`."
+  @spec debug?() :: boolean()
+  def debug?(), do: env_var("_DEBUG") == "1"
+
+  # The library's own key first; the two names it had before (nerves PR
+  # #1220 and the nerves_precompiled extraction) for one release.
   defp app_env() do
-    case Application.get_all_env(:nerves_precompiled) do
-      [] -> Application.get_env(:nerves, :precompiled, [])
-      env -> env
+    case Application.get_all_env(:elixir_precompiled) do
+      [] ->
+        case Application.get_all_env(:nerves_precompiled) do
+          [] -> Application.get_env(:nerves, :precompiled, [])
+          env -> env
+        end
+
+      env ->
+        env
     end
   end
+
+  # ELIXIR_PRECOMPILED* wins; the NERVES_PRECOMPILED* names are read when
+  # the new one is unset, for one release.
+  defp env_var(suffix) do
+    System.get_env("ELIXIR_PRECOMPILED" <> suffix) ||
+      System.get_env("NERVES_PRECOMPILED" <> suffix)
+  end
+
+  defp default_home(), do: to_string(:filename.basedir(:user_cache, "elixir_precompiled"))
 
   @doc false
   # The root of trust ships in the library's priv/; a cwd-relative fallback
   # would let whatever directory the caller is in supply it.
   @spec priv_dir(atom()) :: Path.t()
-  def priv_dir(app \\ :nerves_precompiled) do
+  def priv_dir(app \\ :elixir_precompiled) do
     case :code.priv_dir(app) do
       {:error, reason} ->
         raise ArgumentError,
@@ -75,7 +92,7 @@ defmodule NervesPrecompiled.Config do
         :ok
 
       _ ->
-        NervesPrecompiled.Output.warning(
+        ElixirPrecompiled.Output.warning(
           "precompiled: source must be https (http only on loopback), " <>
             "disabled: #{inspect(source)}"
         )
@@ -88,7 +105,7 @@ defmodule NervesPrecompiled.Config do
     {good, bad} = Enum.split_with(list, &(is_atom(&1) or is_binary(&1)))
 
     if bad != [] do
-      NervesPrecompiled.Output.warning(
+      ElixirPrecompiled.Output.warning(
         "precompiled: ignoring except entries that are not dependency names: #{inspect(bad)}"
       )
     end
@@ -99,7 +116,7 @@ defmodule NervesPrecompiled.Config do
   defp except(nil), do: []
 
   defp except(other) do
-    NervesPrecompiled.Output.warning(
+    ElixirPrecompiled.Output.warning(
       "precompiled: ignoring except, not a list: #{inspect(other)}"
     )
 

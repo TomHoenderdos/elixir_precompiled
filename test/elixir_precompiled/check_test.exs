@@ -2,38 +2,38 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule NervesPrecompiled.CheckTest do
+defmodule ElixirPrecompiled.CheckTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureIO
-  alias NervesPrecompiled.{Check, Env}
-  alias NervesPrecompiled.Env.MixProject
-  alias NervesPrecompiled.Fixture, as: F
+  alias ElixirPrecompiled.{Check, Env}
+  alias ElixirPrecompiled.Env.MixProject
+  alias ElixirPrecompiled.Fixture, as: F
   @moduletag :tmp_dir
 
   @ash {:hex, :ash, "3.5.2", "i", [:mix], [], "hexpm", "ASHOUTER"}
   @jason {:hex, :jason, "1.4.5", "i", [:mix], [], "hexpm", "JOUTER"}
 
   setup_all do
-    start_supervised!(NervesPrecompiled.TestServer)
+    start_supervised!(ElixirPrecompiled.TestServer)
     :ok
   end
 
   setup %{tmp_dir: dir} do
     on_exit(fn ->
       configure([])
-      System.delete_env("NERVES_PRECOMPILED_HOME")
-      System.delete_env("NERVES_PRECOMPILED_DEBUG")
+      System.delete_env("ELIXIR_PRECOMPILED_HOME")
+      System.delete_env("ELIXIR_PRECOMPILED_DEBUG")
     end)
 
     f = F.new(dir)
     configure(source: F.base_url(), root: f.root_path)
-    System.put_env("NERVES_PRECOMPILED_HOME", Path.join(dir, "home"))
+    System.put_env("ELIXIR_PRECOMPILED_HOME", Path.join(dir, "home"))
     lib = Path.join(dir, "_build/rpi4_dev/lib")
 
     %{
       f: f,
       lib: lib,
-      config: NervesPrecompiled.Config.load(),
+      config: ElixirPrecompiled.Config.load(),
       env: %Env{
         candidates: [
           %{name: :ash, version: "3.5.2", lock_entry: @ash},
@@ -48,10 +48,10 @@ defmodule NervesPrecompiled.CheckTest do
   end
 
   defp configure(opts) do
-    for {k, _} <- Application.get_all_env(:nerves_precompiled),
-        do: Application.delete_env(:nerves_precompiled, k)
+    for {k, _} <- Application.get_all_env(:elixir_precompiled),
+        do: Application.delete_env(:elixir_precompiled, k)
 
-    Application.put_all_env([{:nerves_precompiled, opts}])
+    Application.put_all_env([{:elixir_precompiled, opts}])
   end
 
   # `Output.error/1` (used for FAIL lines) writes to stderr, which a plain
@@ -226,12 +226,12 @@ defmodule NervesPrecompiled.CheckTest do
     assert_received {:report, :nothing_to_do}
     refute File.exists?(Path.join(lib, ".precompiled/report.json"))
     # The batch fetch would have stored the sequence under the home dir.
-    refute File.exists?(System.get_env("NERVES_PRECOMPILED_HOME"))
+    refute File.exists?(System.get_env("ELIXIR_PRECOMPILED_HOME"))
   end
 
   test "no candidates in DEBUG mode prints one line", %{config: config, env: env} do
-    System.put_env("NERVES_PRECOMPILED_DEBUG", "1")
-    on_exit(fn -> System.delete_env("NERVES_PRECOMPILED_DEBUG") end)
+    System.put_env("ELIXIR_PRECOMPILED_DEBUG", "1")
+    on_exit(fn -> System.delete_env("ELIXIR_PRECOMPILED_DEBUG") end)
 
     out = run_capturing(config, %{env | candidates: []})
     assert_received {:report, :nothing_to_do}
