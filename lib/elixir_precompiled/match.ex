@@ -110,17 +110,19 @@ defmodule ElixirPrecompiled.Match do
   # When every build missed on its target and none is pure_elixir or for
   # this system, the version simply was not built here; otherwise the
   # build that passed the most rules explains the miss best (ties keep the
-  # first).
+  # first), and a build for another system never explains it.
   defp furthest_reason(results, system, system_version) do
-    if Enum.all?(results, &foreign?(&1, system)) do
-      "not built for #{system} #{system_version}"
-    else
-      {_, {:miss, reason, _}} =
-        Enum.reduce(results, fn {_, {:miss, _, n}} = r, {_, {:miss, _, best}} = acc ->
-          if n > best, do: r, else: acc
-        end)
+    case Enum.reject(results, &foreign?(&1, system)) do
+      [] ->
+        "not built for #{system} #{system_version}"
 
-      reason
+      own ->
+        {_, {:miss, reason, _}} =
+          Enum.reduce(own, fn {_, {:miss, _, n}} = r, {_, {:miss, _, best}} = acc ->
+            if n > best, do: r, else: acc
+          end)
+
+        reason
     end
   end
 
@@ -182,14 +184,22 @@ defmodule ElixirPrecompiled.Match do
   # Elixir's promise is backward within a minor: code compiled on x.y.N runs
   # on x.y.M for M >= N. Hex builds its own archive on x.y.0 for the same
   # reason; the portal builds on the oldest patch its audience runs.
+  # Compared as versions, not patch integers, so a pre-release runtime
+  # (1.21.0-rc.0) is older than the final build (1.21.0) and refused, while
+  # a pre-release build is still served to the final release.
   defp elixir_ok(built, running) do
-    {bmaj, bmin, bpatch} = parse3(built)
-    {rmaj, rmin, rpatch} = parse3(running)
-
-    if bmaj > 0 and {bmaj, bmin} == {rmaj, rmin} and rpatch >= bpatch,
-      do: :ok,
-      else: {:miss, "built with Elixir #{built}, running #{running}"}
+    with {:ok, b} <- parse_version(built),
+         {:ok, r} <- parse_version(running),
+         true <- b.major > 0 and {b.major, b.minor} == {r.major, r.minor},
+         true <- Version.compare(r, b) != :lt do
+      :ok
+    else
+      _ -> {:miss, "built with Elixir #{built}, running #{running}"}
+    end
   end
+
+  defp parse_version(v) when is_binary(v), do: Version.parse(v)
+  defp parse_version(_), do: :error
 
   # OTP's forward guarantee covers bytecode, not what compile time inlines:
   # Record.extract from OTP headers bakes in layouts that change between
@@ -197,7 +207,8 @@ defmodule ElixirPrecompiled.Match do
   defp otp_ok(built, running) when built == running, do: :ok
   defp otp_ok(built, running), do: {:miss, "built on OTP #{built}, running #{running}"}
 
-  # {0, 0, 0} for a value that does not parse, which elixir_ok rejects.
+  # {0, 0, 0} for a value that does not parse; only rank/2 uses it, on
+  # builds elixir_ok/2 already accepted.
   defp parse3(v) when is_binary(v) do
     case Version.parse(v) do
       {:ok, %Version{major: maj, minor: min, patch: patch}} -> {maj, min, patch}

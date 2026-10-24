@@ -100,7 +100,13 @@ defmodule ElixirPrecompiled.MatchTest do
           {"no toolchain recorded misses", [{"elixir", nil}, {"otp", nil}], [],
            {:miss, "build predates toolchain"}},
           {"unparsable Elixir version misses", [{"elixir", "garbage"}], [],
-           {:miss, "built with Elixir garbage, running 1.20.3"}}
+           {:miss, "built with Elixir garbage, running 1.20.3"}},
+          {"final build on a pre-release runtime misses", [{"elixir", "1.21.0"}],
+           [elixir: "1.21.0-rc.0"], {:miss, "built with Elixir 1.21.0, running 1.21.0-rc.0"}},
+          {"pre-release build on the final runtime hits", [{"elixir", "1.21.0-rc.0"}],
+           [elixir: "1.21.0"], :ok},
+          {"unparsable running version misses", [], [elixir: "garbage"],
+           {:miss, "built with Elixir 1.20.3, running garbage"}}
         ] do
       test label do
         build =
@@ -156,6 +162,46 @@ defmodule ElixirPrecompiled.MatchTest do
 
       assert {:miss, "package checksum differs from mix.lock"} =
                Match.select(doc([near, far]), ctx())
+    end
+
+    test "a foreign-target miss ranks below every other miss" do
+      foreign = %{
+        "target" => "nerves_system_bbb",
+        "ebin" => [],
+        "priv" => [],
+        "build" => Map.put(@build, "system_version", "1.0.0")
+      }
+
+      wrong_sys = %{
+        "target" => "nerves_system_rpi4",
+        "ebin" => [],
+        "priv" => [],
+        "build" => Map.put(@build, "system_version", "1.30.0")
+      }
+
+      assert {:miss, "built for nerves_system_rpi4 1.30.0, project has 1.31.0"} =
+               Match.select(doc([foreign, wrong_sys]), ctx())
+    end
+
+    test "of two older-patch builds the closer patch wins" do
+      p1 = pe(Map.merge(@build, %{"elixir" => "1.20.1", "run_id" => "p1"}))
+      p2 = pe(Map.merge(@build, %{"elixir" => "1.20.2", "run_id" => "p2"}))
+
+      assert {:ok, %{"build" => %{"run_id" => "p2"}}, _} = Match.select(doc([p1, p2]), ctx())
+    end
+
+    test "an exact-patch system build wins over an older-patch pure build" do
+      older = pe(Map.merge(@build, %{"elixir" => "1.20.2", "run_id" => "o"}))
+
+      sys = %{
+        "target" => "nerves_system_rpi4",
+        "ebin" => [],
+        "priv" => [],
+        "build" => Map.merge(@build, %{"system_version" => "1.31.0", "run_id" => "s"})
+      }
+
+      assert {:ok, %{"build" => %{"run_id" => "s"}}, "nerves_system_rpi4"} =
+               Match.select(doc([older, sys]), ctx())
     end
 
     test "empty builds and unknown targets are misses" do
