@@ -10,7 +10,9 @@ defmodule NervesPrecompiled.Match do
   """
 
   @tooling_prefixes ["nerves_system_", "nerves_toolchain_"]
-  @tooling_names ["nerves", "nerves_system_br", "nerves_bootstrap"]
+  # nerves_precompiled itself: the client must never install a portal build
+  # of itself.
+  @tooling_names ["nerves", "nerves_system_br", "nerves_bootstrap", "nerves_precompiled"]
 
   @type ctx :: %{
           name: String.t(),

@@ -78,6 +78,11 @@ defmodule NervesPrecompiled.MatchTest do
       refute Match.candidate?(:gitdep, @lock, [])
       refute Match.candidate?(:ash, @lock, [:ash])
       refute Match.candidate?(:unknown, @lock, [])
+
+      # The client never installs a portal build of itself.
+      self_lock = Map.put(@lock, :nerves_precompiled, put_elem(@ash, 1, :nerves_precompiled))
+      assert Match.tooling?("nerves_precompiled")
+      refute Match.candidate?(:nerves_precompiled, self_lock, [])
     end
   end
 

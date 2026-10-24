@@ -285,13 +285,12 @@ defmodule NervesPrecompiled.Trust do
     _ -> {:error, "batch malformed"}
   end
 
+  # Written like roots.json, so a crash mid-write never leaves a torn
+  # sequence number behind.
   defp write_state(dir, seq) do
-    with :ok <- File.mkdir_p(dir),
-         :ok <- File.write(Path.join(dir, "state"), Integer.to_string(seq)) do
-      :ok
-    else
-      {:error, reason} -> {:error, "state dir unwritable: #{inspect(reason)}"}
-    end
+    write_atomic(dir, "state", Integer.to_string(seq))
+  rescue
+    e in File.Error -> {:error, "state dir unwritable: #{inspect(e.reason)}"}
   end
 
   defp batch_fields(%{
