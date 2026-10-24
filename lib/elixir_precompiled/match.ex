@@ -114,7 +114,7 @@ defmodule ElixirPrecompiled.Match do
   defp furthest_reason(results, system, system_version) do
     case Enum.reject(results, &foreign?(&1, system)) do
       [] ->
-        "not built for #{system} #{system_version}"
+        String.trim_trailing("not built for #{system} #{system_version}")
 
       own ->
         {_, {:miss, reason, _}} =
@@ -153,9 +153,7 @@ defmodule ElixirPrecompiled.Match do
       fn -> toolchain_present(b) end,
       fn -> elixir_ok(b["elixir"], ctx.elixir) end,
       fn -> otp_ok(b["otp"], ctx.otp) end,
-      fn ->
-        eq(b["dep_env"], ctx.dep_env, &"built with env #{&1}, dependency compiles as #{&2}")
-      end,
+      fn -> dep_env_ok(b["dep_env"], ctx.dep_env) end,
       fn -> present(b, "package_checksum") end,
       fn ->
         eq(b["package_checksum"], outer, fn _, _ -> "package checksum differs from mix.lock" end)
@@ -206,6 +204,13 @@ defmodule ElixirPrecompiled.Match do
   # majors (public_key.hrl between 27 and 28), so majors must match.
   defp otp_ok(built, running) when built == running, do: :ok
   defp otp_ok(built, running), do: {:miss, "built on OTP #{built}, running #{running}"}
+
+  # A build made before dep_env was recorded has nothing to compare, so the
+  # rule that follows (eq/3) would otherwise read `#{nil}` as an empty env.
+  defp dep_env_ok(nil, _running), do: {:miss, "build predates dep_env"}
+
+  defp dep_env_ok(built, running),
+    do: eq(built, running, &"built with env #{&1}, dependency compiles as #{&2}")
 
   # {0, 0, 0} for a value that does not parse; only rank/2 uses it, on
   # builds elixir_ok/2 already accepted.

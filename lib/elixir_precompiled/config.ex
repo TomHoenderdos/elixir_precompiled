@@ -64,14 +64,21 @@ defmodule ElixirPrecompiled.Config do
 
   @doc false
   # The root of trust ships in the library's priv/; a cwd-relative fallback
-  # would let whatever directory the caller is in supply it.
+  # would let whatever directory the caller is in supply it. :code.priv_dir/1
+  # keys off the app's .app file name, which an archive built with a
+  # non-standard output name (`mix archive.build -o /tmp/x.ez`) does not
+  # carry, so fall back to the application directory before giving up.
   @spec priv_dir(atom()) :: Path.t()
   def priv_dir(app \\ :elixir_precompiled) do
     case :code.priv_dir(app) do
       {:error, reason} ->
-        raise ArgumentError,
-              "#{app} is not on the code path (#{inspect(reason)}), " <>
-                "so its root of trust (priv/precompiled/root.json) cannot be found"
+        if Application.spec(app) do
+          Application.app_dir(app, "priv")
+        else
+          raise ArgumentError,
+                "#{app} is not on the code path (#{inspect(reason)}), " <>
+                  "so its root of trust (priv/precompiled/root.json) cannot be found"
+        end
 
       dir ->
         to_string(dir)

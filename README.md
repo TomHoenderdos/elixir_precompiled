@@ -49,7 +49,7 @@ precompiled: 40 hit, 5 miss, 0 fail of 45 deps, 61.2 MB, 8.3 s
 | `:source` | The portal's precompiled API URL. Without it nothing is installed. `https` only, `http` only on loopback. |
 | `:except` | Dependencies never installed precompiled, for example `[:ash]`. |
 | `:root` | Path to a `root.json` used instead of the one the library ships. |
-| `:home` | The file and trust-state cache (default the user cache dir Mix uses for its own, `:filename.basedir(:user_cache, "elixir_precompiled")`). |
+| `:home` | The file and trust-state cache (default the user cache dir Mix uses for its own, `:filename.basedir(:user_cache, "elixir_precompiled")`; set `ELIXIR_PRECOMPILED_HOME=~/.nerves/precompiled` to keep using the pre-upgrade cache instead). |
 | `ELIXIR_PRECOMPILED=0` | Disables a run (`false` and `no` work too). |
 | `ELIXIR_PRECOMPILED_HOME` | The cache directory when `:home` is not set. |
 | `ELIXIR_PRECOMPILED_DEBUG=1` | Also prints each dependency that was not a candidate, with the reason (tooling, `except`, not from Hex, ...). |
@@ -85,7 +85,8 @@ Install the archive once into the Mix home the runtime uses:
 
     mix archive.install github TomHoenderdos/elixir_precompiled
 
-Then, in the notebook's setup cell (or any script), in place of `Mix.install/2`:
+Then, in the notebook's setup cell (Livebook has Mix started), or in a
+script after `Mix.start()`:
 
     ElixirPrecompiled.install([{:jason, "1.4.5"}, {:decimal, "3.2.0"}],
       source: "https://compatibility.nerves-project.org/api/precompiled")
@@ -161,3 +162,6 @@ mix test --include integration # install/2 in a child VM against production
 scripts/container-check.sh     # the same inside the compatibility worker image
 MIX_ENV=prod mix archive.build # elixir_precompiled-0.1.0.ez, for Livebook
 ```
+
+Keep the built archive named `elixir_precompiled*.ez`: `mix archive.build -o`
+with another name can make `:code.priv_dir/1` miss the root of trust.

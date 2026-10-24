@@ -97,6 +97,8 @@ defmodule ElixirPrecompiled.MatchTest do
           {"newer OTP misses", [{"otp", "27"}], [], {:miss, "built on OTP 27, running 29"}},
           {"env override misses", [], [dep_env: "dev"],
            {:miss, "built with env prod, dependency compiles as dev"}},
+          {"no dep_env recorded misses", [{"dep_env", nil}], [],
+           {:miss, "build predates dep_env"}},
           {"no toolchain recorded misses", [{"elixir", nil}, {"otp", nil}], [],
            {:miss, "build predates toolchain"}},
           {"unparsable Elixir version misses", [{"elixir", "garbage"}], [],
@@ -216,6 +218,18 @@ defmodule ElixirPrecompiled.MatchTest do
 
       assert {:miss, "not built for nerves_system_rpi4 1.31.0"} =
                Match.select(doc([other]), ctx())
+    end
+
+    test "a host project with no matching build has no trailing space in the reason" do
+      other = %{
+        "target" => "nerves_system_rpi4",
+        "ebin" => [],
+        "priv" => [],
+        "build" => Map.put(@build, "system_version", "1.31.0")
+      }
+
+      assert {:miss, "not built for host"} =
+               Match.select(doc([other]), ctx(system: {"host", ""}))
     end
 
     test "a malformed build is a miss, and a good one beside it still hits" do

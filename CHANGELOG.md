@@ -31,3 +31,9 @@
 * Ships as a Mix archive (`mix archive.install github
   TomHoenderdos/elixir_precompiled`) so Livebook and scripts can call
   `ElixirPrecompiled.install/2` in place of `Mix.install/2`; CI builds it.
+* The file cache moved from `~/.nerves/precompiled` to the user cache dir
+  (`:filename.basedir(:user_cache, "elixir_precompiled")`,
+  `~/Library/Caches/elixir_precompiled` on macOS, `~/.cache/elixir_precompiled`
+  on Linux). The old directory is not migrated, so the first run after
+  upgrading downloads everything again; set
+  `ELIXIR_PRECOMPILED_HOME=~/.nerves/precompiled` to keep using the old one.
