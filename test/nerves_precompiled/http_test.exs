@@ -41,6 +41,18 @@ defmodule NervesPrecompiled.HTTPTest do
     refute_receive {:http, _}, 200
   end
 
+  test "gives up when a response that keeps dripping passes the deadline" do
+    assert {:error, "no response within 0.5 s"} = HTTP.get(url("/drip"), deadline_ms: 500)
+    refute_receive {:http, _}, 200
+  end
+
+  test "caps a streamed body that has no content-length" do
+    assert {:error, {:too_large, 1000}} = HTTP.get(url("/chunked"), max_bytes: 1000)
+    refute_receive {:http, _}, 200
+    assert {:ok, body} = HTTP.get(url("/chunked"), max_bytes: 8192)
+    assert byte_size(body) == 4096
+  end
+
   test "reports HTTP errors as a status line" do
     assert {:error, "Status 404 Not Found"} = HTTP.get(url("/nope"))
   end
@@ -60,7 +72,10 @@ defmodule NervesPrecompiled.HTTPTest do
     assert {:error, _} = HTTP.get("http://127.0.0.1:1/x")
   end
 
-  test "the CA store is readable on this host" do
+  test "the CA store is readable on this host, and its absence is an error line" do
     assert {:ok, [_ | _]} = HTTP.cacerts()
+
+    assert HTTP.cacerts(fn -> raise "no store" end) ==
+             {:error, "no CA certificate store on this system"}
   end
 end

@@ -49,6 +49,25 @@ defmodule NervesPrecompiled.TestServer do
     conn
   end
 
+  # One small chunk every 300 ms for 2 s: never idle long enough for the
+  # inactivity timer, so only the overall deadline stops it.
+  get "/drip" do
+    conn = send_chunked(conn, 200)
+    drip(conn, 7)
+  end
+
+  # 4 KiB in 256-byte chunks with no content-length.
+  get "/chunked" do
+    conn = send_chunked(conn, 200)
+
+    Enum.reduce_while(1..16, conn, fn _, conn ->
+      case chunk(conn, :binary.copy("x", 256)) do
+        {:ok, conn} -> {:cont, conn}
+        {:error, _} -> {:halt, conn}
+      end
+    end)
+  end
+
   get "/precompiled/root.json" do
     serve_json(conn, NervesPrecompiled.Fixture.get(:root))
   end
@@ -95,6 +114,17 @@ defmodule NervesPrecompiled.TestServer do
     conn
     |> put_resp_header("location", "/" <> Enum.join(rest, "/"))
     |> send_resp(302, "")
+  end
+
+  defp drip(conn, 0), do: conn
+
+  defp drip(conn, n) do
+    Process.sleep(300)
+
+    case chunk(conn, "x") do
+      {:ok, conn} -> drip(conn, n - 1)
+      {:error, _} -> conn
+    end
   end
 
   defp serve_json(conn, nil), do: send_resp(conn, 503, "none")

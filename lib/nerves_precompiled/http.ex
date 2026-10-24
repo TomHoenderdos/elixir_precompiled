@@ -15,17 +15,30 @@ defmodule NervesPrecompiled.HTTP do
   # for redirects, on its own httpc profile. Derived from Nerves.HTTPClient
   # (nerves 2.0.0-pre.4) so the client runs where nerves does not: inside a
   # firmware.
+  #
+  # Two clocks stop a request: the inactivity timer (no message for
+  # inactivity_ms) and an overall deadline (deadline_ms from the first
+  # request, across redirects), so a server that drips a byte just inside
+  # the inactivity window still ends.
+  #
+  # Known gap: the max_bytes cap is enforced on streamed 2xx bodies only.
+  # httpc buffers a non-2xx body whole before answering, and its handler's
+  # max_body_size limit is not settable: inets 9.7.1 (OTP 29) ignores
+  # max_body_size as a request or profile option ("Invalid option ...
+  # ignored"). Such a body is still bounded by the deadline.
 
   @max_redirects 5
   @profile :nerves_precompiled
   @user_agent ~c"nerves_precompiled/#{Mix.Project.config()[:version]}"
   @connect_timeout 30_000
   @inactivity_ms 60_000
+  @deadline_ms 300_000
 
   @type opts :: [
           max_bytes: pos_integer() | :infinity,
           same_origin: boolean(),
-          inactivity_ms: pos_integer()
+          inactivity_ms: pos_integer(),
+          deadline_ms: pos_integer()
         ]
   @type error ::
           String.t()
@@ -36,12 +49,14 @@ defmodule NervesPrecompiled.HTTP do
 
   @spec get(String.t(), opts()) :: {:ok, binary()} | {:error, error()}
   def get(url, opts \\ []) when is_binary(url) do
-    _ = Keyword.validate!(opts, [:max_bytes, :same_origin, :inactivity_ms])
+    _ = Keyword.validate!(opts, [:max_bytes, :same_origin, :inactivity_ms, :deadline_ms])
+    deadline_ms = Keyword.get(opts, :deadline_ms, @deadline_ms)
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
 
     with :ok <- start_httpc(),
          {:ok, cacerts} <- cacerts() do
       url
-      |> start_request(opts, cacerts, 0)
+      |> start_request(opts, cacerts, 0, {deadline, deadline_ms})
       |> await_response()
     end
   end
@@ -49,18 +64,19 @@ defmodule NervesPrecompiled.HTTP do
   @doc false
   # :public_key.cacerts_get/0 raises when the OS has no certificate store; a
   # device without one must get a readable error line, not an exception.
-  @spec cacerts() :: {:ok, [term()]} | {:error, String.t()}
-  def cacerts() do
-    {:ok, :public_key.cacerts_get()}
+  @spec cacerts((-> [term()])) :: {:ok, [term()]} | {:error, String.t()}
+  def cacerts(loader \\ &:public_key.cacerts_get/0) do
+    {:ok, loader.()}
   rescue
     _ -> {:error, "no CA certificate store on this system"}
   end
 
-  defp start_request(_url, _opts, _cacerts, redirects) when redirects > @max_redirects do
+  defp start_request(_url, _opts, _cacerts, redirects, _deadline)
+       when redirects > @max_redirects do
     {:done, {:error, :too_many_redirects}}
   end
 
-  defp start_request(url, opts, cacerts, redirects) do
+  defp start_request(url, opts, cacerts, redirects, deadline) do
     http_opts =
       [
         timeout: :infinity,
@@ -95,6 +111,7 @@ defmodule NervesPrecompiled.HTTP do
            opts: opts,
            cacerts: cacerts,
            redirects: redirects,
+           deadline: deadline,
            uri: URI.parse(url)
          }}
 
@@ -106,6 +123,9 @@ defmodule NervesPrecompiled.HTTP do
   defp await_response({:done, result}), do: result
 
   defp await_response({:await, request_ref, state}) do
+    {deadline, deadline_ms} = state.deadline
+    left = max(deadline - System.monotonic_time(:millisecond), 0)
+
     receive do
       {:http, {^request_ref, {:error, _} = err}} ->
         err
@@ -143,9 +163,12 @@ defmodule NervesPrecompiled.HTTP do
       {:http, {^request_ref, {{_, status_code, reason}, _headers, _body}}} ->
         {:error, format_error(status_code, reason)}
     after
-      state.inactivity_ms ->
+      min(state.inactivity_ms, left) ->
         cancel_and_drain(request_ref)
-        {:error, "no data for #{format_seconds(state.inactivity_ms)} s"}
+
+        if left < state.inactivity_ms,
+          do: {:error, "no response within #{format_seconds(deadline_ms)} s"},
+          else: {:error, "no data for #{format_seconds(state.inactivity_ms)} s"}
     end
   end
 
@@ -159,7 +182,7 @@ defmodule NervesPrecompiled.HTTP do
         else
           next_uri
           |> URI.to_string()
-          |> start_request(state.opts, state.cacerts, state.redirects + 1)
+          |> start_request(state.opts, state.cacerts, state.redirects + 1, state.deadline)
           |> await_response()
         end
 
