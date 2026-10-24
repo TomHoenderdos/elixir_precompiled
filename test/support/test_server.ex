@@ -7,17 +7,21 @@ defmodule NervesPrecompiled.TestServer do
   @moduledoc false
   use Plug.Router
 
-  @port 4000
-
   plug(:match)
   plug(:dispatch)
 
+  # 4000 by default; TEST_SERVER_PORT moves it when something else holds 4000.
   @spec port() :: pos_integer()
-  def port(), do: @port
+  def port() do
+    case System.get_env("TEST_SERVER_PORT") do
+      nil -> 4000
+      p -> String.to_integer(p)
+    end
+  end
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(_options) do
-    bandit_opts = [plug: __MODULE__, port: @port]
+    bandit_opts = [plug: __MODULE__, port: port()]
 
     %{
       id: __MODULE__,
@@ -66,7 +70,7 @@ defmodule NervesPrecompiled.TestServer do
     conn
     |> put_resp_header(
       "location",
-      "http://127.0.0.2:#{@port}/precompiled/" <> Enum.join(rest, "/")
+      "http://127.0.0.2:#{port()}/precompiled/" <> Enum.join(rest, "/")
     )
     |> send_resp(302, "")
   end
@@ -75,7 +79,7 @@ defmodule NervesPrecompiled.TestServer do
     conn
     |> put_resp_header(
       "location",
-      "http://127.0.0.1:#{@port + 1}/precompiled/" <> Enum.join(rest, "/")
+      "http://127.0.0.1:#{port() + 1}/precompiled/" <> Enum.join(rest, "/")
     )
     |> send_resp(302, "")
   end
