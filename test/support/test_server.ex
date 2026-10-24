@@ -21,7 +21,7 @@ defmodule NervesPrecompiled.TestServer do
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(_options) do
-    bandit_opts = [plug: __MODULE__, port: port()]
+    bandit_opts = [plug: __MODULE__, port: port(), ip: :loopback, startup_log: false]
 
     %{
       id: __MODULE__,
