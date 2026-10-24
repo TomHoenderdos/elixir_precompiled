@@ -3,6 +3,7 @@
 /doc/
 /cover/
 /.elixir_ls/
+/tmp/
 erl_crash.dump
 *.ez
 nerves_precompiled-*.tar
