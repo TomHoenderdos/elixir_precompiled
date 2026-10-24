@@ -45,7 +45,10 @@ defmodule ElixirPrecompiled.Fixture do
   # `format: 2` (the default) stores each package as a format-2 document
   # under :manifests_v2, named by the batch's "manifests_v2" map next to an
   # empty "manifests"; `format: 1` stores today's documents under :manifests
-  # and the batch carries no "manifests_v2".
+  # and the batch carries no "manifests_v2". `merge: true` keeps the other
+  # format's already-published names in the batch instead of replacing them
+  # with an empty map, so a second `publish/3` call can add packages in one
+  # format alongside packages an earlier call already published in the other.
   @spec publish(map(), map(), keyword()) :: map()
   def publish(fixture, packages, opts \\ []) do
     {store, docs} =
@@ -61,11 +64,7 @@ defmodule ElixirPrecompiled.Fixture do
         {name, sha(bytes)}
       end)
 
-    maps =
-      case store do
-        :manifests_v2 -> %{"manifests" => %{}, "manifests_v2" => hashes}
-        :manifests -> %{"manifests" => hashes}
-      end
+    maps = batch_maps(store, hashes, Keyword.get(opts, :merge, false))
 
     payload =
       %{
@@ -139,4 +138,19 @@ defmodule ElixirPrecompiled.Fixture do
 
   @spec put_in_map(atom(), term(), term()) :: :ok
   defp put_in_map(k, key, v), do: Agent.update(__MODULE__, &put_in(&1, [k, key], v))
+
+  defp batch_maps(:manifests_v2, hashes, merge?),
+    do: %{"manifests" => other_hashes(:manifests, merge?), "manifests_v2" => hashes}
+
+  defp batch_maps(:manifests, hashes, false), do: %{"manifests" => hashes}
+
+  defp batch_maps(:manifests, hashes, true),
+    do: %{"manifests" => hashes, "manifests_v2" => other_hashes(:manifests_v2, true)}
+
+  defp other_hashes(_store, false), do: %{}
+
+  defp other_hashes(store, true) do
+    Agent.get(__MODULE__, &Map.get(&1, store, %{}))
+    |> Map.new(fn {name, bytes} -> {name, sha(bytes)} end)
+  end
 end

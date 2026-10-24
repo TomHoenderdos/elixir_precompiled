@@ -52,7 +52,10 @@ defmodule ElixirPrecompiled.Install do
     dir = project_dir(deps, mix_opts)
     if forced?, do: File.rm_rf!(dir)
     resolve(dir, deps, mix_opts)
-    _ = Check.check(config, Env.MixInstall.load(dir), Keyword.take(test_opts, [:config_fun]))
+
+    _ =
+      Check.check(config, Env.MixInstall.load(dir, deps), Keyword.take(test_opts, [:config_fun]))
+
     # Only now, so a forced install that failed above is still forced on retry.
     if forced?, do: System.delete_env("MIX_INSTALL_FORCE")
     installer.(deps, mix_opts)

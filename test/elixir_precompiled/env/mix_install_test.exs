@@ -16,7 +16,7 @@ defmodule ElixirPrecompiled.Env.MixInstallTest do
       file: Path.join(dir, "mix.lock")
     )
 
-    env = MixInstall.load(dir)
+    env = MixInstall.load(dir, [])
     assert Enum.map(env.candidates, & &1.name) == [:decimal, :jason]
     assert env.lock.gitdep == @git
     assert env.build_lib == Path.join([dir, "_build", Atom.to_string(Mix.env()), "lib"])
@@ -31,11 +31,29 @@ defmodule ElixirPrecompiled.Env.MixInstallTest do
     File.write!(Path.join([jason, "ebin", "jason.app"]), "{application, jason, []}.")
     File.write!(Path.join([jason, ".mix", "compile.elixir_scm"]), "scm")
 
-    assert Enum.map(MixInstall.load(dir).candidates, & &1.name) == [:decimal]
+    assert Enum.map(MixInstall.load(dir, []).candidates, & &1.name) == [:decimal]
   end
 
   test "load without a lock has no candidates", %{tmp_dir: dir} do
-    assert MixInstall.load(dir).candidates == []
+    assert MixInstall.load(dir, []).candidates == []
+  end
+
+  test "load carries each dep's own compile env from the deps list given to Mix.install/2", %{
+    tmp_dir: dir
+  } do
+    Mix.Dep.Lock.write(%{jason: @jason, decimal: @decimal}, file: Path.join(dir, "mix.lock"))
+
+    env = MixInstall.load(dir, [{:jason, "1.4.5"}, {:decimal, "3.2.0", env: :dev}])
+    envs = Map.new(env.candidates, &{&1.name, &1.dep_env})
+    assert envs == %{jason: "prod", decimal: "dev"}
+  end
+
+  test "a transitive lock entry absent from the deps list gets prod", %{tmp_dir: dir} do
+    Mix.Dep.Lock.write(%{jason: @jason, decimal: @decimal}, file: Path.join(dir, "mix.lock"))
+
+    env = MixInstall.load(dir, [{:jason, "1.4.5", env: :dev}])
+    envs = Map.new(env.candidates, &{&1.name, &1.dep_env})
+    assert envs == %{jason: "dev", decimal: "prod"}
   end
 
   test "system is the loaded nerves_system_* application, or nil" do

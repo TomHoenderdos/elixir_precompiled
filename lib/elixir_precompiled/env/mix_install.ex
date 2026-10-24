@@ -14,8 +14,8 @@ defmodule ElixirPrecompiled.Env.MixInstall do
 
   alias ElixirPrecompiled.Env
 
-  @spec load(Path.t()) :: Env.t()
-  def load(project_dir) do
+  @spec load(Path.t(), [term()]) :: Env.t()
+  def load(project_dir, deps) do
     lock = Mix.Dep.Lock.read(Path.join(project_dir, "mix.lock"))
     build_lib = Path.join([project_dir, "_build", Atom.to_string(Mix.env()), "lib"])
 
@@ -27,12 +27,32 @@ defmodule ElixirPrecompiled.Env.MixInstall do
 
     %Env{
       system: system(Application.loaded_applications()),
-      candidates: Env.hex_candidates(lock, apps),
+      candidates: Env.hex_candidates(lock, apps, dep_envs(deps)),
       lock: lock,
       build_lib: build_lib,
       deps_path: Path.join(project_dir, "deps")
     }
   end
+
+  # Mix.install/2 deps can carry env:; transitive deps compile as prod, as
+  # Mix.Dep.Loader defaults them.
+  defp dep_envs(deps) do
+    Map.new(
+      for d <- deps,
+          {app, opts} <- [dep_opts(d)],
+          app != nil,
+          env = Keyword.get(opts, :env),
+          env != nil,
+          do: {app, Atom.to_string(env)}
+    )
+  end
+
+  defp dep_opts({app, opts}) when is_atom(app) and is_list(opts), do: {app, opts}
+
+  defp dep_opts({app, req, opts}) when is_atom(app) and is_binary(req) and is_list(opts),
+    do: {app, opts}
+
+  defp dep_opts(_other), do: {nil, []}
 
   # The evidence Mix itself takes for a compiled dep: its .app and the SCM
   # stamp Mix writes after compiling it.

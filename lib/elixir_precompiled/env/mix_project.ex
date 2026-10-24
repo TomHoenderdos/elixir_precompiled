@@ -32,15 +32,16 @@ defmodule ElixirPrecompiled.Env.MixProject do
 
   @doc false
   # Dependencies Mix would compile now: status :compile or no app file, Hex
-  # SCM, and locked.
+  # SCM, and locked. Each dep's own :env option (defaulting to :prod, as Mix
+  # itself does) names the env Mix compiles it with.
   @spec candidates_from([Mix.Dep.t()], map()) :: [Env.candidate()]
   def candidates_from(deps, lock) do
-    apps =
-      for %Mix.Dep{app: app, status: status, scm: Hex.SCM} <- deps,
+    pairs =
+      for %Mix.Dep{app: app, status: status, scm: Hex.SCM, opts: opts} <- deps,
           match?(:compile, status) or match?({:noappfile, _}, status),
-          do: app
+          do: {app, Atom.to_string(Keyword.get(opts, :env, :prod))}
 
-    Env.hex_candidates(lock, apps)
+    Env.hex_candidates(lock, Enum.map(pairs, &elem(&1, 0)), Map.new(pairs))
   end
 
   # Nerves.build_plan/0 raises only when the project itself is broken; it

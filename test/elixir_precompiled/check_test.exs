@@ -157,6 +157,37 @@ defmodule ElixirPrecompiled.CheckTest do
     assert out =~ ~r/precompiled: ash 3\.5\.2\s+HIT/
   end
 
+  test "manifests_v2 present but missing a package falls back to the format-1 document", %{
+    f: f,
+    config: config,
+    env: env,
+    lib: lib
+  } do
+    e = Map.delete(good_entry(f, "ash", "1.31.0"), "target")
+    e = update_in(e["build"], &Map.delete(&1, "dep_env"))
+
+    F.publish(f, %{"other" => %{"versions" => %{}}}, format: 2)
+
+    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"nerves_system_rpi4" => e}}}},
+      format: 1,
+      merge: true
+    )
+
+    # ash is published only in format 1: a v2 fetch for it would 404 and MISS.
+    refute Map.has_key?(F.get(:manifests_v2), "ash")
+    assert Map.has_key?(F.get(:manifests), "ash")
+
+    batch = F.get(:batch)["payload"] |> Base.url_decode64!(padding: false) |> :json.decode()
+    assert batch["manifests_v2"] != %{}
+    refute Map.has_key?(batch["manifests_v2"], "ash")
+    assert Map.has_key?(batch["manifests"], "ash")
+
+    out = run_capturing(config, env)
+    assert_received {:report, {:ok, %{hits: 1}}}
+    assert out =~ ~r/precompiled: ash 3\.5\.2\s+HIT/
+    assert File.exists?(Path.join(lib, "ash/.mix/compile.elixir_scm"))
+  end
+
   test "a tampered manifest is a FAIL and installs nothing", %{
     f: f,
     config: config,

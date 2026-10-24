@@ -26,13 +26,27 @@ defmodule ElixirPrecompiled.Env.MixProjectTest do
     dep = fn app, status, scm -> %Mix.Dep{app: app, status: status, scm: scm} end
 
     assert MixProject.candidates_from([dep.(:ash, :compile, Hex.SCM)], lock) ==
-             [%{name: :ash, version: "3.5.2", lock_entry: @ash}]
+             [%{name: :ash, version: "3.5.2", lock_entry: @ash, dep_env: "prod"}]
 
     assert MixProject.candidates_from([dep.(:jason, {:noappfile, {"a", "b"}}, Hex.SCM)], lock) ==
-             [%{name: :jason, version: "1.4.5", lock_entry: @jason}]
+             [%{name: :jason, version: "1.4.5", lock_entry: @jason, dep_env: "prod"}]
 
     assert MixProject.candidates_from([dep.(:decimal, {:ok, "2.3.0"}, Hex.SCM)], lock) == []
     assert MixProject.candidates_from([dep.(:gitdep, :compile, Mix.SCM.Git)], lock) == []
     assert MixProject.candidates_from([dep.(:absent, :compile, Hex.SCM)], lock) == []
+  end
+
+  test "candidates_from reads the dep's own compile env from its opts" do
+    lock = %{ash: @ash, jason: @jason}
+
+    dep = fn app, opts ->
+      %Mix.Dep{app: app, status: :compile, scm: Hex.SCM, opts: opts}
+    end
+
+    assert MixProject.candidates_from([dep.(:ash, env: :dev)], lock) ==
+             [%{name: :ash, version: "3.5.2", lock_entry: @ash, dep_env: "dev"}]
+
+    assert MixProject.candidates_from([dep.(:jason, [])], lock) ==
+             [%{name: :jason, version: "1.4.5", lock_entry: @jason, dep_env: "prod"}]
   end
 end
