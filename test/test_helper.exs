@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
+NervesPrecompiled.Fixture.start_link()
+
 ExUnit.start()
 
 # Integration tests need the network (hex.pm and the production portal).
