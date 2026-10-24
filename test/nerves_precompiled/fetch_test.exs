@@ -288,6 +288,25 @@ defmodule NervesPrecompiled.FetchTest do
     assert File.read!(Path.join(lib, "ash/priv/data.txt")) == "data"
   end
 
+  test "the include/ and src/ links are relative, so a moved project tree keeps working", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    tmp_dir: dir
+  } do
+    deps = Path.join(dir, "deps")
+    File.mkdir_p!(Path.join(deps, "ash/include"))
+    File.write!(Path.join(deps, "ash/include/x.hrl"), "-record(x, {a}).\n")
+
+    e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+
+    assert {:ok, _} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+
+    link = Path.join(lib, "ash/include")
+    assert Path.type(File.read_link!(link)) == :relative
+    assert File.dir?(link)
+  end
+
   test "a manifest-supplied priv/ is not replaced by deps/<dep>/priv", %{
     f: f,
     config: config,

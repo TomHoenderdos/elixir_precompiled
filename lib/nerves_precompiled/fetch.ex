@@ -108,10 +108,13 @@ defmodule NervesPrecompiled.Fetch do
     :ok
   end
 
-  # Mix.Utils.symlink_or_copy/2 without Mix: a symlink, or a copy where the
+  # Mix.Utils.symlink_or_copy/2 without Mix: a relative symlink, as Mix
+  # makes, so a moved project tree keeps its links; a copy where the
   # filesystem refuses one.
   defp symlink_or_copy(from, to) do
-    case File.ln_s(from, to) do
+    relative = Path.relative_to(from, Path.dirname(to), force: true)
+
+    case File.ln_s(relative, to) do
       :ok -> :ok
       {:error, _} -> File.cp_r!(from, to) && :ok
     end
