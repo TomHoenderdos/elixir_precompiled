@@ -18,3 +18,16 @@
 * `elixir_precompiled` never installs a portal build of itself.
 * Renamed to `elixir_precompiled`; old config keys and `NERVES_PRECOMPILED*`
   variables still work for one release.
+* Reads manifest format 2: a version lists its builds, each with a target
+  (`pure_elixir` or a Nerves system) and the toolchain it was made with.
+  Format 1 manifests still work.
+* Matching rules: the running Elixir must have the build's minor and at
+  least its patch (pre-releases compare as older), the OTP major must be
+  equal, and the dependency's compile env (`dep_env`, `prod` unless the
+  project overrides it with `env:`) must equal the build's. Among passing
+  builds the closest Elixir patch wins, then `pure_elixir`, then the newest
+  run.
+* `report.json` carries `"format": 1`.
+* Ships as a Mix archive (`mix archive.install github
+  TomHoenderdos/elixir_precompiled`) so Livebook and scripts can call
+  `ElixirPrecompiled.install/2` in place of `Mix.install/2`; CI builds it.

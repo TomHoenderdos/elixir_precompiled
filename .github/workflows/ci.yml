@@ -17,3 +17,4 @@ jobs:
       - run: mix compile --warnings-as-errors
       - run: mix credo --strict
       - run: mix test
+      - run: MIX_ENV=prod mix archive.build -o /tmp/elixir_precompiled.ez

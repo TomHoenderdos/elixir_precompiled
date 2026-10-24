@@ -282,6 +282,7 @@ defmodule ElixirPrecompiled.Check do
     dir = Path.join(build_lib, ".precompiled")
 
     json = %{
+      "format" => 1,
       "hits" => report.hits,
       "misses" => report.misses,
       "fails" => report.fails,

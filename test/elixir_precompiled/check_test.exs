@@ -121,6 +121,7 @@ defmodule ElixirPrecompiled.CheckTest do
     assert out =~ "precompiled: 1 hit, 1 miss, 0 fail of 2 deps"
     assert File.exists?(Path.join(lib, "ash/.mix/compile.elixir_scm"))
     report_file = Path.join(lib, ".precompiled/report.json") |> File.read!() |> :json.decode()
+    assert report_file["format"] == 1
 
     assert [%{"name" => "ash", "status" => "hit"}, %{"name" => "jason", "status" => "miss"}] =
              report_file["lines"]
