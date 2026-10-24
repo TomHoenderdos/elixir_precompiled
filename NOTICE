@@ -1,0 +1,5 @@
+nerves_precompiled
+Copyright 2026 Tom Hoenderdos
+
+Portions of lib/nerves_precompiled/http.ex are derived from Nerves.HTTPClient in the
+nerves project (https://github.com/nerves-project/nerves), Apache-2.0.
