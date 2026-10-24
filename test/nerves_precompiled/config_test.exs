@@ -53,6 +53,12 @@ defmodule NervesPrecompiled.ConfigTest do
     assert c.home == Path.expand("~/.nerves/precompiled")
   end
 
+  test "without the library on the code path its root cannot be found" do
+    assert_raise ArgumentError, ~r/no_such_app.*code path/, fn ->
+      Config.priv_dir(:no_such_app)
+    end
+  end
+
   test "overrides and the kill switch" do
     configure(
       source: "https://x",

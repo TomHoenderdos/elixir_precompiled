@@ -12,7 +12,7 @@ defmodule NervesPrecompiled.Install do
   # Mix finds the project, skips deps.get because _build exists, and
   # deps.loadpaths compiles only what carries no marker.
 
-  alias NervesPrecompiled.{Check, Env, Output}
+  alias NervesPrecompiled.{Check, Config, Env, Output}
 
   @mix_install_app :mix_install
 
@@ -24,7 +24,13 @@ defmodule NervesPrecompiled.Install do
 
     cond do
       config == nil ->
-        Output.warning("precompiled: no source configured, installing without precompiled builds")
+        Output.warning(
+          if Config.disabled?(),
+            do:
+              "precompiled: disabled by NERVES_PRECOMPILED, installing without precompiled builds",
+            else: "precompiled: no source configured, installing without precompiled builds"
+        )
+
         installer.(deps, mix_opts)
 
       # Mix allows a second call with the same deps and does nothing; so do we.

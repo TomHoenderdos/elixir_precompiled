@@ -16,7 +16,7 @@ defmodule NervesPrecompiled.Config do
   def load(overrides \\ []) do
     opts = Keyword.merge(app_env(), overrides)
 
-    with false <- System.get_env("NERVES_PRECOMPILED") in ["0", "false", "no"],
+    with false <- disabled?(),
          source when is_binary(source) <- opts[:source],
          :ok <- transport_ok(source) do
       %{
@@ -32,6 +32,10 @@ defmodule NervesPrecompiled.Config do
     end
   end
 
+  @doc "True when `NERVES_PRECOMPILED` is `0`, `false` or `no`."
+  @spec disabled?() :: boolean()
+  def disabled?(), do: System.get_env("NERVES_PRECOMPILED") in ["0", "false", "no"]
+
   # `config :nerves_precompiled, source: ...` is this library's key; the
   # `config :nerves, :precompiled, ...` form from nerves PR #1220 still works.
   defp app_env() do
@@ -41,10 +45,19 @@ defmodule NervesPrecompiled.Config do
     end
   end
 
-  defp priv_dir() do
-    case :code.priv_dir(:nerves_precompiled) do
-      {:error, _} -> "priv"
-      dir -> to_string(dir)
+  @doc false
+  # The root of trust ships in the library's priv/; a cwd-relative fallback
+  # would let whatever directory the caller is in supply it.
+  @spec priv_dir(atom()) :: Path.t()
+  def priv_dir(app \\ :nerves_precompiled) do
+    case :code.priv_dir(app) do
+      {:error, reason} ->
+        raise ArgumentError,
+              "#{app} is not on the code path (#{inspect(reason)}), " <>
+                "so its root of trust (priv/precompiled/root.json) cannot be found"
+
+      dir ->
+        to_string(dir)
     end
   end
 

@@ -84,6 +84,21 @@ defmodule NervesPrecompiled.InstallTest do
            )
   end
 
+  test "the kill switch names itself in the warning" do
+    installer = fn _deps, _opts -> :ok end
+    System.put_env("NERVES_PRECOMPILED", "0")
+
+    try do
+      out =
+        capture_io(fn -> assert Install.run([:jason], [], nil, installer: installer) == :ok end)
+
+      assert out =~ "precompiled: disabled by NERVES_PRECOMPILED"
+      refute out =~ "no source configured"
+    after
+      System.delete_env("NERVES_PRECOMPILED")
+    end
+  end
+
   test "a repeat install in the same VM defers to Mix without touching the project", %{
     config: config,
     tmp_dir: dir

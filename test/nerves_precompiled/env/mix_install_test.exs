@@ -23,6 +23,17 @@ defmodule NervesPrecompiled.Env.MixInstallTest do
     assert env.deps_path == Path.join(dir, "deps")
   end
 
+  test "load skips a dep the install project has already compiled", %{tmp_dir: dir} do
+    Mix.Dep.Lock.write(%{jason: @jason, decimal: @decimal}, file: Path.join(dir, "mix.lock"))
+    jason = Path.join([dir, "_build", Atom.to_string(Mix.env()), "lib", "jason"])
+    File.mkdir_p!(Path.join(jason, "ebin"))
+    File.mkdir_p!(Path.join(jason, ".mix"))
+    File.write!(Path.join([jason, "ebin", "jason.app"]), "{application, jason, []}.")
+    File.write!(Path.join([jason, ".mix", "compile.elixir_scm"]), "scm")
+
+    assert Enum.map(MixInstall.load(dir).candidates, & &1.name) == [:decimal]
+  end
+
   test "load without a lock has no candidates", %{tmp_dir: dir} do
     assert MixInstall.load(dir).candidates == []
   end
