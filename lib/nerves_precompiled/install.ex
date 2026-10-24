@@ -32,13 +32,24 @@ defmodule NervesPrecompiled.Install do
         installer.(deps, mix_opts)
 
       true ->
-        {forced?, mix_opts} = take_force(mix_opts)
-        dir = project_dir(deps, mix_opts)
-        if forced?, do: File.rm_rf!(dir)
-        resolve(dir, deps, mix_opts)
-        _ = Check.check(config, Env.MixInstall.load(dir), Keyword.take(test_opts, [:config_fun]))
-        installer.(deps, mix_opts)
+        install_precompiled(deps, mix_opts, config, installer, test_opts)
     end
+  end
+
+  defp install_precompiled(deps, mix_opts, config, installer, test_opts) do
+    # Mix.install/2 refuses inside a Mix project; refuse before any work.
+    if Keyword.get_lazy(test_opts, :in_project?, fn -> Mix.Project.get() != nil end) do
+      Mix.raise("NervesPrecompiled.install/2 cannot be used inside a Mix project")
+    end
+
+    {forced?, mix_opts} = take_force(mix_opts)
+    dir = project_dir(deps, mix_opts)
+    if forced?, do: File.rm_rf!(dir)
+    resolve(dir, deps, mix_opts)
+    _ = Check.check(config, Env.MixInstall.load(dir), Keyword.take(test_opts, [:config_fun]))
+    # Only now, so a forced install that failed above is still forced on retry.
+    if forced?, do: System.delete_env("MIX_INSTALL_FORCE")
+    installer.(deps, mix_opts)
   end
 
   @doc false
@@ -52,12 +63,12 @@ defmodule NervesPrecompiled.Install do
   end
 
   # Mix.install/2 deletes the install dir when forced, which would delete the
-  # placed hits; honour force here and strip it before Mix runs.
+  # placed hits; honour force here and strip it before Mix runs (the env var
+  # is cleared just before Mix.install/2 is called).
   defp take_force(mix_opts) do
     forced? =
       System.get_env("MIX_INSTALL_FORCE") in ["1", "true"] or Keyword.get(mix_opts, :force, false)
 
-    if forced?, do: System.delete_env("MIX_INSTALL_FORCE")
     {forced?, Keyword.delete(mix_opts, :force)}
   end
 
@@ -126,7 +137,24 @@ defmodule NervesPrecompiled.Install do
       compilers: Keyword.get(mix_opts, :compilers, [:elixir])
     ]
 
-    Mix.Project.in_project(@mix_install_app, dir, config, fn _ -> Mix.Task.rerun("deps.get") end)
-    Mix.Task.clear()
+    # Pushed under a named module, as Mix.install/2 does: in_project/4 without
+    # a mix.exs pushes a nil project, which deps.get rejects. The name is
+    # deliberately not Mix.InstallProject, so Mix's {:cached_deps, module}
+    # cache is not shared with the real install that follows.
+    File.cd!(dir, fn ->
+      :ok = Mix.ProjectStack.push(NervesPrecompiled.InstallProject, config, "nofile")
+
+      try do
+        Mix.Task.rerun("deps.get")
+      after
+        Mix.ProjectStack.pop()
+        Mix.Task.clear()
+      end
+    end)
   end
+end
+
+defmodule NervesPrecompiled.InstallProject do
+  @moduledoc false
+  # The project module Install.resolve/3 pushes for its deps.get.
 end

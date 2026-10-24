@@ -102,4 +102,50 @@ defmodule NervesPrecompiled.InstallTest do
              Path.join(dir, "ex-#{System.version()}-erl-#{:erlang.system_info(:version)}")
            )
   end
+
+  test "a configured install resolves, checks and then installs", %{config: config} do
+    parent = self()
+
+    installer = fn deps, opts ->
+      send(parent, {:installed, deps, opts})
+      :ok
+    end
+
+    project = Mix.Project.get()
+
+    capture_io(fn ->
+      assert Install.run([], [], config, installer: installer, in_project?: false) == :ok
+    end)
+
+    assert_received {:installed, [], []}
+    assert Mix.Project.get() == project
+    assert File.dir?(Install.project_dir([], []))
+  end
+
+  test "inside a Mix project the configured install refuses before any work", %{config: config} do
+    installer = fn _deps, _opts -> flunk("installer must not run") end
+
+    assert_raise Mix.Error, ~r/cannot be used inside a Mix project/, fn ->
+      Install.run([], [], config, installer: installer, in_project?: true)
+    end
+
+    refute File.exists?(Install.project_dir([], []))
+  end
+
+  test "MIX_INSTALL_FORCE survives a failed install", %{config: config, tmp_dir: dir} do
+    # An install dir under a regular file cannot be created, so the forced
+    # install fails before Mix.install/2 would run.
+    blocker = Path.join(dir, "blocker")
+    File.write!(blocker, "")
+    System.put_env("MIX_INSTALL_DIR", blocker)
+    System.put_env("MIX_INSTALL_FORCE", "1")
+    on_exit(fn -> System.delete_env("MIX_INSTALL_FORCE") end)
+    installer = fn _deps, _opts -> flunk("installer must not run") end
+
+    assert_raise File.Error, fn ->
+      Install.run([], [], config, installer: installer, in_project?: false)
+    end
+
+    assert System.get_env("MIX_INSTALL_FORCE") == "1"
+  end
 end
