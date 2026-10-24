@@ -14,7 +14,7 @@ defmodule NervesPrecompiled do
   `_build/<target>_<env>/lib/.precompiled/report.json`.
   """
 
-  alias NervesPrecompiled.{Check, Config, Env}
+  alias NervesPrecompiled.{Check, Config, Env, Install}
 
   @doc """
   The build-time step: check every dependency Mix is about to compile and
@@ -39,5 +39,21 @@ defmodule NervesPrecompiled do
           Keyword.take(opts, [:config_fun])
         )
     end
+  end
+
+  @doc """
+  `Mix.install/2` with precompiled builds: resolves `deps`, installs every
+  matching build into the install project, then calls `Mix.install/2`,
+  which compiles only the rest. Takes `Mix.install/2`'s options plus
+  `:source`, `:except`, `:root` and `:home` (see `NervesPrecompiled.Config`);
+  without a source, configured or given, it is a plain `Mix.install/2`.
+
+  Needs Mix on the device (`:mix` in `extra_applications`), a writable
+  `MIX_INSTALL_DIR`, and Hex.
+  """
+  @spec install([term()], keyword()) :: :ok
+  def install(deps, opts \\ []) when is_list(deps) and is_list(opts) do
+    {ours, mix_opts} = Keyword.split(opts, [:source, :except, :root, :home])
+    Install.run(deps, mix_opts, Config.load(ours))
   end
 end
