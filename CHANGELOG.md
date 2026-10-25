@@ -2,6 +2,9 @@
 
 ## v0.1.0 - unreleased
 
+* On a device, the Nerves system is read from `/usr/lib/os-release`; the
+  loaded-application lookup never matched because systems are `runtime:
+  false`, so devices only got pure-Elixir hits.
 * Extracted from nerves PR #1220: `ElixirPrecompiled.run/1` is the build-time
   step `nerves` calls; `Config`, `Match`, `Trust` and `Fetch` moved unchanged
   apart from their HTTP client and output.

@@ -71,12 +71,19 @@ ElixirPrecompiled.install([{:jason, "1.4.5"}],
 
 is `Mix.install/2` with the precompiled step in front of it: the matching
 builds for the running Nerves system are installed, Mix compiles the rest.
-Of the applications, only `:mix` must be added to `extra_applications`;
-the library's own `.app` starts `:inets`, `:ssl`, `:crypto` and
-`:public_key`. The firmware also needs a writable `MIX_INSTALL_DIR` (for
-example `/data/mix-installs`) and Hex. `:source` can also come from the
-application config as above. Once a dependency is compiled in the install
-project, later boots leave it to Mix, so a cached install needs no network.
+The device's system is read from `/usr/lib/os-release`, written by every
+Nerves system's `nerves_system_br` post-build script, so no marker or extra
+dependency is needed. Of the applications, `:mix` must be added to
+`extra_applications`; the library's own `.app` starts `:inets`, `:ssl`,
+`:crypto` and `:public_key`. Packages that MISS and have Erlang (rebar3)
+dependencies also need an `escript` executable, which Nerves releases do
+not ship, and some dependencies need `:eex` or `:ex_unit` in the release
+(as observed with `stream_data` and rebar-built deps on 2026-10-25); a HIT
+needs none of that. The firmware also needs a writable `MIX_INSTALL_DIR`
+(for example `/data/mix-installs`) and Hex. `:source` can also come from
+the application config as above. Once a dependency is compiled in the
+install project, later boots leave it to Mix, so a cached install needs no
+network.
 
 ## Livebook and `Mix.install`
 
