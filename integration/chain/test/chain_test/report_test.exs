@@ -95,6 +95,22 @@ defmodule ChainTest.ReportTest do
     for value <- ["41", "42", "abc123", "def456", "1.20.3", "2.0.1"], do: assert(text =~ value)
   end
 
+  test "the heading is PASS, RERUN when the worst class is a rerun, else FAIL", %{tmp_dir: dir} do
+    heading = fn results, name ->
+      {:ok, %{md: md}} = Report.write(Path.join(dir, name), "rpi4", results, %{})
+      md |> File.read!() |> String.split("\n") |> hd()
+    end
+
+    pass = %Result{step: :trust, check: "a", class: :pass}
+    miss = %Result{step: :build, check: "b", class: :miss}
+    rerun = %Result{step: :build, check: "sequence", class: :rerun}
+    fail = %Result{step: :deploy, check: "c", class: :fail}
+
+    assert heading.([pass, miss], "p") == "# Chain test: rpi4 (PASS)"
+    assert heading.([pass, rerun, miss], "r") == "# Chain test: rpi4 (RERUN)"
+    assert heading.([rerun, fail], "f") == "# Chain test: rpi4 (FAIL)"
+  end
+
   test "known_gaps/0 is a non-empty list of strings" do
     assert [_ | _] = gaps = Report.known_gaps()
     assert Enum.all?(gaps, &is_binary/1)

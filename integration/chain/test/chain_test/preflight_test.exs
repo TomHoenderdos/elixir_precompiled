@@ -35,6 +35,8 @@ defmodule ChainTest.PreflightTest do
         assert "BatchMode=yes" in argv
         assert "StrictHostKeyChecking=yes" in argv
         assert "UserKnownHostsFile=#{Path.join(tmp, "known_hosts")}" in argv
+        assert "KnownHostsCommand=none" in argv
+        assert "VerifyHostKeyDNS=no" in argv
         refute Enum.any?(argv, &(&1 =~ "accept-new"))
         assert List.last(argv) == "IO.puts(:ok)"
         assert "device.invalid" in argv

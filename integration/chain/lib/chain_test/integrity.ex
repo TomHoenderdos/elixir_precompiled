@@ -49,6 +49,29 @@ defmodule ChainTest.Integrity do
 
   @type files :: %{String.t() => [%{path: String.t(), sha256: String.t()}]}
 
+  # The disagreements that come from the batch alone (the client's batch is
+  # not the one checked against), not from the installed files.
+  @mismatch %{
+    provenance: "and no newer verified batch names the recorded one",
+    manifest_bytes: "the source served manifest bytes hashing to",
+    unnamed: "names no manifest for it"
+  }
+
+  @doc "The phrase a batch-mismatch disagreement of `kind` carries in its detail."
+  @spec mismatch_marker(:provenance | :manifest_bytes | :unnamed) :: String.t()
+  def mismatch_marker(kind), do: Map.fetch!(@mismatch, kind)
+
+  @doc """
+  Whether `result` is a `:disagreement` caused only by the checked batch not
+  naming what the client installed from (provenance, manifest bytes, or no
+  manifest at all), rather than by the installed files.
+  """
+  @spec batch_mismatch?(Result.t()) :: boolean()
+  def batch_mismatch?(%Result{class: :disagreement, detail: detail}),
+    do: Enum.any?(Map.values(@mismatch), &String.contains?(detail, &1))
+
+  def batch_mismatch?(_), do: false
+
   @doc """
   Runs step 3. `trust` is step 1's info; `nil` leaves every hit not
   exercised. Optional: `:lock_path` (default the fixture's `mix.lock`, three
@@ -191,7 +214,8 @@ defmodule ChainTest.Integrity do
 
       nil ->
         {:disagreement,
-         "the client reports a hit, but the verified batch #{trust.sequence} names no manifest"}
+         "the client reports a hit, but the verified batch #{trust.sequence} names no " <>
+           "manifest for it"}
     end
   end
 

@@ -83,7 +83,7 @@ defmodule ChainTest.Report do
   defp json_value(value), do: value
 
   defp markdown(target, results, meta) do
-    verdict = if Result.exit_code(results) == 0, do: "PASS", else: "FAIL"
+    verdict = verdict(results)
 
     meta_rows =
       Enum.map_join(@meta_keys -- [:known_gaps], "", fn key ->
@@ -113,6 +113,15 @@ defmodule ChainTest.Report do
 
     #{gaps}\
     """
+  end
+
+  # A rerun exits 0 but does not count as a pass: run again.
+  defp verdict(results) do
+    cond do
+      Result.exit_code(results) == 1 -> "FAIL"
+      Enum.any?(results, &(&1.class == :rerun)) -> "RERUN"
+      true -> "PASS"
+    end
   end
 
   defp step_times(results) do

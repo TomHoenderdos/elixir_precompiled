@@ -133,6 +133,9 @@ defmodule ChainTest.Run do
         source: opts.source
       })
 
+    integrity =
+      if match?(%Result{class: :rerun}, seq), do: rerun_mismatches(integrity), else: integrity
+
     emit(integrity)
 
     compiled =
@@ -269,7 +272,7 @@ defmodule ChainTest.Run do
                       "the harness could not verify #{path}: #{why}; run again"
                   ),
                 used: step1,
-                results: tagged,
+                results: Enum.map(tagged, &rerun_row/1),
                 harness: :unknown
               }
             else
@@ -282,6 +285,26 @@ defmodule ChainTest.Run do
             end
         end
     end
+  end
+
+  # Production moved past step 1's batch to one the harness could not verify:
+  # the client batch's checks say why, but it is a rerun, not a failure.
+  defp rerun_row(%Result{class: :pass} = r), do: r
+  defp rerun_row(%Result{} = r), do: %{r | class: :rerun}
+
+  # Under a rerun Integrity checked step 1's batch, not the client's; a
+  # disagreement from that mismatch alone is part of the rerun. One about the
+  # installed files stays a disagreement.
+  defp rerun_mismatches(results) do
+    Enum.map(results, fn r ->
+      if Integrity.batch_mismatch?(r),
+        do: %{
+          r
+          | class: :rerun,
+            detail: "checked against step 1's batch, not the client's: " <> r.detail
+        },
+        else: r
+    end)
   end
 
   # The batch checks of the client's batch, under their own names.
@@ -328,7 +351,14 @@ defmodule ChainTest.Run do
       result(:trust, "client_verdict", :not_exercised, "the client wrote no report")
     else
       hits = for %{"status" => "hit", "name" => n} <- lines, do: n
-      refused = for %{"detail" => d} = l <- lines, Build.refusal?(d), do: "#{l["name"]}: #{d}"
+      # A revoked build is refused under a good batch by design; Build
+      # reports it as :refused already.
+      refused =
+        for %{"detail" => d} = l <- lines,
+            Build.refusal?(d),
+            not String.starts_with?(d, "revoked:"),
+            do: "#{l["name"]}: #{d}"
+
       judge(harness, hits, refused)
     end
   end

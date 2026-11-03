@@ -95,7 +95,7 @@ defmodule ChainTest.Deploy do
     cond do
       status != 0 ->
         {:error, nil,
-         result("metadata", :fail, "fwup -m -i #{fw} exit #{status}: #{tail(out)}", ms)}
+         result("metadata", :fail, "fwup -m -i #{fw} exit #{status}: #{Cmd.tail(out)}", ms)}
 
       uuid in [nil, ""] ->
         {:error, nil, result("metadata", :fail, "fwup -m -i #{fw} names no meta-uuid", ms)}
@@ -139,16 +139,20 @@ defmodule ChainTest.Deploy do
 
     case status do
       0 ->
-        {result("upload", :pass, "ssh -s #{input.device} fwup exit 0: #{tail(out)}", ms), started,
-         true}
+        {result("upload", :pass, "ssh -s #{input.device} fwup exit 0: #{Cmd.tail(out)}", ms),
+         started, true}
 
       124 ->
-        {result("upload", :fail, "upload timed out after #{timeout} ms: #{tail(out)}", ms),
+        {result("upload", :fail, "upload timed out after #{timeout} ms: #{Cmd.tail(out)}", ms),
          started, false}
 
       _ ->
-        {result("upload", :fail, "ssh -s #{input.device} fwup exit #{status}: #{tail(out)}", ms),
-         started, false}
+        {result(
+           "upload",
+           :fail,
+           "ssh -s #{input.device} fwup exit #{status}: #{Cmd.tail(out)}",
+           ms
+         ), started, false}
     end
   end
 
@@ -223,6 +227,8 @@ defmodule ChainTest.Deploy do
           seen =
             case other do
               {:up, uuid, uptime} -> %{seen | up: {uuid, uptime}}
+              # A poll the deadline cut short says less than an earlier error.
+              {:error, "ssh exit 124" <> _} when seen.error != nil -> seen
               {:error, detail} -> %{seen | error: detail}
             end
 
@@ -241,7 +247,7 @@ defmodule ChainTest.Deploy do
         end
       end)
 
-    found || {:error, "ssh exit #{status}: #{tail(out)}"}
+    found || {:error, "ssh exit #{status}: #{Cmd.tail(out)}"}
   end
 
   defp active(uuid, expected) when uuid == expected,
@@ -262,13 +268,6 @@ defmodule ChainTest.Deploy do
   defp now, do: System.monotonic_time(:millisecond)
 
   defp lines(out), do: out |> String.split("\n") |> Enum.map(&String.trim(&1))
-
-  defp tail(out) do
-    out
-    |> String.split(~r/\r?\n/, trim: true)
-    |> Enum.take(-5)
-    |> Enum.join(" / ")
-  end
 
   defp not_exercised(checks, why), do: Enum.map(checks, &result(&1, :not_exercised, why))
 

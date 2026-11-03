@@ -92,17 +92,20 @@ The report directory holds `<target>-<timestamp>.md` and `.json` with the
 same content: the run's meta (both batch sequences, the root version, the
 client and nerves commits, Elixir, OTP, the Nerves system), one row per
 check with its class, time and detail, the time per step, and the known,
-untestable gaps. The command exits 1 when any result is a failing class.
+untestable gaps. The command exits 1 when any result is a failing class; the heading then
+says `FAIL`.
 
 | Class | Meaning | Exit |
 | --- | --- | --- |
 | `pass` | Checked and as expected. | 0 |
 | `miss` | A dependency compiled because no precompiled build was found, or the served root differs from the pinned one. Reported, not an error. | 0 |
-| `rerun` | Production moved during the run (a newer batch the harness could not verify, a manifest that moved). Run again. | 0 |
+| `rerun` | Production moved during the run: the client used a newer batch the harness could not fetch or verify (its `trust/client_batch:*` rows say why), or a manifest moved. Integrity results that only reflect that batch mismatch are reruns too. Run again. | 0 |
 | `fail` | Checked and wrong. | 1 |
 | `refused` | The client refused where it should have installed; the detail is the client's reason. | 1 |
 | `disagreement` | The client's account and the harness's own check differ: a hit whose files do not match its manifest, a device file that differs from the release image, a verdict on the batch that differs. | 1 |
 | `not_exercised` | The check could not run, so it proves nothing (an earlier step failed). | 1 |
 
-A run whose report is all `pass`, `miss` and `rerun` exits 0; a `rerun`
-still means the run should be repeated before it counts.
+A run whose report is all `pass`, `miss` and `rerun` exits 0. The report's
+heading is `PASS` only without a `rerun`; with one it is `RERUN`, and the run
+should be repeated before it counts. When step 1 could not verify any batch
+either, the client batch's failed checks stay failures.

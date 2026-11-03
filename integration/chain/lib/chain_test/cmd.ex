@@ -61,6 +61,15 @@ defmodule ChainTest.Cmd do
     end
   end
 
+  @doc "The last five non-empty lines of `out`, joined with ` / `, for a result's detail."
+  @spec tail(String.t()) :: String.t()
+  def tail(out) do
+    out
+    |> String.split(~r/\r?\n/, trim: true)
+    |> Enum.take(-5)
+    |> Enum.join(" / ")
+  end
+
   # The system perl first, so a stub dir on PATH cannot replace the wrapper.
   defp perl do
     if File.regular?("/usr/bin/perl"),

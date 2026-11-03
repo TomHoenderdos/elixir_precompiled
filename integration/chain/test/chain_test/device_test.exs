@@ -171,6 +171,32 @@ defmodule ChainTest.DeviceTest do
     assert detail =~ "missing on the device"
   end
 
+  test "a device file listed twice with different hashes is a disagreement", ctx do
+    files = doc()["files"]
+    [first | _] = files["jason"]
+    # The wrong copy first: a map built from the list keeps the last one.
+    jason = [%{first | "sha256" => Synthetic.sha("other")} | files["jason"]]
+
+    {results, _} = run_with(ctx, block(doc(%{"files" => %{files | "jason" => jason}})))
+    r = by_check(results)["files:jason"]
+
+    assert r.class == :disagreement
+    assert r.detail =~ first["path"]
+  end
+
+  test "an unreadable release image file is not exercised, not a device disagreement", ctx do
+    file = Path.join(ctx.release, "lib/jason-1.4.5/ebin/jason.app")
+    File.chmod!(file, 0o000)
+    on_exit(fn -> File.chmod(file, 0o644) end)
+
+    {results, _} = run_with(ctx, block(doc()))
+    r = by_check(results)["files:jason"]
+
+    assert r.class == :not_exercised
+    assert r.detail =~ "ebin/jason.app"
+    assert r.detail =~ "release image"
+  end
+
   test "a failed app start, module load or smoke call fails its check", ctx do
     overrides = %{
       "apps" => %{"jason" => "ok", "exqlite" => "error: {:bad, :nif}"},

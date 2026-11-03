@@ -7,7 +7,7 @@ defmodule ChainTest.RunTest do
 
   import ExUnit.CaptureIO
 
-  alias ChainTest.{LocalServer, Result, Run, Signed, Synthetic, Trust}
+  alias ChainTest.{Integrity, LocalServer, Result, Run, Signed, Synthetic, Trust}
 
   @moduletag :tmp_dir
 
@@ -202,6 +202,20 @@ defmodule ChainTest.RunTest do
     assert class_of(doc, "trust/client_verdict") == "disagreement"
   end
 
+  test "a revoked build refused under a verified batch is not a disagreement", ctx do
+    report = Synthetic.report([{"jason", "1.4.5", "fail", "revoked: build run-1 withdrawn"}])
+
+    build = fn input ->
+      {[r(:build, "hit:jason", :refused), seq_result(input, 7)],
+       %{report: report, build_lib: "/b/lib", fw_path: nil, log: "", sequence: 7, home: "/h"}}
+    end
+
+    main(ctx, steps(self(), %{build: build}))
+    {doc, _} = report(ctx)
+    assert class_of(doc, "trust/client_verdict") == "pass"
+    assert class_of(doc, "build/hit:jason") == "refused"
+  end
+
   test "both rejecting the batch is a pass of the verdict check", ctx do
     trust = fn _ -> {[r(:trust, "batch_signature", :fail)], nil} end
     report = Synthetic.report([{"jason", "1.4.5", "fail", "batch signature invalid: x"}])
@@ -279,11 +293,33 @@ defmodule ChainTest.RunTest do
       assert_received {:integrity, %{trust: %{sequence: 9, manifests_v2: ^v2}}}
     end
 
-    test "not fetchable: the sequence is a rerun", ctx do
-      {_code, _} = main_at(ctx, steps(self(), %{trust: ctx.trust, build: ctx.build}))
-
-      {doc, _} = report(ctx)
+    defp assert_rerun_run(ctx, code) do
+      {doc, md} = report(ctx)
       assert class_of(doc, "build/sequence") == "rerun"
+
+      client_rows =
+        Enum.filter(doc["results"], &String.starts_with?(&1["check"], "client_batch:"))
+
+      assert client_rows != []
+      assert Enum.all?(client_rows, &(&1["class"] in ["rerun", "pass"])), inspect(client_rows)
+
+      assert code == 0
+      assert doc["exit_code"] == 0
+      assert md =~ "# Chain test: rpi4 (RERUN)"
+      doc
+    end
+
+    test "not fetchable: the sequence is a rerun", ctx do
+      {code, _} = main_at(ctx, steps(self(), %{trust: ctx.trust, build: ctx.build}))
+
+      doc = assert_rerun_run(ctx, code)
+      assert class_of(doc, "trust/client_batch:batch_signature") == "rerun"
+      assert class_of(doc, "trust/client_batch:batch_format") == "rerun"
+
+      assert Enum.find(doc["results"], &(&1["check"] == "client_batch:batch_signature"))[
+               "detail"
+             ] =~ "batches/9.json"
+
       assert Enum.find(doc["results"], &(&1["check"] == "sequence"))["detail"] =~ "batches/9.json"
       assert_received {:integrity, %{trust: %{sequence: 7}}}
     end
@@ -292,17 +328,53 @@ defmodule ChainTest.RunTest do
       other = Signed.key()
       File.write!(Path.join(ctx.served, "batches/9.json"), Signed.batch(other, sequence: 9))
 
-      main_at(ctx, steps(self(), %{trust: ctx.trust, build: ctx.build}))
-      {doc, _} = report(ctx)
-      assert class_of(doc, "build/sequence") == "rerun"
+      {code, _} = main_at(ctx, steps(self(), %{trust: ctx.trust, build: ctx.build}))
+      doc = assert_rerun_run(ctx, code)
+      assert class_of(doc, "trust/client_batch:batch_signature") == "rerun"
     end
 
     test "a numbered batch whose payload names another sequence is a rerun", ctx do
       File.write!(Path.join(ctx.served, "batches/9.json"), Signed.batch(ctx.key, sequence: 8))
 
-      main_at(ctx, steps(self(), %{trust: ctx.trust, build: ctx.build}))
+      {code, _} = main_at(ctx, steps(self(), %{trust: ctx.trust, build: ctx.build}))
+      assert_rerun_run(ctx, code)
+    end
+
+    test "production moving twice: integrity's batch mismatch is a rerun, not a disagreement",
+         ctx do
+      # The client used batch 9 (not fetchable); by step 3 production is at
+      # 11, which names neither manifest, so Integrity sees a mismatch.
+      integrity = fn input ->
+        send(self(), {:integrity, input})
+
+        {[
+           r(
+             :integrity,
+             "integrity:jason",
+             :disagreement,
+             "jason 1.4.5: " <> Integrity.mismatch_marker(:provenance)
+           )
+         ], %{}}
+      end
+
+      {code, _} =
+        main_at(ctx, steps(self(), %{trust: ctx.trust, build: ctx.build, integrity: integrity}))
+
+      doc = assert_rerun_run(ctx, code)
+      assert class_of(doc, "integrity/integrity:jason") == "rerun"
+    end
+
+    test "a file mismatch under a rerun stays a disagreement", ctx do
+      integrity = fn _ ->
+        {[r(:integrity, "integrity:jason", :disagreement, "1 files differ from build x")], %{}}
+      end
+
+      {code, _} =
+        main_at(ctx, steps(self(), %{trust: ctx.trust, build: ctx.build, integrity: integrity}))
+
+      assert code == 1
       {doc, _} = report(ctx)
-      assert class_of(doc, "build/sequence") == "rerun"
+      assert class_of(doc, "integrity/integrity:jason") == "disagreement"
     end
   end
 

@@ -61,6 +61,10 @@ defmodule ChainTest.Preflight do
       "-o",
       "GlobalKnownHostsFile=/dev/null",
       "-o",
+      "KnownHostsCommand=none",
+      "-o",
+      "VerifyHostKeyDNS=no",
+      "-o",
       "ConnectTimeout=10"
     ]
   end
@@ -104,20 +108,22 @@ defmodule ChainTest.Preflight do
   defp ssh_verdict({0, out}, cfg) do
     if out |> String.split(~r/\r?\n/) |> Enum.any?(&(String.trim(&1) == "ok")),
       do: {:pass, "#{cfg.device} answered with the pinned host key"},
-      else: {:fail, "#{cfg.device} did not answer ok: #{tail(out)}"}
+      else: {:fail, "#{cfg.device} did not answer ok: #{Cmd.tail(out)}"}
   end
 
   defp ssh_verdict({124, out}, cfg),
-    do: {:fail, "#{cfg.device} did not answer within #{timeout(cfg)} ms [timeout]: #{tail(out)}"}
+    do:
+      {:fail,
+       "#{cfg.device} did not answer within #{timeout(cfg)} ms [timeout]: #{Cmd.tail(out)}"}
 
   defp ssh_verdict({status, out}, cfg) do
     if out =~ ~r/host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/i do
       {:fail,
        "host key changed or not pinned: #{cfg.device}'s host key does not match " <>
          "#{cfg.known_hosts} (re-flashed card or a different device?). " <>
-         "Update the pinned key by hand; the harness never accepts a new key. ssh: #{tail(out)}"}
+         "Update the pinned key by hand; the harness never accepts a new key. ssh: #{Cmd.tail(out)}"}
     else
-      {:fail, "ssh to #{cfg.device} exited #{status}: #{tail(out)}"}
+      {:fail, "ssh to #{cfg.device} exited #{status}: #{Cmd.tail(out)}"}
     end
   end
 
@@ -187,11 +193,4 @@ defmodule ChainTest.Preflight do
   end
 
   defp timeout(cfg), do: Map.get(cfg, :timeout_ms, @timeout_ms)
-
-  defp tail(out) do
-    out
-    |> String.split(~r/\r?\n/, trim: true)
-    |> Enum.take(-5)
-    |> Enum.join(" / ")
-  end
 end

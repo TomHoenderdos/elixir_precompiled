@@ -68,7 +68,7 @@ defmodule ChainTest.Device do
           checks(doc, apps, input)
 
       {:error, why} ->
-        probe = result("probe", :fail, "#{why}; ssh exit #{status}: #{tail(out)}", ms)
+        probe = result("probe", :fail, "#{why}; ssh exit #{status}: #{Cmd.tail(out)}", ms)
         [probe | Enum.map(check_names(apps, input), &result(&1, :not_exercised, "no probe"))]
     end
   end
@@ -210,9 +210,24 @@ defmodule ChainTest.Device do
         end
       end
 
-    if :bad in pairs,
-      do: {:device, "the probe's file list has a malformed entry"},
-      else: {:ok, Map.new(pairs)}
+    map = if :bad in pairs, do: nil, else: Map.new(pairs)
+
+    cond do
+      map == nil ->
+        {:device, "the probe's file list has a malformed entry"}
+
+      map_size(map) != length(pairs) ->
+        dups =
+          pairs
+          |> Enum.frequencies_by(&elem(&1, 0))
+          |> Enum.filter(fn {_, n} -> n > 1 end)
+          |> Enum.map_join(", ", &elem(&1, 0))
+
+        {:device, "the probe lists a path more than once: #{dups}"}
+
+      true ->
+        {:ok, map}
+    end
   end
 
   defp device_files(nil), do: {:device, "the probe lists no files for the app"}
@@ -223,7 +238,8 @@ defmodule ChainTest.Device do
   image's `lib/<app>-<vsn>/{ebin,priv}`, symlinks followed as the probe
   follows them.
   """
-  @spec release_files(Path.t(), String.t()) :: {:ok, map()} | {:local, String.t()}
+  @spec release_files(Path.t(), String.t()) ::
+          {:ok, %{String.t() => String.t()}} | {:local, String.t()}
   def release_files(release_dir, app) do
     lib = Path.join(release_dir, "lib")
 
@@ -235,9 +251,19 @@ defmodule ChainTest.Device do
               into: %{},
               do: {Path.relative_to(path, dir), sha256(path)}
 
-        if files == %{},
-          do: {:local, "#{dir} has no ebin or priv files to compare with"},
-          else: {:ok, files}
+        unreadable = for {p, {:error, why}} <- files, do: "#{p} (#{why})"
+
+        cond do
+          unreadable != [] ->
+            {:local,
+             "the release image #{dir} has unreadable files: #{Enum.join(unreadable, ", ")}"}
+
+          files == %{} ->
+            {:local, "#{dir} has no ebin or priv files to compare with"}
+
+          true ->
+            {:ok, files}
+        end
 
       [] ->
         {:local, "the release image has no #{Path.join(lib, app <> "-*")}"}
@@ -313,15 +339,8 @@ defmodule ChainTest.Device do
   defp sha256(path) do
     case File.read(path) do
       {:ok, bytes} -> Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
-      {:error, why} -> "unreadable: #{:file.format_error(why)}"
+      {:error, why} -> {:error, :file.format_error(why)}
     end
-  end
-
-  defp tail(out) do
-    out
-    |> String.split(~r/\r?\n/, trim: true)
-    |> Enum.take(-5)
-    |> Enum.join(" / ")
   end
 
   defp result(check, class, detail, ms \\ 0),

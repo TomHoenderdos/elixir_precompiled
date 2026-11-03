@@ -259,6 +259,28 @@ defmodule ChainTest.IntegrityTest do
     assert detail =~ "provenance"
   end
 
+  describe "batch_mismatch?/1" do
+    test "a provenance or manifest-bytes mismatch is one, a file mismatch is not", ctx do
+      trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+      write_provenance(ctx, String.duplicate("d", 64), 9)
+      {[provenance], _} = run(ctx, trust, %{recheck: fn -> trust end})
+      assert provenance.class == :disagreement
+      assert Integrity.batch_mismatch?(provenance)
+
+      bogus = String.duplicate("b", 64)
+      trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)], @files, sha: bogus)
+      {[bytes], _} = run(ctx, trust, %{recheck: fn -> trust end})
+      assert bytes.class == :disagreement
+      assert Integrity.batch_mismatch?(bytes)
+
+      changed = Map.put(@files, "ebin/Elixir.Jason.beam", "tampered")
+      trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)], changed)
+      {[files], _} = run(ctx, trust)
+      assert files.class == :disagreement
+      refute Integrity.batch_mismatch?(files)
+    end
+  end
+
   test "the build for this system is selected, not another system's", ctx do
     so = "rpi4 nif"
     rpi4 = Map.put(@files, "priv/nif.so", so)
