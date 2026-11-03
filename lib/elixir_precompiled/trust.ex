@@ -171,8 +171,15 @@ defmodule ElixirPrecompiled.Trust do
   end
 
   defp version_regression(dir, %{"version" => v}) when is_integer(v) do
-    stored = read_counter(Path.join(dir, "root_version"), "root version")
-    if v < stored, do: {:error, "root version #{v} is older than #{stored}"}, else: :ok
+    path = Path.join(dir, "root_version")
+    stored = read_counter(path, "root version")
+
+    if v < stored,
+      do:
+        {:error,
+         "root version #{v} is older than #{stored}: the adopted roots are gone; " <>
+           "delete #{path} to start again from version #{v}"},
+      else: :ok
   end
 
   defp version_regression(_dir, _root), do: :ok

@@ -52,7 +52,8 @@ defmodule ElixirPrecompiled.Check do
       # A warm build whose installs the batch still names has nothing to say.
       if shown != [], do: print_summary(summarize(shown, ms), length(shown))
       print_stripped(Enum.count(lines, &Map.get(&1, :stripped, false)))
-      write_report(env.build_lib, report)
+      # Nothing to say also means nothing to record: keep the last report.
+      if lines != [], do: write_report(env.build_lib, report)
       {:ok, report}
     end
   end
@@ -116,11 +117,16 @@ defmodule ElixirPrecompiled.Check do
             {:error, why} -> {revoked ++ [revoke_line(dep, :fail, why)], replaced}
           end
 
-        _ ->
+        recorded ->
+          why =
+            if is_binary(sha) and recorded == nil,
+              do: "revoked: provenance unreadable",
+              else: "revoked: no longer in the current batch"
+
           line =
             case remove(env.build_lib, sname) do
-              :ok -> revoke_line(dep, :miss, "revoked: no longer in the current batch")
-              {:error, why} -> revoke_line(dep, :fail, why)
+              :ok -> revoke_line(dep, :miss, why)
+              {:error, failed} -> revoke_line(dep, :fail, failed)
             end
 
           {revoked ++ [line], replaced}

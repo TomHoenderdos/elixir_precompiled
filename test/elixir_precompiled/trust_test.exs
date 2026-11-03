@@ -519,7 +519,10 @@ defmodule ElixirPrecompiled.TrustTest do
     {:ok, root} = Trust.load_root(config)
     assert {:ok, %{"version" => 2}} = Trust.update_root(config, root, fetch)
     File.rm!(Path.join(state_dir(config), "roots.json"))
-    assert {:error, "root version 1 is older than 2"} = Trust.load_root(config)
+    path = Path.join(state_dir(config), "root_version")
+
+    assert {:error, "root version 1 is older than 2" <> rest} = Trust.load_root(config)
+    assert rest =~ "delete #{path}"
     _ = v2
   end
 
@@ -671,6 +674,16 @@ defmodule ElixirPrecompiled.TrustTest do
 
   test "a batch without issued is malformed", %{config: config, f: f, fetch: fetch} do
     F.publish(f, %{}, issued: nil)
+    {:ok, root} = Trust.load_root(config)
+    assert {:error, "batch malformed"} = Trust.fetch_batch(config, root, fetch)
+  end
+
+  test "issued without any offset is malformed, never read as local time", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    F.publish(f, %{}, issued: Calendar.strftime(ago(600), "%Y-%m-%dT%H:%M:%S"))
     {:ok, root} = Trust.load_root(config)
     assert {:error, "batch malformed"} = Trust.fetch_batch(config, root, fetch)
   end

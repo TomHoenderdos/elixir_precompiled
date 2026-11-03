@@ -478,10 +478,61 @@ defmodule ElixirPrecompiled.CheckTest do
       run_capturing(config, env)
       assert_received {:report, {:ok, report}}
 
-      assert [%{name: "ash", status: :miss, detail: "revoked: no longer in the current batch"}] =
+      assert [%{name: "ash", status: :miss, detail: "revoked: provenance unreadable"}] =
                report.lines
 
       refute File.exists?(Path.join(lib, "ash"))
+    end
+
+    test "a run mixing a revoked install with a fresh candidate prints both, revoked first", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+
+      F.publish(
+        f,
+        %{
+          "jason" => %{
+            "versions" => %{"1.4.5" => %{"builds" => [good_entry(f, "jason", "1.31.0")]}}
+          }
+        },
+        sequence: 2
+      )
+
+      jason = %{name: :jason, version: "1.4.5", lock_entry: @jason}
+      out = run_capturing(config, %{env | candidates: [jason]})
+      assert_received {:report, {:ok, report}}
+
+      assert [
+               %{name: "ash", status: :miss, detail: "revoked: no longer in the current batch"},
+               %{name: "jason", status: :hit}
+             ] = report.lines
+
+      assert out =~
+               ~r/ash 3\.5\.2\s+MISS\s+revoked: no longer in the current batch.*\n.*jason 1\.4\.5\s+HIT/
+
+      assert out =~ "precompiled: 1 hit, 1 miss, 0 fail of 2 deps"
+      refute File.exists?(Path.join(lib, "ash"))
+      assert File.exists?(Path.join(lib, "jason/.mix/elixir_precompiled.json"))
+    end
+
+    test "a run with nothing to say keeps the last report.json", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      report = Path.join(lib, ".precompiled/report.json")
+      before = File.read!(report)
+      assert before =~ ~s("hit")
+
+      run_capturing(config, env)
+      assert_received {:report, {:ok, %{lines: []}}}
+      assert File.read!(report) == before
     end
 
     test "a candidate that misses loses a provenance file left from an earlier install", %{
@@ -655,8 +706,8 @@ defmodule ElixirPrecompiled.CheckTest do
   end
 
   # The report under `.precompiled/` is a bookkeeping convenience that is
-  # rewritten on every run, refused batch or not; it is deliberately left
-  # out of both snapshots below.
+  # rewritten on every run with lines, refused batch or not; it alone is
+  # left out of both snapshots below.
   defp home_snapshot(dir) do
     if File.dir?(dir) do
       dir
@@ -672,7 +723,15 @@ defmodule ElixirPrecompiled.CheckTest do
 
   defp dep_dirs(lib) do
     if File.dir?(lib) do
-      lib |> File.ls!() |> Enum.reject(&(&1 == ".precompiled")) |> Enum.sort()
+      top = lib |> File.ls!() |> Enum.reject(&(&1 == ".precompiled"))
+
+      extra =
+        case File.ls(Path.join(lib, ".precompiled")) do
+          {:ok, names} -> for n <- names, n != "report.json", do: ".precompiled/" <> n
+          {:error, _} -> []
+        end
+
+      Enum.sort(top ++ extra)
     else
       []
     end

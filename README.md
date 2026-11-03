@@ -179,7 +179,9 @@ a newer one was adopted does not end the chain.
 Once a root is adopted, its version is kept as a floor that a later run
 will not go back below; `roots.json` losing the entries that reached it
 (deleted, truncated, rolled back) is reported as an error rather than
-silently accepted. A state file that exists but will not parse (the batch
+silently accepted (`root version N is older than M`); deleting the
+`root_version` file the error names, under the trust state dir in
+`ELIXIR_PRECOMPILED_HOME`, accepts the older root. A state file that exists but will not parse (the batch
 sequence or the root version) is logged as a warning and treated as 0.
 
 Today the root and batch roles are one Ed25519 key, threshold 1, held
