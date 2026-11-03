@@ -605,6 +605,139 @@ defmodule ElixirPrecompiled.CheckTest do
     refute out =~ "stripped"
   end
 
+  # The report under `.precompiled/` is a bookkeeping convenience that is
+  # rewritten on every run, refused batch or not; it is deliberately left
+  # out of both snapshots below.
+  defp home_snapshot(dir) do
+    if File.dir?(dir) do
+      dir
+      |> Path.join("**/*")
+      |> Path.wildcard(match_dot: true)
+      |> Enum.reject(&File.dir?/1)
+      |> Enum.map(&{Path.relative_to(&1, dir), File.read!(&1)})
+      |> Enum.sort()
+    else
+      []
+    end
+  end
+
+  defp dep_dirs(lib) do
+    if File.dir?(lib) do
+      lib |> File.ls!() |> Enum.reject(&(&1 == ".precompiled")) |> Enum.sort()
+    else
+      []
+    end
+  end
+
+  defp assert_nothing_installed(config, lib, run) do
+    home_before = home_snapshot(config.home)
+    dirs_before = dep_dirs(lib)
+    run.()
+    assert home_snapshot(config.home) == home_before
+    assert dep_dirs(lib) == dirs_before
+  end
+
+  describe "R14: a refused batch changes nothing on disk" do
+    test "a stale batch", %{f: f, config: config, env: env, lib: lib} do
+      F.publish(f, %{},
+        issued: DateTime.add(DateTime.utc_now(), -25 * 3600, :second) |> DateTime.to_iso8601()
+      )
+
+      assert_nothing_installed(config, lib, fn ->
+        out = run_capturing(config, env)
+        assert_received {:report, {:ok, %{fails: 2, hits: 0}}}
+        assert out =~ ~r/FAIL\s+batch stale/
+      end)
+    end
+
+    test "a future-dated batch (clock)", %{f: f, config: config, env: env, lib: lib} do
+      F.publish(f, %{},
+        issued: DateTime.add(DateTime.utc_now(), 3600, :second) |> DateTime.to_iso8601()
+      )
+
+      assert_nothing_installed(config, lib, fn ->
+        out = run_capturing(config, env)
+        assert_received {:report, {:ok, %{fails: 2, hits: 0}}}
+        assert out =~ ~r/FAIL\s+clock/
+      end)
+    end
+
+    test "a batch whose lifetime exceeds 30 days", %{f: f, config: config, env: env, lib: lib} do
+      now = DateTime.utc_now()
+
+      F.publish(f, %{},
+        issued: DateTime.to_iso8601(now),
+        expires: DateTime.add(now, 31 * 86_400, :second) |> DateTime.to_iso8601()
+      )
+
+      assert_nothing_installed(config, lib, fn ->
+        out = run_capturing(config, env)
+        assert_received {:report, {:ok, %{fails: 2, hits: 0}}}
+        assert out =~ ~r/FAIL\s+batch lifetime/
+      end)
+    end
+
+    test "an expired batch", %{f: f, config: config, env: env, lib: lib} do
+      F.publish(f, %{}, expires: "2020-01-01T00:00:00Z")
+
+      assert_nothing_installed(config, lib, fn ->
+        out = run_capturing(config, env)
+        assert_received {:report, {:ok, %{fails: 2, hits: 0}}}
+        assert out =~ ~r/FAIL\s+batch expired/
+      end)
+    end
+
+    test "a rollback batch, leaving the prior state file byte for byte", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      F.publish(f, %{}, sequence: 7)
+      out = run_capturing(config, env)
+      assert_received {:report, {:ok, %{fails: 0, misses: 2}}}
+      refute out =~ "FAIL"
+
+      F.publish(f, %{}, sequence: 6)
+
+      assert_nothing_installed(config, lib, fn ->
+        out = run_capturing(config, env)
+        assert_received {:report, {:ok, %{fails: 2, hits: 0}}}
+        assert out =~ ~r/FAIL\s+batch sequence 6 is older than 7/
+      end)
+    end
+  end
+
+  test "R15: files cached from an earlier install are not used once the batch stops naming it", %{
+    f: f,
+    config: config,
+    env: env,
+    lib: lib
+  } do
+    F.publish(f, %{
+      "ash" => %{
+        "versions" => %{"3.5.2" => %{"builds" => [good_entry(f, "ash", "1.31.0")]}}
+      }
+    })
+
+    run_capturing(config, %{env | candidates: [hd(env.candidates)]})
+    assert_received {:report, {:ok, %{hits: 1}}}
+    cached_files = Path.join(config.home, "files") |> File.ls!() |> Enum.sort()
+    assert cached_files != []
+
+    # Mix wants to compile ash again (a new toolchain, say): it is a
+    # candidate once more, with the earlier install's cached files still on
+    # disk, while the current batch no longer names the package at all.
+    File.rm_rf!(Path.join(lib, "ash"))
+    F.publish(f, %{"other" => %{"versions" => %{}}}, sequence: 2)
+
+    out = run_capturing(config, %{env | candidates: [hd(env.candidates)]})
+    assert_received {:report, {:ok, %{misses: 1, hits: 0, fails: 0}}}
+    assert out =~ ~r/ash 3\.5\.2\s+MISS\s+not in batch/
+    refute File.exists?(Path.join(lib, "ash"))
+    assert Path.join(config.home, "files") |> File.ls!() |> Enum.sort() == cached_files
+  end
+
   for {app, label} <- [
         {"{application, other, [{vsn, \"3.5.2\"}]}.\n", "other 3.5.2"},
         {"{application, ash, [{vsn, \"9.9.9\"}]}.\n", "ash 9.9.9"},

@@ -153,6 +153,22 @@ defmodule ElixirPrecompiled.ConfigTest do
     {result, stdio <> stderr}
   end
 
+  test "T9: ELIXIR_PRECOMPILED_ROOT and NERVES_PRECOMPILED_ROOT cannot move the root path" do
+    configure(source: "https://x")
+    System.put_env("ELIXIR_PRECOMPILED_ROOT", "/tmp/x.json")
+    System.put_env("NERVES_PRECOMPILED_ROOT", "/tmp/x.json")
+
+    on_exit(fn ->
+      System.delete_env("ELIXIR_PRECOMPILED_ROOT")
+      System.delete_env("NERVES_PRECOMPILED_ROOT")
+    end)
+
+    assert %{root_path: root_path} = Config.load()
+
+    assert root_path ==
+             Path.join(to_string(:code.priv_dir(:elixir_precompiled)), "precompiled/root.json")
+  end
+
   test "plain http is refused except on loopback" do
     for source <- ["http://example.test/x", "http://10.0.0.1/x", "ftp://example.test/x", "x"] do
       configure(source: source)

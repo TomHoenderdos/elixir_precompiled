@@ -313,6 +313,15 @@ defmodule ElixirPrecompiled.TrustTest do
     refute state_dir(config) == state_dir(other)
     assert Path.dirname(state_dir(config)) == config.home
     assert File.read!(Path.join(state_dir(other), "state")) =~ "6"
+
+    # R19: adopting a new root for source A is state kept per source too;
+    # it must not raise source B's root_version floor.
+    k2 = key()
+    F.serve_root(f, root_env(k2, 2, "2031-01-01T00:00:00Z", [f.key, k2]))
+    assert {:ok, %{"version" => 2}} = Trust.update_root(config, root, fetch)
+    assert File.exists?(Path.join(state_dir(config), "root_version"))
+    refute File.exists?(Path.join(state_dir(other), "root_version"))
+    assert {:ok, %{"version" => 1}} = Trust.load_root(other)
   end
 
   test "the state dir is keyed by the shipped root, not a rotated one", %{
