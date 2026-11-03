@@ -13,6 +13,8 @@ defmodule ChainTest.Build do
 
   Checks:
 
+    * `home` - only when a caller-given home is not empty: `:fail`, and
+      nothing is built.
     * `firmware` - `mix firmware` exited 0 and left a `.fw` image.
     * `hit:<dep>` per expected hit (`expected.exs`): `:pass` on a hit,
       `:refused` when the client's detail starts with a refusal reason,
@@ -49,7 +51,7 @@ defmodule ChainTest.Build do
           required(:fixture_dir) => Path.t(),
           required(:target) => String.t(),
           required(:source) => String.t(),
-          required(:home) => Path.t(),
+          optional(:home) => Path.t(),
           optional(:trust) => ChainTest.Trust.info() | nil,
           optional(:expected) => %{hits: [atom()], never: [atom()]},
           optional(:timeout_ms) => pos_integer()
@@ -60,7 +62,8 @@ defmodule ChainTest.Build do
           build_lib: Path.t(),
           fw_path: Path.t() | nil,
           log: String.t(),
-          sequence: integer() | nil
+          sequence: integer() | nil,
+          home: Path.t() | nil
         }
 
   @doc "The client's refusal reason prefixes."
@@ -75,18 +78,60 @@ defmodule ChainTest.Build do
   def refusal?(_), do: false
 
   @doc """
-  Runs step 2. `trust` is step 1's info (`nil` when the batch could not be
+  Runs step 2. `home` is the client's `ELIXIR_PRECOMPILED_HOME`: a fresh
+  temp dir per run when not given, and refused (check `home` fails, nothing
+  runs) when given but not empty. `trust` is step 1's info (`nil` when the batch could not be
   trusted, which leaves `sequence` not exercised); `expected` defaults to
   the fixture's `expected.exs`.
   """
   @spec run(input()) :: {[Result.t()], info()}
-  def run(%{fixture_dir: fixture, target: target, source: source, home: home} = input) do
+  def run(%{fixture_dir: fixture, target: target} = input) do
+    build_lib = Path.join([fixture, "_build", "#{target}_dev", "lib"])
+
+    case fresh_home(Map.get(input, :home)) do
+      {:ok, home} ->
+        build(input, home)
+
+      {:error, why} ->
+        expected = Map.get_lazy(input, :expected, fn -> expected(fixture) end)
+        skipped = "the client home is not fresh"
+
+        results =
+          [result("home", :fail, why), result("firmware", :not_exercised, skipped)] ++
+            Enum.map(expected.hits, &result("hit:#{&1}", :not_exercised, skipped)) ++
+            Enum.map(expected.never, &result("never:#{&1}", :not_exercised, skipped)) ++
+            [result("sequence", :not_exercised, skipped)]
+
+        {results,
+         %{report: %{}, build_lib: build_lib, fw_path: nil, log: "", sequence: nil, home: nil}}
+    end
+  end
+
+  # A fresh home per run, so the client's cache, adopted roots and batch
+  # state all come from this run: a caller-given one must be empty.
+  defp fresh_home(nil) do
+    home = Path.join(System.tmp_dir!(), "chain_test-#{random()}")
+    File.mkdir_p!(home)
+    {:ok, home}
+  end
+
+  defp fresh_home(home) do
+    case File.ls(home) do
+      {:ok, []} -> {:ok, home}
+      {:ok, _} -> {:error, "client home #{home} is not empty; pass an empty dir or none"}
+      {:error, :enoent} -> with :ok <- File.mkdir_p(home), do: {:ok, home}
+      {:error, why} -> {:error, "client home #{home}: #{:file.format_error(why)}"}
+    end
+  end
+
+  defp random, do: Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+
+  defp build(%{fixture_dir: fixture, target: target, source: source} = input, home) do
     build_dir = Path.join([fixture, "_build", "#{target}_dev"])
     build_lib = Path.join(build_dir, "lib")
     expected = Map.get_lazy(input, :expected, fn -> expected(fixture) end)
 
     File.rm_rf!(build_dir)
-    File.mkdir_p!(home)
 
     env =
       [
@@ -114,7 +159,14 @@ defmodule ChainTest.Build do
         [sequence_check(Map.get(input, :trust), sequence)]
 
     {results,
-     %{report: report || %{}, build_lib: build_lib, fw_path: fw, log: log, sequence: sequence}}
+     %{
+       report: report || %{},
+       build_lib: build_lib,
+       fw_path: fw,
+       log: log,
+       sequence: sequence,
+       home: home
+     }}
   end
 
   @doc "The fixture's `expected.exs`."

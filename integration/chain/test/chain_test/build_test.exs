@@ -184,15 +184,39 @@ defmodule ChainTest.BuildTest do
     end)
   end
 
-  test "the newest state file under home wins", ctx do
-    old = Path.join(ctx.home, "fedcba9876543210/state")
-    File.mkdir_p!(Path.dirname(old))
-    File.write!(old, "3")
-    File.touch!(old, System.os_time(:second) - 3600)
+  test "a caller-given home that is not empty is refused without building", ctx do
+    stale = Path.join(ctx.home, "fedcba9876543210/state")
+    File.mkdir_p!(Path.dirname(stale))
+    File.write!(stale, "7")
 
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, @hits, sequence: 7)}, fn dir ->
+      {results, info} = run(ctx)
+      assert FakeBin.argv(dir, "mix") == nil
+      assert %Result{class: :fail, detail: detail} = find(results, "home")
+      assert detail =~ ctx.home
+      assert %Result{class: :not_exercised} = find(results, "firmware")
+      assert %Result{class: :not_exercised} = find(results, "sequence")
+      assert info.sequence == nil
+    end)
+  end
+
+  test "without a home, each run gets its own fresh temp home", ctx do
     FakeBin.with_stubs(%{"mix" => fake_mix(ctx, @hits, sequence: 7)}, fn _ ->
-      {_, info} = run(ctx)
-      assert info.sequence == 7
+      input = %{
+        fixture_dir: ctx.fixture,
+        target: "rpi4",
+        source: "http://127.0.0.1:1/api/precompiled",
+        trust: Synthetic.info(7, %{})
+      }
+
+      {_, a} = Build.run(input)
+      {_, b} = Build.run(input)
+      on_exit(fn -> Enum.each([a.home, b.home], &File.rm_rf/1) end)
+
+      assert a.home != b.home
+      assert String.starts_with?(a.home, Path.join(System.tmp_dir!(), "chain_test-"))
+      assert a.sequence == 7
+      assert File.read!(Path.join(ctx.tmp, "mix.env")) =~ "ELIXIR_PRECOMPILED_HOME=#{b.home}\n"
     end)
   end
 

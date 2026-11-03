@@ -116,15 +116,89 @@ defmodule ChainTest.IntegrityTest do
     assert detail =~ bogus
   end
 
-  test "a manifest that moved under a newer batch is a rerun", ctx do
+  test "a manifest that moved under a newer batch naming the served bytes is a rerun", ctx do
     bogus = String.duplicate("b", 64)
-    trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)], @files, sha: bogus)
-    newer = Synthetic.info(8, %{"jason" => String.duplicate("c", 64)})
+    builds = [Synthetic.build(@files, outer: @outer)]
+    served = Synthetic.sha(Synthetic.manifest("1.4.5", builds))
+    trust = arrange(ctx, builds, @files, sha: bogus)
+    newer = Synthetic.info(8, %{"jason" => served})
 
     assert {[%Result{class: :rerun, detail: detail}], _} =
              run(ctx, trust, %{recheck: fn -> newer end})
 
     assert detail =~ "8"
+  end
+
+  test "a newer batch that does not name the served bytes is a disagreement", ctx do
+    bogus = String.duplicate("b", 64)
+    trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)], @files, sha: bogus)
+    newer = Synthetic.info(8, %{"jason" => String.duplicate("c", 64)})
+
+    assert {[%Result{class: :disagreement}], _} =
+             run(ctx, trust, %{recheck: fn -> newer end})
+  end
+
+  test "a fresh batch naming the served bytes but not newer is a disagreement", ctx do
+    bogus = String.duplicate("b", 64)
+    builds = [Synthetic.build(@files, outer: @outer)]
+    served = Synthetic.sha(Synthetic.manifest("1.4.5", builds))
+    trust = arrange(ctx, builds, @files, sha: bogus)
+    same_seq = Synthetic.info(7, %{"jason" => served})
+
+    assert {[%Result{class: :disagreement}], _} =
+             run(ctx, trust, %{recheck: fn -> same_seq end})
+  end
+
+  defp write_provenance(ctx, sha, sequence) do
+    File.write!(
+      Path.join(ctx.build_lib, "jason/.mix/elixir_precompiled.json"),
+      JSON.encode!(%{
+        "manifest_sha256" => sha,
+        "manifest_path" => "v2/manifests",
+        "batch_sequence" => sequence
+      })
+    )
+  end
+
+  test "provenance from a higher sequence the fresh batch does not name is a disagreement",
+       ctx do
+    trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+    other = String.duplicate("d", 64)
+    write_provenance(ctx, other, 99)
+
+    assert {[%Result{class: :disagreement, detail: detail}], _} =
+             run(ctx, trust, %{recheck: fn -> trust end})
+
+    assert detail =~ "provenance"
+  end
+
+  test "provenance a newer verified batch names is a rerun", ctx do
+    trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+    other = String.duplicate("d", 64)
+    write_provenance(ctx, other, 8)
+    newer = Synthetic.info(8, %{"jason" => other})
+
+    assert {[%Result{class: :rerun}], _} = run(ctx, trust, %{recheck: fn -> newer end})
+  end
+
+  test "a priv symlink to the dep's own sources passes", ctx do
+    trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+    fixture = Path.join(ctx.tmp_dir, "fixture")
+    File.mkdir_p!(Path.join(fixture, "deps/jason/priv"))
+    File.ln_s!("../../../../deps/jason/priv", Path.join(ctx.build_lib, "jason/priv"))
+
+    assert {[%Result{class: :pass}], _} = run(ctx, trust)
+  end
+
+  test "a priv symlink anywhere else is a disagreement", ctx do
+    trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+    elsewhere = Path.join(ctx.tmp_dir, "elsewhere")
+    File.mkdir_p!(elsewhere)
+    File.write!(Path.join(elsewhere, "planted.so"), "x")
+    File.ln_s!(elsewhere, Path.join(ctx.build_lib, "jason/priv"))
+
+    assert {[%Result{class: :disagreement, detail: detail}], _} = run(ctx, trust)
+    assert detail =~ "priv"
   end
 
   test "a provenance file naming another manifest is a disagreement", ctx do

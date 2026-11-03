@@ -11,13 +11,15 @@ defmodule ChainTest.Integrity do
 
     1. The dep's provenance file (`.mix/elixir_precompiled.json`, written by
        the client's install) must name the manifest the verified batch
-       names. A different one from a later batch is `:rerun`, from the same
-       batch a `:disagreement`.
+       names. A different one is `:rerun` only when a fresh batch the
+       harness verifies itself, newer than step 1's, names exactly the
+       recorded manifest; the file's own batch number counts for nothing.
+       Anything else is a `:disagreement`.
     2. The manifest is downloaded from `<source>/<dir>/<name>.json` and its
-       bytes must hash to the verified sha. When they do not, a fresh batch
-       is checked: if it names another manifest for the dep, production
-       moved (`:rerun`); otherwise the source served bytes the batch does
-       not vouch for (`:disagreement`).
+       bytes must hash to the verified sha. When they do not, it is
+       `:rerun` only when a fresh verified batch newer than step 1's names
+       exactly the served bytes; otherwise the source served bytes no
+       verified batch vouches for (`:disagreement`).
     3. The report does not name the build a hit used, so the harness selects
        it as the client does: the builds of the locked version for
        `pure_elixir` or this target's system at the locked version, the
@@ -31,8 +33,9 @@ defmodule ChainTest.Integrity do
        silent pass.
     4. Every file the selected build lists must be in `<build_lib>/<dep>/`
        as a regular file with that sha256, and nothing else may be in its
-       `ebin/` or `priv/` (a `priv` symlink to the dep's sources is what the
-       client makes for a build with no `priv` files). Any difference is a
+       `ebin/` or `priv/`. A `priv` symlink is accepted only for a build
+       with no `priv` files and only to the fixture's `deps/<dep>/priv`,
+       as the client links it. Any difference is a
        `:disagreement` naming the file.
 
   Never compared with the release image or the device: those rewrite and
@@ -51,9 +54,10 @@ defmodule ChainTest.Integrity do
   exercised. Optional: `:lock_path` (default the fixture's `mix.lock`, three
   levels above `build_lib`), `:system` (`{name, version}`, default
   `nerves_system_<target>` at its locked version), `:elixir`, `:otp`
-  (default this VM's), `:timeout_ms`, `:recheck` (a zero-arity function
-  returning a fresh verified batch info, default `ChainTest.Trust.check/1`
-  against `source`).
+  (default this VM's), `:deps_path` (default `deps` next to the lock),
+  `:timeout_ms`, `:recheck` (a zero-arity function returning a fresh
+  verified batch info, default `ChainTest.Trust.check/1` against `source`;
+  called at most once per run).
 
   Returns the results and, per dep whose files all matched, the manifest's
   `[%{path, sha256}]`.
@@ -104,11 +108,25 @@ defmodule ChainTest.Integrity do
            elixir: Map.get(input, :elixir, System.version()),
            otp: Map.get(input, :otp, System.otp_release()),
            timeout_ms: Map.get(input, :timeout_ms, @timeout_ms),
-           recheck: Map.get(input, :recheck, fn -> elem(Trust.check(%{source: source}), 1) end)
+           deps_path: Map.get(input, :deps_path, Path.join(Path.dirname(lock_path), "deps")),
+           recheck:
+             once(Map.get(input, :recheck, fn -> elem(Trust.check(%{source: source}), 1) end))
          }}
 
       {:error, why} ->
         {:error, "fixture lock #{lock_path} unreadable: #{why}"}
+    end
+  end
+
+  # A fresh batch is fetched at most once per run, and only when needed.
+  defp once(fun) do
+    key = {__MODULE__, :recheck, make_ref()}
+
+    fn ->
+      case Process.get(key, :unset) do
+        :unset -> tap(fun.(), &Process.put(key, &1))
+        fresh -> fresh
+      end
     end
   end
 
@@ -145,9 +163,9 @@ defmodule ChainTest.Integrity do
     {outcome, ms} =
       Result.timed(fn ->
         with {:ok, sha, dir} <- batch_ref(trust, name),
-             :ok <- provenance(ctx.build_lib, name, sha, dir, trust.sequence),
+             :ok <- provenance(name, sha, dir, trust, ctx),
              {:ok, bytes} <- fetch(ctx, name, dir),
-             :ok <- manifest_hash(bytes, sha, name, ctx),
+             :ok <- manifest_hash(bytes, sha, name, trust, ctx),
              {:ok, manifest} <- normalize(bytes),
              {:ok, entry, desc} <- select(manifest, name, version, ctx) do
           {:pass, entry, desc}
@@ -177,30 +195,39 @@ defmodule ChainTest.Integrity do
     end
   end
 
-  defp provenance(build_lib, name, sha, dir, sequence) do
-    path = Path.join([build_lib, name, ".mix", "elixir_precompiled.json"])
+  defp provenance(name, sha, dir, trust, ctx) do
+    path = Path.join([ctx.build_lib, name, ".mix", "elixir_precompiled.json"])
 
     with {:ok, bytes} <- File.read(path),
          {:ok, %{"manifest_sha256" => recorded} = p} when is_binary(recorded) <-
            JSON.decode(bytes) do
-      cond do
-        recorded == sha and p["manifest_path"] == dir ->
-          :ok
+      recorded_dir = p["manifest_path"]
 
-        p["batch_sequence"] != sequence ->
+      if recorded == sha and recorded_dir == dir do
+        :ok
+      else
+        # The provenance file is the client's word; only a fresh batch the
+        # harness verified itself can make a different manifest a rerun.
+        fresh = ctx.recheck.()
+
+        if newer?(fresh, trust) and Trust.manifest_sha(fresh, name) == {recorded, recorded_dir} do
           {:rerun,
-           "provenance names manifest #{recorded} from batch #{inspect(p["batch_sequence"])}, " <>
-             "step 1 verified batch #{sequence}: production moved; run again"}
-
-        true ->
+           "the client installed from manifest #{recorded}, which batch #{fresh.sequence} " <>
+             "names; step 1 verified batch #{trust.sequence}: production moved; run again"}
+        else
           {:disagreement,
-           "provenance names manifest #{recorded} under #{inspect(p["manifest_path"])}, " <>
-             "the verified batch #{sequence} names #{sha} under #{dir}"}
+           "provenance names manifest #{recorded} under #{inspect(recorded_dir)}, " <>
+             "the verified batch #{trust.sequence} names #{sha} under #{dir}, and no newer " <>
+             "verified batch names the recorded one"}
+        end
       end
     else
       _ -> {:disagreement, "the client reports a hit, but #{path} is missing or unreadable"}
     end
   end
+
+  defp newer?(%{sequence: fresh}, %{sequence: step1}) when is_integer(fresh), do: fresh > step1
+  defp newer?(_, _), do: false
 
   defp fetch(ctx, name, dir) do
     url = "#{ctx.source}/#{dir}/#{name}.json"
@@ -211,7 +238,7 @@ defmodule ChainTest.Integrity do
     end
   end
 
-  defp manifest_hash(bytes, sha, name, ctx) do
+  defp manifest_hash(bytes, sha, name, trust, ctx) do
     got = sha256(bytes)
 
     if got == sha do
@@ -219,15 +246,15 @@ defmodule ChainTest.Integrity do
     else
       fresh = ctx.recheck.()
 
-      case fresh && Trust.manifest_sha(fresh, name) do
-        {other, _} when other != sha ->
-          {:rerun,
-           "the manifest moved: batch #{fresh.sequence} names #{other}, step 1's names #{sha}; " <>
-             "run again"}
-
-        _ ->
-          {:disagreement,
-           "the source served manifest bytes hashing to #{got}, the verified batch names #{sha}"}
+      # A rerun only when a newer verified batch vouches for exactly the
+      # bytes served; anything else is bytes no verified batch names.
+      if newer?(fresh, trust) and match?({^got, _}, Trust.manifest_sha(fresh, name)) do
+        {:rerun,
+         "the manifest moved: batch #{fresh.sequence} names #{got}, step 1's batch " <>
+           "#{trust.sequence} names #{sha}; run again"}
+      else
+        {:disagreement,
+         "the source served manifest bytes hashing to #{got}, the verified batch names #{sha}"}
       end
     end
   end
@@ -275,7 +302,7 @@ defmodule ChainTest.Integrity do
     case eligible do
       [] ->
         installed =
-          case Enum.find(builds, &(problems(&1, dir) == [])) do
+          case Enum.find(builds, &(problems(&1, dir, name, ctx) == [])) do
             nil -> "the installed files match no build in it"
             b -> "the installed files are #{describe(b)}"
           end
@@ -287,12 +314,12 @@ defmodule ChainTest.Integrity do
       _ ->
         selected = Enum.min_by(eligible, &rank(&1, ctx))
 
-        case problems(selected, dir) do
+        case problems(selected, dir, name, ctx) do
           [] ->
             {:ok, selected, describe(selected)}
 
           problems ->
-            case Enum.find(builds -- [selected], &(problems(&1, dir) == [])) do
+            case Enum.find(builds -- [selected], &(problems(&1, dir, name, ctx) == [])) do
               nil ->
                 shown = Enum.take(problems, @shown_problems)
                 more = length(problems) - length(shown)
@@ -383,13 +410,13 @@ defmodule ChainTest.Integrity do
   end
 
   # Every difference between `build`'s file list and `<dep>/{ebin,priv}`.
-  defp problems(build, dir) do
+  defp problems(build, dir, name, ctx) do
     listed = entry_files(build)
     paths = Enum.map(listed, & &1["path"])
     priv_listed? = Enum.any?(paths, &(is_binary(&1) and String.starts_with?(&1, "priv/")))
 
     listed_problems = Enum.flat_map(listed, &file_problem(&1, dir))
-    {installed, layout} = installed(dir, priv_listed?)
+    {installed, layout} = installed(dir, priv_listed?, Path.join([ctx.deps_path, name, "priv"]))
 
     extra =
       for p <- installed -- paths, do: "#{p}: in _build, not listed in the manifest"
@@ -429,15 +456,23 @@ defmodule ChainTest.Integrity do
   end
 
   # {paths of every non-directory under ebin/ and priv/, layout problems}.
-  defp installed(dir, priv_listed?) do
+  # The only priv symlink the client makes (link_sources) points at the
+  # dep's own `deps/<dep>/priv`, for a build that lists no priv files.
+  defp installed(dir, priv_listed?, own_priv) do
     ebin = walk(dir, "ebin")
+    priv = Path.join(dir, "priv")
 
-    case File.lstat(Path.join(dir, "priv")) do
+    case File.lstat(priv) do
       {:ok, %{type: :directory}} ->
         {ebin ++ walk(dir, "priv"), []}
 
       {:ok, %{type: :symlink}} when not priv_listed? ->
-        {ebin, []}
+        {:ok, link} = File.read_link(priv)
+        target = Path.expand(link, dir)
+
+        if target == Path.expand(own_priv),
+          do: {ebin, []},
+          else: {ebin, ["priv: a symlink to #{target} in _build, not to #{own_priv}"]}
 
       {:ok, %{type: type}} ->
         {ebin, ["priv: a #{type} in _build, the manifest lists priv files"]}
