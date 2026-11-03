@@ -21,7 +21,7 @@ defmodule ChainTest.Result do
   """
 
   @enforce_keys [:step, :check, :class]
-  defstruct [:step, :check, :class, detail: "", ms: 0]
+  defstruct [:step, :check, :class, detail: "", ms: 0, cause: nil]
 
   @type class :: :pass | :fail | :refused | :miss | :disagreement | :not_exercised | :rerun
   @type t :: %__MODULE__{
@@ -29,8 +29,17 @@ defmodule ChainTest.Result do
           check: String.t(),
           class: class(),
           detail: String.t(),
-          ms: non_neg_integer()
+          ms: non_neg_integer(),
+          cause: cause()
         }
+
+  @typedoc """
+  Why a result has its class, where a later step needs to know without
+  reading the detail (which can carry untrusted text). `:batch_mismatch`:
+  a disagreement only because the batch checked against is not the one the
+  client used.
+  """
+  @type cause :: nil | :batch_mismatch
 
   @classes [:pass, :fail, :refused, :miss, :disagreement, :not_exercised, :rerun]
   @failing [:fail, :refused, :disagreement, :not_exercised]

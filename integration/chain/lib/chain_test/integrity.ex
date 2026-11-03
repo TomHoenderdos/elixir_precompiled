@@ -49,27 +49,15 @@ defmodule ChainTest.Integrity do
 
   @type files :: %{String.t() => [%{path: String.t(), sha256: String.t()}]}
 
-  # The disagreements that come from the batch alone (the client's batch is
-  # not the one checked against), not from the installed files.
-  @mismatch %{
-    provenance: "and no newer verified batch names the recorded one",
-    manifest_bytes: "the source served manifest bytes hashing to",
-    unnamed: "names no manifest for it"
-  }
-
-  @doc "The phrase a batch-mismatch disagreement of `kind` carries in its detail."
-  @spec mismatch_marker(:provenance | :manifest_bytes | :unnamed) :: String.t()
-  def mismatch_marker(kind), do: Map.fetch!(@mismatch, kind)
-
   @doc """
   Whether `result` is a `:disagreement` caused only by the checked batch not
   naming what the client installed from (provenance, manifest bytes, or no
-  manifest at all), rather than by the installed files.
+  manifest at all), rather than by the installed files. Carried in the
+  result's `cause`, set by those three checks alone; never read from the
+  detail, which quotes untrusted file names.
   """
   @spec batch_mismatch?(Result.t()) :: boolean()
-  def batch_mismatch?(%Result{class: :disagreement, detail: detail}),
-    do: Enum.any?(Map.values(@mismatch), &String.contains?(detail, &1))
-
+  def batch_mismatch?(%Result{class: :disagreement, cause: :batch_mismatch}), do: true
   def batch_mismatch?(_), do: false
 
   @doc """
@@ -202,6 +190,10 @@ defmodule ChainTest.Integrity do
         {result(check, :pass, "#{name} #{version}: #{length(listed)} files match #{desc}", ms),
          {name, Enum.map(listed, &%{path: &1["path"], sha256: &1["sha256"]})}}
 
+      {:batch_mismatch, detail} ->
+        r = result(check, :disagreement, "#{name} #{version}: #{detail}", ms)
+        {%{r | cause: :batch_mismatch}, nil}
+
       {class, detail} ->
         {result(check, class, "#{name} #{version}: #{detail}", ms), nil}
     end
@@ -213,7 +205,7 @@ defmodule ChainTest.Integrity do
         {:ok, sha, dir}
 
       nil ->
-        {:disagreement,
+        {:batch_mismatch,
          "the client reports a hit, but the verified batch #{trust.sequence} names no " <>
            "manifest for it"}
     end
@@ -239,8 +231,8 @@ defmodule ChainTest.Integrity do
            "the client installed from manifest #{recorded}, which batch #{fresh.sequence} " <>
              "names; step 1 verified batch #{trust.sequence}: production moved; run again"}
         else
-          {:disagreement,
-           "provenance names manifest #{recorded} under #{inspect(recorded_dir)}, " <>
+          {:batch_mismatch,
+           "provenance names manifest #{inspect(recorded)} under #{inspect(recorded_dir)}, " <>
              "the verified batch #{trust.sequence} names #{sha} under #{dir}, and no newer " <>
              "verified batch names the recorded one"}
         end
@@ -277,7 +269,7 @@ defmodule ChainTest.Integrity do
          "the manifest moved: batch #{fresh.sequence} names #{got}, step 1's batch " <>
            "#{trust.sequence} names #{sha}; run again"}
       else
-        {:disagreement,
+        {:batch_mismatch,
          "the source served manifest bytes hashing to #{got}, the verified batch names #{sha}"}
       end
     end
@@ -443,7 +435,7 @@ defmodule ChainTest.Integrity do
     {installed, layout} = installed(dir, priv_listed?, Path.join([ctx.deps_path, name, "priv"]))
 
     extra =
-      for p <- installed -- paths, do: "#{p}: in _build, not listed in the manifest"
+      for p <- installed -- paths, do: "#{inspect(p)}: in _build, not listed in the manifest"
 
     layout ++ listed_problems ++ extra
   end
@@ -458,13 +450,13 @@ defmodule ChainTest.Integrity do
 
           if got == sha,
             do: [],
-            else: ["#{path}: sha256 #{got} in _build, #{inspect(sha)} in the manifest"]
+            else: ["#{inspect(path)}: sha256 #{got} in _build, #{inspect(sha)} in the manifest"]
 
         {:ok, %{type: type}} ->
-          ["#{path}: a #{type} in _build, not a regular file"]
+          ["#{inspect(path)}: a #{type} in _build, not a regular file"]
 
         {:error, _} ->
-          ["#{path}: listed in the manifest, missing from _build"]
+          ["#{inspect(path)}: listed in the manifest, missing from _build"]
       end
     else
       ["#{inspect(path)}: unsafe path in the manifest"]

@@ -279,6 +279,27 @@ defmodule ChainTest.IntegrityTest do
       assert files.class == :disagreement
       refute Integrity.batch_mismatch?(files)
     end
+
+    test "a planted file named like a batch mismatch is still a file disagreement", ctx do
+      planted = "ebin/and no newer verified batch names the recorded one"
+      installed = Map.put(@files, planted, "x")
+      trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)], installed)
+
+      {[r], _} = run(ctx, trust)
+      assert r.class == :disagreement
+      refute Integrity.batch_mismatch?(r)
+      # The untrusted name is quoted, so it cannot pass as the harness's own words.
+      assert r.detail =~ inspect(planted)
+    end
+
+    test "a file name with a newline cannot forge a line in the detail", ctx do
+      installed = Map.put(@files, "ebin/x\n| run | forged | pass |", "x")
+      trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)], installed)
+
+      {[r], _} = run(ctx, trust)
+      assert r.class == :disagreement
+      refute r.detail =~ "\n"
+    end
   end
 
   test "the build for this system is selected, not another system's", ctx do

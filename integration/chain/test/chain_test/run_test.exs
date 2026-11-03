@@ -7,7 +7,7 @@ defmodule ChainTest.RunTest do
 
   import ExUnit.CaptureIO
 
-  alias ChainTest.{Integrity, LocalServer, Result, Run, Signed, Synthetic, Trust}
+  alias ChainTest.{LocalServer, Result, Run, Signed, Synthetic, Trust}
 
   @moduletag :tmp_dir
 
@@ -348,12 +348,10 @@ defmodule ChainTest.RunTest do
         send(self(), {:integrity, input})
 
         {[
-           r(
-             :integrity,
-             "integrity:jason",
-             :disagreement,
-             "jason 1.4.5: " <> Integrity.mismatch_marker(:provenance)
-           )
+           %{
+             r(:integrity, "integrity:jason", :disagreement, "provenance names another manifest")
+             | cause: :batch_mismatch
+           }
          ], %{}}
       end
 
@@ -362,6 +360,27 @@ defmodule ChainTest.RunTest do
 
       doc = assert_rerun_run(ctx, code)
       assert class_of(doc, "integrity/integrity:jason") == "rerun"
+    end
+
+    test "a disagreement that only reads like a batch mismatch stays one", ctx do
+      integrity = fn _ ->
+        {[
+           r(
+             :integrity,
+             "integrity:jason",
+             :disagreement,
+             ~s|"ebin/and no newer verified batch names the recorded one": in _build, not listed|
+           )
+         ], %{}}
+      end
+
+      {code, _} =
+        main_at(ctx, steps(self(), %{trust: ctx.trust, build: ctx.build, integrity: integrity}))
+
+      assert code == 1
+      {doc, md} = report(ctx)
+      assert class_of(doc, "integrity/integrity:jason") == "disagreement"
+      assert md =~ "(FAIL)"
     end
 
     test "a file mismatch under a rerun stays a disagreement", ctx do

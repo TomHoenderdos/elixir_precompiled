@@ -172,12 +172,15 @@ defmodule ChainTest.Device do
 
     with {:ok, local} <- release_files(release_dir, app),
          {:ok, device} <- device_files(get_in_map(doc, ["files", app])) do
-      missing = for p <- Map.keys(local) -- Map.keys(device), do: "#{p}: missing on the device"
-      extra = for p <- Map.keys(device) -- Map.keys(local), do: "#{p}: on the device only"
+      missing =
+        for p <- Map.keys(local) -- Map.keys(device), do: "#{inspect(p)}: missing on the device"
+
+      extra =
+        for p <- Map.keys(device) -- Map.keys(local), do: "#{inspect(p)}: on the device only"
 
       differ =
         for {p, sha} <- device, Map.has_key?(local, p), local[p] != sha do
-          "#{p}: sha256 #{sha} on the device, #{local[p]} in the release image"
+          "#{inspect(p)}: sha256 #{inspect(sha)} on the device, #{local[p]} in the release image"
         end
 
       case Enum.sort(missing ++ extra ++ differ) do
@@ -221,7 +224,7 @@ defmodule ChainTest.Device do
           pairs
           |> Enum.frequencies_by(&elem(&1, 0))
           |> Enum.filter(fn {_, n} -> n > 1 end)
-          |> Enum.map_join(", ", &elem(&1, 0))
+          |> Enum.map_join(", ", &inspect(elem(&1, 0)))
 
         {:device, "the probe lists a path more than once: #{dups}"}
 
@@ -251,7 +254,7 @@ defmodule ChainTest.Device do
               into: %{},
               do: {Path.relative_to(path, dir), sha256(path)}
 
-        unreadable = for {p, {:error, why}} <- files, do: "#{p} (#{why})"
+        unreadable = for {p, {:error, why}} <- files, do: "#{inspect(p)} (#{why})"
 
         cond do
           unreadable != [] ->
