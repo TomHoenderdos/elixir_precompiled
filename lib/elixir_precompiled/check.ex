@@ -41,10 +41,16 @@ defmodule ElixirPrecompiled.Check do
       lines =
         except_lines(excepted, env) ++ lines_for(candidates, installed, config, env, config_fun)
 
-      Enum.each(lines, &print/1)
-      report = summarize(lines, System.monotonic_time(:millisecond) - started)
+      # Installs kept on a refused or missing batch are one warning, not a
+      # FAIL line each: an offline warm build is a correct build. The
+      # report still lists them.
+      {kept, shown} = Enum.split_with(lines, &Map.get(&1, :kept, false))
+      Enum.each(shown, &print/1)
+      print_kept(kept)
+      ms = System.monotonic_time(:millisecond) - started
+      report = summarize(lines, ms)
       # A warm build whose installs the batch still names has nothing to say.
-      if lines != [], do: print_summary(report, length(lines))
+      if shown != [], do: print_summary(summarize(shown, ms), length(shown))
       print_stripped(Enum.count(lines, &Map.get(&1, :stripped, false)))
       write_report(env.build_lib, report)
       {:ok, report}
@@ -65,7 +71,7 @@ defmodule ElixirPrecompiled.Check do
         # No fresh batch, no verdict: installed builds stay as they are,
         # and their line says so rather than reading as a source compile.
         Enum.map(candidates, &revoke_line(&1, :fail, why)) ++
-          Enum.map(installed, &revoke_line(&1, :fail, why <> " (installed build kept)"))
+          Enum.map(installed, &kept_line(&1, why))
     end
   end
 
@@ -120,6 +126,21 @@ defmodule ElixirPrecompiled.Check do
           {revoked ++ [line], replaced}
       end
     end)
+  end
+
+  defp kept_line(dep, why),
+    do:
+      Map.merge(revoke_line(dep, :fail, why <> " (installed build kept)"), %{kept: true, why: why})
+
+  defp print_kept([]), do: :ok
+
+  defp print_kept([%{why: why} | _] = kept) do
+    n = length(kept)
+
+    Output.warning(
+      "precompiled: no fresh batch (#{why}); #{n} installed #{if n == 1, do: "build", else: "builds"} " <>
+        "kept, not rechecked"
+    )
   end
 
   defp revoke_line(dep, status, detail),
@@ -370,7 +391,7 @@ defmodule ElixirPrecompiled.Check do
       fails: count.(:fail),
       bytes: Enum.sum(Enum.map(lines, & &1.bytes)),
       seconds: ms / 1000,
-      lines: Enum.map(lines, &Map.drop(&1, [:bytes, :stripped]))
+      lines: Enum.map(lines, &Map.drop(&1, [:bytes, :stripped, :kept, :why]))
     }
   end
 

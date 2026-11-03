@@ -158,14 +158,18 @@ and never from an environment variable.
 
 Every run, `ElixirPrecompiled.install/2` included, also rechecks builds an
 earlier run installed (into a Mix project's `_build` or into the
-`Mix.install/2` project) against the current batch: one the batch no longer names is removed and compiled from
-source, one whose manifest changed is matched again, and one newly listed
-in `:except` is removed and compiled from source whether or not a batch is
-fetched. So a warm build with precompiled dependencies already installed
-still fetches the root and the batch on every run. When no batch is
-available (offline, or refused), installed builds are left as they are
-and their line ends `(installed build kept)` so it does not read as a
-source compile.
+`Mix.install/2` project) against the current batch: one the batch no
+longer names is removed and compiled from source, one whose manifest
+changed is matched again, and one newly listed in `:except` is removed and
+compiled from source whether or not a batch is fetched. So a warm build
+with precompiled dependencies already installed still fetches the root and
+the batch on every run. When no batch is available (offline, or refused),
+installed builds are left as they are and the run prints one warning,
+`precompiled: no fresh batch (<reason>); N installed builds kept, not
+rechecked`, rather than a FAIL line per dependency; dependencies Mix is
+about to compile still get their own FAIL line with the reason.
+`report.json` lists every kept build as `fail` with a detail ending
+`(installed build kept)`.
 
 Once a root is adopted, its version is kept as a floor that a later run
 will not go back below; `roots.json` losing the entries that reached it

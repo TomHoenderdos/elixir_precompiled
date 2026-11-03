@@ -12,7 +12,9 @@
   `:except`, is removed and compiled from source; one whose manifest
   changed is matched again. A warm build with precompiled dependencies
   already installed now fetches the root and the batch on every run. When
-  no batch is available, installed builds are left as they are. Builds
+  no batch is available, installed builds are left as they are and one
+  warning line says how many were kept, not rechecked (`report.json`
+  still lists each as `fail`, `(installed build kept)`). Builds
   installed by an earlier version carry no provenance file and are
   rechecked only after `mix deps.clean --build` or a clean `_build`.
 * The adopted root version is kept and never goes back; a trust-state

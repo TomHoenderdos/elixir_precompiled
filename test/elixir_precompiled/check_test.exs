@@ -509,7 +509,7 @@ defmodule ElixirPrecompiled.CheckTest do
       F.publish(f, %{}, sequence: 2, expires: "2020-01-01T00:00:00Z")
 
       jason = %{name: :jason, version: "1.4.5", lock_entry: @jason}
-      run_capturing(config, %{env | candidates: [jason]})
+      out = run_capturing(config, %{env | candidates: [jason]})
       assert_received {:report, {:ok, report}}
 
       assert [%{name: "ash", detail: ash}, %{name: "jason", detail: jason}] =
@@ -518,6 +518,49 @@ defmodule ElixirPrecompiled.CheckTest do
       assert ash =~ ~r/^batch expired.* \(installed build kept\)$/
       assert jason =~ ~r/^batch expired/
       refute jason =~ "installed build kept"
+
+      # The candidate keeps its FAIL line; the kept install folds into one
+      # warning instead of a FAIL line of its own.
+      assert out =~ ~r/jason 1\.4\.5\s+FAIL\s+batch expired/
+      refute out =~ ~r/ash 3\.5\.2\s+FAIL/
+      assert [_] = Regex.scan(~r/no fresh batch/, out)
+
+      assert out =~
+               ~r/precompiled: no fresh batch \(batch expired at [^)]+\); 1 installed build kept, not rechecked/
+
+      assert out =~ "precompiled: 0 hit, 0 miss, 1 fail of 1 deps"
+    end
+
+    test "an unavailable batch with only installs prints one warning, no FAIL lines", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      jason_lib = Path.join(lib, "jason")
+      File.cp_r!(Path.join(lib, "ash"), jason_lib)
+      File.rename!(Path.join(jason_lib, "ebin/ash.app"), Path.join(jason_lib, "ebin/jason.app"))
+      env = %{env | installed: [:ash, :jason]}
+
+      # Nothing listens on port 1: the batch is unavailable, as offline.
+      out = run_capturing(%{config | source: "http://127.0.0.1:1/precompiled"}, env)
+      assert_received {:report, {:ok, report}}
+
+      assert out ==
+               "precompiled: no fresh batch (batch unavailable); " <>
+                 "2 installed builds kept, not rechecked\n"
+
+      assert [
+               %{name: "ash", status: :fail, detail: "batch unavailable (installed build kept)"},
+               %{name: "jason", status: :fail, detail: "batch unavailable (installed build kept)"}
+             ] = report.lines
+
+      assert [_, _] =
+               Path.join(lib, ".precompiled/report.json")
+               |> File.read!()
+               |> :json.decode()
+               |> Map.fetch!("lines")
     end
 
     test "an installed build now in :except is removed without fetching a batch", %{
@@ -554,10 +597,16 @@ defmodule ElixirPrecompiled.CheckTest do
         issued: DateTime.add(DateTime.utc_now(), -25 * 3600, :second) |> DateTime.to_iso8601()
       )
 
-      run_capturing(config, env)
+      out = run_capturing(config, env)
       assert_received {:report, {:ok, report}}
       assert [%{name: "ash", status: :fail, detail: "batch stale" <> _ = detail}] = report.lines
       assert String.ends_with?(detail, " (installed build kept)")
+      refute out =~ "FAIL"
+      refute out =~ "deps,"
+
+      assert out =~
+               ~r/^precompiled: no fresh batch \(batch stale: .*\); 1 installed build kept, not rechecked\n$/
+
       assert File.exists?(Path.join(lib, "ash/ebin/Elixir.X.beam"))
       assert File.exists?(Path.join(lib, "ash/.mix/elixir_precompiled.json"))
     end
