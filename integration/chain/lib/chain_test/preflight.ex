@@ -12,7 +12,7 @@ defmodule ChainTest.Preflight do
     * `fixture_lock` - the fixture's `mix.lock` names every expected dependency.
   """
 
-  alias ChainTest.{Cmd, Result}
+  alias ChainTest.{Cmd, HTTP, Result}
 
   @timeout_ms 15_000
 
@@ -104,29 +104,13 @@ defmodule ChainTest.Preflight do
   def portal(cfg) do
     check("portal", fn ->
       url = String.trim_trailing(cfg.source, "/") <> "/root.json"
-      t = timeout(cfg)
-      http_opts = [timeout: t, connect_timeout: t] ++ ssl_opts(url)
 
-      case :httpc.request(:get, {to_charlist(url), []}, http_opts, body_format: :binary) do
-        {:ok, {{_, 200, _}, _, _}} -> {:pass, "GET #{url} 200"}
-        {:ok, {{_, status, _}, _, _}} -> {:fail, "GET #{url} answered #{status}"}
-        {:error, reason} -> {:fail, "GET #{url} failed: #{inspect(reason)}"}
+      case HTTP.get(url, timeout(cfg)) do
+        {:ok, _body} -> {:pass, "GET #{url} 200"}
+        {:error, reason} -> {:fail, reason}
       end
     end)
   end
-
-  defp ssl_opts("https://" <> _) do
-    [
-      ssl: [
-        verify: :verify_peer,
-        cacerts: :public_key.cacerts_get(),
-        depth: 4,
-        customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]
-      ]
-    ]
-  end
-
-  defp ssl_opts(_), do: []
 
   @doc false
   @spec toolchain(config()) :: Result.t()
