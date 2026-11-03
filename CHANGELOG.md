@@ -2,6 +2,18 @@
 
 ## v0.1.0 - unreleased
 
+* A batch issued more than 24 hours ago, more than 5 minutes in the
+  future, valid for more than 30 days, or read against a local clock
+  earlier than this library's build time, is refused; the run falls back
+  to compiling, same as an expired or rolled-back batch.
+* Every run rechecks dependencies an earlier run installed against the
+  current batch: one the batch no longer names, or one newly listed in
+  `:except`, is removed and compiled from source; one whose manifest
+  changed is matched again. A warm build with precompiled dependencies
+  already installed now fetches the root and the batch on every run. When
+  no batch is available, installed builds are left as they are.
+* The adopted root version is kept and never goes back; a trust-state
+  file that exists but will not parse is warned about and treated as 0.
 * On a device, the Nerves system is read from `/usr/lib/os-release`; the
   loaded-application lookup never matched because systems are `runtime:
   false`, so devices only got pure-Elixir hits.

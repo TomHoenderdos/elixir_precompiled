@@ -143,6 +143,33 @@ names; every manifest is fetched by the hash the batch names; every file by
 the hash the manifest names. Nothing unsigned or unhashed reaches `_build`.
 Plain `http` sources are refused except on loopback.
 
+A batch is also checked for freshness, on top of its signature, expiry and
+sequence: it is refused when its `issued` timestamp is more than 24 hours
+ago ("batch stale"), more than 5 minutes in the future ("clock"), when it
+stays valid for more than 30 days past `issued` ("batch lifetime"), or when
+`issued` does not parse ("batch malformed"). A local clock reading earlier
+than the moment this library was built is refused outright ("clock"),
+since none of the above can be trusted on it. Every refusal, old or new,
+falls back to compiling. `clock_offset_seconds` moves the client's notion
+of now for these checks; it is test-only, read only from project config,
+and never from an environment variable.
+
+Every run also rechecks builds an earlier run installed against the
+current batch: one the batch no longer names is removed and compiled from
+source, one whose manifest changed is matched again, and one newly listed
+in `:except` is removed and compiled from source whether or not a batch is
+fetched. So a warm build with precompiled dependencies already installed
+still fetches the root and the batch on every run. When no batch is
+available (offline, or refused), installed builds are left as they are
+and their line ends `(installed build kept)` so it does not read as a
+source compile.
+
+Once a root is adopted, its version is kept as a floor that a later run
+will not go back below; `roots.json` losing the entries that reached it
+(deleted, truncated, rolled back) is reported as an error rather than
+silently accepted. A state file that exists but will not parse (the batch
+sequence or the root version) is logged as a warning and treated as 0.
+
 Today the root and batch roles are one Ed25519 key, threshold 1, held
 online by the portal. Whoever controls the portal host can therefore
 rotate the root and ship code to every opted-in host and device, until a
@@ -159,6 +186,17 @@ are in the compatibility repository's `docs/PRECOMPILED_SIGNING_PROPOSALS.md`.
   then recompiled by Mix's config-outdated check. Never a wrong build.
 * `MIX_INSTALL_RESTORE_PROJECT_DIR` is ignored by the precompiled step.
 * One online key signs both the root and the batches (see Trust).
+* On a machine with no trust state yet (a fresh install, or one pointed at
+  a new `:home`), an older batch issued within the last 24 hours still
+  passes the freshness checks: there is no stored sequence yet to catch it
+  as a rollback.
+* A mirror that withholds newer roots leaves a fresh `:home` on the
+  shipped root; a root is only adopted when the source actually serves it.
+* A dependency's provenance file (`.mix/elixir_precompiled.json` under its
+  build dir) is what the recheck trusts to tell a live build from a
+  withdrawn one. It sits in `_build`, so anyone who can write there can
+  keep a withdrawn build in place — the same trust `_build` already
+  carries.
 
 ## Development
 
