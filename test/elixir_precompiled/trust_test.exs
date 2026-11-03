@@ -442,6 +442,61 @@ defmodule ElixirPrecompiled.TrustTest do
     assert {:error, "state dir unwritable: " <> _} = Trust.fetch_batch(config, root, fetch)
   end
 
+  test "R17: an adopted root version survives roots.json disappearing", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    # Adopt v2 through the existing rotation path (copy the setup of
+    # "a newer root signed by the current root is adopted and cached").
+    v2 = F.rotate_root(f, version: 2)
+    {:ok, root} = Trust.load_root(config)
+    assert {:ok, %{"version" => 2}} = Trust.update_root(config, root, fetch)
+    File.rm!(Path.join(state_dir(config), "roots.json"))
+    assert {:error, "root version 1 is older than 2"} = Trust.load_root(config)
+    _ = v2
+  end
+
+  test "R4: a corrupt state file warns and counts as 0", %{config: config, f: f, fetch: fetch} do
+    File.mkdir_p!(state_dir(config))
+    File.write!(Path.join(state_dir(config), "state"), "not a number")
+    F.publish(f, %{}, sequence: 4)
+    {:ok, root} = Trust.load_root(config)
+    {result, log} = capture_warning(fn -> Trust.fetch_batch(config, root, fetch) end)
+    assert {:ok, %{sequence: 4}} = result
+    assert log =~ "sequence state"
+  end
+
+  test "an unwritable state dir while recording the root version is named, not raised", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    v2 = F.rotate_root(f, version: 2)
+    dir = state_dir(config)
+    File.mkdir_p!(dir)
+    File.chmod!(dir, 0o500)
+    on_exit(fn -> File.chmod!(dir, 0o700) end)
+    {:ok, root} = Trust.load_root(config)
+    assert {:ok, _} = Trust.update_root(config, root, fetch)
+    _ = v2
+  end
+
+  # Output.warning/1 goes through Mix.shell().info (stdout) when Mix is
+  # running and IO.puts(:stderr) otherwise; capture both so this is not
+  # fragile to which applies under `mix test` (see config_test.exs).
+  defp capture_warning(fun) do
+    stderr =
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        stdio = ExUnit.CaptureIO.capture_io(fn -> send(self(), {:result, fun.()}) end)
+        send(self(), {:stdio, stdio})
+      end)
+
+    assert_received {:result, result}
+    assert_received {:stdio, stdio}
+    {result, stdio <> stderr}
+  end
+
   defp iso(dt), do: DateTime.to_iso8601(dt)
   defp ago(seconds), do: DateTime.add(DateTime.utc_now(), -seconds, :second)
 

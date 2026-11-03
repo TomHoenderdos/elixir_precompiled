@@ -42,6 +42,22 @@ defmodule ElixirPrecompiled.Fixture do
   @spec serve_root(map(), map()) :: map()
   def serve_root(fixture, root_env), do: put(:root, root_env) && fixture
 
+  # Rotates the served root to a freshly generated key, co-signed by the
+  # fixture's original key so it chains from whatever root the caller
+  # already trusts — the setup "a newer root signed by the current root is
+  # adopted and cached" builds inline. Returns the new key, in case a test
+  # needs it to sign a later batch or a further rotation.
+  @spec rotate_root(map(), keyword()) :: map()
+  def rotate_root(fixture, opts) do
+    version = Keyword.fetch!(opts, :version)
+    expires = Keyword.get(opts, :expires, "2031-01-01T00:00:00Z")
+    {pub, priv} = :crypto.generate_key(:eddsa, :ed25519)
+    k2 = %{keyid: sha(pub), public: pub, private: priv}
+    root = root_payload(k2.keyid, pub, expires, version)
+    serve_root(fixture, sign(root, [fixture.key, k2]))
+    k2
+  end
+
   # `format: 2` (the default) stores each package as a format-2 document
   # under :manifests_v2, named by the batch's "manifests_v2" map next to an
   # empty "manifests"; `format: 1` stores today's documents under :manifests

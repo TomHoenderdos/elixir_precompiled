@@ -15,6 +15,8 @@ defmodule ElixirPrecompiled.Trust do
   line of defense.
   """
 
+  alias ElixirPrecompiled.Output
+
   @type root :: map()
 
   @spec verify_envelope(map() | binary(), %{String.t() => binary()}, pos_integer()) ::
@@ -133,26 +135,46 @@ defmodule ElixirPrecompiled.Trust do
   higher version and be unexpired, and the first one that fails ends the
   chain. Only the root in use must be unexpired, so a release keeps working
   past its shipped root's expiry once a newer root has been adopted.
+
+  The version this ends on can never drop below one `update_root/3` already
+  recorded: a stored `root_version` higher than the folded root's version
+  means `roots.json` lost the entries that led there (deleted, truncated, or
+  rolled back), and that is reported rather than silently accepted.
   """
   @spec load_root(map()) :: {:ok, root()} | {:error, String.t()}
   def load_root(config) do
     with {:ok, shipped} <- read_shipped(config.root_path) do
-      {root, adopted} = fold_chain(shipped, read_chain(state_dir(config, shipped)))
+      dir = state_dir(config, shipped)
+      {root, adopted} = fold_chain(shipped, read_chain(dir))
 
-      case check_expiry(expires_of(root)) do
-        :ok ->
-          {:ok, root}
-
-        :error when adopted == [] ->
-          {:error, "root document at #{config.root_path} expired at #{expires_of(root)}"}
-
-        :error ->
-          {:error, "cached root expired at #{expires_of(root)}"}
+      case version_regression(dir, root) do
+        :ok -> expiry_outcome(config, root, adopted)
+        error -> error
       end
     end
   rescue
     _ -> {:error, "root document at #{config.root_path} is invalid"}
   end
+
+  defp expiry_outcome(config, root, adopted) do
+    case check_expiry(expires_of(root)) do
+      :ok ->
+        {:ok, root}
+
+      :error when adopted == [] ->
+        {:error, "root document at #{config.root_path} expired at #{expires_of(root)}"}
+
+      :error ->
+        {:error, "cached root expired at #{expires_of(root)}"}
+    end
+  end
+
+  defp version_regression(dir, %{"version" => v}) when is_integer(v) do
+    stored = read_counter(Path.join(dir, "root_version"), "root version")
+    if v < stored, do: {:error, "root version #{v} is older than #{stored}"}, else: :ok
+  end
+
+  defp version_regression(_dir, _root), do: :ok
 
   defp read_shipped(path) do
     with {:ok, body} <- File.read(path),
@@ -237,7 +259,8 @@ defmodule ElixirPrecompiled.Trust do
 
   @doc """
   Adopt the source's served root when it chains from `root` (the root in
-  use), appending it to `roots.json`. Anything else keeps `root`.
+  use), appending it to `roots.json` and recording its version as the
+  floor `load_root/1` will not go back below. Anything else keeps `root`.
   """
   @spec update_root(map(), root(), (String.t() -> {:ok, binary()} | {:error, term()})) ::
           {:ok, root()}
@@ -249,12 +272,28 @@ defmodule ElixirPrecompiled.Trust do
       dir = state_dir(config, shipped)
       {_, adopted} = fold_chain(shipped, read_chain(dir))
       write_atomic(dir, "roots.json", :json.encode(adopted ++ [env]))
+      write_root_version(dir, candidate["version"])
       {:ok, candidate}
     else
       _ -> {:ok, root}
     end
   rescue
     _ -> {:ok, root}
+  end
+
+  # Keeps the higher of what was already stored and the newly adopted
+  # version, like `write_state/2`. A File.Error here must not unwind the
+  # root this call already adopted and is about to return — so it is
+  # caught locally and only logged, never raised further.
+  defp write_root_version(dir, version) do
+    stored = read_counter(Path.join(dir, "root_version"), "root version")
+    write_atomic(dir, "root_version", Integer.to_string(max(stored, version)))
+  rescue
+    e in File.Error ->
+      Output.warning(
+        "precompiled: could not write root version state " <>
+          "#{Path.join(dir, "root_version")}: #{inspect(e.reason)}"
+      )
   end
 
   defp write_atomic(dir, name, data) do
@@ -398,17 +437,29 @@ defmodule ElixirPrecompiled.Trust do
   defp safe_parse_iso8601(_), do: :error
 
   defp monotonic(dir, seq) do
-    stored =
-      case File.read(Path.join(dir, "state")) do
-        {:ok, s} -> s |> String.trim() |> Integer.parse() |> elem_or(0)
-        _ -> 0
-      end
-
+    stored = read_counter(Path.join(dir, "state"), "sequence")
     if seq >= stored, do: :ok, else: {:error, "batch sequence #{seq} is older than #{stored}"}
   end
 
-  defp elem_or({n, _}, _), do: n
-  defp elem_or(_, d), do: d
+  # A counter file (`state`'s sequence, `root_version`'s version) that
+  # exists but fails to parse is corrupt rather than merely absent: warn
+  # once and treat it as 0 either way.
+  defp read_counter(path, label) do
+    case File.read(path) do
+      {:ok, s} ->
+        case s |> String.trim() |> Integer.parse() do
+          {n, _} ->
+            n
+
+          :error ->
+            Output.warning("precompiled: #{label} state #{path} is unreadable; treating it as 0")
+            0
+        end
+
+      _ ->
+        0
+    end
+  end
 
   defp decode_payload(%{"payload" => p}) when is_binary(p),
     do: Base.url_decode64(p, padding: false)
