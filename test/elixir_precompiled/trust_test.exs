@@ -442,6 +442,123 @@ defmodule ElixirPrecompiled.TrustTest do
     assert {:error, "state dir unwritable: " <> _} = Trust.fetch_batch(config, root, fetch)
   end
 
+  defp iso(dt), do: DateTime.to_iso8601(dt)
+  defp ago(seconds), do: DateTime.add(DateTime.utc_now(), -seconds, :second)
+
+  test "R1: a batch issued 15 minutes ago is accepted", %{config: config, f: f, fetch: fetch} do
+    F.publish(f, %{}, sequence: 3, issued: iso(ago(15 * 60)))
+    {:ok, root} = Trust.load_root(config)
+    assert {:ok, %{sequence: 3}} = Trust.fetch_batch(config, root, fetch)
+  end
+
+  test "R2: an unexpired batch issued 25 hours ago is refused as stale", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    F.publish(f, %{}, sequence: 3, issued: iso(ago(25 * 3600)))
+    {:ok, root} = Trust.load_root(config)
+    assert {:error, "batch stale" <> _} = Trust.fetch_batch(config, root, fetch)
+    refute File.exists?(Path.join(state_dir(config), "state"))
+  end
+
+  test "R7/R8: the clock offset moves now: 23 h accepted, 25 h stale", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    F.publish(f, %{}, sequence: 3, issued: iso(DateTime.utc_now()))
+    {:ok, root} = Trust.load_root(config)
+
+    assert {:ok, _} =
+             Trust.fetch_batch(Map.put(config, :clock_offset_seconds, 23 * 3600), root, fetch)
+
+    assert {:error, "batch stale" <> _} =
+             Trust.fetch_batch(Map.put(config, :clock_offset_seconds, 25 * 3600), root, fetch)
+  end
+
+  test "R9: issued an hour in the future is refused as clock", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    F.publish(f, %{}, issued: iso(DateTime.add(DateTime.utc_now(), 3600, :second)))
+    {:ok, root} = Trust.load_root(config)
+    assert {:error, "clock" <> _} = Trust.fetch_batch(config, root, fetch)
+  end
+
+  test "R10: issued 2 minutes in the future is accepted", %{config: config, f: f, fetch: fetch} do
+    F.publish(f, %{}, issued: iso(DateTime.add(DateTime.utc_now(), 120, :second)))
+    {:ok, root} = Trust.load_root(config)
+    assert {:ok, _} = Trust.fetch_batch(config, root, fetch)
+  end
+
+  test "R12: a clock before the library's compile-time floor is refused as clock", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    F.publish(f, %{})
+    {:ok, root} = Trust.load_root(config)
+    behind = DateTime.diff(Trust.clock_floor(), DateTime.utc_now(), :second) - 86_400
+
+    assert {:error, "clock" <> _} =
+             Trust.fetch_batch(Map.put(config, :clock_offset_seconds, behind), root, fetch)
+  end
+
+  test "R13: a clock a year ahead sees an expired batch", %{config: config, f: f, fetch: fetch} do
+    F.publish(f, %{}, expires: iso(DateTime.add(DateTime.utc_now(), 86_400, :second)))
+    {:ok, root} = Trust.load_root(config)
+
+    assert {:error, reason} =
+             Trust.fetch_batch(Map.put(config, :clock_offset_seconds, 365 * 86_400), root, fetch)
+
+    assert reason =~ ~r/^batch (expired|stale)/
+  end
+
+  test "T8: a batch whose expires is more than 30 days after issued is refused", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    now = DateTime.utc_now()
+    F.publish(f, %{}, issued: iso(now), expires: iso(DateTime.add(now, 31 * 86_400, :second)))
+    {:ok, root} = Trust.load_root(config)
+    assert {:error, "batch lifetime" <> _} = Trust.fetch_batch(config, root, fetch)
+  end
+
+  test "R11: a 30-day batch is still refused once 24 h past issued", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    issued = ago(25 * 3600)
+
+    F.publish(f, %{},
+      issued: iso(issued),
+      expires: iso(DateTime.add(issued, 30 * 86_400, :second))
+    )
+
+    {:ok, root} = Trust.load_root(config)
+    assert {:error, "batch stale" <> _} = Trust.fetch_batch(config, root, fetch)
+  end
+
+  test "a batch without issued is malformed", %{config: config, f: f, fetch: fetch} do
+    F.publish(f, %{}, issued: nil)
+    {:ok, root} = Trust.load_root(config)
+    assert {:error, "batch malformed"} = Trust.fetch_batch(config, root, fetch)
+  end
+
+  test "issued with an offset is read as an instant", %{config: config, f: f, fetch: fetch} do
+    # The same instant as 10 minutes ago, written in +01:00 local time.
+    offset =
+      Calendar.strftime(DateTime.add(ago(600), 3600, :second), "%Y-%m-%dT%H:%M:%S") <> "+01:00"
+
+    F.publish(f, %{}, issued: offset)
+    {:ok, root} = Trust.load_root(config)
+    assert {:ok, _} = Trust.fetch_batch(config, root, fetch)
+  end
+
   test "root_keys drops keys whose keyid is not their hash or whose type is not ed25519" do
     good = key()
     misnamed = key()

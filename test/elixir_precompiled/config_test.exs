@@ -125,6 +125,22 @@ defmodule ElixirPrecompiled.ConfigTest do
     assert c.except == [:ash]
   end
 
+  test "clock_offset_seconds comes from config only, default 0" do
+    configure(source: "https://example.org/p")
+    assert %{clock_offset_seconds: 0} = Config.load()
+    configure(source: "https://example.org/p", clock_offset_seconds: 90)
+    assert %{clock_offset_seconds: 90} = Config.load()
+    System.put_env("ELIXIR_PRECOMPILED_CLOCK_OFFSET_SECONDS", "999")
+    on_exit(fn -> System.delete_env("ELIXIR_PRECOMPILED_CLOCK_OFFSET_SECONDS") end)
+    configure(source: "https://example.org/p")
+    assert %{clock_offset_seconds: 0} = Config.load()
+  end
+
+  test "a non-integer clock_offset_seconds is ignored (0)" do
+    configure(source: "https://example.org/p", clock_offset_seconds: "90")
+    assert %{clock_offset_seconds: 0} = Config.load()
+  end
+
   defp with_shell(fun) do
     stderr =
       ExUnit.CaptureIO.capture_io(:stderr, fn ->

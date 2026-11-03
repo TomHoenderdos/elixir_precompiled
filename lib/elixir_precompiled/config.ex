@@ -10,7 +10,13 @@ defmodule ElixirPrecompiled.Config do
   `ELIXIR_PRECOMPILED_HOME` moves the cache.
   """
 
-  @type t :: %{source: String.t(), except: [atom()], root_path: Path.t(), home: Path.t()}
+  @type t :: %{
+          source: String.t(),
+          except: [atom()],
+          root_path: Path.t(),
+          home: Path.t(),
+          clock_offset_seconds: integer()
+        }
 
   @spec load(keyword()) :: t() | nil
   def load(overrides \\ []) do
@@ -23,12 +29,19 @@ defmodule ElixirPrecompiled.Config do
         source: String.trim_trailing(source, "/"),
         except: except(opts[:except]),
         root_path: opts[:root] || Path.join(priv_dir(), "precompiled/root.json"),
-        home: opts[:home] || env_var("_HOME") || default_home()
+        home: opts[:home] || env_var("_HOME") || default_home(),
+        clock_offset_seconds: clock_offset(opts[:clock_offset_seconds])
       }
     else
       _ -> nil
     end
   end
+
+  # Test-only clock skew for the freshness checks. Project config only, never
+  # an environment variable: whoever can edit the project config can already
+  # replace the root, so this adds no new way in.
+  defp clock_offset(n) when is_integer(n), do: n
+  defp clock_offset(_), do: 0
 
   @doc "True when `ELIXIR_PRECOMPILED` (or the old `NERVES_PRECOMPILED`) is `0`, `false` or `no`."
   @spec disabled?() :: boolean()

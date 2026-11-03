@@ -242,6 +242,26 @@ defmodule ElixirPrecompiled.CheckTest do
     assert out =~ ~r/FAIL\s+batch expired/
   end
 
+  test "a batch issued 25 hours ago fails every candidate as stale", %{
+    f: f,
+    config: config,
+    env: env
+  } do
+    F.publish(f, %{},
+      issued: DateTime.add(DateTime.utc_now(), -25 * 3600, :second) |> DateTime.to_iso8601()
+    )
+
+    out = run_capturing(config, env)
+    assert_received {:report, {:ok, report}}
+    assert report.fails == 2 and report.hits == 0
+
+    assert Enum.all?(report.lines, fn line ->
+             line.status == :fail and String.starts_with?(line.detail, "batch stale")
+           end)
+
+    assert out =~ ~r/FAIL\s+batch stale/
+  end
+
   test "a malformed manifest fails its candidate without crashing the run", %{
     f: f,
     config: config,

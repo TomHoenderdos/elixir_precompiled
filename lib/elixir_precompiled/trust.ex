@@ -265,6 +265,25 @@ defmodule ElixirPrecompiled.Trust do
     File.rename!(tmp, final)
   end
 
+  # The newest batch is signed every 15 minutes; one older than this is
+  # refused whatever its `expires`, which bounds a replayed or frozen batch,
+  # and a client with no sequence state yet, to a day.
+  @max_age_seconds 24 * 3600
+  @max_future_skew_seconds 300
+  @max_lifetime_seconds 30 * 86_400
+  # A clock earlier than the moment this library was compiled is wrong; the
+  # freshness checks cannot be trusted on it.
+  @clock_floor DateTime.utc_now() |> DateTime.truncate(:second)
+
+  @doc false
+  @spec clock_floor() :: DateTime.t()
+  def clock_floor(), do: @clock_floor
+
+  @doc false
+  @spec now(map()) :: DateTime.t()
+  def now(config),
+    do: DateTime.add(DateTime.utc_now(), Map.get(config, :clock_offset_seconds, 0), :second)
+
   @spec fetch_batch(map(), root(), (String.t() -> {:ok, binary()} | {:error, term()})) ::
           {:ok,
            %{
@@ -279,8 +298,15 @@ defmodule ElixirPrecompiled.Trust do
     with {:ok, body} <- fetch.(config.source <> "/batch.json") |> or_error("batch unavailable"),
          {:ok, payload} <- verify_envelope(body, keys, t) |> or_error("batch signature invalid"),
          {:ok, decoded} <- safe_decode(payload) |> or_error("batch malformed"),
-         {:ok, seq, exp, manifests, v2} <- batch_fields(decoded),
-         :ok <- not_expired(exp),
+         {:ok, seq, issued, exp, manifests, v2} <- batch_fields(decoded),
+         now = now(config),
+         :ok <- sane_clock(now),
+         {:ok, issued_at} <- parse_instant(issued),
+         {:ok, expires_at} <- parse_instant(exp),
+         :ok <- not_from_future(issued_at, now),
+         :ok <- lifetime(issued_at, expires_at),
+         :ok <- fresh(issued_at, now),
+         :ok <- not_expired(expires_at, now),
          dir = state_dir(config),
          :ok <- monotonic(dir, seq),
          :ok <- write_state(dir, seq) do
@@ -288,6 +314,41 @@ defmodule ElixirPrecompiled.Trust do
     end
   rescue
     _ -> {:error, "batch malformed"}
+  end
+
+  defp sane_clock(now) do
+    if DateTime.compare(now, @clock_floor) == :lt,
+      do:
+        {:error,
+         "clock is before #{DateTime.to_iso8601(@clock_floor)}, when this library was built"},
+      else: :ok
+  end
+
+  defp parse_instant(s) do
+    case safe_parse_iso8601(s) do
+      {:ok, dt} -> {:ok, dt}
+      :error -> {:error, "batch malformed"}
+    end
+  end
+
+  defp not_from_future(issued, now) do
+    if DateTime.diff(issued, now, :second) > @max_future_skew_seconds,
+      do: {:error, "clock: batch issued at #{DateTime.to_iso8601(issued)} is in the future"},
+      else: :ok
+  end
+
+  defp lifetime(issued, expires) do
+    if DateTime.diff(expires, issued, :second) > @max_lifetime_seconds,
+      do:
+        {:error,
+         "batch lifetime over 30 days (issued #{DateTime.to_iso8601(issued)}, expires #{DateTime.to_iso8601(expires)})"},
+      else: :ok
+  end
+
+  defp fresh(issued, now) do
+    if DateTime.diff(now, issued, :second) > @max_age_seconds,
+      do: {:error, "batch stale: issued #{DateTime.to_iso8601(issued)}, more than 24 h ago"},
+      else: :ok
   end
 
   # Written like roots.json, so a crash mid-write never leaves a torn
@@ -304,13 +365,14 @@ defmodule ElixirPrecompiled.Trust do
          %{
            "version" => 1,
            "sequence" => seq,
+           "issued" => issued,
            "expires" => exp,
            "manifests" => manifests
          } = decoded
        )
-       when is_integer(seq) and is_binary(exp) and is_map(manifests) do
+       when is_integer(seq) and is_binary(issued) and is_binary(exp) and is_map(manifests) do
     case Map.get(decoded, "manifests_v2") do
-      v2 when is_map(v2) or is_nil(v2) -> {:ok, seq, exp, manifests, v2}
+      v2 when is_map(v2) or is_nil(v2) -> {:ok, seq, issued, exp, manifests, v2}
       _ -> {:error, "batch malformed"}
     end
   end
@@ -320,19 +382,10 @@ defmodule ElixirPrecompiled.Trust do
   defp or_error({:ok, _} = ok, _), do: ok
   defp or_error(_, msg), do: {:error, msg}
 
-  # `batch_fields/1` only hands this a binary `exp`, but it's kept defensive
-  # (no raise even on a non-binary) since it still runs inside the function's
-  # `with`, ahead of the belt-and-braces `rescue`.
-  defp not_expired(exp) do
-    case safe_parse_iso8601(exp) do
-      {:ok, dt} ->
-        if DateTime.compare(dt, DateTime.utc_now()) == :gt,
-          do: :ok,
-          else: {:error, "batch expired at #{exp}"}
-
-      :error ->
-        {:error, "batch malformed"}
-    end
+  defp not_expired(expires_at, now) do
+    if DateTime.compare(expires_at, now) == :gt,
+      do: :ok,
+      else: {:error, "batch expired at #{DateTime.to_iso8601(expires_at)}"}
   end
 
   defp safe_parse_iso8601(exp) when is_binary(exp) do

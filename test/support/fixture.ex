@@ -70,9 +70,15 @@ defmodule ElixirPrecompiled.Fixture do
       %{
         "version" => 1,
         "sequence" => Keyword.get(opts, :sequence, 1),
-        "issued" => "2026-10-21T00:00:00Z",
-        "expires" => Keyword.get(opts, :expires, "2030-01-01T00:00:00Z")
+        "issued" => Keyword.get(opts, :issued, DateTime.utc_now() |> DateTime.to_iso8601()),
+        "expires" =>
+          Keyword.get(
+            opts,
+            :expires,
+            DateTime.utc_now() |> DateTime.add(7 * 86_400, :second) |> DateTime.to_iso8601()
+          )
       }
+      |> Map.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.merge(maps)
       |> Map.merge(Keyword.get(opts, :batch_extra, %{}))
       |> :json.encode()
