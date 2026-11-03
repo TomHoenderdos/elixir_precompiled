@@ -6,8 +6,9 @@
   future, valid for more than 30 days, or read against a local clock
   earlier than this library's build time, is refused; the run falls back
   to compiling, same as an expired or rolled-back batch.
-* Every run rechecks dependencies an earlier run installed against the
-  current batch: one the batch no longer names, or one newly listed in
+* Every run, `ElixirPrecompiled.install/2` included, rechecks
+  dependencies an earlier run installed (in a Mix project's `_build` or
+  the `Mix.install/2` project) against the current batch: one the batch no longer names, or one newly listed in
   `:except`, is removed and compiled from source; one whose manifest
   changed is matched again. A warm build with precompiled dependencies
   already installed now fetches the root and the batch on every run. When
@@ -25,8 +26,9 @@
 * Config moved to `config :elixir_precompiled, source: ...`; the
   `config :nerves, :precompiled` form still works.
 * On a device, a dependency already compiled in the `Mix.install/2` project
-  is left to Mix: a second boot with a cached install fetches nothing and
-  re-places nothing, and works offline.
+  is no candidate again: a second boot with a cached install re-places
+  nothing and works offline. Builds this library installed there are
+  rechecked against the batch, so such a boot fetches the root and batch.
 * Every HTTP request has an overall deadline (300 s by default) on top of
   the inactivity timer, so a server that keeps dripping data cannot hold a
   build or a boot open.

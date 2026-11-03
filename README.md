@@ -81,9 +81,11 @@ not ship, and some dependencies need `:eex` or `:ex_unit` in the release
 (as observed with `stream_data` and rebar-built deps on 2026-10-25); a HIT
 needs none of that. The firmware also needs a writable `MIX_INSTALL_DIR`
 (for example `/data/mix-installs`) and Hex. `:source` can also come from
-the application config as above. Once a dependency is compiled in the
-install project, later boots leave it to Mix, so a cached install needs no
-network.
+the application config as above. The install project under
+`MIX_INSTALL_DIR` persists across boots: a dependency Mix compiled there is
+left to Mix, and one this library installed there is rechecked against the
+current batch on every boot, as in a Mix project's `_build` (see Trust). A
+boot with no network keeps the installed builds and still starts.
 
 ## Livebook and `Mix.install`
 
@@ -154,8 +156,9 @@ falls back to compiling. `clock_offset_seconds` moves the client's notion
 of now for these checks; it is test-only, read only from project config,
 and never from an environment variable.
 
-Every run also rechecks builds an earlier run installed against the
-current batch: one the batch no longer names is removed and compiled from
+Every run, `ElixirPrecompiled.install/2` included, also rechecks builds an
+earlier run installed (into a Mix project's `_build` or into the
+`Mix.install/2` project) against the current batch: one the batch no longer names is removed and compiled from
 source, one whose manifest changed is matched again, and one newly listed
 in `:except` is removed and compiled from source whether or not a batch is
 fetched. So a warm build with precompiled dependencies already installed
@@ -203,7 +206,7 @@ are in the compatibility repository's `docs/PRECOMPILED_SIGNING_PROPOSALS.md`.
 ```
 mix test                       # unit tests, fixture server on port 4000
 TEST_SERVER_PORT=4567 mix test # when something else holds port 4000
-mix test --include integration # install/2 in a child VM against production
+mix test --include integration # child VMs: install/2 against production, rechecks against the fixture
 scripts/container-check.sh     # the same inside the compatibility worker image
 MIX_ENV=prod mix archive.build # elixir_precompiled-0.1.0.ez, for Livebook
 ```

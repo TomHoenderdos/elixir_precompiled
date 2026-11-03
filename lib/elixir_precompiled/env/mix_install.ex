@@ -10,11 +10,14 @@ defmodule ElixirPrecompiled.Env.MixInstall do
   # /usr/lib/os-release, or (a fallback, e.g. for a test or a firmware that
   # loads a bare app spec as a marker) a loaded nerves_system_* application.
   # Without either the system is nil and Check matches the pure_elixir
-  # entries. A dep already compiled in the install project is left to Mix,
-  # so a second boot with a cached install needs no network and re-places
-  # nothing.
+  # entries. A dep already compiled in the install project is no candidate;
+  # the project dir persists across runs (Mix.install/2 finds it again and
+  # only compiles what is missing), so a compiled dep this library placed
+  # (it carries the provenance file) is rechecked against the current batch,
+  # as in a Mix project's _build. Check removing one makes Mix.install/2
+  # compile it from the sources deps.get already fetched.
 
-  alias ElixirPrecompiled.Env
+  alias ElixirPrecompiled.{Env, Fetch}
 
   @default_os_release_paths ["/usr/lib/os-release", "/etc/os-release"]
 
@@ -23,21 +26,21 @@ defmodule ElixirPrecompiled.Env.MixInstall do
     lock = Mix.Dep.Lock.read(Path.join(project_dir, "mix.lock"))
     build_lib = Path.join([project_dir, "_build", Atom.to_string(Mix.env()), "lib"])
 
-    apps =
-      lock
-      |> Map.keys()
-      |> Enum.sort()
-      |> Enum.reject(&compiled?(build_lib, &1))
+    envs = dep_envs(deps)
+
+    {compiled, apps} =
+      lock |> Map.keys() |> Enum.sort() |> Enum.split_with(&compiled?(build_lib, &1))
+
+    installed = Enum.filter(compiled, &File.regular?(Fetch.provenance_path(build_lib, &1)))
 
     %Env{
       system: system(),
-      candidates: Env.hex_candidates(lock, apps, dep_envs(deps)),
+      candidates: Env.hex_candidates(lock, apps, envs),
       lock: lock,
       build_lib: build_lib,
       deps_path: Path.join(project_dir, "deps"),
-      # Mix.install/2 rebuilds its own project dir; a warm install there is
-      # not rechecked against the batch.
-      installed: []
+      installed: installed,
+      installed_envs: Map.new(installed, &{&1, Map.get(envs, &1, "prod")})
     }
   end
 

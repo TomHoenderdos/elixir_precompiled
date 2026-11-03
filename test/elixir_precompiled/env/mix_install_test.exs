@@ -34,6 +34,39 @@ defmodule ElixirPrecompiled.Env.MixInstallTest do
     assert Enum.map(MixInstall.load(dir, []).candidates, & &1.name) == [:decimal]
   end
 
+  test "load names compiled deps carrying a provenance file as installed, with their env", %{
+    tmp_dir: dir
+  } do
+    Mix.Dep.Lock.write(%{jason: @jason, decimal: @decimal}, file: Path.join(dir, "mix.lock"))
+    lib = Path.join([dir, "_build", Atom.to_string(Mix.env()), "lib"])
+
+    for app <- ["jason", "decimal"] do
+      File.mkdir_p!(Path.join([lib, app, "ebin"]))
+      File.mkdir_p!(Path.join([lib, app, ".mix"]))
+      File.write!(Path.join([lib, app, "ebin", "#{app}.app"]), "{application, #{app}, []}.")
+      File.write!(Path.join([lib, app, ".mix", "compile.elixir_scm"]), "scm")
+    end
+
+    # Only jason was placed by this library; decimal is Mix's own build.
+    File.write!(Path.join([lib, "jason", ".mix", "elixir_precompiled.json"]), "{}")
+
+    env = MixInstall.load(dir, [{:jason, "1.4.5", env: :dev}])
+    assert env.candidates == []
+    assert env.installed == [:jason]
+    assert env.installed_envs == %{jason: "dev"}
+  end
+
+  test "a provenance file in a dep Mix has not compiled is no install", %{tmp_dir: dir} do
+    Mix.Dep.Lock.write(%{jason: @jason}, file: Path.join(dir, "mix.lock"))
+    jason = Path.join([dir, "_build", Atom.to_string(Mix.env()), "lib", "jason"])
+    File.mkdir_p!(Path.join(jason, ".mix"))
+    File.write!(Path.join([jason, ".mix", "elixir_precompiled.json"]), "{}")
+
+    env = MixInstall.load(dir, [])
+    assert Enum.map(env.candidates, & &1.name) == [:jason]
+    assert env.installed == []
+  end
+
   test "load without a lock has no candidates", %{tmp_dir: dir} do
     assert MixInstall.load(dir, []).candidates == []
   end
