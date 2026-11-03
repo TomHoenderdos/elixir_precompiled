@@ -500,6 +500,47 @@ defmodule ElixirPrecompiled.CheckTest do
       refute File.exists?(Path.join(lib, "ash/.mix/elixir_precompiled.json"))
     end
 
+    test "a refused batch marks only installed builds as kept", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      env = install_ash(f, config, env)
+      F.publish(f, %{}, sequence: 2, expires: "2020-01-01T00:00:00Z")
+
+      jason = %{name: :jason, version: "1.4.5", lock_entry: @jason}
+      run_capturing(config, %{env | candidates: [jason]})
+      assert_received {:report, {:ok, report}}
+
+      assert [%{name: "ash", detail: ash}, %{name: "jason", detail: jason}] =
+               Enum.sort_by(report.lines, & &1.name)
+
+      assert ash =~ ~r/^batch expired.* \(installed build kept\)$/
+      assert jason =~ ~r/^batch expired/
+      refute jason =~ "installed build kept"
+    end
+
+    test "an installed build now in :except is removed without fetching a batch", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      # A refused batch: the removal must not depend on one, and with
+      # nothing else to check no batch is fetched (no FAIL line).
+      F.publish(f, %{}, sequence: 2, expires: "2020-01-01T00:00:00Z")
+
+      out = run_capturing(%{config | except: [:ash]}, env)
+      assert_received {:report, {:ok, report}}
+
+      assert [%{name: "ash", status: :miss, detail: "excepted: compiled from source"}] =
+               report.lines
+
+      assert out =~ ~r/ash 3\.5\.2\s+MISS\s+excepted: compiled from source/
+      refute File.exists?(Path.join(lib, "ash"))
+    end
+
     test "a refused batch leaves installed builds in place", %{
       f: f,
       config: config,
@@ -515,7 +556,8 @@ defmodule ElixirPrecompiled.CheckTest do
 
       run_capturing(config, env)
       assert_received {:report, {:ok, report}}
-      assert [%{name: "ash", status: :fail, detail: "batch stale" <> _}] = report.lines
+      assert [%{name: "ash", status: :fail, detail: "batch stale" <> _ = detail}] = report.lines
+      assert String.ends_with?(detail, " (installed build kept)")
       assert File.exists?(Path.join(lib, "ash/ebin/Elixir.X.beam"))
       assert File.exists?(Path.join(lib, "ash/.mix/elixir_precompiled.json"))
     end

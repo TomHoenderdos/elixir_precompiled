@@ -29,15 +29,18 @@ defmodule ElixirPrecompiled.Check do
     started = System.monotonic_time(:millisecond)
     {candidates, skipped} = candidates(env.candidates, env.lock, config.except)
 
-    installed = installed(env, config.except)
+    {excepted, installed} = installed(env, config.except)
 
-    if candidates == [] and installed == [] do
+    if candidates == [] and installed == [] and excepted == [] do
       debug("precompiled: no dependencies to check")
       :nothing_to_do
     else
       debug_skipped(skipped)
       config_fun = Keyword.get(opts, :config_fun, &CompileEnv.lookup/2)
-      lines = lines_for(candidates, installed, config, env, config_fun)
+
+      lines =
+        except_lines(excepted, env) ++ lines_for(candidates, installed, config, env, config_fun)
+
       Enum.each(lines, &print/1)
       report = summarize(lines, System.monotonic_time(:millisecond) - started)
       # A warm build whose installs the batch still names has nothing to say.
@@ -48,6 +51,9 @@ defmodule ElixirPrecompiled.Check do
     end
   end
 
+  # Nothing left that needs the batch (only excepted installs): no fetch.
+  defp lines_for([], [], _config, _env, _config_fun), do: []
+
   defp lines_for(candidates, installed, config, env, config_fun) do
     case batch(config) do
       {:ok, batch} ->
@@ -56,26 +62,32 @@ defmodule ElixirPrecompiled.Check do
         revoked ++ install_lines(candidates ++ replaced, config, batch, env, config_fun)
 
       {:error, why} ->
-        # No fresh batch, no verdict: installed builds stay as they are.
-        Enum.map(
-          candidates ++ installed,
-          &%{
-            name: Atom.to_string(&1.name),
-            version: &1.version,
-            status: :fail,
-            detail: why,
-            bytes: 0
-          }
-        )
+        # No fresh batch, no verdict: installed builds stay as they are,
+        # and their line says so rather than reading as a source compile.
+        Enum.map(candidates, &revoke_line(&1, :fail, why)) ++
+          Enum.map(installed, &revoke_line(&1, :fail, why <> " (installed build kept)"))
     end
   end
 
   # Installed builds Mix will not compile this run, as candidates (with
-  # their lock entry and env). An excepted, tooling or no longer Hex-locked
-  # dep is not this library's to recheck.
+  # their lock entry and env), split into those now in `:except` and the
+  # rest. A tooling or no longer Hex-locked dep is not this library's to
+  # recheck.
   defp installed(env, except) do
     Env.hex_candidates(env.lock, env.installed, env.installed_envs)
-    |> Enum.filter(&Match.candidate?(&1.name, env.lock, except))
+    |> Enum.filter(&Match.candidate?(&1.name, env.lock, []))
+    |> Enum.split_with(&(&1.name in except))
+  end
+
+  # `:except` means compile from source: an install made before the dep was
+  # excepted is removed, batch or no batch, so Mix compiles it this run.
+  defp except_lines(excepted, env) do
+    for dep <- excepted do
+      case remove(env.build_lib, Atom.to_string(dep.name)) do
+        :ok -> revoke_line(dep, :miss, "excepted: compiled from source")
+        {:error, why} -> revoke_line(dep, :fail, why)
+      end
+    end
   end
 
   # R16: an installed build is only as good as the batch that still names
