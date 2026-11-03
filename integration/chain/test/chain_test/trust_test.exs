@@ -118,6 +118,61 @@ defmodule ChainTest.TrustTest do
     assert info.sequence == 7
   end
 
+  test "a key listed under a keyid that is not its sha256 cannot sign a batch", ctx do
+    {pub, _} = signer = Signed.key()
+    fake_id = String.duplicate("c", 64)
+    root_env = JSON.decode!(Signed.root(ctx.key))
+    payload = Base.url_decode64!(root_env["payload"], padding: false) |> JSON.decode!()
+
+    payload =
+      payload
+      |> put_in(["keys", fake_id], %{
+        "type" => "ed25519",
+        "public" => Base.url_encode64(pub, padding: false)
+      })
+      |> put_in(["roles", "batch", "keyids"], [fake_id])
+
+    root = Signed.envelope(JSON.encode!(payload), [ctx.key])
+
+    # The batch signature claims the listed (wrong) keyid.
+    env = JSON.decode!(Signed.batch(signer))
+    sigs = Enum.map(env["signatures"], &%{&1 | "keyid" => fake_id})
+    batch = JSON.encode!(%{env | "signatures" => sigs})
+
+    {results, info} = run(ctx, root, batch)
+
+    assert class(results, "root_signature") == :pass
+    assert class(results, "batch_signature") == :fail
+    assert class(results, "batch_threshold") == :fail
+    assert info == nil
+  end
+
+  test "two signatures from the same key count once against the threshold", ctx do
+    other = Signed.key()
+    root = Signed.root(ctx.key, batch_keys: [ctx.key, other], batch_threshold: 2)
+    {results, info} = run(ctx, root, Signed.batch([ctx.key, ctx.key]))
+
+    assert %Result{class: :fail, detail: detail} = by_check(results)["batch_threshold"]
+    assert detail =~ "1 valid"
+    assert info == nil
+  end
+
+  test "a batch that expires before it was issued fails batch_lifetime", ctx do
+    now = DateTime.utc_now()
+    batch = Signed.batch(ctx.key, issued: now, expires: DateTime.add(now, -1, :second))
+    {results, _} = run(ctx, Signed.root(ctx.key), batch)
+
+    assert %Result{class: :fail, detail: detail} = by_check(results)["batch_lifetime"]
+    assert detail =~ "not after"
+  end
+
+  test "a lifetime of exactly 24 h passes batch_lifetime", ctx do
+    now = DateTime.utc_now()
+    batch = Signed.batch(ctx.key, issued: now, expires: DateTime.add(now, 24, :hour))
+    {results, _} = run(ctx, Signed.root(ctx.key), batch)
+    assert class(results, "batch_lifetime") == :pass
+  end
+
   test "an expired batch fails batch_expiry", ctx do
     now = DateTime.utc_now()
 

@@ -34,7 +34,7 @@ defmodule ChainTest.Trust do
     * `batch_expiry` - `expires` is in the future.
     * `batch_freshness` - issued within the last 24 h and not more than
       300 s ahead.
-    * `batch_lifetime` - `expires - issued` is at most 24 h, the portal's
+    * `batch_lifetime` - `expires - issued` is positive and at most 24 h, the portal's
       signing policy (the client accepts more; the harness holds the portal
       to what it promises).
 
@@ -430,14 +430,20 @@ defmodule ChainTest.Trust do
     life = DateTime.diff(b.expires, b.issued, :microsecond)
     detail = "issued #{DateTime.to_iso8601(b.issued)}, expires #{DateTime.to_iso8601(b.expires)}"
 
-    if life <= @max_lifetime_us,
-      do: result("batch_lifetime", :pass, "#{div(life, 1_000_000)} s: #{detail}"),
-      else:
+    cond do
+      life <= 0 ->
+        result("batch_lifetime", :fail, "expires is not after issued: #{detail}")
+
+      life > @max_lifetime_us ->
         result(
           "batch_lifetime",
           :fail,
           "lifetime #{div(life, 1_000_000)} s is over the portal's 24 h: #{detail}"
         )
+
+      true ->
+        result("batch_lifetime", :pass, "#{div(life, 1_000_000)} s: #{detail}")
+    end
   end
 
   # envelope and keys
