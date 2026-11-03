@@ -131,9 +131,10 @@ defmodule ElixirPrecompiled.Trust do
   @doc """
   The root in use: the shipped root, advanced along the adopted chain in
   `roots.json`. The shipped root must verify under its own root role; each
-  chain entry must also verify under the previous root's root role, have a
-  higher version and be unexpired, and the first one that fails ends the
-  chain. Only the root in use must be unexpired, so a release keeps working
+  chain entry must also verify under the previous root's root role and have
+  a higher version, and the first one that fails ends the chain. As in TUF,
+  only the root in use (the last one) must be unexpired: an expired
+  intermediate root does not end the chain, and a release keeps working
   past its shipped root's expiry once a newer root has been adopted.
 
   The version this ends on can never drop below one `update_root/3` already
@@ -196,11 +197,14 @@ defmodule ElixirPrecompiled.Trust do
     end
   end
 
-  # {root in use, envelopes adopted on the way there}
+  # {root in use, envelopes adopted on the way there}. As in TUF, a step's
+  # expiry does not end the chain: v2 expiring after v3 was adopted must not
+  # strand a client on v1. Only the root the fold ends on must be unexpired,
+  # which load_root/1 checks.
   defp fold_chain(shipped, envs) do
     {root, adopted} =
       Enum.reduce_while(envs, {shipped, []}, fn env, {current, adopted} ->
-        case adopt(env, current) do
+        case chain_step(env, current) do
           {:ok, next} -> {:cont, {next, [env | adopted]}}
           :error -> {:halt, {current, adopted}}
         end
@@ -210,18 +214,25 @@ defmodule ElixirPrecompiled.Trust do
   end
 
   # A root may follow `current` when it verifies under its own root role and
-  # under current's, is newer, and has not expired.
-  defp adopt(env, current) do
+  # under current's, and is newer.
+  defp chain_step(env, current) do
     {keys, t} = root_keys(current, "root")
 
     with {:ok, payload} <- self_verify(env),
          {:ok, root} <- safe_decode(payload),
          true <- newer?(root, current),
-         {:ok, _} <- verify_envelope(env, keys, t),
-         :ok <- check_expiry(expires_of(root)) do
+         {:ok, _} <- verify_envelope(env, keys, t) do
       {:ok, root}
     else
       _ -> :error
+    end
+  end
+
+  # A served root becomes the root in use, so it must also be unexpired.
+  defp adopt(env, current) do
+    with {:ok, root} <- chain_step(env, current),
+         :ok <- check_expiry(expires_of(root)) do
+      {:ok, root}
     end
   end
 

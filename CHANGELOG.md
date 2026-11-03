@@ -17,6 +17,10 @@
   still lists each as `fail`, `(installed build kept)`). Builds
   installed by an earlier version carry no provenance file and are
   rechecked only after `mix deps.clean --build` or a clean `_build`.
+* Root rotation follows TUF: an intermediate root that expired after a
+  newer one was adopted no longer ends the chain; only the root in use
+  must be unexpired. Before, v1 -> v2 -> v3 fell back to v1 once v2
+  expired, which with the version floor failed every run.
 * The adopted root version is kept and never goes back; a trust-state
   file that exists but will not parse is warned about and treated as 0.
 * On a device, the Nerves system is read from `/usr/lib/os-release`; the

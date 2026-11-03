@@ -171,6 +171,11 @@ about to compile still get their own FAIL line with the reason.
 `report.json` lists every kept build as `fail` with a detail ending
 `(installed build kept)`.
 
+Root rotation follows TUF: each adopted root must be signed by the
+previous root's root keys (to its threshold) and carry a higher version,
+and only the root in use must be unexpired, so a root that expires after
+a newer one was adopted does not end the chain.
+
 Once a root is adopted, its version is kept as a floor that a later run
 will not go back below; `roots.json` losing the entries that reached it
 (deleted, truncated, rolled back) is reported as an error rather than

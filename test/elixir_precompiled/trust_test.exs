@@ -405,20 +405,77 @@ defmodule ElixirPrecompiled.TrustTest do
     assert version(v2) == 2
   end
 
-  test "an expired chain entry is skipped and the fold stops there", %{
+  # TUF: every step must verify under the previous root's root role and be
+  # newer; only the root the fold ends on must be unexpired.
+  test "an expired intermediate root does not stop the chain: v1 -> v2 (expired) -> v3", %{
     config: config,
     f: f
   } do
     k2 = key()
     k3 = key()
-    {:ok, v1} = Trust.load_root(config)
 
     write_chain(config, [
       root_env(k2, 2, "2020-01-01T00:00:00Z", [f.key, k2]),
       root_env(k3, 3, "2031-01-01T00:00:00Z", [k2, k3])
     ])
 
+    File.write!(Path.join(state_dir(config), "root_version"), "3")
+
+    assert {:ok, v3} = Trust.load_root(config)
+    assert version(v3) == 3
+  end
+
+  test "a chain whose final root is expired is refused", %{config: config, f: f} do
+    k2 = key()
+    k3 = key()
+
+    write_chain(config, [
+      root_env(k2, 2, "2031-01-01T00:00:00Z", [f.key, k2]),
+      root_env(k3, 3, "2020-01-01T00:00:00Z", [k2, k3])
+    ])
+
+    assert {:error, "cached root expired at 2020-01-01T00:00:00Z"} = Trust.load_root(config)
+  end
+
+  test "an expired intermediate not signed by the previous root still stops the chain", %{
+    config: config
+  } do
+    k2 = key()
+    k3 = key()
+    {:ok, v1} = Trust.load_root(config)
+
+    write_chain(config, [
+      root_env(k2, 2, "2020-01-01T00:00:00Z", [k2]),
+      root_env(k3, 3, "2031-01-01T00:00:00Z", [k2, k3])
+    ])
+
     assert {:ok, ^v1} = Trust.load_root(config)
+  end
+
+  test "update_root adopts across an expired intermediate and keeps the chain", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    k2 = key()
+    k3 = key()
+    k4 = key()
+
+    write_chain(config, [
+      root_env(k2, 2, "2020-01-01T00:00:00Z", [f.key, k2]),
+      root_env(k3, 3, "2031-01-01T00:00:00Z", [k2, k3])
+    ])
+
+    {:ok, v3} = Trust.load_root(config)
+    assert version(v3) == 3
+
+    F.serve_root(f, root_env(k4, 4, "2031-01-01T00:00:00Z", [k3, k4]))
+    assert {:ok, v4} = Trust.update_root(config, v3, fetch)
+    assert version(v4) == 4
+
+    chain = Path.join(state_dir(config), "roots.json") |> File.read!() |> :json.decode()
+    assert length(chain) == 3
+    assert {:ok, ^v4} = Trust.load_root(config)
   end
 
   test "a chain entry after a bad one is not used", %{config: config, f: f} do
