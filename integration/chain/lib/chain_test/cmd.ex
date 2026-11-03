@@ -6,9 +6,23 @@ defmodule ChainTest.Cmd do
   @moduledoc """
   The one place the harness runs external commands.
 
-  stdout and stderr are merged. A command that outlives `:timeout_ms` is
-  killed and reported as exit status 124 (as `timeout(1)` does), with the
-  output collected so far and a `[timeout]` marker.
+  stdout and stderr are merged. Every command runs as the leader of its own
+  process group, started through a small perl wrapper (`setpgrp`, then
+  `exec`; perl is on macOS and Linux, which have no common `setsid`). A
+  command that outlives `:timeout_ms` has its whole group killed, so the
+  grandchildren ssh, mix or fwup fork die with it, and is reported as exit
+  status 124 (as `timeout(1)` does), with the output collected so far and a
+  `[timeout]` marker.
+  """
+
+  # ARGV: stdin file ("" for none), exe, args. The group id is the pid, which
+  # the exec keeps. Where the runtime already made the child a session leader,
+  # setpgrp fails with EPERM but the child already leads its own group.
+  @wrapper ~S"""
+  my $in = shift @ARGV;
+  if ($in ne "") { open(STDIN, "<", $in) or do { print "stdin $in: $!\n"; exit 127 } }
+  setpgrp(0, 0) or getpgrp() == $$ or do { print "setpgrp: $!\n"; exit 126 };
+  exec { $ARGV[0] } @ARGV or do { print "exec $ARGV[0]: $!\n"; exit 127 };
   """
 
   @default_timeout_ms 60_000
@@ -19,6 +33,8 @@ defmodule ChainTest.Cmd do
     * `:timeout_ms` - default #{@default_timeout_ms}.
     * `:env` - `[{name, value}]`; a `nil` value unsets the variable.
     * `:cd` - the working directory.
+    * `:stdin_file` - a file whose bytes become the command's stdin (a
+      missing file returns `{127, message}` without running the command).
 
   An `exe` that is not found returns `{127, message}`.
   """
@@ -31,15 +47,25 @@ defmodule ChainTest.Cmd do
       path ->
         timeout = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
 
+        stdin = opts[:stdin_file] || ""
+        wrapper_args = ["-e", @wrapper, stdin, path | args]
+
         port_opts =
-          [:binary, :exit_status, :stderr_to_stdout, :hide, args: args]
+          [:binary, :exit_status, :stderr_to_stdout, :hide, args: wrapper_args]
           |> put_env(opts[:env])
           |> put_cd(opts[:cd])
 
-        port = Port.open({:spawn_executable, path}, port_opts)
+        port = Port.open({:spawn_executable, perl()}, port_opts)
         deadline = System.monotonic_time(:millisecond) + timeout
         collect(port, deadline, [])
     end
+  end
+
+  # The system perl first, so a stub dir on PATH cannot replace the wrapper.
+  defp perl do
+    if File.regular?("/usr/bin/perl"),
+      do: "/usr/bin/perl",
+      else: System.find_executable("perl") || raise("ChainTest.Cmd needs perl")
   end
 
   defp resolve(exe) do
@@ -76,11 +102,8 @@ defmodule ChainTest.Cmd do
 
   defp kill(port, acc) do
     case Port.info(port, :os_pid) do
-      {:os_pid, pid} ->
-        System.cmd("kill", ["-KILL", Integer.to_string(pid)], stderr_to_stdout: true)
-
-      nil ->
-        :ok
+      {:os_pid, pid} -> kill_group(pid)
+      nil -> :ok
     end
 
     try do
@@ -90,6 +113,14 @@ defmodule ChainTest.Cmd do
     end
 
     drain(port, acc)
+  end
+
+  # The command leads its own group (pgid == pid); a negative pid kills the
+  # group. The pid itself as well, in case it died before setpgrp ran.
+  defp kill_group(pid) do
+    pid = Integer.to_string(pid)
+    System.cmd("kill", ["-KILL", "--", "-" <> pid], stderr_to_stdout: true)
+    System.cmd("kill", ["-KILL", pid], stderr_to_stdout: true)
   end
 
   defp drain(port, acc) do
