@@ -211,8 +211,26 @@ defmodule ChainFixture.Probe do
     _kind, _reason -> nil
   end
 
-  # The running Nerves system, as nerves_system_br writes it into os-release.
+  # The running Nerves system, as nerves_system_br writes it into os-release;
+  # else the firmware's platform from the KV store; else "unknown".
   defp nerves_system() do
+    os_release_system() || kv_platform() || "unknown"
+  end
+
+  defp kv_platform() do
+    kv = Nerves.Runtime.KV
+
+    case call(kv, :get, ["nerves_fw_platform"]) do
+      platform when is_binary(platform) and platform != "" -> "platform " <> platform
+      _other -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _kind, _reason -> nil
+  end
+
+  defp os_release_system() do
     Enum.find_value(@os_release_paths, fn path ->
       with {:ok, contents} <- File.read(path),
            kv = parse_os_release(contents),

@@ -8,10 +8,12 @@ defmodule Mix.Tasks.ChainTest do
   Runs the precompiled chain test for one target on one device.
 
       mix chain_test --target rpi4|rpi0_2 --device HOST [--known-hosts PATH]
-                     [--source URL] [--report-dir DIR]
+                     [--target-config PATH] [--source URL] [--report-dir DIR]
 
-  Defaults: `--known-hosts ~/.config/chain_test/known_hosts`, the production
-  precompiled source, `--report-dir integration/chain/reports`. Exits non-zero
+  Defaults: `--known-hosts ~/.config/chain_test/known_hosts`,
+  `--target-config ~/.config/chain_test/target.exs`, the production
+  precompiled source, `--report-dir <tmp>/chain_test-<UTC timestamp>`.
+  It rewrites the device's firmware with the fixture's. Exits non-zero
   on any fail, refused, disagreement or not exercised result.
   """
   use Mix.Task

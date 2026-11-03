@@ -5,20 +5,25 @@
 defmodule ChainTest.CLI do
   @moduledoc """
   `mix chain_test --target rpi4|rpi0_2 --device HOST [--known-hosts PATH]
-  [--source URL] [--report-dir DIR]`.
+  [--target-config PATH] [--source URL] [--report-dir DIR]`.
+
+  Defaults: `~/.config/chain_test/known_hosts`, `~/.config/chain_test/target.exs`,
+  the production precompiled source, and a fresh
+  `<tmp>/chain_test-<UTC timestamp>` report dir, never inside the repository.
 
   `main/1` returns the exit code; only `Mix.Tasks.ChainTest` halts.
   """
 
-  alias ChainTest.{Preflight, Report, Result}
+  alias ChainTest.{Preflight, Result, Run}
 
   @usage "usage: mix chain_test --target rpi4|rpi0_2 --device HOST " <>
-           "[--known-hosts PATH] [--source URL] [--report-dir DIR]"
+           "[--known-hosts PATH] [--target-config PATH] [--source URL] [--report-dir DIR]"
 
   @switches [
     target: :string,
     device: :string,
     known_hosts: :string,
+    target_config: :string,
     source: :string,
     report_dir: :string
   ]
@@ -30,6 +35,7 @@ defmodule ChainTest.CLI do
           target: String.t(),
           device: String.t(),
           known_hosts: Path.t(),
+          target_config: Path.t(),
           source: String.t(),
           report_dir: Path.t(),
           fixture_dir: Path.t()
@@ -64,38 +70,21 @@ defmodule ChainTest.CLI do
       target: target,
       device: device,
       known_hosts: Path.expand(opts[:known_hosts] || "~/.config/chain_test/known_hosts"),
+      target_config: Path.expand(opts[:target_config] || "~/.config/chain_test/target.exs"),
       source: String.trim_trailing(opts[:source] || @default_source, "/"),
-      report_dir: Path.expand(opts[:report_dir] || Path.join(@root, "reports")),
+      report_dir: Path.expand(opts[:report_dir] || default_report_dir()),
       fixture_dir: Path.join(@root, "fixture")
     }
   end
 
-  @doc "Runs the chain test and returns the exit code."
+  @doc "Runs the chain test (`ChainTest.Run`) and returns the exit code."
   @spec main([String.t()]) :: 0 | 1
-  def main(argv) do
-    opts = parse!(argv)
-    started_at = DateTime.utc_now() |> DateTime.truncate(:second)
+  def main(argv), do: Run.main(argv)
 
-    results = Preflight.run(opts)
-    Enum.each(results, &print/1)
-
-    meta = %{
-      batch_sequence_step1: nil,
-      batch_sequence_step2: nil,
-      root_version: nil,
-      client_commit: nil,
-      nerves_commit: nil,
-      elixir: System.version(),
-      otp: System.otp_release(),
-      system_version: nil,
-      started_at: started_at,
-      known_gaps: Report.known_gaps()
-    }
-
-    {:ok, %{md: md}} = Report.write(opts.report_dir, opts.target, results, meta)
-    code = Result.exit_code(results)
-    IO.puts("report: #{md}")
-    code
+  # Reports never go into the repository tree.
+  defp default_report_dir do
+    stamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%dT%H%M%SZ")
+    Path.join(System.tmp_dir!(), "chain_test-" <> stamp)
   end
 
   @doc "Prints one status line for a result."

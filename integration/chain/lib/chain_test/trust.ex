@@ -24,7 +24,8 @@ defmodule ChainTest.Trust do
     * `served_root` - `<source>/root.json` matches the pinned root; a
       different or unavailable served root is a `:miss`, and the pinned root
       is used either way.
-    * `batch_signature` - `<source>/batch.json` carries at least one valid
+    * `batch_signature` - `<source>/batch.json` (or `batch_path`, e.g.
+      `batches/<sequence>.json`, under the source) carries at least one valid
       signature from a key the batch role names, and none from such a key
       that fails to verify.
     * `batch_threshold` - the distinct valid batch-role signatures meet the
@@ -65,6 +66,7 @@ defmodule ChainTest.Trust do
           required(:source) => String.t(),
           optional(:root_path) => Path.t(),
           optional(:library_root_path) => Path.t(),
+          optional(:batch_path) => String.t(),
           optional(:timeout_ms) => pos_integer()
         }
 
@@ -82,6 +84,7 @@ defmodule ChainTest.Trust do
     defaults = %{
       root_path: @pinned_root,
       library_root_path: @library_root,
+      batch_path: "batch.json",
       timeout_ms: @timeout_ms
     }
 
@@ -109,7 +112,7 @@ defmodule ChainTest.Trust do
     {batch_results, info} =
       case root do
         nil -> {not_exercised(@batch_checks, "the pinned root did not verify"), nil}
-        root -> verify_batch(source, root, now, cfg.timeout_ms)
+        root -> verify_batch(source <> "/" <> cfg.batch_path, root, now, cfg.timeout_ms)
       end
 
     {[pin | root_results] ++ [served | batch_results], info}
@@ -242,8 +245,7 @@ defmodule ChainTest.Trust do
 
   # batch
 
-  defp verify_batch(source, root, now, timeout_ms) do
-    url = source <> "/batch.json"
+  defp verify_batch(url, root, now, timeout_ms) do
     {fetched, ms} = Result.timed(fn -> HTTP.get(url, timeout_ms) end)
 
     with {:fetch, {:ok, body}} <- {:fetch, fetched},

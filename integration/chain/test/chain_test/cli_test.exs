@@ -38,7 +38,9 @@ defmodule ChainTest.CLITest do
     assert opts.device == "dev.local"
     assert opts.known_hosts == Path.expand("~/.config/chain_test/known_hosts")
     assert opts.source == "https://compatibility.nerves-project.org/api/precompiled"
-    assert opts.report_dir == Path.expand("../../reports", __DIR__)
+    assert opts.target_config == Path.expand("~/.config/chain_test/target.exs")
+    assert Path.dirname(opts.report_dir) == Path.expand(System.tmp_dir!())
+    assert Path.basename(opts.report_dir) =~ ~r/\Achain_test-\d{8}T\d{6}Z\z/
     assert opts.fixture_dir == Path.expand("../../fixture", __DIR__)
   end
 
@@ -54,11 +56,14 @@ defmodule ChainTest.CLITest do
         "--source",
         "http://127.0.0.1:1/api/precompiled/",
         "--report-dir",
-        "/r"
+        "/r",
+        "--target-config",
+        "/t.exs"
       ])
 
     assert opts.known_hosts == "/k"
     assert opts.source == "http://127.0.0.1:1/api/precompiled"
     assert opts.report_dir == "/r"
+    assert opts.target_config == "/t.exs"
   end
 end

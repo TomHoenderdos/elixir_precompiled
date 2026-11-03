@@ -201,6 +201,38 @@ defmodule ChainTest.PreflightTest do
     end)
   end
 
+  describe "target_config" do
+    test "an existing operator file passes, a missing one fails naming it", %{tmp_dir: tmp} do
+      file = Path.join(tmp, "target.exs")
+      File.write!(file, "import Config\n")
+
+      assert %Result{check: "target_config", class: :pass} =
+               Preflight.target_config(cfg(tmp, %{target_config: file}))
+
+      missing = Path.join(tmp, "nope.exs")
+
+      assert %Result{class: :fail, detail: detail} =
+               Preflight.target_config(cfg(tmp, %{target_config: missing}))
+
+      assert detail =~ missing
+    end
+
+    test "run/1 adds the check when a target config is given", %{tmp_dir: tmp} do
+      write_lock(tmp, Preflight.expected_deps("rpi4"))
+      {port, _} = http_stub(200)
+      source = "http://127.0.0.1:#{port}/api/precompiled"
+      file = Path.join(tmp, "target.exs")
+      File.write!(file, "import Config\n")
+
+      FakeBin.with_stubs(%{"ssh" => "echo ok", "mix" => @mix_ok, "fwup" => "exit 0"}, fn _ ->
+        results = Preflight.run(cfg(tmp, %{source: source, target_config: file}))
+
+        assert Enum.map(results, & &1.check) ==
+                 ~w(ssh portal toolchain fixture_lock target_config)
+      end)
+    end
+  end
+
   defp write_lock(dir, deps) do
     body =
       Enum.map_join(deps, "", fn dep ->

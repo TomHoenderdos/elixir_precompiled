@@ -54,6 +54,7 @@ defmodule ChainTest.Build do
           optional(:home) => Path.t(),
           optional(:trust) => ChainTest.Trust.info() | nil,
           optional(:expected) => %{hits: [atom()], never: [atom()]},
+          optional(:target_config) => Path.t(),
           optional(:timeout_ms) => pos_integer()
         }
 
@@ -140,7 +141,8 @@ defmodule ChainTest.Build do
         {"MIX_ENV", "dev"},
         {"ELIXIR_PRECOMPILED_HOME", home},
         {"CHAIN_SOURCE", source}
-      ] ++ Enum.map(@unset, &{&1, nil})
+      ] ++
+        target_config(Map.get(input, :target_config)) ++ Enum.map(@unset, &{&1, nil})
 
     timeout = Map.get(input, :timeout_ms, @timeout_ms)
 
@@ -169,6 +171,10 @@ defmodule ChainTest.Build do
        home: home
      }}
   end
+
+  # The fixture's config/target.exs imports the operator file named here.
+  defp target_config(nil), do: []
+  defp target_config(path), do: [{"CHAIN_TARGET_CONFIG", path}]
 
   @doc "The fixture's `expected.exs`."
   @spec expected(Path.t()) :: %{hits: [atom()], never: [atom()]}

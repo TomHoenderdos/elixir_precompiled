@@ -10,6 +10,9 @@ defmodule ChainTest.Preflight do
     * `portal` - `GET <source>/root.json` answers 200.
     * `toolchain` - `mix archive` lists nerves_bootstrap and fwup is on `PATH`.
     * `fixture_lock` - the fixture's `mix.lock` names every expected dependency.
+    * `target_config` - only when the config names one: the operator's
+      fixture config file (network, `nerves_ssh` keys) exists, so a target
+      build does not stop on it minutes in.
   """
 
   alias ChainTest.{Cmd, HTTP, Result}
@@ -26,6 +29,7 @@ defmodule ChainTest.Preflight do
           required(:known_hosts) => Path.t(),
           required(:source) => String.t(),
           required(:fixture_dir) => Path.t(),
+          optional(:target_config) => Path.t(),
           optional(:timeout_ms) => pos_integer()
         }
 
@@ -62,7 +66,25 @@ defmodule ChainTest.Preflight do
   end
 
   @spec run(config()) :: [Result.t()]
-  def run(cfg), do: [ssh(cfg), portal(cfg), toolchain(cfg), fixture_lock(cfg)]
+  def run(cfg) do
+    base = [ssh(cfg), portal(cfg), toolchain(cfg), fixture_lock(cfg)]
+    if Map.has_key?(cfg, :target_config), do: base ++ [target_config(cfg)], else: base
+  end
+
+  @doc false
+  @spec target_config(config()) :: Result.t()
+  def target_config(cfg) do
+    check("target_config", fn ->
+      path = cfg.target_config
+
+      if File.regular?(path),
+        do: {:pass, "#{path} exists"},
+        else:
+          {:fail,
+           "operator file #{path} not found; the fixture's target build needs its network " <>
+             "and nerves_ssh authorized_keys config (see integration/chain/README.md)"}
+    end)
+  end
 
   @doc false
   @spec ssh(config()) :: Result.t()

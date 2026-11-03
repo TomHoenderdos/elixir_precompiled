@@ -66,7 +66,8 @@ defmodule ChainFixture.ProbeTest do
     # The NIF deps are target-only; on host the smoke calls report an error, never raise.
     assert Enum.all?(Map.values(doc["smoke"]), &is_binary/1)
     assert doc["firmware_uuid"] == nil
-    assert doc["nerves_system"] == nil
+    # No os-release and no KV platform on host: a fallback, never a crash.
+    assert doc["nerves_system"] == "unknown"
   end
 
   test "app names may be given as strings" do

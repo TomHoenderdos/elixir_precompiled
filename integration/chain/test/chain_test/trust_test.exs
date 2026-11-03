@@ -54,6 +54,37 @@ defmodule ChainTest.TrustTest do
     assert info.manifests_v2 == nil
   end
 
+  test "batch_path verifies a numbered batch instead of batch.json", ctx do
+    root = Signed.root(ctx.key)
+    pinned = Path.join(ctx.tmp_dir, "pinned_root.json")
+    File.write!(pinned, root)
+    File.write!(Path.join(ctx.served, "root.json"), root)
+    File.write!(Path.join(ctx.served, "batch.json"), Signed.batch(ctx.key, sequence: 7))
+    File.mkdir_p!(Path.join(ctx.served, "batches"))
+    File.write!(Path.join(ctx.served, "batches/9.json"), Signed.batch(ctx.key, sequence: 9))
+
+    {results, info} =
+      Trust.check(%{
+        source: ctx.source,
+        root_path: pinned,
+        library_root_path: pinned,
+        batch_path: "batches/9.json"
+      })
+
+    assert Enum.all?(results, &(&1.class == :pass)), inspect(results)
+    assert info.sequence == 9
+
+    {results, nil} =
+      Trust.check(%{
+        source: ctx.source,
+        root_path: pinned,
+        library_root_path: pinned,
+        batch_path: "batches/10.json"
+      })
+
+    assert Enum.find(results, &(&1.check == "batch_signature")).detail =~ "batches/10.json"
+  end
+
   test "one flipped bit in the batch signature fails batch_signature", ctx do
     env = JSON.decode!(Signed.batch(ctx.key))
     [%{"sig" => sig} = s] = env["signatures"]

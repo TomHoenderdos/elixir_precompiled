@@ -113,6 +113,21 @@ defmodule ChainTest.BuildTest do
     end)
   end
 
+  test "a target config is passed to the fixture build as CHAIN_TARGET_CONFIG", ctx do
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, @hits, sequence: 7)}, fn _ ->
+      Build.run(%{
+        fixture_dir: ctx.fixture,
+        target: "rpi4",
+        source: "http://127.0.0.1:1/api/precompiled",
+        home: ctx.home,
+        trust: Synthetic.info(7, %{}),
+        target_config: "/op/target.exs"
+      })
+
+      assert File.read!(Path.join(ctx.tmp, "mix.env")) =~ "CHAIN_TARGET_CONFIG=/op/target.exs\n"
+    end)
+  end
+
   test "a batch stale refusal is refused, a benign miss is a miss", ctx do
     lines = [
       {"jason", "1.4.5", "fail", "batch stale: issued 2026-11-01T00:00:00Z"},

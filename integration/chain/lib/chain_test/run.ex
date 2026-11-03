@@ -1,0 +1,450 @@
+# SPDX-FileCopyrightText: 2026 Tom Hoenderdos
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+defmodule ChainTest.Run do
+  @moduledoc """
+  The whole chain test, in order: preflight, trust (step 1), build (2),
+  integrity (3), compiled here (4), deploy (5), on the device (6), then the
+  report.
+
+  A failing preflight stops the run before anything is built (`run/aborted`,
+  not exercised). Steps 2 to 4 run whatever step 1 found, so a client that
+  installs from a batch the harness rejects is caught. Step 6 runs only when
+  step 5 left the device on the uploaded firmware.
+
+  Two checks belong to the run rather than to one step:
+
+    * `build/sequence` - the client's batch sequence (from its state file)
+      usually differs from step 1's: batches come every 15 to 30 minutes and
+      a build takes minutes. When it differs, the harness fetches
+      `batches/<client sequence>.json` itself and runs the same trust checks
+      on it (reported as `trust/client_batch:<check>`). If it verifies and
+      names that sequence, the check passes and step 3 runs against that
+      batch. If it does not, the check is `:rerun` (production moved past a
+      batch step 1 verified), or stays as step 2 left it when step 1 could
+      not verify a batch either.
+    * `trust/client_verdict` - the harness's own verdict on the batch the
+      client used against the client's: a batch the harness rejects but the
+      client installed from, or one the harness verified but the client
+      refused, is a `:disagreement`.
+
+  Reports go to `opts.report_dir` (outside the repository by default) as
+  `<target>-<timestamp>.md` and `.json`.
+  """
+
+  alias ChainTest.{
+    Build,
+    CLI,
+    Cmd,
+    Compiled,
+    Deploy,
+    Device,
+    Integrity,
+    Preflight,
+    Report,
+    Result,
+    Trust
+  }
+
+  @project_app "chain_fixture"
+  @repo_root Path.expand("../../../..", __DIR__)
+
+  @type steps :: %{optional(atom()) => function()}
+
+  @doc "Parses `argv`, runs the chain test, writes the report; returns the exit code."
+  @spec main([String.t()]) :: 0 | 1
+  def main(argv), do: argv |> CLI.parse!() |> main_with(%{})
+
+  @doc """
+  `main/1` with parsed options and, for tests, step functions replacing the
+  real ones (`:preflight`, `:trust`, `:build`, `:integrity`, `:compiled`,
+  `:deploy`, `:device`, `:versions`).
+  """
+  @spec main_with(CLI.opts(), steps()) :: 0 | 1
+  def main_with(opts, steps) do
+    {results, meta} = run(opts, steps)
+    {:ok, %{md: md}} = Report.write(opts.report_dir, opts.target, results, meta)
+    IO.puts("report: #{md}")
+    Result.exit_code(results)
+  end
+
+  @doc "Runs every step; returns the results and the report's meta."
+  @spec run(CLI.opts(), steps()) :: {[Result.t()], map()}
+  def run(opts, steps \\ %{}) do
+    s = Map.merge(default_steps(), steps)
+    started_at = DateTime.utc_now() |> DateTime.truncate(:second)
+    lock = lock_info(opts)
+    versions = s.versions.(opts)
+
+    meta = %{
+      batch_sequence_step1: nil,
+      batch_sequence_step2: nil,
+      root_version: nil,
+      client_commit: versions[:client_commit],
+      nerves_commit: versions[:nerves_commit] || lock.nerves_commit,
+      elixir: System.version(),
+      otp: System.otp_release(),
+      system_version: system_text(lock.system),
+      started_at: started_at,
+      known_gaps: Report.known_gaps()
+    }
+
+    pre = emit(s.preflight.(opts))
+
+    if Result.exit_code(pre) == 1 do
+      aborted =
+        result(:run, "aborted", :not_exercised, "preflight failed; nothing built or deployed")
+
+      {pre ++ emit([aborted]), meta}
+    else
+      chain(opts, s, lock, pre, meta)
+    end
+  end
+
+  defp chain(opts, s, lock, pre, meta) do
+    {trust_results, step1} = s.trust.(%{source: opts.source})
+    emit(trust_results)
+
+    expected = Build.expected(opts.fixture_dir)
+
+    {build_results, build} =
+      s.build.(%{
+        fixture_dir: opts.fixture_dir,
+        target: opts.target,
+        source: opts.source,
+        trust: step1,
+        target_config: opts.target_config
+      })
+
+    %{sequence: seq, used: used, results: client_batch, harness: harness} =
+      reconcile(s, opts, step1, trust_results, build.sequence)
+
+    build_results = replace_sequence(build_results, seq)
+    emit(client_batch)
+    emit(build_results)
+    verdict = emit([client_verdict(harness, build.report)])
+
+    {integrity, _files} =
+      s.integrity.(%{
+        build_lib: build.build_lib,
+        report: build.report,
+        trust: used,
+        source: opts.source
+      })
+
+    emit(integrity)
+
+    compiled =
+      emit(
+        s.compiled.(%{
+          build_lib: build.build_lib,
+          report: build.report,
+          allowlist: Compiled.allowlist(@project_app)
+        })
+      )
+
+    {deploy, %{expected_uuid: uuid}} =
+      s.deploy.(%{
+        device: opts.device,
+        known_hosts: opts.known_hosts,
+        fw_path: build.fw_path,
+        target: opts.target
+      })
+
+    emit(deploy)
+
+    device =
+      if landed?(deploy) do
+        s.device.(%{
+          device: opts.device,
+          known_hosts: opts.known_hosts,
+          apps: expected.hits,
+          release_dir: Path.join(Path.dirname(build.build_lib), "rel/#{@project_app}"),
+          expected_uuid: uuid,
+          system: lock.system
+        })
+      else
+        [
+          result(
+            :device,
+            "probe",
+            :not_exercised,
+            "the device is not running the uploaded firmware"
+          )
+        ]
+      end
+
+    emit(device)
+
+    results =
+      pre ++
+        trust_results ++
+        client_batch ++
+        verdict ++ build_results ++ integrity ++ compiled ++ deploy ++ device
+
+    meta = %{
+      meta
+      | batch_sequence_step1: step1 && step1.sequence,
+        batch_sequence_step2: build.sequence,
+        root_version: step1 && step1.root_version
+    }
+
+    {results, meta}
+  end
+
+  defp default_steps do
+    %{
+      preflight: &Preflight.run/1,
+      trust: &Trust.check/1,
+      build: &Build.run/1,
+      integrity: &Integrity.run/1,
+      compiled: &Compiled.run/1,
+      deploy: &Deploy.run/1,
+      device: &Device.run/1,
+      versions: &versions/1
+    }
+  end
+
+  defp emit(results) do
+    Enum.each(results, &CLI.print/1)
+    results
+  end
+
+  defp landed?(deploy),
+    do: Enum.any?(deploy, &match?(%Result{check: "active_uuid", class: :pass}, &1))
+
+  # batch sequence
+
+  defp reconcile(s, opts, step1, step1_results, client) do
+    cond do
+      client == nil ->
+        %{sequence: nil, used: step1, results: [], harness: verdict(step1, step1_results)}
+
+      step1 != nil and step1.sequence == client ->
+        %{sequence: nil, used: step1, results: [], harness: verdict(step1, step1_results)}
+
+      true ->
+        path = "batches/#{client}.json"
+        {results, info} = s.trust.(%{source: opts.source, batch_path: path})
+        tagged = client_batch_results(results)
+        named = info != nil and info.sequence == client
+
+        case verdict(info, results) do
+          {:accepted, _} when named ->
+            step1_text =
+              if step1,
+                do: "step 1 verified batch #{step1.sequence}",
+                else: "step 1 verified none"
+
+            %{
+              sequence:
+                result(
+                  :build,
+                  "sequence",
+                  :pass,
+                  "the client used batch #{client} (#{step1_text}); the harness verified " <>
+                    "#{path} itself and checks step 3 against it"
+                ),
+              used: info,
+              results: tagged,
+              harness: {:accepted, "batch #{client}"}
+            }
+
+          other ->
+            why =
+              case other do
+                {:accepted, _} -> "#{path} names sequence #{info.sequence}, not #{client}"
+                {:rejected, why} -> why
+              end
+
+            if step1 do
+              %{
+                sequence:
+                  result(
+                    :build,
+                    "sequence",
+                    :rerun,
+                    "step 1 verified batch #{step1.sequence}, the client used #{client}, and " <>
+                      "the harness could not verify #{path}: #{why}; run again"
+                  ),
+                used: step1,
+                results: tagged,
+                harness: :unknown
+              }
+            else
+              %{
+                sequence: nil,
+                used: nil,
+                results: tagged,
+                harness: {:rejected, "neither batch.json nor #{path} verifies: #{why}"}
+              }
+            end
+        end
+    end
+  end
+
+  # The batch checks of the client's batch, under their own names.
+  defp client_batch_results(results) do
+    for %Result{check: "batch_" <> _} = r <- results, do: %{r | check: "client_batch:" <> r.check}
+  end
+
+  # The harness's verdict on a batch: every trust check passed (a served
+  # root other than the pinned one is only a miss).
+  defp verdict(nil, results), do: {:rejected, first_problem(results)}
+
+  defp verdict(_info, results) do
+    case Enum.reject(results, &(&1.class == :pass or &1.check == "served_root")) do
+      [] -> {:accepted, "batch"}
+      _ -> {:rejected, first_problem(results)}
+    end
+  end
+
+  defp first_problem(results) do
+    case Enum.find(results, &(&1.class not in [:pass, :miss])) do
+      nil -> "no batch"
+      r -> "#{r.check}: #{r.detail}"
+    end
+  end
+
+  defp replace_sequence(build_results, nil), do: build_results
+
+  defp replace_sequence(build_results, seq) do
+    if Enum.any?(build_results, &(&1.check == "sequence")),
+      do: Enum.map(build_results, &if(&1.check == "sequence", do: seq, else: &1)),
+      else: build_results ++ [seq]
+  end
+
+  # client verdict
+
+  defp client_verdict(harness, report) do
+    lines =
+      case report do
+        %{"lines" => lines} when is_list(lines) -> Enum.filter(lines, &is_map/1)
+        _ -> nil
+      end
+
+    if lines == nil do
+      result(:trust, "client_verdict", :not_exercised, "the client wrote no report")
+    else
+      hits = for %{"status" => "hit", "name" => n} <- lines, do: n
+      refused = for %{"detail" => d} = l <- lines, Build.refusal?(d), do: "#{l["name"]}: #{d}"
+      judge(harness, hits, refused)
+    end
+  end
+
+  defp judge(:unknown, _hits, _refused) do
+    result(
+      :trust,
+      "client_verdict",
+      :rerun,
+      "the harness could not verify the batch the client used; run again"
+    )
+  end
+
+  defp judge({:accepted, what}, _hits, [first | _] = refused) do
+    result(
+      :trust,
+      "client_verdict",
+      :disagreement,
+      "the harness verified #{what}, but the client refused #{length(refused)}: #{first}"
+    )
+  end
+
+  defp judge({:rejected, why}, [_ | _] = hits, _refused) do
+    result(
+      :trust,
+      "client_verdict",
+      :disagreement,
+      "the harness rejects the batch (#{why}), but the client installed " <>
+        "#{length(hits)} from it: #{Enum.join(hits, ", ")}"
+    )
+  end
+
+  defp judge({:accepted, what}, hits, []) do
+    result(
+      :trust,
+      "client_verdict",
+      :pass,
+      "the harness and the client both accept #{what}; #{length(hits)} installed"
+    )
+  end
+
+  defp judge({:rejected, why}, [], refused) do
+    result(
+      :trust,
+      "client_verdict",
+      :pass,
+      "the harness rejects the batch (#{why}) and the client installed nothing " <>
+        "(#{length(refused)} refused)"
+    )
+  end
+
+  # versions and the fixture lock
+
+  @doc false
+  @spec versions(CLI.opts()) :: map()
+  def versions(_opts) do
+    nerves =
+      case System.get_env("CHAIN_NERVES_PATH") do
+        nil -> nil
+        path -> with sha when is_binary(sha) <- git_head(path), do: sha <> " (CHAIN_NERVES_PATH)"
+      end
+
+    %{client_commit: git_head(@repo_root), nerves_commit: nerves}
+  end
+
+  defp git_head(dir) do
+    case Cmd.run("git", ["-C", dir, "rev-parse", "HEAD"], timeout_ms: 10_000) do
+      {0, out} ->
+        sha = String.trim(out)
+
+        case Cmd.run("git", ["-C", dir, "status", "--porcelain"], timeout_ms: 10_000) do
+          {0, ""} -> sha
+          {0, _} -> sha <> "-dirty"
+          _ -> sha
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp lock_info(opts) do
+    lock = read_lock(Path.join(opts.fixture_dir, "mix.lock"))
+    name = "nerves_system_#{opts.target}"
+
+    system =
+      case lock[name] do
+        {:hex, _, vsn, _, _, _, _, _} -> {name, vsn}
+        _ -> nil
+      end
+
+    nerves =
+      case lock["nerves"] do
+        {:git, _url, sha, _} -> sha
+        _ -> nil
+      end
+
+    %{system: system, nerves_commit: nerves}
+  end
+
+  # The fixture's own lock, read as Mix reads it; string keys.
+  defp read_lock(path) do
+    with {:ok, text} <- File.read(path),
+         {:ok, quoted} <- Code.string_to_quoted(text, file: path, emit_warnings: false),
+         {lock, _} when is_map(lock) <- Code.eval_quoted(quoted, [], file: path) do
+      Map.new(lock, fn {k, v} -> {to_string(k), v} end)
+    else
+      _ -> %{}
+    end
+  rescue
+    _ -> %{}
+  end
+
+  defp system_text({name, vsn}), do: "#{name} #{vsn}"
+  defp system_text(nil), do: nil
+
+  defp result(step, check, class, detail),
+    do: %Result{step: step, check: check, class: class, detail: detail}
+end
