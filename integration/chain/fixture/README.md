@@ -51,7 +51,9 @@ one smoke call per NIF (exqlite `select 1`, argon2 hash and verify,
 `Circuits.GPIO.enumerate/0`), hashes every file under each app's `ebin/`
 and `priv/`, and prints one JSON document between
 `-----BEGIN CHAIN PROBE-----` and `-----END CHAIN PROBE-----`.
-`ChainFixture.Probe.run()` probes the hits in `expected.exs`. It uses
+`ChainFixture.Probe.run()` probes the hits in `expected.exs`. It also
+reports the active firmware UUID and the running Nerves system (from
+os-release, else the firmware's platform, else `"unknown"`). It uses
 Elixir's own `JSON` and calls none of the test subjects directly, so a
 broken dependency shows in the report instead of breaking the probe.
 
