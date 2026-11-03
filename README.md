@@ -200,6 +200,10 @@ are in the compatibility repository's `docs/PRECOMPILED_SIGNING_PROPOSALS.md`.
   withdrawn one. It sits in `_build`, so anyone who can write there can
   keep a withdrawn build in place — the same trust `_build` already
   carries.
+* Builds installed by an earlier version of this library carry no
+  provenance file and are not rechecked; they are rechecked only after
+  `mix deps.clean --build` or a clean `_build` (for `install/2`, a forced
+  install) has them installed again.
 
 ## Development
 

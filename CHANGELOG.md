@@ -12,7 +12,9 @@
   `:except`, is removed and compiled from source; one whose manifest
   changed is matched again. A warm build with precompiled dependencies
   already installed now fetches the root and the batch on every run. When
-  no batch is available, installed builds are left as they are.
+  no batch is available, installed builds are left as they are. Builds
+  installed by an earlier version carry no provenance file and are
+  rechecked only after `mix deps.clean --build` or a clean `_build`.
 * The adopted root version is kept and never goes back; a trust-state
   file that exists but will not parse is warned about and treated as 0.
 * On a device, the Nerves system is read from `/usr/lib/os-release`; the
