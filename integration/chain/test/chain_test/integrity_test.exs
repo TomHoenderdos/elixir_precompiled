@@ -201,6 +201,47 @@ defmodule ChainTest.IntegrityTest do
     assert detail =~ "priv"
   end
 
+  test "a priv link through a planted directory symlink is a disagreement", ctx do
+    trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+    fixture = Path.join(ctx.tmp_dir, "fixture")
+    File.mkdir_p!(Path.join(fixture, "deps/jason/priv"))
+    # The kernel follows `x` first, so five `..` from it climb out of
+    # `elsewhere/a/b/c/d`, while the text expands to the fixture's priv.
+    planted = Path.join(ctx.tmp_dir, "elsewhere")
+    File.mkdir_p!(Path.join(planted, "a/b/c/d"))
+    File.mkdir_p!(Path.join(planted, "deps/jason/priv"))
+    File.write!(Path.join(planted, "deps/jason/priv/planted.so"), "x")
+    File.ln_s!(Path.join(planted, "a/b/c/d"), Path.join(ctx.build_lib, "jason/x"))
+    File.ln_s!("x/../../../../../deps/jason/priv", Path.join(ctx.build_lib, "jason/priv"))
+
+    assert {[%Result{class: :disagreement, detail: detail}], _} = run(ctx, trust)
+    assert detail =~ "priv"
+  end
+
+  test "a dep priv that is itself a symlink is a disagreement", ctx do
+    trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+    fixture = Path.join(ctx.tmp_dir, "fixture")
+    elsewhere = Path.join(ctx.tmp_dir, "elsewhere")
+    File.mkdir_p!(elsewhere)
+    File.mkdir_p!(Path.join(fixture, "deps/jason"))
+    File.ln_s!(elsewhere, Path.join(fixture, "deps/jason/priv"))
+    File.ln_s!("../../../../deps/jason/priv", Path.join(ctx.build_lib, "jason/priv"))
+
+    assert {[%Result{class: :disagreement, detail: detail}], _} = run(ctx, trust)
+    assert detail =~ "priv"
+  end
+
+  test "a priv symlink loop is a disagreement", ctx do
+    trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+    File.mkdir_p!(Path.join(ctx.tmp_dir, "fixture/deps/jason/priv"))
+    # Textually the fixture's priv; `y` points at itself.
+    File.ln_s!("y", Path.join(ctx.build_lib, "jason/y"))
+    File.ln_s!("y/../../../../../deps/jason/priv", Path.join(ctx.build_lib, "jason/priv"))
+
+    assert {[%Result{class: :disagreement, detail: detail}], _} = run(ctx, trust)
+    assert detail =~ "priv"
+  end
+
   test "a provenance file naming another manifest is a disagreement", ctx do
     trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
     other = String.duplicate("d", 64)

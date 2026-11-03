@@ -467,18 +467,84 @@ defmodule ChainTest.Integrity do
         {ebin ++ walk(dir, "priv"), []}
 
       {:ok, %{type: :symlink}} when not priv_listed? ->
-        {:ok, link} = File.read_link(priv)
-        target = Path.expand(link, dir)
-
-        if target == Path.expand(own_priv),
-          do: {ebin, []},
-          else: {ebin, ["priv: a symlink to #{target} in _build, not to #{own_priv}"]}
+        case priv_link(priv, own_priv) do
+          :ok -> {ebin, []}
+          {:error, why} -> {ebin, ["priv: a symlink in _build, #{why}"]}
+        end
 
       {:ok, %{type: type}} ->
         {ebin, ["priv: a #{type} in _build, the manifest lists priv files"]}
 
       {:error, _} ->
         {ebin, []}
+    end
+  end
+
+  # The link must resolve, symlink by symlink as the kernel does, to the
+  # fixture's own `deps/<dep>/priv`, itself a real directory reached
+  # through no symlink below the fixture root. Comparing expanded text is
+  # not enough: a planted directory symlink or `..` in the link path, or a
+  # `deps/<dep>/priv` that is itself a link, opens somewhere else.
+  defp priv_link(priv, own_priv) do
+    deps = Path.dirname(Path.dirname(own_priv))
+    root = Path.dirname(deps)
+
+    with {:root, {:ok, real_root}} <- {:root, realpath(root)},
+         expected =
+           Path.join([
+             real_root,
+             Path.basename(deps),
+             Path.basename(Path.dirname(own_priv)),
+             "priv"
+           ]),
+         {:own, {:ok, %{type: :directory}}} <- {:own, File.lstat(expected)},
+         {:own, {:ok, ^expected}} <- {:own, realpath(expected)},
+         {:link, {:ok, ^expected}} <- {:link, realpath(priv)} do
+      :ok
+    else
+      {:root, {:error, why}} -> {:error, "the fixture root #{root} does not resolve: #{why}"}
+      {:own, _} -> {:error, "#{own_priv} is not a real directory under the fixture root"}
+      {:link, {:ok, real}} -> {:error, "resolves to #{real}, not to #{own_priv}"}
+      {:link, {:error, why}} -> {:error, "does not resolve: #{why}"}
+    end
+  end
+
+  @max_links 40
+
+  # The real path of `path`: every symlink followed, component by
+  # component, with a relative target resolved against the link's parent.
+  # `{:error, reason}` on a missing component, an unreadable link or more
+  # than 40 links. Never raises.
+  defp realpath(path) do
+    case if(Path.type(path) == :absolute, do: {:ok, "/"}, else: File.cwd()) do
+      {:ok, base} -> resolve("/", Path.split(Path.join(base, path)), 0)
+      {:error, why} -> {:error, "cwd: #{:file.format_error(why)}"}
+    end
+  end
+
+  defp resolve(acc, [], _links), do: {:ok, acc}
+  defp resolve(_acc, ["/" | rest], links), do: resolve("/", rest, links)
+  defp resolve(acc, ["." | rest], links), do: resolve(acc, rest, links)
+  defp resolve(acc, [".." | rest], links), do: resolve(Path.dirname(acc), rest, links)
+
+  defp resolve(_acc, _rest, links) when links > @max_links,
+    do: {:error, "more than #{@max_links} symlinks"}
+
+  defp resolve(acc, [name | rest], links) do
+    next = Path.join(acc, name)
+
+    case File.lstat(next) do
+      {:ok, %{type: :symlink}} ->
+        case File.read_link(next) do
+          {:ok, target} -> resolve(acc, Path.split(target) ++ rest, links + 1)
+          {:error, why} -> {:error, "#{next}: #{:file.format_error(why)}"}
+        end
+
+      {:ok, _} ->
+        resolve(next, rest, links)
+
+      {:error, why} ->
+        {:error, "#{next}: #{:file.format_error(why)}"}
     end
   end
 

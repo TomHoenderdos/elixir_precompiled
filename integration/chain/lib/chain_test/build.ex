@@ -112,6 +112,7 @@ defmodule ChainTest.Build do
   defp fresh_home(nil) do
     home = Path.join(System.tmp_dir!(), "chain_test-#{random()}")
     File.mkdir_p!(home)
+    File.chmod!(home, 0o700)
     {:ok, home}
   end
 
