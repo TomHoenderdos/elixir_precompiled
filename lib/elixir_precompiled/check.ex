@@ -104,34 +104,34 @@ defmodule ElixirPrecompiled.Check do
   # compiles it from source in this same run.
   defp recheck(installed, batch, env) do
     Enum.reduce(installed, {[], []}, fn dep, {revoked, replaced} ->
-      sname = Atom.to_string(dep.name)
-      {sha, _path} = manifest_ref(batch, sname)
+      {sha, _path} = manifest_ref(batch, Atom.to_string(dep.name))
 
-      case provenance_sha(env.build_lib, dep.name) do
-        ^sha when is_binary(sha) ->
-          {revoked, replaced}
-
-        recorded when is_binary(sha) and is_binary(recorded) ->
-          case remove(env.build_lib, sname) do
-            :ok -> {revoked, replaced ++ [dep]}
-            {:error, why} -> {revoked ++ [revoke_line(dep, :fail, why)], replaced}
-          end
-
-        recorded ->
-          why =
-            if is_binary(sha) and recorded == nil,
-              do: "revoked: provenance unreadable",
-              else: "revoked: no longer in the current batch"
-
-          line =
-            case remove(env.build_lib, sname) do
-              :ok -> revoke_line(dep, :miss, why)
-              {:error, failed} -> revoke_line(dep, :fail, failed)
-            end
-
-          {revoked ++ [line], replaced}
+      case recheck_one(dep, sha, provenance_sha(env.build_lib, dep.name), env) do
+        :keep -> {revoked, replaced}
+        :replace -> {revoked, replaced ++ [dep]}
+        line -> {revoked ++ [line], replaced}
       end
     end)
+  end
+
+  defp recheck_one(_dep, sha, sha, _env) when is_binary(sha), do: :keep
+
+  defp recheck_one(dep, sha, recorded, env) when is_binary(sha) and is_binary(recorded),
+    do: revoke(dep, env, :replace)
+
+  defp recheck_one(dep, sha, nil, env) when is_binary(sha),
+    do: revoke(dep, env, revoke_line(dep, :miss, "revoked: provenance unreadable"))
+
+  defp recheck_one(dep, _sha, _recorded, env),
+    do: revoke(dep, env, revoke_line(dep, :miss, "revoked: no longer in the current batch"))
+
+  # Removes the installed build; `outcome` once it is gone, a FAIL line
+  # naming the file that would not go otherwise.
+  defp revoke(dep, env, outcome) do
+    case remove(env.build_lib, Atom.to_string(dep.name)) do
+      :ok -> outcome
+      {:error, why} -> revoke_line(dep, :fail, why)
+    end
   end
 
   defp kept_line(dep, why),
