@@ -1,0 +1,219 @@
+# SPDX-FileCopyrightText: 2026 Tom Hoenderdos
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+defmodule ChainTest.BuildTest do
+  # FakeBin changes the global PATH.
+  use ExUnit.Case, async: false
+
+  alias ChainTest.{Build, FakeBin, Result, Synthetic}
+
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: tmp} do
+    fixture = Path.join(tmp, "fixture")
+    File.mkdir_p!(fixture)
+
+    File.write!(
+      Path.join(fixture, "expected.exs"),
+      "%{hits: [:jason, :exqlite, :ash], never: [:nerves]}\n"
+    )
+
+    %{fixture: fixture, home: Path.join(tmp, "home"), tmp: tmp}
+  end
+
+  # A fake `mix firmware`: copies `report` into the build's report.json,
+  # writes a .fw unless `fw: false`, records its environment, writes the
+  # client's batch state with `sequence`, and exits with `exit`.
+  defp fake_mix(ctx, lines, opts) do
+    report = Path.join(ctx.tmp, "report.json")
+    File.write!(report, JSON.encode!(Synthetic.report(lines)))
+    env = Path.join(ctx.tmp, "mix.env")
+
+    fw =
+      if Keyword.get(opts, :fw, true),
+        do: "mkdir -p \"$b/nerves/images\" && echo fw > \"$b/nerves/images/chain_fixture.fw\"",
+        else: ":"
+
+    state =
+      case Keyword.get(opts, :sequence) do
+        nil ->
+          ":"
+
+        seq ->
+          "mkdir -p \"$ELIXIR_PRECOMPILED_HOME/0123456789abcdef\" && " <>
+            "printf #{seq} > \"$ELIXIR_PRECOMPILED_HOME/0123456789abcdef/state\""
+      end
+
+    """
+    env > '#{env}'
+    pwd >> '#{env}'
+    b="_build/${MIX_TARGET}_${MIX_ENV}"
+    mkdir -p "$b/lib/.precompiled"
+    cp '#{report}' "$b/lib/.precompiled/report.json"
+    #{fw}
+    #{state}
+    echo 'precompiled: building'
+    exit #{Keyword.get(opts, :exit, 0)}
+    """
+  end
+
+  @hits [
+    {"jason", "1.4.5", "hit", "0.3 MB"},
+    {"exqlite", "0.42.0", "hit", "1.7 MB"},
+    {"ash", "3.37.2", "hit", "20.1 MB"}
+  ]
+
+  defp run(ctx, trust \\ Synthetic.info(7, %{})) do
+    Build.run(%{
+      fixture_dir: ctx.fixture,
+      target: "rpi4",
+      source: "http://127.0.0.1:1/api/precompiled",
+      home: ctx.home,
+      trust: trust
+    })
+  end
+
+  defp find(results, check), do: Enum.find(results, &(&1.check == check))
+
+  test "a clean build with every expected hit passes", ctx do
+    stale = Path.join(ctx.fixture, "_build/rpi4_dev/stale")
+    File.mkdir_p!(Path.dirname(stale))
+    File.write!(stale, "old")
+
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, @hits, sequence: 7)}, fn dir ->
+      {results, info} = run(ctx)
+
+      assert FakeBin.argv(dir, "mix") == ["firmware"]
+      refute File.exists?(stale)
+
+      assert %Result{step: :build, class: :pass} = find(results, "firmware")
+
+      for dep <- ~w(jason exqlite ash),
+          do: assert(%Result{class: :pass} = find(results, "hit:#{dep}"))
+
+      assert %Result{class: :pass} = find(results, "sequence")
+      assert %Result{class: :pass} = find(results, "never:nerves")
+
+      assert info.sequence == 7
+      assert info.build_lib == Path.join(ctx.fixture, "_build/rpi4_dev/lib")
+
+      assert info.fw_path ==
+               Path.join(ctx.fixture, "_build/rpi4_dev/nerves/images/chain_fixture.fw")
+
+      assert info.log =~ "precompiled: building"
+      assert length(info.report["lines"]) == 3
+
+      env = File.read!(Path.join(ctx.tmp, "mix.env"))
+      assert env =~ "MIX_TARGET=rpi4\n"
+      assert env =~ "MIX_ENV=dev\n"
+      assert env =~ "ELIXIR_PRECOMPILED_HOME=#{ctx.home}\n"
+      assert env =~ "CHAIN_SOURCE=http://127.0.0.1:1/api/precompiled\n"
+      assert env =~ ctx.fixture
+    end)
+  end
+
+  test "a batch stale refusal is refused, a benign miss is a miss", ctx do
+    lines = [
+      {"jason", "1.4.5", "fail", "batch stale: issued 2026-11-01T00:00:00Z"},
+      {"exqlite", "0.42.0", "miss", "built against elixir_make 0.10.0, lock has 0.10.1"},
+      {"ash", "3.37.2", "miss", "revoked: no longer in the current batch"}
+    ]
+
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, lines, sequence: 7)}, fn _ ->
+      {results, _} = run(ctx)
+
+      assert %Result{class: :refused, detail: "batch stale" <> _} = find(results, "hit:jason")
+
+      assert %Result{class: :miss, detail: "built against elixir_make" <> _} =
+               find(results, "hit:exqlite")
+
+      assert %Result{class: :refused} = find(results, "hit:ash")
+    end)
+  end
+
+  test "a client fail that is not a refusal fails", ctx do
+    lines = [{"jason", "1.4.5", "fail", "manifest hash differs from batch"} | tl(@hits)]
+
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, lines, sequence: 7)}, fn _ ->
+      {results, _} = run(ctx)
+      assert %Result{class: :fail} = find(results, "hit:jason")
+    end)
+  end
+
+  test "an expected hit the report does not name fails", ctx do
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, tl(@hits), sequence: 7)}, fn _ ->
+      {results, _} = run(ctx)
+      assert %Result{class: :fail, detail: detail} = find(results, "hit:jason")
+      assert detail =~ "not in report.json"
+    end)
+  end
+
+  test "a never dep reported as a hit fails", ctx do
+    lines = [{"nerves", "2.0.0", "hit", ""} | @hits]
+
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, lines, sequence: 7)}, fn _ ->
+      {results, _} = run(ctx)
+      assert %Result{class: :fail} = find(results, "never:nerves")
+    end)
+  end
+
+  test "a client batch sequence other than the one step 1 verified is a rerun", ctx do
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, @hits, sequence: 8)}, fn _ ->
+      {results, info} = run(ctx)
+      assert %Result{class: :rerun, detail: detail} = find(results, "sequence")
+      assert detail =~ "7"
+      assert detail =~ "8"
+      assert info.sequence == 8
+    end)
+  end
+
+  test "an untrusted step 1 leaves the sequence check not exercised", ctx do
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, @hits, sequence: 7)}, fn _ ->
+      {results, _} = run(ctx, nil)
+      assert %Result{class: :not_exercised} = find(results, "sequence")
+      assert %Result{class: :pass} = find(results, "hit:jason")
+    end)
+  end
+
+  test "no client state is a not exercised sequence", ctx do
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, @hits, [])}, fn _ ->
+      {results, info} = run(ctx)
+      assert %Result{class: :not_exercised} = find(results, "sequence")
+      assert info.sequence == nil
+    end)
+  end
+
+  test "the newest state file under home wins", ctx do
+    old = Path.join(ctx.home, "fedcba9876543210/state")
+    File.mkdir_p!(Path.dirname(old))
+    File.write!(old, "3")
+    File.touch!(old, System.os_time(:second) - 3600)
+
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, @hits, sequence: 7)}, fn _ ->
+      {_, info} = run(ctx)
+      assert info.sequence == 7
+    end)
+  end
+
+  test "a failed build fails firmware and leaves unreported hits not exercised", ctx do
+    stub = "echo 'compile error' ; exit 1"
+
+    FakeBin.with_stubs(%{"mix" => stub}, fn _ ->
+      {results, info} = run(ctx)
+      assert %Result{class: :fail, detail: detail} = find(results, "firmware")
+      assert detail =~ "exit 1"
+      assert %Result{class: :not_exercised} = find(results, "hit:jason")
+      assert info.report == %{}
+      assert info.log =~ "compile error"
+    end)
+  end
+
+  test "exit 0 without a .fw fails firmware", ctx do
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, @hits, sequence: 7, fw: false)}, fn _ ->
+      {results, _} = run(ctx)
+      assert %Result{class: :fail, detail: detail} = find(results, "firmware")
+      assert detail =~ ".fw"
+    end)
+  end
+end
