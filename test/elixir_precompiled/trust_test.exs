@@ -467,18 +467,23 @@ defmodule ElixirPrecompiled.TrustTest do
     assert log =~ "sequence state"
   end
 
-  test "an unwritable state dir while recording the root version is named, not raised", %{
+  test "a root_version write failure is named, not raised, and the adopted root is kept", %{
     config: config,
     f: f,
     fetch: fetch
   } do
     v2 = F.rotate_root(f, version: 2)
     dir = state_dir(config)
-    File.mkdir_p!(dir)
-    File.chmod!(dir, 0o500)
-    on_exit(fn -> File.chmod!(dir, 0o700) end)
+    # roots.json writes fine; renaming root_version.tmp onto this directory
+    # fails with EISDIR, isolating write_root_version/2's own rescue from
+    # the write that precedes it.
+    File.mkdir_p!(Path.join(dir, "root_version"))
     {:ok, root} = Trust.load_root(config)
-    assert {:ok, _} = Trust.update_root(config, root, fetch)
+
+    {result, log} = capture_warning(fn -> Trust.update_root(config, root, fetch) end)
+    assert {:ok, %{"version" => 2}} = result
+    assert File.exists?(Path.join(dir, "roots.json"))
+    assert log =~ "root version state"
     _ = v2
   end
 

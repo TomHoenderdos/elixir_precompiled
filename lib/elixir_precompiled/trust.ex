@@ -282,14 +282,16 @@ defmodule ElixirPrecompiled.Trust do
   end
 
   # Keeps the higher of what was already stored and the newly adopted
-  # version, like `write_state/2`. A File.Error here must not unwind the
-  # root this call already adopted and is about to return — so it is
-  # caught locally and only logged, never raised further.
+  # version, like `write_state/2`. Neither failure here must unwind the
+  # root this call already adopted and is about to return — so both are
+  # caught locally and only logged, never raised further: `write_atomic/3`
+  # raises `File.Error` from `mkdir_p!/1` and `write!/2`, but `File.RenameError`
+  # from `rename!/2` (e.g. `root_version` already exists as a directory).
   defp write_root_version(dir, version) do
     stored = read_counter(Path.join(dir, "root_version"), "root version")
     write_atomic(dir, "root_version", Integer.to_string(max(stored, version)))
   rescue
-    e in File.Error ->
+    e in [File.Error, File.RenameError] ->
       Output.warning(
         "precompiled: could not write root version state " <>
           "#{Path.join(dir, "root_version")}: #{inspect(e.reason)}"
