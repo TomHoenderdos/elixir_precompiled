@@ -34,7 +34,10 @@ defmodule ElixirPrecompiled.Env.MixInstall do
       candidates: Env.hex_candidates(lock, apps, dep_envs(deps)),
       lock: lock,
       build_lib: build_lib,
-      deps_path: Path.join(project_dir, "deps")
+      deps_path: Path.join(project_dir, "deps"),
+      # Mix.install/2 rebuilds its own project dir; a warm install there is
+      # not rechecked against the batch.
+      installed: []
     }
   end
 

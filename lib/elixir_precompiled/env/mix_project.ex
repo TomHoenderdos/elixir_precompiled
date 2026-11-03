@@ -8,7 +8,7 @@ defmodule ElixirPrecompiled.Env.MixProject do
   # project's lock and build dir, and the Nerves system from the build plan
   # when nerves is loaded.
 
-  alias ElixirPrecompiled.Env
+  alias ElixirPrecompiled.{Env, Fetch}
 
   # nerves is not a dependency; its build plan is read only when the module
   # is there, so the compiler must not warn about the remote call.
@@ -20,14 +20,31 @@ defmodule ElixirPrecompiled.Env.MixProject do
   @spec load() :: Env.t()
   def load() do
     lock = Mix.Dep.Lock.read()
+    deps = Mix.Dep.load_and_cache()
+    build_lib = Path.join(Mix.Project.build_path(), "lib")
+    installed = installed_from(deps, build_lib)
 
     %Env{
       system: system(),
-      candidates: candidates_from(Mix.Dep.load_and_cache(), lock),
+      candidates: candidates_from(deps, lock),
       lock: lock,
-      build_lib: Path.join(Mix.Project.build_path(), "lib"),
-      deps_path: Mix.Project.deps_path()
+      build_lib: build_lib,
+      deps_path: Mix.Project.deps_path(),
+      installed: Enum.map(installed, &elem(&1, 0)),
+      installed_envs: Map.new(installed)
     }
+  end
+
+  @doc false
+  # Dependencies Mix counts as compiled and current (status {:ok, _}) whose
+  # build dir holds the provenance file an install wrote: builds this
+  # library placed, which the current batch must still vouch for. Paired
+  # with each one's compile env, as candidates_from/2 reads it.
+  @spec installed_from([Mix.Dep.t()], Path.t()) :: [{atom(), String.t()}]
+  def installed_from(deps, build_lib) do
+    for %Mix.Dep{app: app, status: {:ok, _}, scm: Hex.SCM, opts: opts} <- deps,
+        File.regular?(Fetch.provenance_path(build_lib, app)),
+        do: {app, Atom.to_string(Keyword.get(opts, :env, :prod))}
   end
 
   @doc false

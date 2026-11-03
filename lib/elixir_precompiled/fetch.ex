@@ -18,6 +18,7 @@ defmodule ElixirPrecompiled.Fetch do
   # 64 MiB: manifests of packages with many versions and systems run past 8 MiB
   @max_manifest_bytes 67_108_864
   @ok_modes [0o644, 0o755, 0o100644, 0o100755]
+  @provenance_file "elixir_precompiled.json"
 
   @spec get_body(String.t(), keyword()) :: {:ok, binary()} | {:error, String.t()}
   def get_body(url, opts \\ []) do
@@ -79,6 +80,7 @@ defmodule ElixirPrecompiled.Fetch do
            {:ok, stats} <- stage(config, files, staging),
            :ok <- verify_app.(Path.join([staging, "ebin", "#{dep}.app"])) do
         write_marker(staging, lock_entry)
+        write_provenance(staging, Keyword.get(opts, :provenance))
         File.rm_rf!(dest)
         File.mkdir_p!(build_lib)
         File.rename!(staging, dest)
@@ -251,6 +253,28 @@ defmodule ElixirPrecompiled.Fetch do
     File.mkdir_p!(Path.join(staging, ".mix"))
     File.write!(Path.join([staging, ".mix", "compile.elixir_scm"]), marker)
   end
+
+  # Which signed manifest this install came from, so a later run can tell a
+  # build the portal has since withdrawn (dropped from the batch) from one it
+  # still vouches for.
+  defp write_provenance(_staging, nil), do: :ok
+
+  defp write_provenance(staging, %{sha: sha, path: path, sequence: seq}) do
+    File.mkdir_p!(Path.join(staging, ".mix"))
+
+    File.write!(
+      Path.join([staging, ".mix", @provenance_file]),
+      :json.encode(%{"manifest_sha256" => sha, "manifest_path" => path, "batch_sequence" => seq})
+    )
+  end
+
+  @doc """
+  The provenance file under a dependency's build dir, written by `install/6`
+  when it is given `:provenance`.
+  """
+  @spec provenance_path(Path.t(), atom() | String.t()) :: Path.t()
+  def provenance_path(build_lib, dep),
+    do: Path.join([build_lib, to_string(dep), ".mix", @provenance_file])
 
   @doc """
   Mix's "already compiled" marker (`Mix.Dep.ElixirSCM`) in the format the

@@ -294,6 +294,40 @@ defmodule ElixirPrecompiled.FetchTest do
     assert File.read!(Path.join(lib, "ash/priv/data.txt")) == "data"
   end
 
+  test "install records which signed manifest the build came from", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+    sha = String.duplicate("ab", 32)
+
+    assert {:ok, _} =
+             Fetch.install(config, :ash, e, @lock_entry, lib,
+               deps_path: deps,
+               provenance: %{sha: sha, path: "v2/manifests", sequence: 7}
+             )
+
+    assert %{
+             "manifest_sha256" => ^sha,
+             "manifest_path" => "v2/manifests",
+             "batch_sequence" => 7
+           } =
+             Path.join(lib, "ash/.mix/elixir_precompiled.json") |> File.read!() |> :json.decode()
+  end
+
+  test "install without provenance writes no provenance file", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+    assert {:ok, _} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+    refute File.exists?(Path.join(lib, "ash/.mix/elixir_precompiled.json"))
+  end
+
   test "the include/ and src/ links are relative, so a moved project tree keeps working", %{
     f: f,
     config: config,

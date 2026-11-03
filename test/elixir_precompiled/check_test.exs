@@ -373,6 +373,154 @@ defmodule ElixirPrecompiled.CheckTest do
     assert out =~ ~r/ash 3\.5\.2\s+FAIL\s+candidate crashed: :boom/
   end
 
+  describe "installed builds are rechecked against the current batch" do
+    # Installs ash (a HIT), then hands back an env for a later run in which
+    # Mix already counts ash as compiled: no candidates, ash installed.
+    defp install_ash(f, config, env) do
+      F.publish(f, ash_packages(f, "1.31.0"), sequence: 1)
+      run_capturing(config, %{env | candidates: [hd(env.candidates)]})
+      assert_received {:report, {:ok, %{hits: 1}}}
+      %{env | candidates: [], installed: [:ash]}
+    end
+
+    defp ash_packages(f, system_version) do
+      %{
+        "ash" => %{
+          "versions" => %{"3.5.2" => %{"builds" => [good_entry(f, "ash", system_version)]}}
+        }
+      }
+    end
+
+    test "a build the batch still names is left alone, silently", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      beam = Path.join(lib, "ash/ebin/Elixir.X.beam")
+      before = File.stat!(beam, time: :posix)
+
+      out = run_capturing(config, env)
+      assert_received {:report, {:ok, report}}
+      assert report.lines == []
+      assert out == ""
+      assert File.stat!(beam, time: :posix) == before
+      assert File.exists?(Path.join(lib, "ash/.mix/elixir_precompiled.json"))
+    end
+
+    test "a build the batch dropped is removed and reported as revoked", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      F.publish(f, %{"other" => %{"versions" => %{}}}, sequence: 2)
+
+      out = run_capturing(config, env)
+      assert_received {:report, {:ok, report}}
+
+      assert [%{name: "ash", status: :miss, detail: "revoked: no longer in the current batch"}] =
+               report.lines
+
+      assert out =~ ~r/ash 3\.5\.2\s+MISS\s+revoked: no longer in the current batch/
+      refute File.exists?(Path.join(lib, "ash"))
+    end
+
+    test "a build whose manifest changed is matched again, never kept as the old bytes", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      # A different manifest (sha) for ash whose only build no longer matches.
+      F.publish(f, ash_packages(f, "1.32.0"), sequence: 2)
+
+      out = run_capturing(config, env)
+      assert_received {:report, {:ok, report}}
+      assert [%{name: "ash", status: :miss}] = report.lines
+      assert out =~ ~r/ash 3\.5\.2\s+MISS\s+built for nerves_system_rpi4 1\.32\.0/
+      refute File.exists?(Path.join(lib, "ash"))
+    end
+
+    test "a build whose manifest changed and still matches is re-installed", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      packages = put_in(ash_packages(f, "1.31.0"), ["ash", "extra"], "changes the sha")
+      F.publish(f, packages, sequence: 2)
+      new_sha = F.get(:batch)["payload"] |> Base.url_decode64!(padding: false) |> :json.decode()
+
+      run_capturing(config, env)
+      assert_received {:report, {:ok, %{hits: 1, lines: [%{name: "ash", status: :hit}]}}}
+
+      assert Path.join(lib, "ash/.mix/elixir_precompiled.json")
+             |> File.read!()
+             |> :json.decode()
+             |> Map.take(["manifest_sha256", "batch_sequence"]) ==
+               %{"manifest_sha256" => new_sha["manifests_v2"]["ash"], "batch_sequence" => 2}
+    end
+
+    test "an unreadable provenance file counts as revoked", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      File.write!(Path.join(lib, "ash/.mix/elixir_precompiled.json"), "not json {")
+
+      run_capturing(config, env)
+      assert_received {:report, {:ok, report}}
+
+      assert [%{name: "ash", status: :miss, detail: "revoked: no longer in the current batch"}] =
+               report.lines
+
+      refute File.exists?(Path.join(lib, "ash"))
+    end
+
+    test "a candidate that misses loses a provenance file left from an earlier install", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      install_ash(f, config, env)
+      F.publish(f, %{"other" => %{"versions" => %{}}}, sequence: 2)
+
+      # Mix wants to compile ash again (a new toolchain, say): it is a
+      # candidate, and the build it compiles must not pass for an install.
+      run_capturing(config, %{env | candidates: [hd(env.candidates)]})
+      assert_received {:report, {:ok, %{misses: 1}}}
+      refute File.exists?(Path.join(lib, "ash/.mix/elixir_precompiled.json"))
+    end
+
+    test "a refused batch leaves installed builds in place", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+
+      F.publish(f, %{},
+        sequence: 2,
+        issued: DateTime.add(DateTime.utc_now(), -25 * 3600, :second) |> DateTime.to_iso8601()
+      )
+
+      run_capturing(config, env)
+      assert_received {:report, {:ok, report}}
+      assert [%{name: "ash", status: :fail, detail: "batch stale" <> _}] = report.lines
+      assert File.exists?(Path.join(lib, "ash/ebin/Elixir.X.beam"))
+      assert File.exists?(Path.join(lib, "ash/.mix/elixir_precompiled.json"))
+    end
+  end
+
   defp with_beam(f, entry, beam) do
     app = "{application, ash, [{vsn, \"3.5.2\"}, {modules, ['Elixir.X']}]}.\n"
 

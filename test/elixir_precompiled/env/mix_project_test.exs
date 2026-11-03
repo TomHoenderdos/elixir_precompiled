@@ -36,6 +36,30 @@ defmodule ElixirPrecompiled.Env.MixProjectTest do
     assert MixProject.candidates_from([dep.(:absent, :compile, Hex.SCM)], lock) == []
   end
 
+  @tag :tmp_dir
+  test "installed_from keeps compiled Hex deps that carry a provenance file", %{tmp_dir: lib} do
+    for app <- ~w(ash jason gitdep stale) do
+      File.mkdir_p!(Path.join([lib, app, ".mix"]))
+      File.write!(Path.join([lib, app, ".mix/elixir_precompiled.json"]), "{}")
+    end
+
+    dep = fn app, status, scm, opts ->
+      %Mix.Dep{app: app, status: status, scm: scm, opts: opts}
+    end
+
+    deps = [
+      dep.(:ash, {:ok, "3.5.2"}, Hex.SCM, []),
+      dep.(:jason, {:ok, "1.4.5"}, Hex.SCM, env: :dev),
+      # compiled by Mix, never installed by this library
+      dep.(:decimal, {:ok, "2.3.0"}, Hex.SCM, []),
+      dep.(:gitdep, {:ok, "1.0.0"}, Mix.SCM.Git, []),
+      # Mix compiles this one now: a candidate, not an installed build
+      dep.(:stale, :compile, Hex.SCM, [])
+    ]
+
+    assert MixProject.installed_from(deps, lib) == [{:ash, "prod"}, {:jason, "dev"}]
+  end
+
   test "candidates_from reads the dep's own compile env from its opts" do
     lock = %{ash: @ash, jason: @jason}
 

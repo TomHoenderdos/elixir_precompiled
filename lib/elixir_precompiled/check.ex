@@ -29,36 +29,36 @@ defmodule ElixirPrecompiled.Check do
     started = System.monotonic_time(:millisecond)
     {candidates, skipped} = candidates(env.candidates, env.lock, config.except)
 
-    if candidates == [] do
+    installed = installed(env, config.except)
+
+    if candidates == [] and installed == [] do
       debug("precompiled: no dependencies to check")
       :nothing_to_do
     else
       debug_skipped(skipped)
       config_fun = Keyword.get(opts, :config_fun, &CompileEnv.lookup/2)
-      lines = lines_for(candidates, config, env, config_fun)
+      lines = lines_for(candidates, installed, config, env, config_fun)
       Enum.each(lines, &print/1)
       report = summarize(lines, System.monotonic_time(:millisecond) - started)
-      print_summary(report, length(lines))
+      # A warm build whose installs the batch still names has nothing to say.
+      if lines != [], do: print_summary(report, length(lines))
       print_stripped(Enum.count(lines, &Map.get(&1, :stripped, false)))
       write_report(env.build_lib, report)
       {:ok, report}
     end
   end
 
-  defp lines_for(candidates, config, env, config_fun) do
+  defp lines_for(candidates, installed, config, env, config_fun) do
     case batch(config) do
       {:ok, batch} ->
-        candidates
-        |> Task.async_stream(&one(&1, config, batch, env, config_fun),
-          max_concurrency: 8,
-          timeout: :infinity,
-          ordered: true
-        )
-        |> Enum.map(fn {:ok, line} -> line end)
+        {revoked, replaced} = recheck(installed, batch, env)
+
+        revoked ++ install_lines(candidates ++ replaced, config, batch, env, config_fun)
 
       {:error, why} ->
+        # No fresh batch, no verdict: installed builds stay as they are.
         Enum.map(
-          candidates,
+          candidates ++ installed,
           &%{
             name: Atom.to_string(&1.name),
             version: &1.version,
@@ -68,6 +68,87 @@ defmodule ElixirPrecompiled.Check do
           }
         )
     end
+  end
+
+  # Installed builds Mix will not compile this run, as candidates (with
+  # their lock entry and env). An excepted, tooling or no longer Hex-locked
+  # dep is not this library's to recheck.
+  defp installed(env, except) do
+    Env.hex_candidates(env.lock, env.installed, env.installed_envs)
+    |> Enum.filter(&Match.candidate?(&1.name, env.lock, except))
+  end
+
+  # R16: an installed build is only as good as the batch that still names
+  # it. Same manifest sha: nothing to do. Another sha: matched again like
+  # any candidate, its old bytes removed first so a miss leaves Mix to
+  # compile it. Not named, or no readable provenance: removed, so Mix
+  # compiles it from source in this same run.
+  defp recheck(installed, batch, env) do
+    Enum.reduce(installed, {[], []}, fn dep, {revoked, replaced} ->
+      sname = Atom.to_string(dep.name)
+      {sha, _path} = manifest_ref(batch, sname)
+
+      case provenance_sha(env.build_lib, dep.name) do
+        ^sha when is_binary(sha) ->
+          {revoked, replaced}
+
+        recorded when is_binary(sha) and is_binary(recorded) ->
+          case remove(env.build_lib, sname) do
+            :ok -> {revoked, replaced ++ [dep]}
+            {:error, why} -> {revoked ++ [revoke_line(dep, :fail, why)], replaced}
+          end
+
+        _ ->
+          line =
+            case remove(env.build_lib, sname) do
+              :ok -> revoke_line(dep, :miss, "revoked: no longer in the current batch")
+              {:error, why} -> revoke_line(dep, :fail, why)
+            end
+
+          {revoked ++ [line], replaced}
+      end
+    end)
+  end
+
+  defp revoke_line(dep, status, detail),
+    do: %{
+      name: Atom.to_string(dep.name),
+      version: dep.version,
+      status: status,
+      detail: detail,
+      bytes: 0
+    }
+
+  defp provenance_sha(build_lib, dep) do
+    with {:ok, bytes} <- File.read(Fetch.provenance_path(build_lib, dep)),
+         %{"manifest_sha256" => sha} when is_binary(sha) <- decode_json(bytes) do
+      sha
+    else
+      _ -> nil
+    end
+  end
+
+  defp decode_json(bytes) do
+    :json.decode(bytes)
+  rescue
+    _ -> nil
+  end
+
+  defp remove(build_lib, sname) do
+    case File.rm_rf(Path.join(build_lib, sname)) do
+      {:ok, _} -> :ok
+      {:error, reason, file} -> {:error, "revoke failed: #{file}: #{:file.format_error(reason)}"}
+    end
+  end
+
+  defp install_lines(candidates, config, batch, env, config_fun) do
+    candidates
+    |> Task.async_stream(&one(&1, config, batch, env, config_fun),
+      max_concurrency: 8,
+      timeout: :infinity,
+      ordered: true
+    )
+    |> Enum.map(fn {:ok, line} -> line end)
   end
 
   defp debug(msg), do: if(Config.debug?(), do: Output.info(msg))
@@ -116,6 +197,10 @@ defmodule ElixirPrecompiled.Check do
     {sha, path} = manifest_ref(batch, sname)
 
     try do
+      # Mix compiles this dep unless it is installed now: a provenance file
+      # left by an earlier install would vouch for Mix's own build.
+      _ = File.rm(Fetch.provenance_path(env.build_lib, name))
+
       result =
         with sha when is_binary(sha) <- sha || {:miss, "not in batch"},
              {:ok, manifest} <- Fetch.manifest(config, sname, sha, path),
@@ -134,6 +219,7 @@ defmodule ElixirPrecompiled.Check do
              {:ok, stats} <-
                Fetch.install(config, name, entry, lock_entry, env.build_lib,
                  deps_path: env.deps_path,
+                 provenance: %{sha: sha, path: path, sequence: batch.sequence},
                  verify_app: &verify_app(&1, sname, version, config_fun)
                ) do
           {:hit, Map.put(stats, :stripped, stripped?(Path.join(env.build_lib, sname), sname))}

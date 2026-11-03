@@ -22,11 +22,24 @@ defmodule ElixirPrecompiled.Env do
           candidates: [candidate()],
           lock: map(),
           build_lib: Path.t(),
-          deps_path: Path.t()
+          deps_path: Path.t(),
+          installed: [atom()],
+          installed_envs: %{optional(atom()) => String.t()}
         }
 
+  # `installed`: Hex deps Mix counts as compiled this run whose build dir
+  # carries the provenance file an install writes, so `Check` can recheck
+  # them against the current batch. `installed_envs` names each one's own
+  # compile env, as `hex_candidates/3` takes it, for when one has to be
+  # matched again.
   @enforce_keys [:candidates, :lock, :build_lib, :deps_path]
-  defstruct system: nil, candidates: [], lock: %{}, build_lib: nil, deps_path: nil
+  defstruct system: nil,
+            candidates: [],
+            lock: %{},
+            build_lib: nil,
+            deps_path: nil,
+            installed: [],
+            installed_envs: %{}
 
   @doc """
   The locked Hex entries among `apps`, in the order given. `envs` names each
