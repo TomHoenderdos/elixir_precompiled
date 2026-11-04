@@ -150,7 +150,7 @@ defmodule ChainTest.Mirror.Layer2Test do
 
         expected =
           case kind do
-            :path_dep -> ["elixir_precompiled", "nerves"]
+            :path_dep -> ["chain_path_dep"]
             :unlocked_package -> ["chain_absent"]
             _ -> ["jason"]
           end
@@ -175,26 +175,23 @@ defmodule ChainTest.Mirror.Layer2Test do
                forged(s, :unlocked_package)
     end
 
-    test "P5: each git or path dep gets a build at its own identity, so only the git/path rule can stop it",
-         %{s: s} do
-      for {name, vsn, checksum} <- [
-            {"nerves", "2.0.0-pre.4", "0123456789abcdef0123456789abcdef01234567"},
-            {"elixir_precompiled", "0.1.0", nil}
-          ] do
-        rel = Map.fetch!(Forge.forged(s, :path_dep), name)
-        assert rel == "v2/manifests/#{name}.json"
-        doc = JSON.decode!(File.read!(Path.join(s.dir, rel)))
-        assert %{"format" => 2, "versions" => %{^vsn => %{"builds" => [build]}}} = doc
-        assert build["target"] == "pure_elixir"
-        assert build["build"]["elixir"] == System.version()
-        assert build["build"]["otp"] == System.otp_release()
-        assert build["build"]["dep_env"] == "prod"
-        if checksum, do: assert(build["build"]["package_checksum"] == checksum)
-        assert [%{"path" => app_path, "sha256" => sha}] = build["ebin"]
-        assert app_path == "ebin/#{name}.app"
-        app = File.read!(Path.join(s.dir, "files/#{sha}"))
-        assert app =~ "{application,#{name}," and app =~ ~s("#{vsn}")
-      end
+    test "P5: the fixture's path dep gets a build at its own identity, so only the git/path rule can stop it",
+         %{s: s, tmp_dir: tmp} do
+      rel = Map.fetch!(Forge.forged(s, :path_dep), "chain_path_dep")
+      assert rel == "v2/manifests/chain_path_dep.json"
+      doc = JSON.decode!(File.read!(Path.join(s.dir, rel)))
+      assert %{"format" => 2, "versions" => %{"0.1.0" => %{"builds" => [build]}}} = doc
+      assert build["target"] == "pure_elixir"
+      assert build["build"]["elixir"] == System.version()
+      assert build["build"]["otp"] == System.otp_release()
+      assert build["build"]["dep_env"] == "prod"
+
+      mix_exs = Path.join(Layer2Fixture.fixture_dir(tmp), "deps_local/chain_path_dep/mix.exs")
+      assert build["build"]["package_checksum"] == Synthetic.sha(File.read!(mix_exs))
+
+      assert [%{"path" => "ebin/chain_path_dep.app", "sha256" => sha}] = build["ebin"]
+      app = File.read!(Path.join(s.dir, "files/#{sha}"))
+      assert app =~ "{application,chain_path_dep," and app =~ ~s("0.1.0")
     end
 
     test "forging never writes over a file that exists (hard links into the real snapshot)",

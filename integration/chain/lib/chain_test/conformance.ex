@@ -546,7 +546,7 @@ defmodule ChainTest.Conformance do
           s.compiled.(%{
             build_lib: build.build_lib,
             report: build.report,
-            allowlist: Compiled.allowlist(@project_app)
+            allowlist: Compiled.fixture_allowlist(opts.fixture_dir, @project_app)
           })
 
         build_dir = Path.join([opts.fixture_dir, "_build", "#{opts.target}_dev"])

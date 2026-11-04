@@ -96,6 +96,20 @@ defmodule ChainTest.CompiledTest do
     refute Compiled.allowed?("nerves_systemx", list)
   end
 
+  test "the project's own path deps are allowed to compile here" do
+    refute Compiled.allowed?("chain_path_dep", Compiled.allowlist("chain_fixture"))
+    list = Compiled.allowlist("chain_fixture", ["chain_path_dep"])
+    assert Compiled.allowed?("chain_path_dep", list)
+    refute Compiled.allowed?("nerves_ssh", list)
+
+    fixture = Path.expand("../../fixture", __DIR__)
+
+    assert Compiled.allowed?(
+             "chain_path_dep",
+             Compiled.fixture_allowlist(fixture, "chain_fixture")
+           )
+  end
+
   # The fixture's deps/<dep>/lib/<file>, next to the synthetic _build.
   defp source(build_lib, dep, file) do
     path = Path.expand("../../../deps/#{dep}/#{file}", build_lib)

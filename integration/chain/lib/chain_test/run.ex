@@ -147,7 +147,7 @@ defmodule ChainTest.Run do
         s.compiled.(%{
           build_lib: build.build_lib,
           report: build.report,
-          allowlist: Compiled.allowlist(@project_app)
+          allowlist: Compiled.fixture_allowlist(opts.fixture_dir, @project_app)
         })
       )
 

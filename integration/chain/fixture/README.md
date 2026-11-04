@@ -10,7 +10,10 @@ precompiled build:
   ash builds carry);
 - `nerves_pack`, which brings `nerves_ssh`, so the next run can deploy again;
 - `nerves` (the `feat/precompiled` branch) and `elixir_precompiled` (this
-  repository, by path), which are never installed precompiled.
+  repository, by path), which are never installed precompiled;
+- `chain_path_dep` (`deps_local/chain_path_dep`, one module), a path dep that
+  is not Nerves tooling: never installed precompiled, whatever a batch names
+  (the conformance case P5).
 
 `expected.exs` lists the dependencies that must be precompiled hits
 (`hits`) and the ones that never may be (`never`). The versions are pinned

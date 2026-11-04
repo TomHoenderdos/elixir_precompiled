@@ -23,11 +23,9 @@ defmodule ChainTest.Layer2Fixture do
     }
 
   @doc """
-  The fixture dir of `snapshot/1` under `tmp`: three levels below it, so
-  the path dep `../../..` (elixir_precompiled, as in the real fixture) is
-  `tmp`, whose `mix.exs` gives version 0.1.0; `nerves` is a git dep at
-  `0123456789abcdef0123456789abcdef01234567`, its `deps/nerves/mix.exs`
-  version 2.0.0-pre.4.
+  The fixture dir of `snapshot/1` under `tmp`: its `mix.exs` declares the
+  path dep `chain_path_dep` at `deps_local/chain_path_dep`, version 0.1.0,
+  as the real fixture does.
   """
   @spec fixture_dir(Path.t()) :: Path.t()
   def fixture_dir(tmp), do: Path.join([tmp, "w", "x", "fixture"])
@@ -73,22 +71,15 @@ defmodule ChainTest.Layer2Fixture do
 
     fixture = fixture_dir(tmp)
     Synthetic.tree(fixture, "rpi4", %{jason: {"1.4.5", @outer}})
-    lock = Path.join(fixture, "mix.lock")
 
     File.write!(
-      lock,
-      String.replace(
-        File.read!(lock),
-        "%{\n",
-        ~s(%{\n  "nerves": {:git, "https://example.invalid/nerves.git", ) <>
-          ~s("0123456789abcdef0123456789abcdef01234567", [branch: "main"]},\n),
-        global: false
-      )
+      Path.join(fixture, "mix.exs"),
+      ~s(defp deps, do: [{:chain_path_dep, path: "deps_local/chain_path_dep"}]\n)
     )
 
-    File.mkdir_p!(Path.join(fixture, "deps/nerves"))
-    File.write!(Path.join(fixture, "deps/nerves/mix.exs"), ~s(@version "2.0.0-pre.4"\n))
-    File.write!(Path.join(tmp, "mix.exs"), ~s(  @version "0.1.0"\n))
+    dep = Path.join(fixture, "deps_local/chain_path_dep")
+    File.mkdir_p!(dep)
+    File.write!(Path.join(dep, "mix.exs"), ~s(  @version "0.1.0"\n))
 
     {:ok, snap} =
       Snapshot.take(%{

@@ -101,8 +101,10 @@ defmodule ChainTest.Conformance.Case do
         for the case's source and root: `:absent` (no root adopted), or the
         integer it must hold (an adopted root's version, R17).
       * `unrequested` - a non-empty list of snapshot paths
-        (`"v2/manifests/nerves.json"`) the client must never have asked the
-        case's mirror for (P5, P9: a manifest it must not even consider).
+        (`"v2/manifests/chain_path_dep.json"`) the client must never have
+        asked either mirror for (P5, P9: a manifest it must not even
+        consider): no logged target, decoded, its query dropped, in any
+        case, may end in a listed path's base name.
 
   `gate` (optional) - the id of an earlier case in the file, of the same
   layer (both real-root, or both layer 2): this case runs only after that
@@ -895,11 +897,20 @@ defmodule ChainTest.Conformance.Case do
   end
 
   defp post_problem(:unrequested, paths, _seen, _snap, input) do
-    asked = MapSet.new(for %{path: path} <- Map.get(input, :requests, []), do: path)
+    asked =
+      for {which, key} <- [
+            {"the case's mirror", :requests},
+            {"the second mirror", :second_requests}
+          ],
+          %{path: target} <- Map.get(input, key, []),
+          is_binary(target),
+          do: {which, target, normalized(target)}
 
     for path <- paths,
-        MapSet.member?(asked, path),
-        do: "after unrequested: the client asked the case's mirror for #{path}"
+        base = String.downcase(Path.basename(path)),
+        {which, target, norm} <- asked,
+        norm == base or String.ends_with?(norm, "/" <> base),
+        do: "after unrequested: the client asked #{which} for #{inspect(target)} (#{path})"
   end
 
   defp post_problem(:cache, :untouched, seen, _snap, _input),
@@ -930,6 +941,18 @@ defmodule ChainTest.Conformance.Case do
           before,
           Map.get(seen.after, :outside, %{})
         )
+  end
+
+  # A logged target as the name it asks for: percent-decoded, without its
+  # query, lower case.
+  defp normalized(target) do
+    target
+    |> String.split("?", parts: 2)
+    |> hd()
+    |> URI.decode()
+    |> String.downcase()
+  rescue
+    ArgumentError -> String.downcase(target)
   end
 
   defp left_unused?(rel, fp, before, used),

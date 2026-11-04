@@ -43,6 +43,8 @@ defmodule ChainFixture.MixProject do
       {:elixir_precompiled, path: "../../..", runtime: false, override: true},
       {:nerves_runtime, "~> 0.13.12"},
       {:toolshed, "~> 0.5.0"},
+      # A path dep that is not Nerves tooling: never precompiled (P5).
+      {:chain_path_dep, path: "deps_local/chain_path_dep"},
 
       # Pure Elixir; on host too, so the probe's host test has an app to hash.
       {:jason, "1.4.5"},

@@ -51,18 +51,24 @@ defmodule ChainTest.Preflight do
   def expected_deps(fixture_dir, target) do
     {%{hits: hits, never: never}, _} = Code.eval_file(Path.join(fixture_dir, "expected.exs"))
     names = Enum.map(hits ++ never, &to_string/1)
-    Enum.uniq(names -- path_deps(fixture_dir)) ++ [Map.fetch!(@systems, target)]
+    Enum.uniq(names -- Map.keys(path_deps(fixture_dir))) ++ [Map.fetch!(@systems, target)]
   end
 
-  defp path_deps(fixture_dir) do
+  @doc """
+  The deps the fixture's `mix.exs` declares with a literal `path:`, by
+  name, to that path (relative to the fixture). A lock never names them;
+  Mix compiles them here, as part of the project.
+  """
+  @spec path_deps(Path.t()) :: %{String.t() => String.t()}
+  def path_deps(fixture_dir) do
     case File.read(Path.join(fixture_dir, "mix.exs")) do
       {:ok, text} ->
-        ~r/\{:([a-z0-9_]+),\s*path:\s*"/
+        ~r/\{:([a-z0-9_]+),\s*path:\s*"([^"]+)"/
         |> Regex.scan(text, capture: :all_but_first)
-        |> List.flatten()
+        |> Map.new(fn [name, path] -> {name, path} end)
 
       {:error, _} ->
-        []
+        %{}
     end
   end
 

@@ -36,9 +36,19 @@ defmodule ChainTest.Compiled do
   @tooling ~w(nerves nerves_system_* nerves_toolchain_* elixir_precompiled interactive_cmd
               nerves_discovery tablet)
 
-  @doc "The tooling allowlist plus the project's own app."
-  @spec allowlist(String.t()) :: [String.t()]
-  def allowlist(project_app), do: @tooling ++ [project_app]
+  @doc """
+  The tooling allowlist plus the project's own app and `project_deps`, the
+  project's own path deps (compiled here as part of it; the client never
+  considers them).
+  """
+  @spec allowlist(String.t(), [String.t()]) :: [String.t()]
+  def allowlist(project_app, project_deps \\ []),
+    do: @tooling ++ [project_app | project_deps]
+
+  @doc "`allowlist/2` with the fixture's literal path deps (`ChainTest.Preflight.path_deps/1`)."
+  @spec fixture_allowlist(Path.t(), String.t()) :: [String.t()]
+  def fixture_allowlist(fixture_dir, project_app),
+    do: allowlist(project_app, Map.keys(ChainTest.Preflight.path_deps(fixture_dir)))
 
   @doc "Whether `name` matches an allowlist entry (a trailing `*` is a prefix)."
   @spec allowed?(String.t(), [String.t()]) :: boolean()

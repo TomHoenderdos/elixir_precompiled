@@ -58,6 +58,7 @@ defmodule ChainTest.Conformance.CaseLayer2Test do
       snapshot: snap(),
       hits: [:jason],
       isolation: Keyword.get(opts, :isolation, []),
+      second_requests: Keyword.get(opts, :second_requests, []),
       observed: %{
         before: Keyword.get(opts, :before, view()),
         after: Keyword.get(opts, :after, view()),
@@ -174,6 +175,29 @@ defmodule ChainTest.Conformance.CaseLayer2Test do
 
       assert d =~ "unrequested" and d =~ "v2/manifests/nerves.json"
     end
+
+    test "unrequested matches the base name in any logged target, on either mirror" do
+      c = Map.put(@t0, :after, %{unrequested: ["v2/manifests/chain_path_dep.json"]})
+      base = [get("batch.json"), get("v2/manifests/jason.json")]
+
+      for target <- [
+            "/v2/manifests/chain_path_dep.json?x=1",
+            "/manifests/chain_path_dep.json",
+            "/v2/manifests/chain%5Fpath%5Fdep.json",
+            "/v2//manifests/CHAIN_PATH_DEP.JSON"
+          ] do
+        assert %Result{class: :fail, detail: d} = judged(c, requests: base ++ [get(target)]),
+               target
+
+        assert d =~ "chain_path_dep"
+      end
+
+      assert %Result{class: :fail} =
+               judged(c, second_requests: [get("v2/manifests/chain_path_dep.json")])
+
+      assert %Result{class: :pass} =
+               judged(c, requests: base ++ [get("/v2/manifests/chain_path.json")])
+    end
   end
 
   describe "judge/2" do
@@ -275,7 +299,7 @@ defmodule ChainTest.Conformance.CaseLayer2Test do
       for id <- ~w(P8-duplicate P8-case P8-unicode),
           do: assert(by[id].client.deps.jason == {:fail, "path collision"}, id)
 
-      for {id, names} <- [{"P5", ~w(nerves elixir_precompiled)}, {"P9", ~w(chain_absent)}] do
+      for {id, names} <- [{"P5", ~w(chain_path_dep)}, {"P9", ~w(chain_absent)}] do
         want = for n <- names, dir <- ["v2/manifests", "manifests"], do: "#{dir}/#{n}.json"
         assert Enum.sort(by[id].after.unrequested) == Enum.sort(want), id
       end

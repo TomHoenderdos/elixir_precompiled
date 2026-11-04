@@ -8,5 +8,5 @@
 # with mix.lock.
 %{
   hits: [:exqlite, :argon2_elixir, :circuits_gpio, :jason, :ash, :spark, :reactor, :plug],
-  never: [:nerves, :elixir_precompiled]
+  never: [:nerves, :elixir_precompiled, :chain_path_dep]
 }

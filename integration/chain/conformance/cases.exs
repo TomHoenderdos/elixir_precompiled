@@ -596,8 +596,8 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
       ignored.(
         "P5",
         :path_dep,
-        ["nerves", "elixir_precompiled"],
-        "The batch names a build for nerves (a git dep) and elixir_precompiled (a path dep), each at its own version and identity: never precompiled, their manifests never even asked for."
+        ["chain_path_dep"],
+        "The batch names a build for the fixture's path dep chain_path_dep, at its own version and identity: never precompiled, its manifest never even asked for."
       ),
       forged.(
         "P6-name",

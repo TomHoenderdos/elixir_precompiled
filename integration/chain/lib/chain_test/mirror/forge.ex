@@ -28,14 +28,13 @@ defmodule ChainTest.Mirror.Forge do
       own on the code path;
     * `:package_checksum`, `:deps_lock` (P4) - the build's package checksum,
       or one locked dep's checksum in its deps lock, zeroed;
-    * `:path_dep` (P5) - the batch also names a manifest for `nerves` (a git
-      dep) and one for `elixir_precompiled` (a path dep), each with one
-      build at that dep's own identity: its version (from its `mix.exs`),
-      the lock's git commit as its package checksum (a path dep has none:
-      the sha256 of its `mix.exs`), a `pure_elixir` build for this Elixir
-      and OTP, an `.app` naming the dep at that version. Nothing but the
-      client's git/path rule (and its tooling list, which names both) can
-      keep it out;
+    * `:path_dep` (P5) - the batch also names a manifest for the fixture's
+      own path dep `chain_path_dep` (not Nerves tooling, which the client
+      skips before its git/path rule), with one build at that dep's own
+      identity: the version from its `mix.exs`, the sha256 of that
+      `mix.exs` as its package checksum (a path dep has none), a
+      `pure_elixir` build for this Elixir and OTP, an `.app` naming the dep
+      at that version. Only the client's git/path rule can keep it out;
     * `:app_name`, `:app_version` (P6) - `ebin/jason.app` replaced by a served
       `.app` naming `chain_forged`, or version `9.9.9`;
     * `:duplicate`, `:case_variant`, `:unicode_variant` (P8) - one more
@@ -52,7 +51,7 @@ defmodule ChainTest.Mirror.Forge do
   """
   @behaviour ChainTest.Mirror.Transform
 
-  alias ChainTest.{Lock, TestKey, Trust}
+  alias ChainTest.{Lock, Preflight, TestKey, Trust}
 
   @target "jason"
   @project_app "chain_fixture"
@@ -75,14 +74,7 @@ defmodule ChainTest.Mirror.Forge do
     :unicode_variant,
     :unlocked_package
   ]
-  @new_names %{path_dep: ["elixir_precompiled", "nerves"], unlocked_package: ["chain_absent"]}
-  # Where a non-Hex dep of the fixture lives when the lock has no git entry
-  # for it: relative to the fixture dir, or an environment variable.
-  @path_deps %{
-    "elixir_precompiled" => {:rel, "../../.."},
-    "nerves" => {:env, "CHAIN_NERVES_PATH"}
-  }
-
+  @new_names %{path_dep: ["chain_path_dep"], unlocked_package: ["chain_absent"]}
   @doc "Every forgery this transform serves."
   @spec kinds() :: [atom()]
   def kinds(), do: @kinds
@@ -247,18 +239,9 @@ defmodule ChainTest.Mirror.Forge do
   end
 
   defp path_dep(name, fixture_dir) do
-    case Map.get(@path_deps, name) do
-      {:rel, rel} ->
-        {Path.expand(rel, fixture_dir), nil}
-
-      {:env, var} ->
-        case System.get_env(var) do
-          nil -> raise ArgumentError, "#{name} is neither a git dep in the lock nor at $#{var}"
-          path -> {Path.expand(path), nil}
-        end
-
-      nil ->
-        raise ArgumentError, "no known location for the fixture's #{name}"
+    case Map.fetch(Preflight.path_deps(fixture_dir), name) do
+      {:ok, rel} -> {Path.expand(rel, fixture_dir), nil}
+      :error -> raise ArgumentError, "the fixture declares no git or path dep #{name}"
     end
   end
 

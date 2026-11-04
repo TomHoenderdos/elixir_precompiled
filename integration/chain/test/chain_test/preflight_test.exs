@@ -6,7 +6,7 @@ defmodule ChainTest.PreflightTest do
   # FakeBin changes the global PATH.
   use ExUnit.Case, async: false
 
-  alias ChainTest.{FakeBin, Preflight, Result}
+  alias ChainTest.{Build, FakeBin, Preflight, Result}
 
   @moduletag :tmp_dir
 
@@ -186,6 +186,20 @@ defmodule ChainTest.PreflightTest do
       end
 
       refute "elixir_precompiled" in deps
+      refute "chain_path_dep" in deps
+    end
+
+    test "path_deps/1 names the fixture's literal path deps and where they live" do
+      fixture = Path.expand("../../fixture", __DIR__)
+
+      assert %{
+               "elixir_precompiled" => "../../..",
+               "chain_path_dep" => "deps_local/chain_path_dep"
+             } =
+               Preflight.path_deps(fixture)
+
+      assert File.regular?(Path.join(fixture, "deps_local/chain_path_dep/mix.exs"))
+      assert :chain_path_dep in Build.expected(fixture).never
     end
 
     test "a lock missing a hit from expected.exs fails and names it", %{tmp_dir: tmp} do
