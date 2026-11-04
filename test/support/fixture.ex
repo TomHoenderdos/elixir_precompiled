@@ -139,6 +139,26 @@ defmodule ElixirPrecompiled.Fixture do
     }
   end
 
+  @spec record(map()) :: :ok
+  def record(req),
+    do: Agent.update(__MODULE__, &Map.update(&1, :requests, [req], fn l -> [req | l] end))
+
+  @spec requests() :: [map()]
+  def requests(), do: Agent.get(__MODULE__, &(Map.get(&1, :requests, []) |> Enum.reverse()))
+
+  @spec clear_requests() :: :ok
+  def clear_requests(), do: Agent.update(__MODULE__, &Map.put(&1, :requests, []))
+
+  # false: root and batch are served without an ETag and never as 304, as
+  # the production portal did until it learned If-None-Match.
+  @spec set_etags(boolean()) :: :ok
+  def set_etags(on?), do: put(:etags, on?)
+
+  # Every file and manifest the listener on `port` serves has its first
+  # byte flipped: a CDN serving wrong bytes. nil turns it off.
+  @spec corrupt_port(pos_integer() | nil) :: :ok
+  def corrupt_port(port), do: put(:corrupt_port, port)
+
   @spec get(atom()) :: term()
   def get(key), do: Agent.get(__MODULE__, &Map.get(&1, key))
 
