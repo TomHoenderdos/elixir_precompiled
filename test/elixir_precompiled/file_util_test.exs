@@ -43,4 +43,14 @@ defmodule ElixirPrecompiled.FileUtilTest do
     File.write!(blocker, "")
     refute FileUtil.writable_dir?(Path.join(blocker, "home"))
   end
+
+  test "mark_used sets the times of an existing file and never creates one", %{tmp_dir: dir} do
+    path = Path.join(dir, "entry")
+    assert FileUtil.mark_used(path) == :ok
+    refute File.exists?(path)
+    File.write!(path, "x")
+    File.touch!(path, 1)
+    assert FileUtil.mark_used(path) == :ok
+    assert File.stat!(path, time: :posix).mtime > 1
+  end
 end

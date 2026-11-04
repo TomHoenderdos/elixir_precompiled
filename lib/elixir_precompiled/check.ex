@@ -70,6 +70,37 @@ defmodule ElixirPrecompiled.Check do
   end
 
   @doc false
+  # Off means compile from source: every build an earlier run installed
+  # goes, so Mix compiles it in this same run. Only a dir that carries the
+  # provenance file an install writes is removed, checked again by lstat
+  # right before (ElixirPrecompiled.Status.remove/2), so a dep Mix built
+  # stays. A dir that will not go is one line naming it; Mix then compiles
+  # what is left over it.
+  @spec remove_installed(Env.t()) :: non_neg_integer()
+  def remove_installed(%Env{installed: []}), do: 0
+
+  def remove_installed(env) do
+    results =
+      for dep <- env.installed do
+        {dep, ElixirPrecompiled.Status.remove(env.build_lib, Atom.to_string(dep))}
+      end
+
+    for {dep, {:error, why}} <- results,
+        do: Output.warning("precompiled: could not remove the installed #{dep}: #{why}")
+
+    n = Enum.count(results, &match?({_, :ok}, &1))
+
+    if n > 0 do
+      Output.warning(
+        "precompiled: disabled; removed #{n} installed #{if n == 1, do: "build", else: "builds"}, " <>
+          "Mix compiles #{if n == 1, do: "it", else: "them"} from source"
+      )
+    end
+
+    n
+  end
+
+  @doc false
   # The home must take writes (trust state, cache). One that cannot (none
   # at all, read-only, or a pre-seeded CI cache) moves to _build for this
   # run.
@@ -120,7 +151,11 @@ defmodule ElixirPrecompiled.Check do
 
         {revoked, replaced} = recheck(installed, batch, env)
 
-        revoked ++ install_lines(candidates ++ replaced, config, batch, env, config_fun)
+        lines = revoked ++ install_lines(candidates ++ replaced, config, batch, env, config_fun)
+        # Once a day, the cache back under its bound. Only after a run with
+        # a verified batch: a refused one changes nothing on disk (R14).
+        ElixirPrecompiled.Cache.maybe_gc(config)
+        lines
 
       {:error, why} ->
         # No fresh batch, no verdict: installed builds stay as they are,

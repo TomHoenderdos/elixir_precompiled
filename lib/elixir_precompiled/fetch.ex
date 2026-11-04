@@ -217,10 +217,20 @@ defmodule ElixirPrecompiled.Fetch do
   defp decode_manifest(bytes), do: with({:ok, map} <- decode(bytes), do: Manifest.normalize(map))
 
   defp cached_manifest(config, sha) do
-    case read_cached(manifest_cache_path(config, sha), @max_manifest_bytes) do
-      {:ok, bytes} -> if sha256(bytes) == sha, do: {:ok, bytes}, else: :absent
+    path = manifest_cache_path(config, sha)
+
+    case read_cached(path, @max_manifest_bytes) do
+      {:ok, bytes} -> if sha256(bytes) == sha, do: used(path, {:ok, bytes}), else: :absent
       other -> other
     end
+  end
+
+  # A verified hit marks its entry as used (mtime), so the cache gc
+  # (ElixirPrecompiled.Cache) evicts by last use. A home that takes no
+  # writes makes it a no-op.
+  defp used(path, result) do
+    _ = ElixirPrecompiled.FileUtil.mark_used(path)
+    result
   end
 
   # A cache write that fails costs only the next run a download.
@@ -629,9 +639,14 @@ defmodule ElixirPrecompiled.Fetch do
   # The cached copy, re-hashed on every use; a wrong size or a wrong hash
   # is no copy at all, and anything but a regular file refuses the dep.
   defp cached_file(config, sha, size) do
-    case read_cached(file_cache_path(config, sha), size) do
-      {:ok, bytes} -> if check_bytes(bytes, sha, size) == :ok, do: {:ok, bytes}, else: :absent
-      other -> other
+    path = file_cache_path(config, sha)
+
+    case read_cached(path, size) do
+      {:ok, bytes} ->
+        if check_bytes(bytes, sha, size) == :ok, do: used(path, {:ok, bytes}), else: :absent
+
+      other ->
+        other
     end
   end
 

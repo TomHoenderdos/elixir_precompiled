@@ -24,6 +24,22 @@ defmodule ElixirPrecompiled.FileUtil do
     end
   end
 
+  @doc false
+  # Sets a cache entry's access and modification times to now, so the
+  # cache gc evicts by last use. Unlike File.touch/1 it never creates the
+  # file: an entry another run evicted meanwhile stays gone. Any failure
+  # (a read-only home) is ignored.
+  @spec mark_used(Path.t()) :: :ok
+  def mark_used(path) do
+    t = System.os_time(:second)
+    u = :undefined
+    info = {:file_info, u, u, u, t, t, u, u, u, u, u, u, u, u}
+    _ = :file.write_file_info(String.to_charlist(path), info, [{:time, :posix}])
+    :ok
+  rescue
+    _ -> :ok
+  end
+
   @spec writable_dir?(Path.t()) :: boolean()
   def writable_dir?(dir) do
     probe = Path.join(dir, ".probe-#{System.pid()}-#{System.unique_integer([:positive])}")

@@ -39,6 +39,36 @@ defmodule ElixirPrecompiled.Integration.AliasTest do
     out = C.mix!(proj, ["compile"])
     refute out =~ "precompiled:", out
     assert [%{path: "/precompiled/batch.json", if_none_match: "\"" <> _}] = F.requests()
+
+    out = C.mix!(proj, ["precompiled.status"])
+    assert out =~ ~r/jason 1\.4\.5\s+batch 2/, out
+    out = C.mix!(proj, ["precompiled.clean"])
+    assert out =~ "precompiled: removed 1 installed build", out
+    refute File.exists?(Path.join(proj, "_build/dev/lib/jason")), out
+    out = C.mix!(proj, ["compile"], [{"ELIXIR_PRECOMPILED", "0"}])
+    assert out =~ "==> jason", out
+  end
+
+  # Turning the library off undoes it: the installed build goes and Mix
+  # compiles the dep from source in that same run.
+  test "ELIXIR_PRECOMPILED=0 removes installs and Mix compiles them", %{tmp_dir: dir} do
+    f = F.new(dir)
+    proj = C.plain!(dir, f)
+    C.publish_jason!(f, proj)
+    assert C.mix!(proj, ["compile"]) =~ ~r/precompiled: jason 1\.4\.5\s+HIT/
+
+    out = C.mix!(proj, ["compile"], [{"ELIXIR_PRECOMPILED", "0"}])
+    assert out =~ "precompiled: disabled; removed 1 installed build", out
+    assert out =~ "==> jason", out
+    lib = Path.join(proj, "_build/dev/lib/jason")
+    refute File.exists?(Path.join(lib, ".mix/elixir_precompiled.json")), out
+
+    out =
+      C.mix!(proj, ["run", "-e", ~s|IO.puts("encoded=" <> Jason.encode!(%{a: 1}))|], [
+        {"ELIXIR_PRECOMPILED", "0"}
+      ])
+
+    assert out =~ ~s(encoded={"a":1}), out
   end
 
   # clean deletes _build and reenables deps.loadpaths: the second install

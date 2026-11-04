@@ -77,6 +77,15 @@ defmodule ElixirPrecompiled.ConfigTest do
              Config.load()
   end
 
+  test "the cache is bounded: cache_max_mb, default 4096" do
+    configure(source: "https://x")
+    assert Config.load().cache_max_bytes == 4096 * 1_048_576
+    configure(source: "https://x", cache_max_mb: 10)
+    assert Config.load().cache_max_bytes == 10 * 1_048_576
+    configure(source: "https://x", cache_max_mb: -1)
+    assert Config.load().cache_max_bytes == 4096 * 1_048_576
+  end
+
   test "content origins are https, or http on loopback" do
     assert Config.content_origin?("https://cdn.example.test")
     assert Config.content_origin?("http://127.0.0.1:4000")

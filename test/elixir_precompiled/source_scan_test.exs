@@ -80,7 +80,12 @@ defmodule ElixirPrecompiled.SourceScanTest do
     key = String.duplicate("ab", 32)
     assert %{target: true} = SourceScan.cached(home, d, key)
     File.rm_rf!(d)
+    entry = Path.join([home, "scan", "v1", key <> ".term"])
+    File.touch!(entry, 1)
     assert %{target: true} = SourceScan.cached(home, d, key)
+    # A hit marks the entry as used, so the cache gc evicts by last use.
+    assert {:ok, %File.Stat{mtime: m}} = File.lstat(entry, time: :posix)
+    assert m > 1
     # Not a checksum: never a file name, scanned every time.
     assert %{target: false} = SourceScan.cached(home, Path.join(dir, "none"), "../x")
   end

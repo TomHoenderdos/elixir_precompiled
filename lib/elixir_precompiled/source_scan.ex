@@ -58,6 +58,8 @@ defmodule ElixirPrecompiled.SourceScan do
         result
 
       hit ->
+        # Marks the entry as used, so the cache gc evicts by last use.
+        _ = ElixirPrecompiled.FileUtil.mark_used(path)
         hit
     end
   end

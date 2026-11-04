@@ -127,6 +127,30 @@ defmodule ElixirPrecompiled.CheckTest do
              report_file["lines"]
   end
 
+  test "a run with a verified batch keeps the cache under its bound, once a day", %{
+    f: f,
+    config: config,
+    env: env
+  } do
+    F.publish(f, %{
+      "ash" => %{
+        "versions" => %{"3.5.2" => %{"builds" => [good_entry(f, "ash", "1.31.0")]}}
+      }
+    })
+
+    old = Path.join(config.home, "files/" <> String.duplicate("0", 64))
+    File.mkdir_p!(Path.dirname(old))
+    File.write!(old, String.duplicate("x", 2_000_000))
+    File.touch!(old, 1)
+
+    _ = run_capturing(%{config | cache_max_bytes: 1_000_000}, env)
+    assert_received {:report, {:ok, %{hits: 1}}}
+    refute File.exists?(old)
+    assert File.regular?(Path.join(config.home, "gc_at"))
+    # What this run used was touched just now: it stays.
+    assert [_ | _] = File.ls!(Path.join(config.home, "files"))
+  end
+
   test "a format-1 manifest still hits", %{f: f, config: config, env: env, lib: lib} do
     e = Map.delete(good_entry(f, "ash", "1.31.0"), "target")
     e = update_in(e["build"], &Map.delete(&1, "dep_env"))

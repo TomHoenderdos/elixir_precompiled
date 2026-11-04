@@ -181,6 +181,40 @@ defmodule ElixirPrecompiled.FetchTest do
     refute File.exists?(Path.join(lib, "ash"))
   end
 
+  test "a cache hit marks its entry as used, so gc evicts by last use", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    s = F.file(f, "good")
+    file = Path.join(config.home, "files/#{s}")
+    File.mkdir_p!(Path.dirname(file))
+    File.write!(file, "good")
+    File.touch!(file, 1)
+
+    entry = entry(with_app(f, [file_entry(s, 4)]))
+    assert {:ok, _} = Fetch.install(config, :ash, entry, @lock_entry, lib, deps_path: deps)
+    assert {:ok, %File.Stat{mtime: m}} = File.lstat(file, time: :posix)
+    assert m > 1
+
+    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{}}}}, format: 1)
+
+    sha =
+      F.get(:batch)
+      |> then(fn env ->
+        env["payload"] |> Base.url_decode64!(padding: false) |> :json.decode()
+      end)
+      |> get_in(["manifests", "ash"])
+
+    assert {:ok, _} = Fetch.manifest(config, "ash", sha)
+    manifest = Path.join(config.home, "manifests/#{sha}.json")
+    File.touch!(manifest, 1)
+    assert {:ok, _} = Fetch.manifest(config, "ash", sha)
+    assert {:ok, %File.Stat{mtime: m}} = File.lstat(manifest, time: :posix)
+    assert m > 1
+  end
+
   test "a cached file that no longer matches its sha is re-downloaded", %{
     f: f,
     config: config,

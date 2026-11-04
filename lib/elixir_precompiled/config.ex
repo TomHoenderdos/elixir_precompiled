@@ -12,7 +12,9 @@ defmodule ElixirPrecompiled.Config do
   Also: `deadline_seconds:` (default 300) bounds a whole run, after which
   every dependency still waiting compiles from source; `root_check_seconds:`
   (default 3600) is how often the served root is fetched; `content: [url]`
-  names CDN or mirror origins the files may come from (https only).
+  names CDN or mirror origins the files may come from (https only);
+  `cache_max_mb:` (default 4096) bounds the download cache, least recently
+  used entries going first (checked at most once a day).
   `ELIXIR_PRECOMPILED_OFFLINE=1` makes no request: the last verified batch
   and the cache only, and only while that batch is still fresh.
   """
@@ -28,6 +30,7 @@ defmodule ElixirPrecompiled.Config do
           metadata_timeout_ms: pos_integer(),
           connect_timeout_ms: pos_integer(),
           root_check_seconds: non_neg_integer(),
+          cache_max_bytes: non_neg_integer(),
           content_override: [String.t()] | nil
         }
 
@@ -47,11 +50,12 @@ defmodule ElixirPrecompiled.Config do
         home: home_dir(opts),
         clock_offset_seconds: clock_offset(opts[:clock_offset_seconds]),
         offline: offline?(),
-        deadline_ms: seconds(opts[:deadline_seconds], 300) * 1000,
+        deadline_ms: non_neg(opts[:deadline_seconds], 300) * 1000,
         # Root and batch together; connects to any host.
         metadata_timeout_ms: 15_000,
         connect_timeout_ms: 5_000,
-        root_check_seconds: seconds(opts[:root_check_seconds], 3600),
+        root_check_seconds: non_neg(opts[:root_check_seconds], 3600),
+        cache_max_bytes: non_neg(opts[:cache_max_mb], 4096) * 1_048_576,
         content_override: content(opts[:content])
       }
     else
@@ -73,8 +77,9 @@ defmodule ElixirPrecompiled.Config do
   @spec offline?() :: boolean()
   def offline?(), do: env_var("_OFFLINE") in ["1", "true", "yes"]
 
-  defp seconds(n, _default) when is_integer(n) and n >= 0, do: n
-  defp seconds(_, default), do: default
+  # A non-negative integer, else the default.
+  defp non_neg(n, _default) when is_integer(n) and n >= 0, do: n
+  defp non_neg(_, default), do: default
 
   @doc false
   # A content origin (a CDN or mirror for files and manifests): https, or

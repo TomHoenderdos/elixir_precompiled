@@ -99,6 +99,43 @@ defmodule ElixirPrecompiled.InstallTest do
     end
   end
 
+  test "off: builds an earlier install placed go before Mix.install compiles", %{tmp_dir: _} do
+    proj = Install.project_dir([:jason], [])
+    lib = Path.join(proj, "_build/#{Mix.env()}/lib")
+
+    File.mkdir_p!(proj)
+
+    File.write!(
+      Path.join(proj, "mix.lock"),
+      ~s(%{"jason": {:hex, :jason, "1.4.5", "i", [:mix], [], "hexpm", "o"}}\n)
+    )
+
+    for f <- ["ebin/jason.app", ".mix/compile.elixir_scm", ".mix/elixir_precompiled.json"] do
+      File.mkdir_p!(Path.dirname(Path.join([lib, "jason", f])))
+      File.write!(Path.join([lib, "jason", f]), "x")
+    end
+
+    parent = self()
+
+    installer = fn _deps, _opts ->
+      send(parent, {:installed, File.exists?(Path.join(lib, "jason"))})
+      :ok
+    end
+
+    out =
+      capture_io(fn ->
+        assert Install.run([:jason], [], nil, installer: installer, installed?: true) == :ok
+      end)
+
+    # A repeat call in one VM: its deps are loaded, nothing is undone.
+    assert_received {:installed, true}
+    refute out =~ "removed"
+
+    out = capture_io(fn -> assert Install.run([:jason], [], nil, installer: installer) == :ok end)
+    assert out =~ "precompiled: disabled; removed 1 installed build"
+    assert_received {:installed, false}
+  end
+
   test "a repeat install in the same VM defers to Mix without touching the project", %{
     config: config,
     tmp_dir: dir

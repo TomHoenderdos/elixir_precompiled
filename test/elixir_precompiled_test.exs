@@ -159,4 +159,90 @@ defmodule ElixirPrecompiledTest do
 
     assert out =~ "precompiled: internal error, compiling from source"
   end
+
+  @tag :tmp_dir
+  test "turned off, installed builds are removed so Mix compiles them", %{tmp_dir: dir} do
+    lib = Path.join(dir, "_build/dev/lib")
+    File.mkdir_p!(Path.join(lib, "ash/.mix"))
+    File.write!(Path.join(lib, "ash/.mix/elixir_precompiled.json"), "{}")
+    ash = {:hex, :ash, "3.5.2", "i", [:mix], [], "hexpm", "AO"}
+
+    env = %Env{
+      candidates: [],
+      lock: %{ash: ash},
+      build_lib: lib,
+      deps_path: dir,
+      installed: [:ash]
+    }
+
+    System.put_env("ELIXIR_PRECOMPILED", "0")
+    on_exit(fn -> System.delete_env("ELIXIR_PRECOMPILED") end)
+
+    out =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert ElixirPrecompiled.run(env: env, host?: false) == :disabled
+      end)
+
+    assert out =~ "precompiled: disabled; removed 1 installed build, Mix compiles it from source"
+    refute File.exists?(Path.join(lib, "ash"))
+  end
+
+  @tag :tmp_dir
+  test "turned off, only dirs with the provenance file go, and links are never followed", %{
+    tmp_dir: dir
+  } do
+    lib = Path.join(dir, "_build/dev/lib")
+    outside = Path.join(dir, "outside")
+    File.mkdir_p!(Path.join(outside, ".mix"))
+    File.write!(Path.join(outside, ".mix/elixir_precompiled.json"), "{}")
+    File.write!(Path.join(outside, "keep"), "x")
+    # Mix's own build of a dep: no provenance file.
+    File.mkdir_p!(Path.join(lib, "decimal/ebin"))
+    # A dep dir that is a link to somewhere else, provenance and all.
+    File.ln_s!(outside, Path.join(lib, "linked"))
+    # An install holding a link out of _build (priv, as Mix makes them).
+    File.mkdir_p!(Path.join(lib, "jason/.mix"))
+    File.write!(Path.join(lib, "jason/.mix/elixir_precompiled.json"), "{}")
+    File.ln_s!(outside, Path.join(lib, "jason/priv"))
+
+    env = %Env{
+      candidates: [],
+      lock: %{},
+      build_lib: lib,
+      deps_path: dir,
+      installed: [:decimal, :linked, :jason]
+    }
+
+    System.put_env("ELIXIR_PRECOMPILED", "0")
+    on_exit(fn -> System.delete_env("ELIXIR_PRECOMPILED") end)
+
+    out =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert ElixirPrecompiled.run(env: env, host?: false) == :disabled
+      end)
+
+    assert out =~ "removed 1 installed build"
+    assert File.ls!(lib) |> Enum.sort() == ["decimal", "linked"]
+    assert File.read!(Path.join(outside, "keep")) == "x"
+    assert File.regular?(Path.join(outside, ".mix/elixir_precompiled.json"))
+  end
+
+  @tag :tmp_dir
+  test "the host target leaves installs alone", %{tmp_dir: dir} do
+    lib = Path.join(dir, "_build/dev/lib")
+    File.mkdir_p!(Path.join(lib, "ash/.mix"))
+    File.write!(Path.join(lib, "ash/.mix/elixir_precompiled.json"), "{}")
+    Application.put_env(:elixir_precompiled, :source, "https://example.test/x")
+
+    env = %Env{
+      candidates: [],
+      lock: %{},
+      build_lib: lib,
+      deps_path: dir,
+      installed: [:ash]
+    }
+
+    assert ElixirPrecompiled.run(env: env, host?: true) == :disabled
+    assert File.exists?(Path.join(lib, "ash"))
+  end
 end

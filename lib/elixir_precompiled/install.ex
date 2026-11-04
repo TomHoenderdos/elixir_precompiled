@@ -37,6 +37,10 @@ defmodule ElixirPrecompiled.Install do
             else: "precompiled: no source configured, installing without precompiled builds"
         )
 
+        # A second call in one VM finds its deps loaded: nothing to undo.
+        if not Keyword.get_lazy(test_opts, :installed?, &Mix.installed?/0),
+          do: remove_installed(deps, mix_opts)
+
         installer.(deps, mix_opts)
 
       # Mix allows a second call with the same deps and does nothing; so do we.
@@ -81,6 +85,21 @@ defmodule ElixirPrecompiled.Install do
     # Only now, so a forced install that failed above is still forced on retry.
     if forced?, do: System.delete_env("MIX_INSTALL_FORCE")
     installer.(deps, mix_opts)
+  end
+
+  # Off means off here too: builds an earlier install placed in this
+  # install project go, so Mix.install/2 compiles them. Never in the way
+  # of the install itself.
+  defp remove_installed(deps, mix_opts) do
+    dir = project_dir(deps, mix_opts)
+
+    if File.dir?(Path.join(dir, "_build")) do
+      _ = Check.remove_installed(Env.MixInstall.load(dir, deps))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
   end
 
   defp internal_error(why),

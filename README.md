@@ -42,6 +42,12 @@ precompiled: 40 hit, 5 miss, 0 fail of 45 deps, 61.2 MB, 8.3 s
 
 `mix nerves.info` repeats the last run.
 
+`mix precompiled.status` lists what is installed in the current `_build`,
+with the batch and manifest each build came from. `mix precompiled.clean`
+removes those installs (only build dirs the library wrote, never one Mix
+compiled), and `mix precompiled.clean --cache` also empties the download
+cache.
+
 ## Configuration
 
 | Key or variable | Meaning |
@@ -50,7 +56,8 @@ precompiled: 40 hit, 5 miss, 0 fail of 45 deps, 61.2 MB, 8.3 s
 | `:except` | Dependencies never installed precompiled, for example `[:ash]`. |
 | `:root` | Path to a `root.json` used instead of the one the library ships. |
 | `:home` | The file and trust-state cache (default the user cache dir Mix uses for its own, `:filename.basedir(:user_cache, "elixir_precompiled")`; set `ELIXIR_PRECOMPILED_HOME=~/.nerves/precompiled` to keep using the pre-upgrade cache instead). |
-| `ELIXIR_PRECOMPILED=0` | Disables a run (`false` and `no` work too). |
+| `:cache_max_mb` | The size the download cache is kept under (default 4096), least recently used entries first; checked at most once a day. Trust state is never evicted. |
+| `ELIXIR_PRECOMPILED=0` | Turns the library off (`false` and `no` work too): builds it installed earlier are removed, and Mix compiles them from source in that same run. |
 | `ELIXIR_PRECOMPILED_HOME` | The cache directory when `:home` is not set. |
 | `ELIXIR_PRECOMPILED_DEBUG=1` | Also prints each dependency that was not a candidate, with the reason (tooling, `except`, not from Hex, ...). |
 

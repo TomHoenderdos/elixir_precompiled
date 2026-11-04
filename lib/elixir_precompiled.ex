@@ -45,7 +45,7 @@ defmodule ElixirPrecompiled do
 
     cond do
       config == nil ->
-        :disabled
+        off(opts)
 
       host_disabled?(opts) ->
         :disabled
@@ -59,6 +59,17 @@ defmodule ElixirPrecompiled do
           )
         end)
     end
+  end
+
+  # Off means compile from source: builds an earlier run installed are
+  # removed, so Mix compiles them in this same run. Only when a project is
+  # there to look at; a script without one has nothing installed.
+  defp off(opts) do
+    if Keyword.has_key?(opts, :env) or Mix.Project.get() != nil do
+      _ = Check.remove_installed(Keyword.get_lazy(opts, :env, &Env.MixProject.load/0))
+    end
+
+    :disabled
   end
 
   # `host?:` (the old option) wins; `allow_host: true` is what the Mix task
