@@ -37,6 +37,8 @@ jobs:
           mix compile --warnings-as-errors
           mix test
       - run: mix archive.install hex nerves_bootstrap --force
+      # nerves_uevent compiles a host NIF against libmnl.
+      - run: sudo apt-get update && sudo apt-get install -y libmnl-dev
       - name: fixture tests (host)
         working-directory: integration/chain/fixture
         run: |
