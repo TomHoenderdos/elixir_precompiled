@@ -16,7 +16,7 @@ defmodule ElixirPrecompiled do
   `_build/<target>_<env>/lib/.precompiled/report.json`.
   """
 
-  alias ElixirPrecompiled.{Check, Config, Env, Install}
+  alias ElixirPrecompiled.{Check, Config, Env, Fetch, Install}
 
   # A process told to stop (supervisor shutdown, a linked :normal or
   # {:shutdown, _} exit) must stop, not turn into a source compile.
@@ -73,7 +73,10 @@ defmodule ElixirPrecompiled do
   end
 
   # The fork's nerves.init hook and the alias can both call in one VM;
-  # the second call returns the first one's result without a request.
+  # the second call returns the first one's result without a request, but
+  # only while the build lib still looks as the first run left it: `mix do
+  # clean --deps + compile` deletes _build between the two, and the second
+  # call must install again.
   defp once(opts, fun) do
     if Keyword.has_key?(opts, :env) do
       fun.()
@@ -81,15 +84,40 @@ defmodule ElixirPrecompiled do
       key = {__MODULE__, :ran, Mix.Project.build_path()}
 
       case :persistent_term.get(key, :none) do
-        :none ->
-          result = fun.()
-          :persistent_term.put(key, result)
-          result
-
-        result ->
-          result
+        {result, proof} -> if proof(result) == proof, do: result, else: remember(key, fun)
+        :none -> remember(key, fun)
       end
     end
+  end
+
+  defp remember(key, fun) do
+    result = fun.()
+    :persistent_term.put(key, {result, proof(result)})
+    result
+  end
+
+  # What a memoised result depends on: the deps' build dirs (by name) and
+  # the provenance file of every dep the run installed.
+  defp proof(result) do
+    build_lib = Path.join(Mix.Project.build_path(), "lib")
+
+    hits =
+      case result do
+        {:ok, %{lines: lines}} ->
+          for %{status: :hit, name: name} <- lines,
+              do: File.regular?(Fetch.provenance_path(build_lib, name))
+
+        _ ->
+          []
+      end
+
+    dirs =
+      case File.ls(build_lib) do
+        {:ok, names} -> Enum.sort(names)
+        {:error, _} -> :none
+      end
+
+    {dirs, hits}
   end
 
   # The build must go on: whatever went wrong here, Mix compiles the deps.

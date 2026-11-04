@@ -4,6 +4,7 @@
 #
 defmodule ElixirPrecompiled.Integration.InstallRecheckTest do
   use ExUnit.Case, async: false
+  alias ElixirPrecompiled.ChildProject, as: C
   alias ElixirPrecompiled.Fixture, as: F
 
   @moduletag :integration
@@ -42,7 +43,7 @@ defmodule ElixirPrecompiled.Integration.InstallRecheckTest do
     out = child!(dir, f, [{"ELIXIR_PRECOMPILED", "0"}])
     mix_dir = line!(out, "mix_dir")
     lib = Path.join(mix_dir, "_build/dev/lib/jason")
-    entry = jason_entry(f, lib, mix_dir)
+    entry = C.jason_entry(f, lib, mix_dir)
     File.rm_rf!(lib)
 
     F.publish(f, %{"jason" => %{"versions" => %{"1.4.5" => %{"builds" => [entry]}}}}, sequence: 2)
@@ -76,62 +77,27 @@ defmodule ElixirPrecompiled.Integration.InstallRecheckTest do
     assert out =~ ~s(encoded={"a":1}), out
   end
 
-  defp jason_entry(f, lib, mix_dir) do
-    files =
-      for path <- Path.wildcard(Path.join(lib, "ebin/*")) do
-        bytes = File.read!(path)
-
-        %{
-          "path" => "ebin/" <> Path.basename(path),
-          "sha256" => F.file(f, bytes),
-          "size" => byte_size(bytes),
-          "mode" => 0o100644
-        }
-      end
-
-    assert files != [], "no jason beams under #{lib}"
-
-    %{jason: {:hex, :jason, "1.4.5", _, _, _, _, outer}} =
-      Mix.Dep.Lock.read(Path.join(mix_dir, "mix.lock"))
-
-    %{
-      "target" => "pure_elixir",
-      "ebin" => files,
-      "priv" => [],
-      "build" => %{
-        "elixir" => System.version(),
-        "otp" => to_string(:erlang.system_info(:otp_release)),
-        "run_id" => "r",
-        "image_digest" => "d",
-        "deps" => %{},
-        "compile_env" => [],
-        "package_checksum" => outer,
-        "dep_env" => "prod"
-      }
-    }
-  end
-
   defp child!(dir, f, env \\ []) do
-    ebin = Path.join(Mix.Project.build_path(), "lib/elixir_precompiled/ebin")
+    argv = [
+      "elixir",
+      "-pa",
+      C.own_ebin(),
+      Path.join(dir, "install.exs"),
+      F.base_url(),
+      f.root_path
+    ]
 
-    {out, status} =
-      System.cmd(
-        "elixir",
-        ["-pa", ebin, Path.join(dir, "install.exs"), F.base_url(), f.root_path],
-        env:
-          [
-            {"MIX_INSTALL_DIR", Path.join(dir, "installs")},
-            {"ELIXIR_PRECOMPILED_HOME", Path.join(dir, "home")},
-            {"MIX_ENV", nil},
-            {"MIX_TARGET", nil},
-            {"MIX_BUILD_PATH", nil},
-            {"MIX_DEPS_PATH", nil}
-          ] ++ env,
-        stderr_to_stdout: true
-      )
+    env =
+      [
+        {"MIX_INSTALL_DIR", Path.join(dir, "installs")},
+        {"ELIXIR_PRECOMPILED_HOME", Path.join(dir, "home")},
+        {"MIX_ENV", nil},
+        {"MIX_TARGET", nil},
+        {"MIX_BUILD_PATH", nil},
+        {"MIX_DEPS_PATH", nil}
+      ] ++ env
 
-    assert status == 0, "install child exited #{status}:\n" <> out
-    out
+    C.cmd!(argv, dir, env: env)
   end
 
   defp line!(out, key) do

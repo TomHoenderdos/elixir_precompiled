@@ -128,9 +128,9 @@ defmodule ElixirPrecompiled.FetchTest do
     refute File.exists?(Path.join(lib, "ash/ebin/stale.beam"))
     refute File.exists?(Path.join(lib, ".precompiled/ash"))
 
-    # Elixir 1.17 to 1.19 compile a Hex dep whose build dir lacks
+    # Elixir 1.17 and 1.18 compile a Hex dep whose build dir lacks
     # compile.fetch, the mark deps.compile leaves (Mix.Dep.Loader's
-    # recently_fetched?); 1.20 ignores the file.
+    # recently_fetched?); 1.19 and later ignore the file.
     assert File.exists?(Path.join(lib, "ash/.mix/compile.fetch"))
 
     # Mix itself must read the marker as "compiled by this Elixir/OTP with Hex".

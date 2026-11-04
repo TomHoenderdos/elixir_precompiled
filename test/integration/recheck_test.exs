@@ -4,6 +4,7 @@
 #
 defmodule ElixirPrecompiled.Integration.RecheckTest do
   use ExUnit.Case, async: false
+  alias ElixirPrecompiled.ChildProject, as: C
   alias ElixirPrecompiled.Fixture, as: F
 
   @moduletag :integration
@@ -53,17 +54,17 @@ defmodule ElixirPrecompiled.Integration.RecheckTest do
     """)
 
     F.publish(f, %{}, sequence: 1)
-    mix!(dir, ["deps.get"], [{"ELIXIR_PRECOMPILED", "0"}])
+    C.mix!(proj, ["deps.get"], [{"ELIXIR_PRECOMPILED", "0"}], pa: true)
 
     # Real jason beams, built here and then published as the portal's build.
-    mix!(dir, ["deps.compile", "jason"], [{"ELIXIR_PRECOMPILED", "0"}])
+    C.mix!(proj, ["deps.compile", "jason"], [{"ELIXIR_PRECOMPILED", "0"}], pa: true)
     lib = Path.join(proj, "_build/dev/lib/jason")
-    entry = jason_entry(f, lib, proj)
+    entry = C.jason_entry(f, lib, proj)
     File.rm_rf!(lib)
 
     F.publish(f, %{"jason" => %{"versions" => %{"1.4.5" => %{"builds" => [entry]}}}}, sequence: 2)
 
-    out = mix!(dir, ["compile"])
+    out = C.mix!(proj, ["compile"], [], pa: true)
     assert out =~ ~r/precompiled: jason 1\.4\.5\s+HIT/, out
     assert File.exists?(Path.join(lib, ".mix/elixir_precompiled.json"))
     refute File.exists?(Path.join(lib, ".mix/compile.elixir"))
@@ -71,7 +72,7 @@ defmodule ElixirPrecompiled.Integration.RecheckTest do
     # The portal withdraws the build: the next batch no longer names jason.
     F.publish(f, %{"other" => %{"versions" => %{}}}, sequence: 3)
 
-    out = mix!(dir, ["compile"])
+    out = C.mix!(proj, ["compile"], [], pa: true)
 
     assert out =~ ~r/precompiled: jason 1\.4\.5\s+MISS\s+revoked: no longer in the current batch/,
            out
@@ -80,65 +81,13 @@ defmodule ElixirPrecompiled.Integration.RecheckTest do
     assert File.exists?(Path.join(lib, ".mix/compile.elixir"))
     refute File.exists?(Path.join(lib, ".mix/elixir_precompiled.json"))
 
-    out = mix!(dir, ["run", "-e", "IO.puts(\"encoded=\" <> Jason.encode!(%{a: 1}))"])
+    out =
+      C.mix!(proj, ["run", "-e", "IO.puts(\"encoded=\" <> Jason.encode!(%{a: 1}))"], [], pa: true)
+
     assert out =~ ~s(encoded={"a":1}), out
 
     # And the run after that is quiet: nothing installed, nothing to recheck.
-    out = mix!(dir, ["compile"])
+    out = C.mix!(proj, ["compile"], [], pa: true)
     refute out =~ "precompiled: jason", out
-  end
-
-  defp jason_entry(f, lib, proj) do
-    files =
-      for path <- Path.wildcard(Path.join(lib, "ebin/*")) do
-        bytes = File.read!(path)
-
-        %{
-          "path" => "ebin/" <> Path.basename(path),
-          "sha256" => F.file(f, bytes),
-          "size" => byte_size(bytes),
-          "mode" => 0o100644
-        }
-      end
-
-    %{jason: {:hex, :jason, "1.4.5", _, _, _, _, outer}} =
-      Mix.Dep.Lock.read(Path.join(proj, "mix.lock"))
-
-    %{
-      "target" => "pure_elixir",
-      "ebin" => files,
-      "priv" => [],
-      "build" => %{
-        "elixir" => System.version(),
-        "otp" => to_string(:erlang.system_info(:otp_release)),
-        "run_id" => "r",
-        "image_digest" => "d",
-        "deps" => %{},
-        "compile_env" => [],
-        "package_checksum" => outer,
-        "dep_env" => "prod"
-      }
-    }
-  end
-
-  defp mix!(dir, args, env \\ []) do
-    ebin = Path.join(Mix.Project.build_path(), "lib/elixir_precompiled/ebin")
-
-    {out, status} =
-      System.cmd("elixir", ["-pa", ebin, "-S", "mix" | args],
-        cd: Path.join(dir, "proj"),
-        env:
-          [
-            {"MIX_ENV", "dev"},
-            {"MIX_TARGET", nil},
-            {"MIX_BUILD_PATH", nil},
-            {"MIX_DEPS_PATH", nil},
-            {"ELIXIR_PRECOMPILED_HOME", Path.join(dir, "home")}
-          ] ++ env,
-        stderr_to_stdout: true
-      )
-
-    assert status == 0, "mix #{Enum.join(args, " ")} exited #{status}:\n" <> out
-    out
   end
 end

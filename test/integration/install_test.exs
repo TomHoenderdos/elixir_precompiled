@@ -4,7 +4,8 @@
 #
 defmodule ElixirPrecompiled.Integration.InstallTest do
   use ExUnit.Case, async: false
-  @moduletag :integration
+  alias ElixirPrecompiled.ChildProject, as: C
+  # Not :integration: `--only integration` must never reach the portal.
   @moduletag :production
   @moduletag :tmp_dir
   @moduletag timeout: 300_000
@@ -30,19 +31,17 @@ defmodule ElixirPrecompiled.Integration.InstallTest do
   test "install/2 in a fresh VM hits production and the dir formula matches Mix", %{tmp_dir: dir} do
     script = Path.join(dir, "install.exs")
     File.write!(script, @script)
-    ebin = Path.join(Mix.Project.build_path(), "lib/elixir_precompiled/ebin")
-
-    {out, status} =
-      System.cmd("elixir", ["-pa", ebin, script],
+    # Production needs the network anyway: no offline attempt.
+    out =
+      C.cmd!(["elixir", "-pa", C.own_ebin(), script], dir,
         env: [
           {"MIX_INSTALL_DIR", Path.join(dir, "installs")},
           {"ELIXIR_PRECOMPILED_HOME", Path.join(dir, "home")},
           {"MIX_ENV", nil}
         ],
-        stderr_to_stdout: true
+        offline: false
       )
 
-    assert status == 0, out
     assert out =~ "encoded={\"a\":1}"
     mix_dir = line!(out, "mix_dir")
     assert mix_dir == line!(out, "our_dir")

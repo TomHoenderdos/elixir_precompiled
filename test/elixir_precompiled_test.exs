@@ -36,7 +36,7 @@ defmodule ElixirPrecompiledTest do
     assert ElixirPrecompiled.run(env: env, allow_host: false, host?: false) == :nothing_to_do
   end
 
-  test "without :env, a second run in one VM returns the first result", %{env: env} do
+  test "without :env, a second run in one VM returns the first result while it holds", %{env: env} do
     Application.put_env(:elixir_precompiled, :source, "https://example.test/x")
     key = {ElixirPrecompiled, :ran, Mix.Project.build_path()}
     saved = :persistent_term.get(key, :none)
@@ -48,10 +48,19 @@ defmodule ElixirPrecompiledTest do
     # The first call loads this project's own deps: all compiled, nothing to do.
     :persistent_term.erase(key)
     assert ElixirPrecompiled.run(allow_host: true) == :nothing_to_do
-    assert :persistent_term.get(key) == :nothing_to_do
+    assert {:nothing_to_do, {dirs, []}} = :persistent_term.get(key)
+    assert "elixir_precompiled" in dirs
 
-    :persistent_term.put(key, :first_result)
+    :persistent_term.put(key, {:first_result, {dirs, []}})
     assert ElixirPrecompiled.run(allow_host: true) == :first_result
+
+    # The build lib no longer looks as the first run left it (mix clean,
+    # an installed dep gone): run again.
+    :persistent_term.put(key, {:first_result, {["gone" | dirs], []}})
+    assert ElixirPrecompiled.run(allow_host: true) == :nothing_to_do
+    :persistent_term.put(key, {:first_result, {dirs, [false]}})
+    assert ElixirPrecompiled.run(allow_host: true) == :nothing_to_do
+
     # An explicit :env is never memoised.
     assert ElixirPrecompiled.run(env: env, allow_host: true) == :nothing_to_do
   end

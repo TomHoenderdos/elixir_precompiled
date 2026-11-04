@@ -5,12 +5,17 @@
 defmodule ElixirPrecompiled.ChildProject do
   @moduledoc false
   # Real Mix projects in a tmp dir that depend on this checkout by path,
-  # exactly as a user adds the library, served by the test fixture. Every
-  # child mix runs under a timeout with its own HEX_HOME, seeded from the
-  # user's Hex cache, so it neither reads nor rewrites the shared one. With
-  # jason 1.4.5 in that cache (the registry entry and the tarball, written
-  # by this Hex version) the child runs with HEX_OFFLINE=1 and touches no
-  # network at all; otherwise the one deps.get fetches jason from hex.pm.
+  # exactly as a user adds the library, served by the test fixture, and the
+  # one way every integration test starts a child VM (cmd!/3; a unit test
+  # holds test/integration to that). Every child runs under a timeout with
+  # its own HEX_HOME, seeded from the user's Hex cache, so it neither reads
+  # nor rewrites the shared one. With the packages in that cache (registry
+  # entries and tarballs, written by this Hex version) the child runs with
+  # HEX_OFFLINE=1 and touches no network at all; otherwise the command is
+  # retried once online, into the private HEX_HOME.
+  #
+  # MIX_HOME is shared on purpose: it holds the Hex archive and rebar, which
+  # the children only read.
   import ExUnit.Assertions
   alias ElixirPrecompiled.Fixture, as: F
 
@@ -46,8 +51,8 @@ defmodule ElixirPrecompiled.ChildProject do
     proj
   end
 
-  @spec umbrella!(Path.t(), map(), keyword()) :: Path.t()
-  def umbrella!(dir, f, _opts \\ []) do
+  @spec umbrella!(Path.t(), map()) :: Path.t()
+  def umbrella!(dir, f) do
     root = Path.join(dir, "umb")
     app = Path.join(root, "apps/a")
     File.mkdir_p!(Path.join(app, "lib"))
@@ -125,6 +130,8 @@ defmodule ElixirPrecompiled.ChildProject do
         }
       end
 
+    assert files != [], "no jason beams under #{lib}"
+
     %{jason: {:hex, :jason, "1.4.5", _, _, _, _, outer}} =
       Mix.Dep.Lock.read(Path.join(proj, "mix.lock"))
 
@@ -145,67 +152,97 @@ defmodule ElixirPrecompiled.ChildProject do
     }
   end
 
-  @spec mix!(Path.t(), [String.t()], [{String.t(), String.t() | nil}]) :: String.t()
-  def mix!(proj, args, env \\ []) do
-    hex_home = Path.join(Path.dirname(proj), "hex")
-    offline? = seed_hex_home!(hex_home)
-    {out, status} = run_mix(proj, args, env, hex_home, offline?)
+  # `pa:` puts this checkout's compiled ebin on the child's code path
+  # (`elixir -pa ebin -S mix`) for a project that calls the library without
+  # depending on it, as nerves.init does.
+  @spec mix!(Path.t(), [String.t()], [{String.t(), String.t() | nil}], keyword()) :: String.t()
+  def mix!(proj, args, env \\ [], opts \\ []) do
+    argv =
+      if Keyword.get(opts, :pa, false),
+        do: ["elixir", "-pa", own_ebin(), "-S", "mix" | args],
+        else: ["mix" | args]
 
-    # A seeded cache another Hex version wrote reads as empty to this one:
-    # fetch jason's registry entry from hex.pm once, into this HEX_HOME.
+    env =
+      [
+        {"MIX_ENV", "dev"},
+        {"MIX_TARGET", nil},
+        {"MIX_BUILD_PATH", nil},
+        {"MIX_DEPS_PATH", nil},
+        {"MIX_EXS", nil},
+        {"ELIXIR_PRECOMPILED_SOURCE", nil},
+        {"ELIXIR_PRECOMPILED_HOME", Path.join(Path.dirname(proj), "home")}
+      ] ++ env
+
+    cmd!(argv, Path.dirname(proj), cd: proj, env: env)
+  end
+
+  @spec own_ebin() :: Path.t()
+  def own_ebin(), do: Path.join(Mix.Project.build_path(), "lib/elixir_precompiled/ebin")
+
+  @doc """
+  Runs `argv` with `base/hex` as its HEX_HOME, seeded with `:packages`
+  (default jason 1.4.5). `offline: false` skips the offline attempt, for a
+  child that needs the network anyway. Raises on a non-zero exit.
+  """
+  @spec cmd!([String.t()], Path.t(), keyword()) :: String.t()
+  def cmd!([exe | args], base, opts) do
+    hex_home = Path.join(base, "hex")
+    packages = Keyword.get(opts, :packages, ["jason-1.4.5"])
+    offline? = Keyword.get(opts, :offline, true) and seed_hex_home!(hex_home, packages)
+
+    run =
+      &run_cmd(
+        exe,
+        args,
+        Keyword.put(opts, :env, hex_env(hex_home, &1) ++ Keyword.get(opts, :env, []))
+      )
+
+    {out, status} = run.(offline?)
+
+    # A seeded cache another Hex version wrote reads as empty to this one.
     {out, status} =
       if offline? and status != 0 and out =~ "is not cached locally" do
         File.write!(Path.join(hex_home, ".seeded"), "online")
-        run_mix(proj, args, env, hex_home, false)
+        run.(false)
       else
         {out, status}
       end
 
-    assert status == 0, "mix #{Enum.join(args, " ")} exited #{status}:\n" <> out
+    assert status == 0, "#{Enum.join([exe | args], " ")} exited #{status}:\n" <> out
     out
   end
 
-  defp run_mix(proj, args, env, hex_home, offline?) do
-    System.cmd(cmd(), cmd_args(args),
-      cd: proj,
-      env:
-        [
-          {"MIX_ENV", "dev"},
-          {"MIX_TARGET", nil},
-          {"MIX_BUILD_PATH", nil},
-          {"MIX_DEPS_PATH", nil},
-          {"MIX_EXS", nil},
-          {"HEX_HOME", hex_home},
-          {"HEX_OFFLINE", if(offline?, do: "1")},
-          {"ELIXIR_PRECOMPILED_SOURCE", nil},
-          {"ELIXIR_PRECOMPILED_HOME", Path.join(Path.dirname(proj), "home")}
-        ] ++ env,
-      stderr_to_stdout: true
-    )
+  @doc "The HEX_HOME pair every child env carries; HEX_OFFLINE only when offline."
+  @spec hex_env(Path.t(), boolean()) :: [{String.t(), String.t() | nil}]
+  def hex_env(hex_home, offline?),
+    do: [{"HEX_HOME", hex_home}, {"HEX_OFFLINE", if(offline?, do: "1")}]
+
+  defp run_cmd(exe, args, opts) do
+    {exe, args} =
+      case System.find_executable("timeout") do
+        nil -> {exe, args}
+        timeout -> {timeout, [to_string(@timeout_s), exe | args]}
+      end
+
+    cmd_opts = [env: opts[:env], stderr_to_stdout: true] ++ Keyword.take(opts, [:cd])
+    System.cmd(exe, args, cmd_opts)
   end
 
-  # coreutils timeout bounds a hung child mix; without it the ExUnit
-  # timeout still ends the test.
-  defp cmd(), do: System.find_executable("timeout") || "mix"
-
-  defp cmd_args(args) do
-    if System.find_executable("timeout"), do: [to_string(@timeout_s), "mix" | args], else: args
-  end
-
-  # Copies the user's Hex registry cache and the jason tarball into `home`
-  # once; true when both were there to copy.
-  defp seed_hex_home!(home) do
+  # Copies the user's Hex registry cache and the packages' tarballs into
+  # `home` once; true when all were there to copy. Later calls read the
+  # answer back from .seeded.
+  defp seed_hex_home!(home, packages) do
     marker = Path.join(home, ".seeded")
 
     if File.exists?(marker) do
       File.read!(marker) == "offline"
     else
       src = System.get_env("HEX_HOME") || Path.join(System.user_home!(), ".hex")
-      tar = "packages/hexpm/jason-1.4.5.tar"
       File.mkdir_p!(Path.join(home, "packages/hexpm"))
+      files = ["cache.ets" | Enum.map(packages, &"packages/hexpm/#{&1}.tar")]
 
       offline? =
-        Enum.all?(["cache.ets", tar], fn rel ->
+        Enum.all?(files, fn rel ->
           match?({:ok, _}, File.copy(Path.join(src, rel), Path.join(home, rel)))
         end)
 

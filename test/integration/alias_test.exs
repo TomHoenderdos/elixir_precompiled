@@ -35,6 +35,22 @@ defmodule ElixirPrecompiled.Integration.AliasTest do
     assert out =~ ~r/precompiled: jason 1\.4\.5\s+HIT/, out
   end
 
+  # clean deletes _build and reenables deps.loadpaths: the second install
+  # in the same VM must really install again, not trust the first run.
+  test "mix do clean --deps, compile installs again in one VM", %{tmp_dir: dir} do
+    f = F.new(dir)
+    proj = C.plain!(dir, f)
+    C.publish_jason!(f, proj)
+    assert C.mix!(proj, ["compile"]) =~ ~r/precompiled: jason 1\.4\.5\s+HIT/
+
+    out = C.mix!(proj, ["do", "clean", "--deps", "+", "compile"])
+    assert out =~ ~r/precompiled: jason 1\.4\.5\s+HIT/, out
+    refute out =~ "==> jason", out
+    lib = Path.join(proj, "_build/dev/lib/jason")
+    assert File.exists?(Path.join(lib, ".mix/elixir_precompiled.json")), out
+    refute File.exists?(Path.join(lib, ".mix/compile.elixir")), out
+  end
+
   test "umbrella: the root alias serves every app", %{tmp_dir: dir} do
     f = F.new(dir)
     root = C.umbrella!(dir, f)
