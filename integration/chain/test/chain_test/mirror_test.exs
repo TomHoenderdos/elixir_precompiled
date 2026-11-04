@@ -47,7 +47,7 @@ defmodule ChainTest.MirrorTest do
     cond do
       fun.() -> true
       System.monotonic_time(:millisecond) >= deadline -> false
-      true -> Process.sleep(10) || eventually(fun, deadline)
+      true -> Process.sleep(10) && eventually(fun, deadline)
     end
   end
 
@@ -618,5 +618,163 @@ defmodule ChainTest.MirrorTest do
     refute Transform.valid?({ChainTest.TestTransform, %{needs: [:newer]}})
     refute Transform.valid?({ChainTest.TestTransform, %{needs: :old}})
     refute Transform.valid?({Identity, %{case: %{}}})
+  end
+
+  describe "TLS" do
+    # A GET through :httpc with the client's own TLS options: peer
+    # verification against `cacerts` and the https hostname check.
+    defp tls_get(url, cacerts) do
+      opts = [
+        timeout: 5_000,
+        autoredirect: false,
+        ssl: [
+          log_level: :none,
+          verify: :verify_peer,
+          cacerts: cacerts,
+          depth: 3,
+          customize_hostname_check: [
+            match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+          ]
+        ]
+      ]
+
+      case :httpc.request(:get, {to_charlist(url), []}, opts, body_format: :binary) do
+        {:ok, {{_, status, _}, headers, body}} -> {:ok, status, headers, body}
+        {:error, why} -> {:error, why}
+      end
+    end
+
+    test "tls: serves https, the same layout, to a client that trusts its CA", %{dir: dir} do
+      %{ssl: ssl, ca: ca} = ChainTest.TestCert.server(:ip)
+      mirror = start!(dir, tls: ssl)
+
+      assert mirror.url == "https://127.0.0.1:#{mirror.port}"
+      assert {:ok, 200, _, ~s({"batch":7})} = tls_get(mirror.url <> "/batch.json", [ca])
+
+      assert [%{method: "GET", path: "batch.json", status: 200, mutated: false} = entry] =
+               Mirror.requests(mirror)
+
+      refute Map.has_key?(entry, :tls_alert)
+    end
+
+    test "a handshake the client aborts is logged with its alert, and no request", %{dir: dir} do
+      for {kind, cacerts} <- [
+            ip: [],
+            self_signed: [],
+            wrong_host: :own_ca
+          ] do
+        %{ssl: ssl, ca: ca} = ChainTest.TestCert.server(kind)
+        mirror = start!(dir, tls: ssl)
+        trust = if cacerts == :own_ca, do: [ca], else: cacerts
+
+        assert {:error, _} = tls_get(mirror.url <> "/batch.json", trust)
+
+        assert eventually(fn -> Mirror.requests(mirror) != [] end), inspect(kind)
+
+        assert [%{method: "TLS", path: "handshake", status: 0, mutated: false, tls_alert: alert}] =
+                 Mirror.requests(mirror)
+
+        assert alert in [:unknown_ca, :bad_certificate], inspect({kind, alert})
+      end
+    end
+
+    test "plain http to the TLS port is logged as a failed handshake, never served", %{dir: dir} do
+      %{ssl: ssl} = ChainTest.TestCert.server(:ip)
+      mirror = start!(dir, tls: ssl)
+
+      response = raw_bytes(mirror, "GET /batch.json HTTP/1.1\r\nhost: x\r\n\r\n")
+      refute response =~ "batch"
+
+      assert eventually(fn -> Mirror.requests(mirror) != [] end)
+
+      assert [%{method: "TLS", status: 0, tls_alert: :unexpected_message}] =
+               Mirror.requests(mirror)
+    end
+
+    test "a TLS client that never finishes its handshake is cut off and logged", %{dir: dir} do
+      %{ssl: ssl} = ChainTest.TestCert.server(:ip)
+      mirror = start!(dir, tls: ssl, request_timeout_ms: 200)
+
+      {:ok, sock} = :gen_tcp.connect({127, 0, 0, 1}, mirror.port, [:binary, active: false])
+      assert eventually(fn -> Mirror.requests(mirror) != [] end)
+      :gen_tcp.close(sock)
+
+      assert [%{method: "TLS", status: 0, tls_error: why}] = Mirror.requests(mirror)
+      assert why =~ "timeout"
+    end
+
+    test "{:redirect, s, {:scheme, scheme}} points at the same host and port", %{dir: dir} do
+      %{ssl: ssl, ca: ca} = ChainTest.TestCert.server(:ip)
+
+      mirror =
+        start!(dir, tls: ssl, transform: fn _, _ -> {:redirect, 302, {:scheme, "http"}} end)
+
+      assert {:ok, 302, headers, ""} = tls_get(mirror.url <> "/files/#{@sha}", [ca])
+
+      assert {~c"location", to_charlist("http://127.0.0.1:#{mirror.port}/files/#{@sha}")} in headers
+
+      assert [%{status: 302, mutated: true}] = Mirror.requests(mirror)
+    end
+
+    test "a scheme redirect needs http or https", %{dir: dir} do
+      mirror = start!(dir, transform: fn _, _ -> {:redirect, 302, {:scheme, "ftp"}} end)
+      assert raw(mirror, "GET /batch.json HTTP/1.1") == 500
+      assert [%{transform_error: _}] = Mirror.requests(mirror)
+    end
+  end
+
+  describe "proxied requests" do
+    test "an absolute-form request is a 400, logged by its URL, and reads no file", %{dir: dir} do
+      test = self()
+
+      mirror =
+        start!(dir,
+          transform: fn path, _ ->
+            send(test, {:read, path})
+            {500, ""}
+          end
+        )
+
+      response =
+        raw_bytes(mirror, "GET http://n2.invalid/batch.json HTTP/1.1\r\nhost: n2.invalid\r\n\r\n")
+
+      assert code(response) == 400
+
+      assert [%{method: "GET", path: "http://n2.invalid/batch.json", status: 400, proxied: true}] =
+               Mirror.requests(mirror)
+
+      refute_received {:read, _}
+    end
+
+    test "an :httpc request through the mirror as HTTP proxy reaches its log", %{dir: dir} do
+      mirror = start!(dir)
+      profile = :"chain_proxy_test_#{System.unique_integer([:positive])}"
+      {:ok, pid} = :inets.start(:httpc, profile: profile)
+
+      try do
+        :ok = :httpc.set_options([proxy: {{~c"127.0.0.1", mirror.port}, []}], profile)
+
+        {:ok, {{_, 400, _}, _, _}} =
+          :httpc.request(
+            :get,
+            {~c"http://localhost:1/batch.json", []},
+            [timeout: 5_000],
+            [],
+            profile
+          )
+      after
+        :inets.stop(:httpc, pid)
+      end
+
+      assert [%{method: "GET", path: "http://localhost:1/batch.json", proxied: true}] =
+               Mirror.requests(mirror)
+    end
+
+    test "an origin-form request is not proxied", %{dir: dir} do
+      mirror = start!(dir)
+      assert raw(mirror, "GET /batch.json HTTP/1.1") == 200
+      assert [entry] = Mirror.requests(mirror)
+      refute Map.has_key?(entry, :proxied)
+    end
   end
 end

@@ -13,11 +13,13 @@
 # T0's, whose integrity step checks that every hit installed exactly the
 # build the harness selects from the manifest for this target, OTP and
 # Elixir. A forged entry for another target is layer 2 (P7). N6 (a
-# same-host scheme downgrade) needs TLS: Task 5's mirror.
+# same-host scheme downgrade) and N3 run over the TLS mirror, N2 through
+# the mirror as HTTP proxy: the last layer-1 cases.
 
 # The fixture's expected hits: a refused batch makes every one of them a
 # refusal, compiled from source instead.
-{%{hits: hits}, _} = Code.eval_file(Path.join(__DIR__, "../fixture/expected.exs"))
+{%{hits: hits, never: never}, _} =
+  Code.eval_file(Path.join(__DIR__, "../fixture/expected.exs"))
 
 # What a refused batch looks like to the harness: every expected hit
 # `:refused`, nothing installed to check, and, on a home without state, no
@@ -380,7 +382,107 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     client: %{default: :recheck, deps: %{}},
     harness: %{"build/sequence" => :rerun},
     after: %{state_sequence: :previous, installed: :recheck}
-  }
+  },
+  # N2: an http source outside loopback disables the client before any
+  # fetch. The build's HTTP_PROXY is the case mirror (`proxy: :mirror`), so
+  # a plain-http request to any host would show in its log; N2-proxy, the
+  # control, shows that route works for the real client (a loopback
+  # source, which the client allows, reaches the mirror as a proxied
+  # request it answers 400).
+  Map.merge(no_batch, %{
+    id: "N2-proxy",
+    description:
+      "The control: a loopback http source, fetched through the case mirror as HTTP proxy, which logs each request and answers 400.",
+    transform: {ChainTest.Mirror.Identity, %{}},
+    proxy: :mirror,
+    client_config: %{source: "http://localhost:1"},
+    after: Map.put(no_batch.after, :proxied, :requested)
+  }),
+  %{
+    id: "N2",
+    gate: "N2-proxy",
+    description:
+      "An http source outside loopback: the client is disabled before any fetch, no request leaves the build, and everything compiles.",
+    transform: {ChainTest.Mirror.Identity, %{}},
+    proxy: :mirror,
+    client_config: %{source: "http://chain-n2.invalid"},
+    # No client: no report line, no report.json, so steps 3 and 4 have no
+    # hit to check and no reported miss to explain what compiled.
+    client: %{default: :none, deps: %{}},
+    harness:
+      Map.merge(
+        Map.new(hits, &{"build/hit:#{&1}", :fail}),
+        Map.new(never, &{"build/never:#{&1}", :not_exercised})
+      )
+      |> Map.merge(%{
+        "build/sequence" => :not_exercised,
+        "integrity/integrity" => :not_exercised,
+        "compiled/compiled_here" => :fail
+      }),
+    after: %{
+      proxied: :none,
+      state_sequence: :absent,
+      installed: :none,
+      cache: :untouched,
+      log: "source must be https (http only on loopback), disabled"
+    }
+  },
+  # N3 and N6 over the TLS mirror, a new certificate per case
+  # (ChainTest.TestCert). The client has no CA option: it trusts the OS
+  # store. TLS-T0, the control, loads the case's test CA as the build VM's
+  # whole store (`trust_ca: true`) and must install as T0 does; the cases
+  # that need a trusted mirror are gated on it. The N3 cases that test
+  # trust itself never get the CA.
+  Map.merge(accepted, %{
+    id: "TLS-T0",
+    description:
+      "The control: the snapshot over HTTPS, its test CA the build's only trusted one; the same hits as T0.",
+    transform: {ChainTest.Mirror.Identity, %{tls: :ip, trust_ca: true}},
+    after: %{state_sequence: :snapshot, installed: :snapshot, tls: :clean}
+  }),
+  Map.merge(no_batch, %{
+    id: "N3-self-signed",
+    description:
+      "HTTPS with a self-signed certificate for 127.0.0.1: every handshake refused, nothing fetched, everything compiles.",
+    transform: {ChainTest.Mirror.Identity, %{tls: :self_signed}},
+    after: Map.put(no_batch.after, :tls, :rejected)
+  }),
+  Map.merge(no_batch, %{
+    id: "N3-wrong-host",
+    description:
+      "HTTPS with a certificate for another host, from a CA the client does not know: every handshake refused.",
+    transform: {ChainTest.Mirror.Identity, %{tls: :wrong_host}},
+    after: Map.put(no_batch.after, :tls, :rejected)
+  }),
+  Map.merge(no_batch, %{
+    id: "N3-hostname",
+    gate: "TLS-T0",
+    description:
+      "HTTPS with a certificate for another host from the CA the build trusts (TLS-T0's): refused on the hostname alone.",
+    transform: {ChainTest.Mirror.Identity, %{tls: :wrong_host, trust_ca: true}},
+    after: Map.put(no_batch.after, :tls, :rejected)
+  }),
+  none_installed.({:fail, "file not available:"})
+  |> Map.merge(%{
+    id: "N6",
+    gate: "TLS-T0",
+    description:
+      "Every file redirected from https to http on the same host and port: refused as another origin, never followed.",
+    transform: {ChainTest.Mirror.Downgrade, %{paths: :files, tls: :ip, trust_ca: true}}
+  })
+  |> Map.update!(
+    :after,
+    &Map.merge(&1, %{tls: :clean, log: "redirect to another host refused"})
+  ),
+  none_installed.({:miss, "manifest unavailable: redirect to another host refused"})
+  |> Map.merge(%{
+    id: "N6-manifest",
+    gate: "TLS-T0",
+    description:
+      "Every manifest redirected from https to http on the same host and port: refused, never followed, nothing installed.",
+    transform: {ChainTest.Mirror.Downgrade, %{paths: :manifests, tls: :ip, trust_ca: true}}
+  })
+  |> Map.update!(:after, &Map.put(&1, :tls, :clean))
 ] ++
   (
     # Layer 2: a compromised portal. Each case runs against a copy of the

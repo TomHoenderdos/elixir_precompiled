@@ -39,7 +39,8 @@ defmodule ChainTest.Conformance.Case do
       manifest for, `revoked: no longer in the current batch` for one it
       names none for, no report line for any other (the install kept). A
       dep the last two make anything but a hit has no fixed `build/hit:`
-      row class; its client line is judged instead.
+      row class; its client line is judged instead. `:none`: no report
+      line at all (a client that never ran: N2).
     * `harness` - harness results by `"<step>/<check>"` (as the reports
       print them; step `build`, `integrity` or `compiled`) and the class each
       must have. Every result not named must be `:pass` or `:miss`. A
@@ -61,6 +62,9 @@ defmodule ChainTest.Conformance.Case do
       the snapshot batch's `issued`, `ChainTest.Conformance.Clock`),
       `root` (an absolute path, or `{:test_root, name}`, below), `source`
       (URL).
+    * `proxy` - `:mirror`: the build's `HTTP_PROXY` is the case mirror
+      (`HTTPS_PROXY` unset), so a plain-http request to any host shows in
+      its log as a proxied request (N2). Not with a `tls` transform.
     * `client_env` - environment variables for this case's build only, from
       the few `ChainTest.Build.client_env_names/0` allows (the names a
       client might wrongly take a root path from: T9): each an absolute
@@ -100,6 +104,17 @@ defmodule ChainTest.Conformance.Case do
       * `root_version` - the `root_version` file in the client's state dir
         for the case's source and root: `:absent` (no root adopted), or the
         integer it must hold (an adopted root's version, R17).
+      * `tls` - only with a `tls` transform: `:rejected`, the client
+        opened at least one connection to the case mirror and aborted every
+        handshake with a certificate alert (`:bad_certificate`,
+        `:unknown_ca`, ...), and no request got through (N3); `:clean`, no
+        handshake failed at all, so the client never sent plain http to
+        the TLS port (N6).
+      * `proxied` - only with `proxy: :mirror`: `:none`, neither mirror
+        logged anything at all (N2: the client made no request, through
+        the proxy or to the mirror); `:requested`, at least one request,
+        each of them proxied (the control, N2-proxy, showing the route
+        works).
       * `unrequested` - a non-empty list of snapshot paths
         (`"v2/manifests/chain_path_dep.json"`) the client must never have
         asked either mirror for (P5-path, P9: a manifest it must not even
@@ -125,6 +140,12 @@ defmodule ChainTest.Conformance.Case do
   Whatever the case expects, a report line that calls a dep a hit when the
   snapshot holds no build of it the client could select is a difference:
   the client installed something the portal never served it.
+
+  A case whose `after` has `tls: :rejected` or `proxied` is judged by the
+  mirror's log alone, as those say, instead of the two checks below: the
+  client cannot have used a mirror it refused, or never asked (N3, N2).
+  For `tls: :rejected` a log without a single handshake is
+  `:not_exercised`: the client never connected.
 
   The case's mirror must show that the client used it: a `GET batch.json`
   and, for every dep the report calls a hit, a `GET` of the snapshot's
@@ -152,7 +173,8 @@ defmodule ChainTest.Conformance.Case do
   alias ChainTest.Mirror.Transform
 
   @type status :: :hit | :miss | :fail
-  @type expect :: :snapshot | :recheck | :older_manifest | status() | {status(), String.t()}
+  @type expect ::
+          :snapshot | :recheck | :older_manifest | :none | status() | {status(), String.t()}
   @type post :: %{
           optional(:state_sequence) => integer() | :snapshot | :previous | :absent | :unchanged,
           optional(:other_states) => :unchanged,
@@ -162,7 +184,9 @@ defmodule ChainTest.Conformance.Case do
           optional(:outside) => :untouched,
           optional(:second_mirror) => :requested | :untouched,
           optional(:root_version) => :absent | non_neg_integer(),
-          optional(:unrequested) => [String.t()]
+          optional(:unrequested) => [String.t()],
+          optional(:tls) => :rejected | :clean,
+          optional(:proxied) => :none | :requested
         }
   @type t :: %{
           required(:id) => String.t(),
@@ -174,6 +198,7 @@ defmodule ChainTest.Conformance.Case do
           optional(:client_config) => ChainTest.Build.client_config(),
           optional(:client_env) => %{String.t() => Path.t() | {:home, Path.t()}},
           optional(:runs) => 2,
+          optional(:proxy) => :mirror,
           optional(:gate) => String.t(),
           optional(:after) => post()
         }
@@ -208,17 +233,28 @@ defmodule ChainTest.Conformance.Case do
           :dir | {:file, String.t()} | {:link, String.t()} | {:other, atom()}
 
   @keys [:client, :description, :harness, :id, :transform]
-  @optional [:after, :client_config, :client_env, :gate, :runs, :setup]
+  @optional [:after, :client_config, :client_env, :gate, :proxy, :runs, :setup]
   @post_keys [
     :cache,
     :installed,
     :log,
     :other_states,
     :outside,
+    :proxied,
     :root_version,
     :second_mirror,
     :state_sequence,
+    :tls,
     :unrequested
+  ]
+  # The alerts a TLS client sends when it refuses the server's certificate.
+  @cert_alerts [
+    :bad_certificate,
+    :unknown_ca,
+    :certificate_unknown,
+    :unsupported_certificate,
+    :certificate_expired,
+    :certificate_revoked
   ]
   @control "L2-T0"
   @statuses [:hit, :miss, :fail]
@@ -412,8 +448,32 @@ defmodule ChainTest.Conformance.Case do
         "client_env must map names from #{inspect(Build.client_env_names())} to an " <>
           "absolute path or {:home, relative path}, got #{inspect(c.client_env)}"
 
-      Map.has_key?(c, :after) ->
-        after_problem(c.after, c.transform)
+      true ->
+        proxy_problem(c) || post_problem(c)
+    end
+  end
+
+  defp proxy_problem(c) do
+    cond do
+      not Map.has_key?(c, :proxy) -> nil
+      c.proxy != :mirror -> "proxy must be :mirror, got #{inspect(c.proxy)}"
+      Transform.tls(c.transform) != nil -> "proxy: :mirror is plain http, not for a tls transform"
+      true -> nil
+    end
+  end
+
+  defp post_problem(%{after: post} = c),
+    do: after_problem(post, c.transform) || log_post_problem(c)
+
+  defp post_problem(_c), do: nil
+
+  defp log_post_problem(c) do
+    cond do
+      Map.has_key?(c.after, :tls) and Transform.tls(c.transform) == nil ->
+        "after tls needs a transform with tls"
+
+      Map.has_key?(c.after, :proxied) and Map.get(c, :proxy) != :mirror ->
+        "after proxied needs proxy: :mirror"
 
       true ->
         nil
@@ -427,7 +487,8 @@ defmodule ChainTest.Conformance.Case do
           ":previous, :absent, :unchanged), other_states (:unchanged), installed " <>
           "(:none, :snapshot, :recheck, {:without, [dep name]}), cache (:untouched, " <>
           ":verified), outside (:untouched), log (non-empty strings), " <>
-          "second_mirror (:requested, :untouched), root_version (:absent, integer), unrequested ([path]), got " <>
+          "second_mirror (:requested, :untouched), root_version (:absent, integer), " <>
+          "unrequested ([path]), tls (:rejected, :clean), proxied (:none, :requested), got " <>
           inspect(post)
 
       Map.has_key?(post, :second_mirror) and Transform.mirrors(transform) != 2 ->
@@ -462,6 +523,7 @@ defmodule ChainTest.Conformance.Case do
   defp expect?(:snapshot), do: true
   defp expect?(:recheck), do: true
   defp expect?(:older_manifest), do: true
+  defp expect?(:none), do: true
   defp expect?(s) when s in @statuses, do: true
   defp expect?({s, prefix}) when s in @statuses and is_binary(prefix), do: true
   defp expect?(_), do: false
@@ -499,6 +561,8 @@ defmodule ChainTest.Conformance.Case do
     do: Enum.all?(paths, &(is_binary(&1) and &1 != ""))
 
   defp post_value?(:unrequested, _v), do: false
+  defp post_value?(:tls, v), do: v in [:rejected, :clean]
+  defp post_value?(:proxied, v), do: v in [:none, :requested]
 
   @doc "How many builds the case runs: 2 with `runs: 2` (a warm build first), else 1."
   @spec runs(t()) :: 1 | 2
@@ -532,9 +596,14 @@ defmodule ChainTest.Conformance.Case do
       transform_errors(requests, "mirror") ++
         transform_errors(Map.get(input, :second_requests, []), "second mirror")
 
+    post = Map.get(c, :after, %{})
+
     cond do
       broken != [] ->
         result(c, :fail, Enum.join(broken, "; "))
+
+      post[:tls] == :rejected or Map.has_key?(post, :proxied) ->
+        by_log(c, input)
 
       identity? and unused != [] ->
         result(c, :not_exercised, Enum.join(unused, "; "))
@@ -543,19 +612,41 @@ defmodule ChainTest.Conformance.Case do
         result(c, :not_exercised, "the mirror never served anything the transform changed")
 
       true ->
-        problems =
-          unused ++
-            client_problems(c, report, snap, hits, input) ++
-            unheld_hits(report, snap) ++
-            harness_problems(c, rows, snap) ++
-            post_problems(c, input, snap) ++ Map.get(input, :isolation, [])
-
-        case problems do
-          [] -> result(c, :pass, "as expected: #{c.description}")
-          problems -> result(c, :fail, Enum.join(problems, "; "))
-        end
+        verdict(
+          c,
+          unused ++ client_problems(c, report, snap, hits, input) ++ judged(c, rows, snap, input)
+        )
     end
   end
+
+  # N3, N2: the client cannot have used a mirror it refused or never asked;
+  # the mirror's log, as the case's `after` says, is the evidence.
+  defp by_log(c, %{rows: rows, report: report, requests: requests, snapshot: snap} = input) do
+    if c.after[:tls] == :rejected and not Enum.any?(requests, &handshake?/1) do
+      result(
+        c,
+        :not_exercised,
+        "the client never connected to the case's TLS mirror: no handshake to judge"
+      )
+    else
+      verdict(
+        c,
+        client_problems(c, report, snap, input.hits, input) ++ judged(c, rows, snap, input)
+      )
+    end
+  end
+
+  defp judged(c, rows, snap, input) do
+    unheld_hits(input.report, snap) ++
+      harness_problems(c, rows, snap) ++
+      post_problems(c, input, snap) ++ Map.get(input, :isolation, [])
+  end
+
+  defp verdict(c, []), do: result(c, :pass, "as expected: #{c.description}")
+  defp verdict(c, problems), do: result(c, :fail, Enum.join(problems, "; "))
+
+  defp handshake?(%{method: "TLS"}), do: true
+  defp handshake?(_request), do: false
 
   # A transform that crashed or answered a malformed shape was never the
   # mutation the case meant: the client saw only the mirror's 500.
@@ -672,6 +763,7 @@ defmodule ChainTest.Conformance.Case do
   end
 
   defp matches?(:kept, got), do: got == nil
+  defp matches?(:none, got), do: got == nil
   defp matches?(_want, nil), do: false
 
   defp matches?({status, prefix}, %{"status" => got, "detail" => detail}) when is_binary(detail),
@@ -682,6 +774,7 @@ defmodule ChainTest.Conformance.Case do
   defp matches?(_want, _line), do: false
 
   defp describe(:kept), do: "no report line (the installed build kept)"
+  defp describe(:none), do: "no report line (the client never ran)"
   defp describe({status, prefix}), do: "#{status} (#{inspect(prefix)}...)"
   defp describe(status), do: to_string(status)
 
@@ -872,6 +965,48 @@ defmodule ChainTest.Conformance.Case do
     end
   end
 
+  defp post_problem(:tls, :rejected, _seen, _snap, input) do
+    for r <- input.requests,
+        why = rejected_problem(r),
+        do: "after tls: expected every connection refused on the certificate, " <> why
+  end
+
+  defp post_problem(:tls, :clean, _seen, _snap, input) do
+    for %{method: "TLS"} = r <- input.requests,
+        do: "after tls: expected every handshake to complete, one failed: #{tls_why(r)}"
+  end
+
+  defp post_problem(:proxied, :none, _seen, _snap, input) do
+    case input.requests ++ Map.get(input, :second_requests, []) do
+      [] ->
+        []
+
+      asked ->
+        [
+          "after proxied: expected no request at all, the mirror logged " <>
+            Enum.map_join(asked, ", ", &"#{&1.method} #{&1.path}")
+        ]
+    end
+  end
+
+  defp post_problem(:proxied, :requested, _seen, _snap, input) do
+    {proxied, direct} = Enum.split_with(input.requests, &(Map.get(&1, :proxied) == true))
+
+    cond do
+      proxied == [] ->
+        ["after proxied: expected a request through the proxy, the mirror logged none"]
+
+      direct != [] ->
+        [
+          "after proxied: expected every request through the proxy, these came direct: " <>
+            Enum.map_join(direct, ", ", &"#{&1.method} #{&1.path}")
+        ]
+
+      true ->
+        []
+    end
+  end
+
   defp post_problem(:root_version, want, seen, _snap, _input) do
     case seen.after.own do
       {:error, why} ->
@@ -1015,6 +1150,17 @@ defmodule ChainTest.Conformance.Case do
 
   defp state(nil), do: "absent"
   defp state(bytes), do: inspect(bytes, limit: 8, printable_limit: 32)
+
+  defp rejected_problem(%{method: "TLS", tls_alert: alert}) when alert in @cert_alerts, do: nil
+
+  defp rejected_problem(%{method: "TLS"} = r),
+    do: "a handshake failed without a certificate alert: #{tls_why(r)}"
+
+  defp rejected_problem(r), do: "a request got through: #{r.method} #{r.path} (#{r.status})"
+
+  defp tls_why(%{tls_alert: alert}), do: inspect(alert)
+  defp tls_why(%{tls_error: why}), do: why
+  defp tls_why(_r), do: "no reason logged"
 
   defp result(c, class, detail),
     do: %Result{step: :conformance, check: c.id, class: class, detail: detail}

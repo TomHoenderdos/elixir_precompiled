@@ -309,9 +309,9 @@ defmodule ChainTest.Conformance.CaseLayer1Test do
                    C1 C2-entry C2-dir R15-refused R15-unserved R16),
           do: assert(Map.has_key?(by, id), id)
 
-      # M4 is T0 plus Integrity's selected-build check; N6 is Task 5's (TLS).
+      # M4 is T0 plus Integrity's selected-build check (N6, over TLS, is
+      # in case_tls_test.exs).
       refute Map.has_key?(by, "M4")
-      refute Map.has_key?(by, "N6")
     end
 
     test "every case that leaves nothing installed also keeps the cache clean", %{by: by} do

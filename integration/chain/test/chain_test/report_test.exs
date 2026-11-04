@@ -134,6 +134,9 @@ defmodule ChainTest.ReportTest do
     assert hd(String.split(md, "\n")) == "# Chain test: rpi4 (PASS (1 not testable here))"
     assert md =~ "## Not testable here\n\n- X1: not testable here: no old batch\n"
 
+    named = %{untestable | check: "M3"}
+    assert write.([named], "n") =~ "- M3 (spec M3): not testable here: no old batch\n"
+
     assert hd(String.split(write.([pass, untestable, miss], "m"), "\n")) ==
              "# Chain test: rpi4 (PASS (1 miss, 1 not testable here))"
 
@@ -199,5 +202,47 @@ defmodule ChainTest.ReportTest do
 
   test "known_gaps/0 names P7: the client trusts the signed target claim" do
     assert Enum.any?(Report.known_gaps(), &(&1 =~ "P7" and &1 =~ "trusts the signed claim"))
+  end
+
+  test "spec_ids/1 reads the spec's ids out of a case id" do
+    assert Report.spec_ids("T4.R3") == ["T4", "R3"]
+    assert Report.spec_ids("R1.R6.T10") == ["R1", "R6", "T10"]
+    assert Report.spec_ids("N1-manifest") == ["N1"]
+    assert Report.spec_ids("N5-manifest-500") == ["N5"]
+    assert Report.spec_ids("L2-T0") == ["T0"]
+    assert Report.spec_ids("TLS-T0") == ["T0"]
+    assert Report.spec_ids("N3-self-signed") == ["N3"]
+    assert Report.spec_ids("X1") == []
+  end
+
+  test "meta layers become a per-layer table; without them there is none", %{tmp_dir: dir} do
+    layers = [
+      %{layer: "layer 1", cases: 5, pass: 2, fail: 1, not_testable: 1, rerun: 1},
+      %{layer: "layer 2", cases: 2, pass: 1, not_exercised: 1}
+    ]
+
+    {:ok, %{md: md, json: json}} = Report.write(dir, "rpi4", [], %{layers: layers})
+    text = File.read!(md)
+
+    assert text =~
+             "## Per layer\n\n" <>
+               "| layer | cases | pass | fail | not exercised | not testable | other |\n" <>
+               "| --- | --- | --- | --- | --- | --- | --- |\n" <>
+               "| layer 1 | 5 | 2 | 1 | 0 | 1 | 1 |\n" <>
+               "| layer 2 | 2 | 1 | 0 | 1 | 0 | 0 |\n"
+
+    assert [%{"layer" => "layer 1", "cases" => 5} | _] =
+             JSON.decode!(File.read!(json))["meta"]["layers"]
+
+    {:ok, %{md: plain}} = Report.write(Path.join(dir, "p"), "rpi4", [], %{})
+    refute File.read!(plain) =~ "## Per layer"
+  end
+
+  test "known_gaps/0 names N3's positive control: the client has no CA option" do
+    assert Enum.any?(Report.known_gaps(), &(&1 =~ "N3" and &1 =~ "no CA option"))
+  end
+
+  test "known_gaps/0 says R20 is its own check, outside the case run" do
+    assert Enum.any?(Report.known_gaps(), &(&1 =~ "R20" and &1 =~ "--policy"))
   end
 end

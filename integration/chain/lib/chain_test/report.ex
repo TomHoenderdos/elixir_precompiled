@@ -6,6 +6,12 @@ defmodule ChainTest.Report do
   @moduledoc """
   Writes a run's results as Markdown and JSON: `<dir>/<target>-<timestamp>.md`
   and `.json`, the timestamp taken from `meta.started_at`.
+
+  Sections after the results: the time per step; "Per layer" when the meta
+  carries `layers` (a conformance summary: each layer's verdicts counted by
+  class); "Not testable here", one line per `:not_testable` case with the
+  spec ids its case id names and its reason; and "Known, not testable",
+  the meta's `known_gaps`.
   """
 
   alias ChainTest.Result
@@ -38,7 +44,15 @@ defmodule ChainTest.Report do
       "test in the client suite; the conformance case P5-path covers path deps.",
     "P7, a forged entry claiming the project's target and toolchain but carrying another " <>
       "target's .so: the client cannot tell (it trusts the signed claim); it is a layer-3 / " <>
-      "on-device item, caught by step 6's smoke call failing on the device."
+      "on-device item, caught by step 6's smoke call failing on the device.",
+    "N3's positive control through a client CA option: the client has no CA option (it " <>
+      "trusts the OS store only), so it cannot be told to trust a test CA the way a user " <>
+      "would. TLS-T0 stands in: the run's test CA loaded as the build VM's whole store " <>
+      "(:public_key.cacerts_load/1 from the case's config file), which no N3 case gets; " <>
+      "N3-hostname uses the same store to reach the hostname check alone.",
+    "R20, the portal's signing policy (expires - issued at most 24 h, a batch at most " <>
+      "15 minutes old at fetch time), is its own read-only check against the portal, " <>
+      "mix chain_conformance --policy, never part of a case run."
   ]
 
   @doc "The \"known, not testable\" items every report names."
@@ -120,12 +134,36 @@ defmodule ChainTest.Report do
     | step | check | class | ms | detail |
     | --- | --- | --- | --- | --- |
     #{result_rows}
-    #{step_times(results)}#{not_testable(results)}
+    #{step_times(results)}#{layers(meta[:layers])}#{not_testable(results)}
     ## Known, not testable
 
     #{gaps}\
     """
   end
+
+  @layer_columns [
+    pass: "pass",
+    fail: "fail",
+    not_exercised: "not exercised",
+    not_testable: "not testable"
+  ]
+
+  # A conformance summary's verdicts per layer.
+  defp layers([_ | _] = layers) do
+    head = Enum.map_join(@layer_columns, " | ", &elem(&1, 1))
+
+    rows =
+      Enum.map_join(layers, "", fn l ->
+        counts = Enum.map(@layer_columns, fn {k, _} -> Map.get(l, k, 0) end)
+        other = l.cases - Enum.sum(counts)
+        "| #{cell(l.layer)} | #{l.cases} | #{Enum.join(counts, " | ")} | #{other} |\n"
+      end)
+
+    "\n## Per layer\n\n| layer | cases | #{head} | other |\n" <>
+      "| --- | --- | --- | --- | --- | --- | --- |\n" <> rows
+  end
+
+  defp layers(_), do: ""
 
   # Cases the snapshot could not back, apart from the results that ran.
   defp not_testable(results) do
@@ -135,8 +173,26 @@ defmodule ChainTest.Report do
 
       rs ->
         "\n## Not testable here\n\n" <>
-          Enum.map_join(rs, "", &"- #{cell(&1.check)}: #{cell(&1.detail)}\n")
+          Enum.map_join(rs, "", &"- #{cell(&1.check)}#{spec(&1.check)}: #{cell(&1.detail)}\n")
     end
+  end
+
+  defp spec(id) do
+    case spec_ids(to_string(id)) do
+      [] -> ""
+      ids -> " (spec #{Enum.join(ids, ", ")})"
+    end
+  end
+
+  @doc """
+  The spec's ids (`T4`, `R3`, ...: a row letter and a number) a case id
+  names: `"T4.R3"` both, `"N1-manifest"` N1, `"L2-T0"` T0.
+  """
+  @spec spec_ids(String.t()) :: [String.t()]
+  def spec_ids(id) do
+    ~r/(?<![A-Za-z0-9])[TMFNCRP][0-9]+(?![0-9])/
+    |> Regex.scan(id)
+    |> List.flatten()
   end
 
   # A rerun exits 0 but does not count as a pass: run again.

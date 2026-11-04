@@ -849,6 +849,185 @@ defmodule ChainTest.ConformanceTest do
     end
   end
 
+  describe "TLS and transport cases" do
+    # A fake client over TLS: trusts `trust_ca` alone when the build was
+    # given one, else the OS store, as the real build does; a refused
+    # handshake reports every dep `batch unavailable`, the client's own
+    # reason. A source outside loopback over http: the client is off.
+    defp tls_steps(test, snapshot) do
+      s = steps(test, snapshot)
+
+      build = fn input ->
+        send(test, {:build, input})
+        source = (input.client_config || %{})[:source] || input.source
+
+        report =
+          if String.starts_with?(source, "https://"),
+            do: tls_report(source, input.trust_ca),
+            else: %{}
+
+        class = if report == %{} or hd(report["lines"])["status"] != "hit", do: :fail, else: :pass
+
+        {[
+           %Result{step: :build, check: "compile", class: :pass},
+           %Result{step: :build, check: "hit:jason", class: class}
+         ], %{report: report, build_lib: "/nonexistent", fw_path: nil, sequence: 7}}
+      end
+
+      %{s | build: build}
+    end
+
+    defp tls_report(source, trust_ca) do
+      cacerts = if trust_ca, do: [trust_ca], else: :public_key.cacerts_get()
+
+      line =
+        case tls_get(source <> "/batch.json", cacerts) do
+          :ok -> {"jason", "1.4.5", "hit", "0.3 MB"}
+          :error -> {"jason", "1.4.5", "fail", "batch unavailable"}
+        end
+
+      if elem(line, 2) == "hit", do: :ok = tls_get(source <> "/v2/manifests/jason.json", cacerts)
+      Synthetic.report([line])
+    end
+
+    defp tls_get(url, cacerts) do
+      opts = [
+        timeout: 5_000,
+        ssl: [
+          log_level: :none,
+          verify: :verify_peer,
+          cacerts: cacerts,
+          customize_hostname_check: [
+            match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+          ]
+        ]
+      ]
+
+      case :httpc.request(:get, {to_charlist(url), []}, opts, []) do
+        {:ok, {{_, 200, _}, _, _}} -> :ok
+        _ -> :error
+      end
+    end
+
+    @no_batch %{
+      client: %{default: {:fail, "batch unavailable"}, deps: %{}},
+      harness: %{"build/hit:jason" => :fail},
+      after: %{installed: :none}
+    }
+
+    test "a tls case gets an https mirror; trust_ca hands its CA, and only then, to the build",
+         ctx do
+      control = %{
+        @t0
+        | id: "TLS-T0",
+          transform: {ChainTest.Mirror.Identity, %{tls: :ip, trust_ca: true}}
+      }
+
+      n3 =
+        Map.merge(@no_batch, %{
+          id: "N3",
+          description: "Untrusted.",
+          transform: {ChainTest.Mirror.Identity, %{tls: :ip}},
+          after: %{installed: :none, tls: :rejected}
+        })
+
+      cases!(ctx.opts, [control, n3])
+
+      assert {[%Result{check: "TLS-T0", class: :pass}, %Result{check: "N3", class: :pass}], _} =
+               Conformance.run(ctx.opts, tls_steps(self(), ctx.snapshot))
+
+      assert_received {:build, trusted}
+      assert_received {:build, untrusted}
+      assert String.starts_with?(trusted.source, "https://127.0.0.1:")
+      assert String.starts_with?(untrusted.source, "https://127.0.0.1:")
+      assert is_binary(trusted.trust_ca)
+      assert untrusted.trust_ca == nil
+      assert trusted.http_proxy == nil
+    end
+
+    test "every tls case gets new certificates", ctx do
+      a = %{@t0 | id: "A", transform: {ChainTest.Mirror.Identity, %{tls: :ip, trust_ca: true}}}
+      cases!(ctx.opts, [a, %{a | id: "B"}])
+      Conformance.run(ctx.opts, tls_steps(self(), ctx.snapshot))
+      assert_received {:build, %{trust_ca: ca_a}}
+      assert_received {:build, %{trust_ca: ca_b}}
+      refute ca_a == ca_b
+    end
+
+    test "proxy: :mirror points the build's HTTP_PROXY at the case mirror", ctx do
+      n2 = %{
+        id: "N2",
+        description: "Off.",
+        transform: {ChainTest.Mirror.Identity, %{}},
+        proxy: :mirror,
+        client_config: %{source: "http://chain-n2.invalid"},
+        client: %{default: :none, deps: %{}},
+        harness: %{"build/hit:jason" => :fail},
+        after: %{proxied: :none, installed: :none}
+      }
+
+      cases!(ctx.opts, [n2, @t0])
+
+      assert {[%Result{check: "N2", class: :pass}, %Result{check: "T0"}], _} =
+               Conformance.run(ctx.opts, tls_steps(self(), ctx.snapshot))
+
+      assert_received {:build, proxied}
+      assert_received {:build, plain}
+      assert proxied.http_proxy == proxied.source
+      assert String.starts_with?(proxied.http_proxy, "http://127.0.0.1:")
+      assert plain.http_proxy == nil
+      assert plain.trust_ca == nil
+    end
+  end
+
+  describe "the summary's per-layer counts" do
+    test "meta.layers counts each layer's verdicts by class", ctx do
+      untestable = %{@t0 | id: "U", transform: {ChainTest.TestTransform, %{needs: [:old]}}}
+      failing = %{@status | id: "F", client: %{default: :snapshot, deps: %{jason: :hit}}}
+      cases!(ctx.opts, [@t0, untestable, failing])
+      snapshot = Map.put(ctx.snapshot, :old, {:missing, "pruned"})
+
+      {_verdicts, meta} = Conformance.run(ctx.opts, steps(self(), snapshot))
+
+      assert meta.layers == [
+               %{layer: "layer 1", cases: 3, pass: 1, fail: 1, not_testable: 1}
+             ]
+    end
+  end
+
+  describe "--policy" do
+    test "parses alone, with --source and --report-dir; refuses case options" do
+      opts = Conformance.parse!(["--policy", "--source", "https://p.invalid/api/"])
+      assert opts.policy
+      assert opts.source == "https://p.invalid/api"
+      refute Conformance.parse!([]).policy
+
+      for extra <- [["--only", "T0"], ["--cases", "x.exs"], ["--snapshot-dir", "d"]] do
+        assert_raise Mix.Error, fn -> Conformance.parse!(["--policy" | extra]) end
+      end
+    end
+
+    test "runs only the policy check, writes its report, and takes no snapshot", ctx do
+      opts = Map.put(ctx.opts, :policy, true)
+      cases!(ctx.opts, [@t0])
+      test = self()
+
+      row = %Result{step: :policy, check: "R20", class: :pass, detail: "ok"}
+
+      s =
+        Map.put(steps(test, ctx.snapshot), :policy, fn input ->
+          send(test, {:policy, input})
+          row
+        end)
+
+      assert {[^row], meta} = Conformance.run(opts, s)
+      assert_received {:policy, %{source: "https://portal.invalid"}}
+      refute_received {:snapshot, _}
+      refute_received {:build, _}
+      assert meta.batch_sequence_step1 == nil
+    end
+  end
+
   # The snapshot with one file of jason's build stored.
   defp with_file(snapshot) do
     File.mkdir_p!(Path.join(snapshot.dir, "files"))

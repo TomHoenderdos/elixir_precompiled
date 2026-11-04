@@ -56,10 +56,12 @@ defmodule ChainTest.Trust do
                    batch_lifetime)
 
   @type info :: %{
-          sequence: integer(),
-          root_version: integer(),
-          manifests: %{String.t() => String.t()},
-          manifests_v2: %{String.t() => String.t()} | nil
+          required(:sequence) => integer(),
+          optional(:issued) => DateTime.t(),
+          optional(:expires) => DateTime.t(),
+          required(:root_version) => integer(),
+          required(:manifests) => %{String.t() => String.t()},
+          required(:manifests_v2) => %{String.t() => String.t()} | nil
         }
 
   @type config :: %{
@@ -360,6 +362,8 @@ defmodule ChainTest.Trust do
 
         info = %{
           sequence: b.sequence,
+          issued: b.issued,
+          expires: b.expires,
           root_version: root["version"],
           manifests: b.manifests,
           manifests_v2: b.manifests_v2

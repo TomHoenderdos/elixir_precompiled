@@ -51,10 +51,23 @@ defmodule ChainTest.Conformance do
   a layer-2 case fails when its home holds a state dir named for the real
   root.
 
+  A case whose transform asks for `tls` gets an HTTPS case mirror with a
+  new certificate of that kind (`ChainTest.TestCert`, in memory, made for
+  that case alone), and its build trusts that certificate's CA, and only
+  it, when the transform also says `trust_ca: true` (`ChainTest.Build`'s
+  `:trust_ca`); otherwise the build keeps the OS store. A case with `proxy:
+  :mirror` gets the case mirror as its build's `HTTP_PROXY`.
+
   Reports go to `report_dir`: per case `<target>-<id>-<stamp>.{md,json}`
   with every result as it came (their classes are what the case expects,
   not the run's verdict), and `<target>-conformance-<stamp>.{md,json}` with
-  one verdict per case. The exit code is the verdicts'.
+  one verdict per case and, in its meta, the verdicts counted per layer
+  (`layers`: layer 1, the real root, and layer 2, the test keys). The exit
+  code is the verdicts'.
+
+  `--policy` runs none of that: only R20, `ChainTest.Policy`, against the
+  source's current batch (read only, no snapshot, no build), reported as
+  one row in `policy-<stamp>.{md,json}`.
   """
 
   alias ChainTest.{
@@ -73,7 +86,7 @@ defmodule ChainTest.Conformance do
 
   alias ChainTest.Conformance.{Case, Clock, Setup}
   alias ChainTest.Mirror.Transform
-  alias ChainTest.{TestKey, Trust}
+  alias ChainTest.{Policy, TestCert, TestKey, Trust}
 
   @project_app "chain_fixture"
   @switches [
@@ -82,10 +95,12 @@ defmodule ChainTest.Conformance do
     cases: :string,
     only: :string,
     snapshot_dir: :string,
-    report_dir: :string
+    report_dir: :string,
+    policy: :boolean
   ]
   @usage "usage: mix chain_conformance [--target rpi4|rpi0_2] [--cases PATH] [--only ID,ID] " <>
-           "[--source URL] [--snapshot-dir DIR] [--report-dir DIR]"
+           "[--source URL] [--snapshot-dir DIR] [--report-dir DIR]\n" <>
+           "       mix chain_conformance --policy [--source URL] [--report-dir DIR]"
 
   @type opts :: %{
           target: String.t(),
@@ -94,7 +109,8 @@ defmodule ChainTest.Conformance do
           only: [String.t()] | nil,
           snapshot_dir: Path.t() | nil,
           report_dir: Path.t(),
-          fixture_dir: Path.t()
+          fixture_dir: Path.t(),
+          policy: boolean()
         }
   @type steps :: %{optional(atom()) => function()}
 
@@ -105,6 +121,8 @@ defmodule ChainTest.Conformance do
 
     if rest != [] or invalid != [],
       do: Mix.raise("unexpected arguments\n" <> @usage)
+
+    policy_alone!(opts)
 
     target = opts[:target] || "rpi4"
     supported_target!(target)
@@ -117,8 +135,17 @@ defmodule ChainTest.Conformance do
       only: only,
       snapshot_dir: opts[:snapshot_dir] && Path.expand(opts[:snapshot_dir]),
       report_dir: Path.expand(opts[:report_dir] || default_report_dir()),
-      fixture_dir: Path.join(CLI.root(), "fixture")
+      fixture_dir: Path.join(CLI.root(), "fixture"),
+      policy: opts[:policy] == true
     }
+  end
+
+  defp policy_alone!(opts) do
+    if opts[:policy] && Enum.any?([:only, :cases, :snapshot_dir], &Keyword.has_key?(opts, &1)),
+      do:
+        Mix.raise(
+          "--policy runs no case: --only, --cases and --snapshot-dir do not apply\n" <> @usage
+        )
   end
 
   defp supported_target!(target) do
@@ -140,7 +167,8 @@ defmodule ChainTest.Conformance do
   def main(argv) do
     opts = parse!(argv)
     {verdicts, meta} = run(opts)
-    {:ok, %{md: md}} = Report.write(opts.report_dir, "#{opts.target}-conformance", verdicts, meta)
+    name = if opts.policy, do: "policy", else: "#{opts.target}-conformance"
+    {:ok, %{md: md}} = Report.write(opts.report_dir, name, verdicts, meta)
     IO.puts("report: #{md}")
     Result.exit_code(verdicts)
   end
@@ -156,7 +184,8 @@ defmodule ChainTest.Conformance do
           integrity: &Integrity.run/1,
           compiled: &Compiled.run/1,
           mirror: &Mirror.start/2,
-          layer2: &TestKey.prepare/2
+          layer2: &TestKey.prepare/2,
+          policy: &Policy.check/1
         },
         steps
       )
@@ -164,6 +193,19 @@ defmodule ChainTest.Conformance do
     started_at = DateTime.utc_now() |> DateTime.truncate(:second)
     versions = Run.versions(%{})
 
+    if Map.get(opts, :policy, false),
+      do: policy(opts, s, started_at, versions),
+      else: run_suite(opts, s, started_at, versions)
+  end
+
+  # R20 alone: the source's current batch, read only.
+  defp policy(opts, s, started_at, versions) do
+    row = s.policy.(%{source: opts.source})
+    CLI.print(row)
+    {[row], meta(opts, nil, started_at, versions)}
+  end
+
+  defp run_suite(opts, s, started_at, versions) do
     with {:ok, cases} <- Case.load(opts.cases),
          {:ok, cases} <- only(cases, opts.only),
          :ok <- selected(cases),
@@ -178,7 +220,8 @@ defmodule ChainTest.Conformance do
       meta = meta(opts, snap, started_at, versions)
 
       try do
-        {run_cases(cases, snap, opts, s, meta), meta}
+        verdicts = run_cases(cases, snap, opts, s, meta)
+        {verdicts, Map.put(meta, :layers, layers(cases, verdicts))}
       after
         # A snapshot this run took for itself is not kept; one in a
         # caller-given --snapshot-dir is.
@@ -187,6 +230,21 @@ defmodule ChainTest.Conformance do
     else
       {:error, why} -> {[setup(why)], meta(opts, nil, started_at, versions)}
     end
+  end
+
+  # The verdicts of each layer's cases, counted by class.
+  defp layers(cases, verdicts) do
+    layer = Map.new(cases, &{&1.id, if(Case.layer2?(&1), do: "layer 2", else: "layer 1")})
+
+    verdicts
+    |> Enum.filter(&Map.has_key?(layer, &1.check))
+    |> Enum.group_by(&layer[&1.check])
+    |> Enum.sort()
+    |> Enum.map(fn {name, rs} ->
+      rs
+      |> Enum.frequencies_by(& &1.class)
+      |> Map.merge(%{layer: name, cases: length(rs)})
+    end)
   end
 
   defp setup(why) do
@@ -224,6 +282,7 @@ defmodule ChainTest.Conformance do
 
   defp run_cases(cases, snap, opts, s, meta) do
     File.mkdir_p!(opts.report_dir)
+
     site = Path.join(opts.report_dir, "fixture-site.exs")
 
     File.write!(
@@ -375,24 +434,31 @@ defmodule ChainTest.Conformance do
 
   # `[case_mirror]` or `[case_mirror, second]`; the second is started first,
   # so the case mirror's transform knows where it is.
+  # A `tls` case's mirror speaks HTTPS with a new certificate of that kind,
+  # its CA (when it has one) kept as the mirror's `:ca` for the build.
   defp start_mirrors(c, run) do
-    start = fn mirror, second_url ->
+    start = fn mirror, second_url, extra ->
       context = %{mirror: mirror, second_url: second_url, snapshot: run.snap}
 
       run.steps.mirror.(
         run.snap.dir,
-        [transform: Transform.fun(c.transform, context)] ++ Transform.mirror_opts(c.transform)
+        [transform: Transform.fun(c.transform, context)] ++
+          Transform.mirror_opts(c.transform) ++ extra
       )
     end
 
     result =
-      case Transform.mirrors(c.transform) do
-        1 ->
-          with {:ok, m} <- start.(1, nil), do: {:ok, [m]}
+      case {Transform.mirrors(c.transform), Transform.tls(c.transform)} do
+        {1, nil} ->
+          with {:ok, m} <- start.(1, nil, []), do: {:ok, [m]}
 
-        2 ->
-          with {:ok, second} <- start.(2, nil) do
-            case start.(1, second.url) do
+        {1, kind} ->
+          cert = TestCert.server(kind)
+          with {:ok, m} <- start.(1, nil, tls: cert.ssl), do: {:ok, [Map.put(m, :ca, cert.ca)]}
+
+        {2, nil} ->
+          with {:ok, second} <- start.(2, nil, []) do
+            case start.(1, second.url, []) do
               {:ok, m} ->
                 {:ok, [m, second]}
 
@@ -528,6 +594,8 @@ defmodule ChainTest.Conformance do
             keep_build: Case.runs(c) == 2,
             client_config: client_config(test_root(Map.get(c, :client_config), run), snap),
             client_env: client_env(Map.get(c, :client_env), home),
+            trust_ca: if(Transform.trust_ca?(c.transform), do: Map.fetch!(mirror, :ca)),
+            http_proxy: if(Map.get(c, :proxy) == :mirror, do: mirror.url),
             trust: snap.info,
             target_config: run.site,
             command: ["compile"]

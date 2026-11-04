@@ -9,7 +9,7 @@ defmodule ChainTest.Mirror.Transform do
   case. `fun/2` turns it into the mirror's `(path, bytes) ->
   ChainTest.Mirror.response()` hook.
 
-  Three args keys mean something to the runner, so a module that takes
+  Five args keys mean something to the runner, so a module that takes
   them must accept them in `valid_args?/1`:
 
     * `mirrors: 2` - the case gets a second mirror over the snapshot (a
@@ -19,6 +19,12 @@ defmodule ChainTest.Mirror.Transform do
       (`ChainTest.Mirror.start/2`), 1 to 600000 ms instead of the default
       120 s: a drip that must outlast the client's own deadline (N4).
       `mirror_opts/1` hands it to the runner.
+    * `tls` - `:ip`, `:self_signed` or `:wrong_host`: the case mirror
+      speaks HTTPS with a new certificate of that kind
+      (`ChainTest.TestCert`), not with `mirrors: 2`.
+    * `trust_ca` - `true`, only with `tls`: the case's build trusts that
+      certificate's CA, and only it (`ChainTest.Build`'s `:trust_ca`).
+      Without it, the build keeps the OS store, which knows no test CA.
     * `:case` - reserved: never in a case file. At run time the runner puts
       the case's context there: `%{mirror: 1 | 2, second_url: url | nil,
       snapshot: snapshot}`, `mirror` saying which mirror is answering and
@@ -65,7 +71,8 @@ defmodule ChainTest.Mirror.Transform do
   def valid?({module, args}) when is_atom(module) and is_map(args) do
     Code.ensure_loaded?(module) and function_exported?(module, :transform, 3) and
       not Map.has_key?(args, :case) and Map.get(args, :mirrors, 1) in [1, 2] and
-      stream_cap?(args) and valid_args?(module, args) and needs_valid?(module, args)
+      stream_cap?(args) and tls_args?(args) and valid_args?(module, args) and
+      needs_valid?(module, args)
   end
 
   def valid?(_), do: false
@@ -89,6 +96,29 @@ defmodule ChainTest.Mirror.Transform do
   def file_path?(path), do: String.starts_with?(path, "files/")
 
   @max_stream_ms 600_000
+  @tls_kinds [:ip, :self_signed, :wrong_host]
+
+  defp tls_args?(args) do
+    case {Map.fetch(args, :tls), Map.fetch(args, :trust_ca)} do
+      {:error, :error} ->
+        true
+
+      {{:ok, kind}, trust} ->
+        kind in @tls_kinds and trust in [:error, {:ok, true}] and
+          Map.get(args, :mirrors, 1) == 1
+
+      {:error, _} ->
+        false
+    end
+  end
+
+  @doc "The certificate kind the case mirror presents (`tls`), or `nil` for plain http."
+  @spec tls({module(), map()}) :: ChainTest.TestCert.kind() | nil
+  def tls({_module, args}), do: Map.get(args, :tls)
+
+  @doc "Whether the case's build trusts the case mirror's CA (`trust_ca: true`)."
+  @spec trust_ca?({module(), map()}) :: boolean()
+  def trust_ca?({_module, args}), do: Map.get(args, :trust_ca) == true
 
   defp stream_cap?(%{stream_max_ms: ms}), do: is_integer(ms) and ms in 1..@max_stream_ms
   defp stream_cap?(_args), do: true

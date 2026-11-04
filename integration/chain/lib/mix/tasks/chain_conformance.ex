@@ -15,6 +15,11 @@ defmodule Mix.Tasks.ChainConformance do
   dir. A `--snapshot-dir` that already holds a snapshot is loaded instead of
   downloaded (under 24 hours old, same source, target and fixture lock).
   Needs no device. Exits non-zero when a case fails or is not exercised.
+
+      mix chain_conformance --policy [--source URL] [--report-dir DIR]
+
+  runs no case: only R20 (`ChainTest.Policy`), the portal's current batch
+  checked read only against its signing policy, never part of a case run.
   """
   use Mix.Task
 

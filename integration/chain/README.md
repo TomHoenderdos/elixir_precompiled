@@ -94,7 +94,9 @@ The report directory holds `<target>-<timestamp>.md` and `.json` with the
 same content: the run's meta (both batch sequences, the root version, the
 client and nerves commits, Elixir, OTP, the Nerves system), one row per
 check with its class, time and detail, the time per step, and the known,
-untestable gaps. The command exits 1 when any result is a failing class; the heading then
+untestable gaps. A conformance summary adds the verdicts counted per layer
+and, for each case the snapshot could not back, its spec ids and reason
+("Not testable here"). The command exits 1 when any result is a failing class; the heading then
 says `FAIL`.
 
 | Class | Meaning | Exit |
@@ -152,17 +154,19 @@ Cases are data, in `conformance/cases.exs`, one map per case:
 | `id` | Unique; a letter or digit, then letters, digits, `.` or `-`. |
 | `description` | One plain sentence. |
 | `transform` | `{module, args}`: a `ChainTest.Mirror.Transform` and its args. `ChainTest.Mirror.Identity` serves unchanged; `ChainTest.Mirror.Status` takes `%{paths: ["v2/manifests/jason.json", ...], status: 500}` (a non-empty list of snapshot paths and an HTTP status 100-599; nothing else) and answers that status with an empty body for those paths. A transform may define `valid_args?/1`; the case file is refused before any download when it returns false. A transform gets each response's path relative to the snapshot (`"v2/manifests/jason.json"`) and bytes, and returns `{status, bytes}`. |
-| `client` | `%{default: expect, deps: %{dep => expect}}`: what `report.json` must say for each expected hit, each dep in `deps` and each dep the snapshot holds a build of, except the deps `nerves` pulls in (Nerves tooling the client leaves to `nerves_bootstrap`; read from the lock and the compiled `nerves.app`) (`deps[dep]`, else `default`). `expect` is `:hit`, `:miss`, `:fail`, `{status, "detail prefix"}`, or one the snapshot decides per dep: `:snapshot` (a hit when the snapshot holds a build the client could select), `:older_manifest` (M3: `manifest hash differs from batch` for a dep served an older batch's manifest, else `:snapshot`) or `:recheck` (R16, only with `runs: 2`: `manifest hash differs from batch` for a held dep the previous batch names another manifest for, `revoked: no longer in the current batch` for one it names none for, and no report line for every other, a kept install). A dep the last two make anything but a hit has its `build/hit:` row judged by its client line instead. |
+| `client` | `%{default: expect, deps: %{dep => expect}}`: what `report.json` must say for each expected hit, each dep in `deps` and each dep the snapshot holds a build of, except the deps `nerves` pulls in (Nerves tooling the client leaves to `nerves_bootstrap`; read from the lock and the compiled `nerves.app`) (`deps[dep]`, else `default`). `expect` is `:hit`, `:miss`, `:fail`, `{status, "detail prefix"}`, `:none` (no report line: a client that never ran), or one the snapshot decides per dep: `:snapshot` (a hit when the snapshot holds a build the client could select), `:older_manifest` (M3: `manifest hash differs from batch` for a dep served an older batch's manifest, else `:snapshot`) or `:recheck` (R16, only with `runs: 2`: `manifest hash differs from batch` for a held dep the previous batch names another manifest for, `revoked: no longer in the current batch` for one it names none for, and no report line for every other, a kept install). A dep the last two make anything but a hit has its `build/hit:` row judged by its client line instead. |
 | `harness` | `%{"step/check" => class}`: harness results that must have that class. `step` is `build`, `integrity` or `compiled`, `check` as the per-case report prints it (`"build/hit:jason"`, `"integrity/integrity:ash"`, `"compiled/reported_miss:jason"`). Every other result must be `pass` or `miss`; a `rerun` is a difference, since the snapshot never moves. |
 | `runs` (optional) | `2`: build twice. The first build is cold, served unchanged by the reference mirror, in a home of its own removed afterwards, and must pass every check; the case's own build then starts from its `_build` (warm), with the case's home, setup and mirror (R16). The cold build's leftovers are not judged again there: the integrity `unreported:` row of each dep a `:recheck` expectation keeps, and step 4's `compiled_here`. |
 | `setup` (optional) | `{module, args}`: a `ChainTest.Conformance.Setup` run against the case's fresh client home before the build (write a state file, fill the cache, plant a symlink). It gets the home, the snapshot with the case's `source`, `root` and mirror URLs under `:case`, and its args; `ChainTest.Conformance.Setup.state_dir/3` names the client's state dir. A setup that fails fails the case, unbuilt. `ChainTest.Conformance.Setup.State` writes the batch sequence state (`sequence: :snapshot`, `{:below, n}` or `:corrupt`; `source: :second` for the second mirror's); `ChainTest.Conformance.Setup.PlantRoot` writes an attacker's self-signed root at `path` under the home; `ChainTest.Conformance.Setup.Cache` fills the client's file cache from the snapshot's files (`plant: :all_files`, `:corrupt_files` (one byte changed, size kept), `:link_entries` (each entry a symlink to the right bytes under `outside/` in the home) or `:link_dir` (`files` itself a symlink to an empty dir there)). |
 | `client_config` (optional) | Merged into the fixture's `config :elixir_precompiled` for this case's build only, after the operator's site config: `clock_offset_seconds` (integer, or `{:age, seconds}`: the client's clock that long after the snapshot batch's `issued`, resolved just before the build, so the case does not depend on the snapshot's age or the run's order), `root` (an absolute path, or `{:test_root, :v1 | :threshold_2}` for a layer-2 case, below), `source` (URL). |
+| `proxy` (optional) | `:mirror`: the build's `HTTP_PROXY` is the case mirror (`HTTPS_PROXY` unset), so a plain-http request to any host reaches it; the mirror answers a proxied request 400 and logs it with its URL (N2). Not with a `tls` transform. |
 | `client_env` (optional) | Environment variables for this case's build only, from the names a client might wrongly read a root path from (`ChainTest.Build.client_env_names/0`: `ELIXIR_PRECOMPILED_ROOT` and `NERVES_PRECOMPILED_ROOT` only, the names the client's own pattern would give; it reads neither today, and T9 pins that): an absolute path, or `{:home, rel}` for a path under the case home. Every allowed name a case does not give is unset. |
-| `after` (optional) | Post-conditions after the build: `state_sequence` (the client's state file for the case's source and root holds an integer, or `:snapshot`, the snapshot batch's sequence, or `:previous`, the previous batch's; `:absent`; or `:unchanged`, every state file in the home as setup left it), `other_states` (`:unchanged`: every state file but that one as setup left it), `installed` (`:none`: no `.mix/elixir_precompiled.json` in the target's `_build`; `:snapshot`: exactly the deps the snapshot holds a build of; `{:without, [dep]}`, `:older_manifest`, `:recheck`: those but the named deps, or the ones the matching `client` expectation fails), `cache` (`:untouched`: every cache entry as setup left it, compared by kind, the sha256 of a file's bytes and a symlink's target, never following one, with nothing gained or removed; `:verified`: every entry a regular file directly in `files/` whose bytes hash to its name, so no changed byte and no symlink stayed; a file setup planted may stay as it left it only when no installed file has its sha256, since the snapshot holds builds the client never selects), `outside: :untouched` (what setup planted under `outside/` in the home, the targets of its symlinks, compared the same way; a setup that planted nothing there fails it), `log` (a non-empty string, or a list of them, the build's output must contain: a client warning, say), and, with `mirrors: 2`, `second_mirror` (`:requested`: the client asked the second mirror for something; `:untouched`: it asked nothing), `root_version` (the `root_version` file in that state dir: `:absent`, no root adopted, or the integer it holds), and `unrequested` (a list of snapshot paths the client must never have asked either mirror for: no logged target, decoded, its query dropped, in any case, may end in one's base name). |
+| `after` (optional) | Post-conditions after the build: `state_sequence` (the client's state file for the case's source and root holds an integer, or `:snapshot`, the snapshot batch's sequence, or `:previous`, the previous batch's; `:absent`; or `:unchanged`, every state file in the home as setup left it), `other_states` (`:unchanged`: every state file but that one as setup left it), `installed` (`:none`: no `.mix/elixir_precompiled.json` in the target's `_build`; `:snapshot`: exactly the deps the snapshot holds a build of; `{:without, [dep]}`, `:older_manifest`, `:recheck`: those but the named deps, or the ones the matching `client` expectation fails), `cache` (`:untouched`: every cache entry as setup left it, compared by kind, the sha256 of a file's bytes and a symlink's target, never following one, with nothing gained or removed; `:verified`: every entry a regular file directly in `files/` whose bytes hash to its name, so no changed byte and no symlink stayed; a file setup planted may stay as it left it only when no installed file has its sha256, since the snapshot holds builds the client never selects), `tls` (with a `tls` transform: `:rejected`, every connection a handshake the client aborted with a certificate alert and no request through, judged by that log alone, `not_exercised` without a handshake; `:clean`, no handshake failed), `proxied` (with `proxy: :mirror`: `:none`, the mirror logged nothing at all; `:requested`, only proxied requests, at least one; either is judged by that log alone), `outside: :untouched` (what setup planted under `outside/` in the home, the targets of its symlinks, compared the same way; a setup that planted nothing there fails it), `log` (a non-empty string, or a list of them, the build's output must contain: a client warning, say), and, with `mirrors: 2`, `second_mirror` (`:requested`: the client asked the second mirror for something; `:untouched`: it asked nothing), `root_version` (the `root_version` file in that state dir: `:absent`, no root adopted, or the integer it holds), and `unrequested` (a list of snapshot paths the client must never have asked either mirror for: no logged target, decoded, its query dropped, in any case, may end in one's base name). |
 | `gate` (optional) | The id of an earlier case of the same layer: this case runs only after that one passed, else it is `not_exercised`. A refusal whose positive control failed says nothing (T7 on T7-chained, T3-duplicated on T3-pair). `--only` brings the gates along. |
 
 A transform answers `{status, bytes}` or, to misbehave in other ways,
-`{status, headers, body}`, `{:redirect, 3xx, location}`, `{:stream, status,
+`{status, headers, body}`, `{:redirect, 3xx, location}` (or `{:scheme,
+"http"}` for the same path on the mirror's own host and port), `{:stream, status,
 chunks, delay_ms}` (no `content-length`, a delay before each chunk),
 `{:truncate, status, body, n}` (declares the whole body, sends `n` bytes),
 `:close` (no response at all) or `{:endless, status, chunk, delay_ms}` (until
@@ -200,7 +204,7 @@ which the portal does not serve, so it is not testable here today),
 origin) and `ChainTest.Mirror.Drip` (`paths: :batch | :files`, one byte
 every 2 s, with `stream_max_ms`). M4 has no case of its own: with real bytes
 entry selection is T0's, whose integrity step checks each hit installed the
-build the harness selects; N6 needs TLS. A case standing for several spec rows joins
+build the harness selects; N6 runs over TLS (below). A case standing for several spec rows joins
 their ids with `.` (`T4.R3`): every case home is a fresh
 `ELIXIR_PRECOMPILED_HOME`, so T10 and R6 run as R1 and R2.
 
@@ -264,3 +268,150 @@ for is `not_exercised`. A case that crashes is a `fail`; the others still
 run. An empty `--only`, or a run that selects no case, is refused.
 Each case's own results are in `<target>-<id>-<stamp>.md`; the verdicts in
 `<target>-conformance-<stamp>.md`.
+
+### TLS and transport cases
+
+The TLS cases (N3, N6) run the case mirror over HTTPS: a transform's args
+`tls: :ip | :self_signed | :wrong_host` give it a certificate of that kind,
+made for that case alone with `:public_key` (`ChainTest.TestCert`: P-256
+keys, a CA of its own for `:ip` and `:wrong_host`; nothing written to
+disk, no `openssl`). The client has no CA option: it trusts the OS store,
+which knows no test CA. So the N3 cases that test trust (`N3-self-signed`,
+`N3-wrong-host`) build with the OS store, and must refuse every handshake;
+the mirror logs each one with the alert the client sent, and `after: %{tls:
+:rejected}` judges the case by that log alone. A case whose args also say
+`trust_ca: true` builds with that CA as the VM's whole store
+(`:public_key.cacerts_load/1` from the case's config file, a PEM beside it,
+both removed after the build): `TLS-T0`, the control, must then install as
+T0 does, and `N3-hostname` (a wrong-host certificate from that trusted
+CA, the hostname check alone), `N6` and `N6-manifest` (a redirect from
+https to plain http on the same host and port, `ChainTest.Mirror.Downgrade`)
+are gated on it. A client that followed the downgrade would send plain http
+to the TLS port, which the mirror logs as a failed handshake: `after: %{tls:
+:clean}` fails on it.
+
+N2 (an http source outside loopback) builds with the case mirror as its
+`HTTP_PROXY` (`proxy: :mirror`) and `source: "http://chain-n2.invalid"`:
+the client must be disabled before any fetch, so the mirror logs nothing
+(`after: %{proxied: :none}`), no `report.json` is written, the log has the
+client's warning, and everything compiles. Its control `N2-proxy` (a
+loopback source, `http://localhost:1`, which the client allows) shows that
+the route works: its requests reach the mirror as proxied requests.
+
+The client's reasons these cases pin are today's: `batch unavailable` (a
+refused handshake: the client keeps no more of the reason), `redirect to
+another host refused` and `source must be https (http only on loopback),
+disabled`. They are prefixes or substrings, so a client that adds the
+transport reason after `batch unavailable` still matches.
+
+### The production policy check (R20)
+
+    mix chain_conformance --policy [--source URL] [--report-dir DIR]
+
+R20 is a check, not a mirror case, and never part of a case run: it
+fetches the portal's current `batch.json` (and `root.json`), read only,
+verifies it under the pinned root (`ChainTest.Trust`), and requires
+`expires - issued` to be at most 24 hours and `now - issued` at most 15
+minutes at fetch time (and the batch not issued more than 300 s ahead of
+this clock). One row, `policy/R20`, in `policy-<stamp>.md`: `pass`,
+`fail` (a batch that does not verify, or dates outside the policy), or
+`not_exercised` (the batch could not be fetched). It needs no fixture build
+and no snapshot.
+
+### The cases
+
+Every case in `conformance/cases.exs`, with the spec rows it stands for and
+its layer (1: real root; 2: test keys). "after X" is its gate. P7, P5 for a
+git dep, N3's positive control through a client CA option and the spec's
+"known, not testable" items are in every report's "Known, not testable"
+section instead.
+
+| Case | Spec | Layer | What it shows |
+| --- | --- | --- | --- |
+| `T0` | T0 | 1 | The mirror serves the snapshot unchanged: the client installs every build the snapshot holds. |
+| `R8` | R8 | 1 | Freeze: the client's clock is 23 hours past the current batch's issue; still fresh, it is accepted. |
+| `N5-manifest-500` | N5 | 1 | The mirror answers 500 for jason's manifest: the client compiles jason and says why. |
+| `R0` | R0 | 1 | The current batch on a fresh home: accepted, and the state records its sequence. |
+| `T1` | T1 | 1 | One bit of the batch signature flipped: the batch is refused. |
+| `T3-removed` | T3 | 1 | The batch served with its signatures removed: refused. |
+| `T4.R3` | T4, R3 | 1 | Rollback: the client's state holds the current sequence, the mirror serves the batch before it; refused, the state stays. |
+| `T5` | T5 | 1 | Replay: a client that saw the current batch is served one issued over 25 hours earlier; refused as stale. |
+| `T6` | T6 | 1 | The mirror serves an attacker's newer root.json: the client keeps its shipped root and installs as in T0. |
+| `T9` | T9 | 1 | Pins today's behaviour: only environment variables name a root path, an attacker's, and the client, which reads none, installs as in T0. |
+| `R1.R6.T10` | R1, R6, T10 | 1 | A fresh home is served the batch before the current one: accepted, within the 24-hour bound. |
+| `R2.R6.T10` | R2, R6, T10 | 1 | A fresh home is served a batch issued over 25 hours ago: refused as stale, state or not. Real 24-hour batches that old are also expired; the pinned batch stale prefix proves the freshness bound is what refused. |
+| `R4-previous` | R4 | 1 | A corrupt state file counts as 0: the batch before the current one is accepted and replaces it. |
+| `R4-old` | R4 | 1 | A corrupt state file counts as 0, yet a batch issued over 25 hours ago is still refused as stale. Freshness is checked before the state is read, so the corrupt file is never read and nothing is logged; R4-previous checks the log. |
+| `R5` | R5 | 1 | The state holds a sequence 40 below the current batch: gaps are allowed, it is accepted. |
+| `R7` | R7 | 1 | Freeze: the client's clock is 25 hours past the current batch's issue; refused as stale. |
+| `R12` | R12 | 1 | The client's clock is 30 days before the library was built: refused, and everything compiles. |
+| `R13` | R13 | 1 | The client's clock is a year past the batch's issue: refused as stale, and everything compiles. |
+| `R19` | R19 | 1 | Two sources: one's state holds the current sequence, the other is served the batch before it; accepted there, the first source's state untouched. |
+| `M1` | M1 | 1 | One byte of every manifest changed: each fails the hash the batch names, and nothing is installed. |
+| `M2` | M2 | 1 | Each dep's manifest is another dep's real one: refused on the hash, nothing installed. |
+| `M3` | M3 | 1 | A real manifest an older batch names, and the current one does not, served under the current batch: refused on the hash. |
+| `F1` | F1 | 1 | One byte of every file changed, its size kept: refused on the sha256, nothing installed or cached. |
+| `F2-truncated` | F2 | 1 | Every file cut one byte short of the length it declares: refused, nothing installed or cached. |
+| `F2-larger` | F2 | 1 | Every file one byte larger than the manifest's size: refused at the size cap, nothing installed or cached. |
+| `F2-endless` | F2 | 1 | Every file an endless stream without a length: refused at the size cap, nothing installed or cached. |
+| `N1` | N1 | 1 | Every file redirected to another origin, a second mirror with the right bytes: refused as cross-origin, never followed. |
+| `N1-manifest` | N1 | 1 | Every manifest redirected to another origin: refused as cross-origin, never followed, nothing installed. |
+| `N1-batch` | N1 | 1 | batch.json redirected to another origin: refused as cross-origin, never followed, and the reason says so. |
+| `N4` | N4 | 1 | batch.json dripped one byte every 2 seconds: the client gives up at its own deadline and compiles everything. |
+| `C1` | C1 | 1 | The cache holds every file with one byte changed, its size kept: each is fetched again, and only the right bytes are installed and cached. |
+| `C2-entry` | C2 | 1 | Each cache entry is a symlink out of the cache, to the right bytes: refused, the links and their targets left alone. |
+| `C2-dir` | C2 | 1 | The cache dir itself is a symlink out of the home: refused, nothing written through it. |
+| `R15-refused` | R15 | 1 | The cache holds every file of every build, the batch is refused: nothing is installed from the cache. |
+| `R15-unserved` | R15 | 1 | The cache holds every file of every build, jason's manifest is not served: jason is not installed from the cache. |
+| `R16` | R16 | 1 | A warm _build holds a dep installed from a manifest the served batch no longer names: it is removed and compiled. |
+| `N2-proxy` | N2 | 1 | The control: a loopback http source, fetched through the case mirror as HTTP proxy, which logs each request and answers 400. |
+| `N2` | N2 | 1 | An http source outside loopback: the client is disabled before any fetch, no request leaves the build, and everything compiles. (after N2-proxy) |
+| `TLS-T0` | T0 | 1 | The control: the snapshot over HTTPS, its test CA the build's only trusted one; the same hits as T0. |
+| `N3-self-signed` | N3 | 1 | HTTPS with a self-signed certificate for 127.0.0.1: every handshake refused, nothing fetched, everything compiles. |
+| `N3-wrong-host` | N3 | 1 | HTTPS with a certificate for another host, from a CA the client does not know: every handshake refused. |
+| `N3-hostname` | N3 | 1 | HTTPS with a certificate for another host from the CA the build trusts (TLS-T0's): refused on the hostname alone. (after TLS-T0) |
+| `N6` | N6 | 1 | Every file redirected from https to http on the same host and port: refused as another origin, never followed. (after TLS-T0) |
+| `N6-manifest` | N6 | 1 | Every manifest redirected from https to http on the same host and port: refused, never followed, nothing installed. (after TLS-T0) |
+| `L2-T0` | T0 | 2 | The control: the snapshot's batch signed by the test key, served unchanged to a client pinned to the test root; the same hits as T0. |
+| `T2` | T2 | 2 | The batch signed by a key the root's batch role does not name: refused. |
+| `T3-pair` | T3 | 2 | Under the threshold-2 root, the batch signed by both of its batch keys: accepted, so T3-duplicated's refusal is the duplicate's. |
+| `T3-duplicated` | T3 | 2 | Under a root whose batch role needs two signatures, the batch carries one key's signature twice: refused. (after T3-pair) |
+| `T7-chained` | T7 | 2 | The mirror serves a root v2 that v1 signed, and a batch only v2's key signed: v2 is adopted, the batch accepted. |
+| `T7` | T7 | 2 | The mirror serves a root v2 that v1 did not sign, and a batch only v2's key signed: v2 is not adopted, the batch refused. (after T7-chained) |
+| `T8` | T8 | 2 | A batch expiring ten years after its issue: refused for its lifetime. |
+| `R9` | R9 | 2 | A batch issued an hour ahead of the client's clock: refused. |
+| `R10` | R10 | 2 | A batch issued five minutes ahead of the client's clock, the tolerance: accepted. |
+| `R11` | R11 | 2 | A batch that lives 30 days, the client's clock 25 hours past its issue: refused as stale, its expiry does not keep it alive. |
+| `T5-expired` | T5 | 2 | A batch that lives one hour, the client's clock two hours past its issue: fresh, but refused as expired. |
+| `R17` | R17 | 2 | The client adopted root v2 earlier; the mirror serves only v1 and a batch v2's key signed: v2 is kept, the batch accepted. |
+| `R18` | R18 | 2 | Known gap, pinned: a fresh home, the mirror withholds every newer root (root.json a 404) and serves a batch the shipped root's key signed: the shipped root is used and the batch accepted. |
+| `P1-dotdot` | P1 | 2 | jason's build names a file at ebin/../..: refused, nothing of jason installed. |
+| `P1-absolute` | P1 | 2 | jason's build names a file at an absolute path: refused, nothing of jason installed. |
+| `P1-outside` | P1 | 2 | jason's build names a file outside ebin/ and priv/: refused, nothing of jason installed. |
+| `P2-setuid` | P2 | 2 | jason's .app with a setuid mode: refused, only 644 and 755 are allowed. |
+| `P2-0777` | P2 | 2 | jason's .app with mode 0777: refused, only 644 and 755 are allowed. |
+| `P3-escape` | P3 | 2 | jason's build names a file in the project's own app dir: refused. |
+| `P3-app` | P3 | 2 | jason's build carries the project's .app name in its ebin, ahead of the project's own on the code path: refused. |
+| `P4-checksum` | P4 | 2 | jason's build claims another package checksum than the lock's: a miss, jason compiled. |
+| `P4-deps` | P4 | 2 | jason's build was made against another checksum of a locked dep: a miss, jason compiled. |
+| `P5-path` | P5 | 2 | The batch names a build for the fixture's path dep chain_path_dep, at its own version and identity: never precompiled, its manifest never even asked for. A path dep is never in mix.lock, so the client's lock check stops it before its git/path rule (as for P9); never precompiled holds for every path dep. |
+| `P6-name` | P6 | 2 | jason's served .app names another application: refused. |
+| `P6-version` | P6 | 2 | jason's served .app names another version: refused. |
+| `P8-duplicate` | P8 | 2 | jason's build names one beam path twice, with other bytes: refused. |
+| `P8-case` | P8 | 2 | jason's build names a beam path and its lower-case variant: refused. |
+| `P8-unicode` | P8 | 2 | jason's build names one priv path precomposed and decomposed: refused. |
+| `P9` | P9 | 2 | The batch names a build for a package the project does not lock: nothing installed for it, its manifest never asked for. |
+
+To add a case: pick the spec row's id (or `<id>-<variant>`, or ids joined
+with `.` when one case stands for several rows); add a map to
+`conformance/cases.exs` with the spec row's expected outcome as `client`,
+`harness` and `after`, starting from the helpers at the top of the file
+(`refused`, `none_installed`, `no_batch`, `accepted`); reuse a transform
+or setup, or write one implementing `ChainTest.Mirror.Transform` /
+`ChainTest.Conformance.Setup` with `valid_args?/1` (and `needs/1` when it
+needs an older batch); give a refusal whose meaning depends on a working
+path a `gate` on its positive control; add the case to this table and a
+test under `test/chain_test/conformance/`; run `mix test`, then `mix
+chain_conformance --only <id>`. A case that cannot run on this machine is
+not faked: its transform's `needs/1` makes it `not_testable`, or it goes
+in `ChainTest.Report.known_gaps/0`.

@@ -28,7 +28,9 @@ defmodule ChainTest.Mirror do
       owns `content-length`, `connection` and `transfer-encoding`, which a
       transform may not name.
     * `{:redirect, 300..399, location}` - an empty body and `location`
-      (up to 2048 bytes, without CR, LF or NUL).
+      (up to 2048 bytes, without CR, LF or NUL), or `{:scheme, "http" |
+      "https"}` for the same path on this mirror's own host and port under
+      that scheme (N6: a downgrade that changes nothing but the scheme).
     * `{:stream, status, chunks, delay_ms}` - no `content-length`; each
       chunk (a list of binaries) is sent after `delay_ms` (0..60000), then
       the connection is closed.
@@ -53,6 +55,20 @@ defmodule ChainTest.Mirror do
   One request per connection (`connection: close`). Built on `:gen_tcp`
   rather than `:httpd` so a transform has the whole response in hand.
 
+  A request in absolute form (`GET http://host/path`, what a client sends
+  to its HTTP proxy) is answered 400 without reading anything, and logged
+  with its URL as `path` and `proxied: true`: a build given this mirror as
+  `HTTP_PROXY` shows every plain-http request it made, to any host (N2).
+
+  With `:tls` (`:ssl` server options, a certificate and its key:
+  `ChainTest.TestCert.server/1`) the mirror speaks HTTPS and its URL is
+  `https://127.0.0.1:<port>`. Each connection's handshake must finish
+  within `:request_timeout_ms`; one that fails serves nothing and is logged
+  as `%{method: "TLS", path: "handshake", status: 0, mutated: false}` with
+  `tls_alert` (the alert's atom, `:unknown_ca` when the client did not
+  trust the certificate, `:unexpected_message` for plain http sent to the
+  TLS port) or else `tls_error` (why, as text).
+
   A misbehaving client cannot hang a test run. Every line of the request
   head is capped at 8192 bytes (400), the request target at 1024
   bytes (414), the head at 100 headers (400), and the whole head must
@@ -68,7 +84,7 @@ defmodule ChainTest.Mirror do
   @type response ::
           {status(), binary()}
           | {status(), [{String.t(), String.t()}], binary()}
-          | {:redirect, 300..399, String.t()}
+          | {:redirect, 300..399, String.t() | {:scheme, String.t()}}
           | {:stream, status(), [binary()], non_neg_integer()}
           | {:truncate, status(), binary(), non_neg_integer()}
           | :close
@@ -79,7 +95,10 @@ defmodule ChainTest.Mirror do
           required(:path) => String.t(),
           required(:status) => non_neg_integer(),
           required(:mutated) => boolean(),
-          optional(:transform_error) => String.t()
+          optional(:transform_error) => String.t(),
+          optional(:proxied) => true,
+          optional(:tls_alert) => atom(),
+          optional(:tls_error) => String.t()
         }
   @type t :: %{pid: pid(), port: :inet.port_number(), url: String.t()}
 
@@ -134,7 +153,8 @@ defmodule ChainTest.Mirror do
   Starts a mirror over `dir` on a free port of 127.0.0.1. Options
   `:transform` (default `identity/0`), `:request_timeout_ms` (default
   5000), `:max_connections` (default 64), `:stream_max_bytes` and
-  `:stream_max_ms` (`stream_limits/0`).
+  `:stream_max_ms` (`stream_limits/0`), `:tls` (`:ssl` server options;
+  see the moduledoc).
   """
   @spec start(Path.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def start(dir, opts \\ []) do
@@ -144,13 +164,16 @@ defmodule ChainTest.Mirror do
       timeout: Keyword.get(opts, :request_timeout_ms, @request_timeout_ms),
       max: Keyword.get(opts, :max_connections, @max_connections),
       stream_max_bytes: Keyword.get(opts, :stream_max_bytes, @stream_max_bytes),
-      stream_max_ms: Keyword.get(opts, :stream_max_ms, @stream_max_ms)
+      stream_max_ms: Keyword.get(opts, :stream_max_ms, @stream_max_ms),
+      tls: Keyword.get(opts, :tls)
     }
+
+    scheme = if config.tls, do: "https", else: "http"
 
     case GenServer.start(__MODULE__, config) do
       {:ok, pid} ->
         port = GenServer.call(pid, :port)
-        {:ok, %{pid: pid, port: port, url: "http://127.0.0.1:#{port}"}}
+        {:ok, %{pid: pid, port: port, url: "#{scheme}://127.0.0.1:#{port}"}}
 
       {:error, _} = error ->
         error
@@ -197,6 +220,7 @@ defmodule ChainTest.Mirror do
       {:ok, listen} ->
         {:ok, port} = :inet.port(listen)
         server = self()
+        config = Map.put(config, :port, port)
         acceptor = spawn_link(fn -> acceptor(listen, server, config) end)
         {:ok, %{listen: listen, port: port, acceptor: acceptor, log: []}}
 
@@ -291,9 +315,39 @@ defmodule ChainTest.Mirror do
   # has its answer always finds the request in `requests/1`. A client
   # that hung up before its head was complete sent no request and is not
   # logged.
-  defp serve(sock, server, config) do
+  defp serve(tcp, server, config) do
     deadline = System.monotonic_time(:millisecond) + config.timeout
 
+    case secure(tcp, config, deadline) do
+      {:ok, sock} ->
+        serve_request(sock, server, config, deadline)
+        close(sock)
+
+      {:error, why} ->
+        log(
+          server,
+          Map.merge(%{method: "TLS", path: "handshake", status: 0, mutated: false}, why)
+        )
+
+        :gen_tcp.close(tcp)
+    end
+  end
+
+  # The connection as `{module, socket}`: TLS over it when the mirror has
+  # `:tls`, the plain socket otherwise.
+  defp secure(tcp, %{tls: nil}, _deadline), do: {:ok, {:gen_tcp, tcp}}
+
+  defp secure(tcp, %{tls: tls}, deadline) do
+    left = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    case :ssl.handshake(tcp, [log_level: :none] ++ tls, left) do
+      {:ok, ssl} -> {:ok, {:ssl, ssl}}
+      {:error, {:tls_alert, {alert, _}}} when is_atom(alert) -> {:error, %{tls_alert: alert}}
+      {:error, why} -> {:error, %{tls_error: inspect(why)}}
+    end
+  end
+
+  defp serve_request(sock, server, config, deadline) do
     case read_request(sock, deadline) do
       :closed ->
         :ok
@@ -308,27 +362,41 @@ defmodule ChainTest.Mirror do
           mutated: mutated
         }
 
-        log(server, if(error, do: Map.put(entry, :transform_error, error), else: entry))
+        entry = if error, do: Map.put(entry, :transform_error, error), else: entry
+        entry = if match?({:proxy, _, _}, result), do: Map.put(entry, :proxied, true), else: entry
+        log(server, entry)
 
         respond(sock, reply, path, config)
     end
-
-    :gen_tcp.close(sock)
   end
 
   defp method_of({:ok, method, _target}), do: method
+  defp method_of({:proxy, method, _url}), do: method
   defp method_of(_), do: "?"
 
+  defp send_data({mod, sock}, data), do: mod.send(sock, data)
+  defp close({mod, sock}), do: mod.close(sock)
+
   defp read_request(sock, deadline) do
-    with {:ok, {:http_request, method, {:abs_path, target}, _vsn}, rest} <-
+    with {:ok, {:http_request, method, uri, _vsn}, rest} <-
            next(sock, deadline, :http_bin, ""),
          {:ok, _body} <- skip_headers(sock, deadline, rest, @max_headers) do
-      {:ok, to_string(method), target}
+      request(to_string(method), uri)
     else
       {:ok, _other_packet, _rest} -> :bad
       other -> other
     end
   end
+
+  defp request(method, {:abs_path, target}), do: {:ok, method, target}
+
+  defp request(method, {:absoluteURI, scheme, host, port, path}) do
+    port = if port == :undefined, do: "", else: ":#{port}"
+    url = "#{scheme}://#{host}#{port}#{path}"
+    {:proxy, method, binary_part(url, 0, min(byte_size(url), @max_target))}
+  end
+
+  defp request(_method, _uri), do: :bad
 
   defp skip_headers(_sock, _deadline, _buf, 0), do: :bad
 
@@ -366,15 +434,16 @@ defmodule ChainTest.Mirror do
     end
   end
 
-  defp recv(sock, deadline) do
+  defp recv({mod, sock}, deadline) do
     case deadline - System.monotonic_time(:millisecond) do
-      left when left > 0 -> :gen_tcp.recv(sock, 0, left)
+      left when left > 0 -> mod.recv(sock, 0, left)
       _ -> {:error, :timeout}
     end
   end
 
   defp answer(:bad, _config), do: {plain(400), "?", false, nil}
   defp answer(:timeout, _config), do: {plain(408), "?", false, nil}
+  defp answer({:proxy, _method, url}, _config), do: {plain(400), url, false, nil}
 
   defp answer({:ok, _method, target}, _config) when byte_size(target) > @max_target,
     do: {plain(414), binary_part(target, 0, @max_target), false, nil}
@@ -383,7 +452,7 @@ defmodule ChainTest.Mirror do
     with false <- String.contains?(target, "?"),
          {:ok, rel} <- route(target),
          {:ok, bytes} <- read_inside(config.dir, rel) do
-      transformed(rel, bytes, config.transform)
+      transformed(rel, bytes, config)
     else
       _ -> {plain(404), target, false, nil}
     end
@@ -417,10 +486,10 @@ defmodule ChainTest.Mirror do
     end
   end
 
-  defp transformed(rel, bytes, transform) do
-    out = transform.(rel, bytes)
+  defp transformed(rel, bytes, config) do
+    out = config.transform.(rel, bytes)
 
-    case reply(out) do
+    case out |> own_location(rel, config) |> reply() do
       {:ok, reply} -> {reply, rel, out != {200, bytes}, nil}
       :error -> transform_error("transform returned #{inspect(out, limit: 20)}", rel)
     end
@@ -431,6 +500,13 @@ defmodule ChainTest.Mirror do
   end
 
   defp transform_error(why, rel), do: {plain(500, why), rel, true, why}
+
+  # A redirect to `rel` under another scheme on this mirror's host and port.
+  defp own_location({:redirect, s, {:scheme, scheme}}, rel, config)
+       when scheme in ["http", "https"],
+       do: {:redirect, s, "#{scheme}://127.0.0.1:#{config.port}/#{rel}"}
+
+  defp own_location(out, _rel, _config), do: out
 
   defguardp status?(s) when is_integer(s) and s in 100..599
   defguardp delay?(d) when is_integer(d) and d in 0..@max_delay_ms
@@ -485,10 +561,10 @@ defmodule ChainTest.Mirror do
   defp reply_status(reply), do: elem(reply, 1)
 
   defp respond(sock, {:full, status, headers, body}, path, _config),
-    do: :gen_tcp.send(sock, [head(status, headers, byte_size(body), path), body])
+    do: send_data(sock, [head(status, headers, byte_size(body), path), body])
 
   defp respond(sock, {:truncate, status, body, n}, path, _config),
-    do: :gen_tcp.send(sock, [head(status, [], byte_size(body), path), binary_part(body, 0, n)])
+    do: send_data(sock, [head(status, [], byte_size(body), path), binary_part(body, 0, n)])
 
   defp respond(_sock, :close, _path, _config), do: :ok
 
@@ -503,7 +579,7 @@ defmodule ChainTest.Mirror do
   defp stream(sock, head, chunks, delay, config) do
     deadline = System.monotonic_time(:millisecond) + config.stream_max_ms
 
-    with :ok <- :gen_tcp.send(sock, head),
+    with :ok <- send_data(sock, head),
          do: drip(sock, chunks, delay, config.stream_max_bytes, deadline)
   end
 
@@ -519,7 +595,7 @@ defmodule ChainTest.Mirror do
     else
       part = binary_part(chunk, 0, min(byte_size(chunk), left))
 
-      case :gen_tcp.send(sock, part) do
+      case send_data(sock, part) do
         :ok -> drip(sock, rest, delay, left - byte_size(part), deadline)
         {:error, _} -> :ok
       end

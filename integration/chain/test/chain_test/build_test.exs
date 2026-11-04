@@ -255,6 +255,90 @@ defmodule ChainTest.BuildTest do
     end
   end
 
+  describe "trust_ca and http_proxy" do
+    test "trust_ca: the config file loads that CA as the build VM store, from beside it",
+         ctx do
+      %{ca: ca} = ChainTest.TestCert.server(:ip)
+      copy = Path.join(ctx.tmp, "copied")
+
+      grab =
+        ~s(mkdir -p '#{copy}' && cp "$\(dirname "$CHAIN_CLIENT_CONFIG"\)"/* '#{copy}'/ && ) <>
+          ~s(echo "$CHAIN_CLIENT_CONFIG" > '#{copy}/where'\n)
+
+      FakeBin.with_stubs(%{"mix" => grab <> fake_mix(ctx, @hits, sequence: 7)}, fn _ ->
+        Build.run(%{
+          fixture_dir: ctx.fixture,
+          target: "rpi4",
+          source: "https://127.0.0.1:1",
+          home: ctx.home,
+          trust: Synthetic.info(7, %{}),
+          trust_ca: ca
+        })
+      end)
+
+      dir = copy |> Path.join("where") |> File.read!() |> String.trim() |> Path.dirname()
+      refute File.exists?(dir), "the CA outlives the build"
+      assert File.read!(Path.join(copy, "ca.pem")) == ChainTest.TestCert.pem(ca)
+      config = File.read!(Path.join(copy, "client.exs"))
+      assert config =~ ":public_key.cacerts_load(#{inspect(Path.join(dir, "ca.pem"))})"
+      refute config =~ "config :elixir_precompiled"
+    end
+
+    test "the file it writes replaces the store of the VM that reads the config", ctx do
+      %{ca: ca} = ChainTest.TestCert.server(:ip)
+      path = Build.client_config_file(%{clock_offset_seconds: 1}, ca)
+
+      try do
+        code =
+          "Config.Reader.read!(#{inspect(path)}); " <>
+            "IO.write(Base.encode16(:erlang.term_to_binary(:public_key.cacerts_get())))"
+
+        {out, 0} = System.cmd("elixir", ["-e", code], cd: ctx.tmp)
+        certs = :erlang.binary_to_term(Base.decode16!(out))
+        assert [{:cert, ^ca, _}] = certs
+        assert Config.Reader.read!(path, env: :dev) |> Keyword.keys() == [:elixir_precompiled]
+      after
+        File.rm_rf(Path.dirname(path))
+      end
+    end
+
+    test "without trust_ca no CA reaches the build", ctx do
+      {_env, {:ok, file}} = client_run(ctx, %{client_config: %{clock_offset_seconds: 1}})
+      refute file =~ "cacerts_load"
+    end
+
+    test "http_proxy: HTTP_PROXY is that URL and HTTPS_PROXY unset, for this build", ctx do
+      System.put_env("HTTPS_PROXY", "http://127.0.0.1:9")
+
+      try do
+        {env, _} = client_run(ctx, %{http_proxy: "http://127.0.0.1:5"})
+        assert env =~ ~r/^HTTP_PROXY=http:\/\/127\.0\.0\.1:5$/m
+        refute env =~ ~r/^HTTPS_PROXY=/m
+      after
+        System.delete_env("HTTPS_PROXY")
+      end
+    end
+
+    test "without http_proxy the proxy variables are left as they are", ctx do
+      System.put_env("HTTP_PROXY", "http://127.0.0.1:8")
+
+      try do
+        {env, _} = client_run(ctx, %{})
+        assert env =~ ~r/^HTTP_PROXY=http:\/\/127\.0\.0\.1:8$/m
+      after
+        System.delete_env("HTTP_PROXY")
+      end
+    end
+
+    test "a bad trust_ca or http_proxy raises before anything runs" do
+      for bad <- [%{trust_ca: :x}, %{http_proxy: "https://127.0.0.1:1"}, %{http_proxy: 1}] do
+        assert_raise ArgumentError, fn ->
+          Build.run(Map.merge(%{fixture_dir: "/nonexistent", target: "rpi4", source: "x"}, bad))
+        end
+      end
+    end
+  end
+
   describe "client_env" do
     test "passes the variables a case names to its build only", ctx do
       env_in = %{"ELIXIR_PRECOMPILED_ROOT" => "/a/root.json"}

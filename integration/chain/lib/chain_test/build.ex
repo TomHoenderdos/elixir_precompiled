@@ -25,6 +25,16 @@ defmodule ChainTest.Build do
   wrongly read a root path from) set for this build; every allowed name
   not given is unset.
 
+  Two more, for the TLS and transport cases only: `:trust_ca` (a CA
+  certificate, DER) makes the build VM trust that CA alone, through
+  `:public_key.cacerts_load/1` in the same config file, from a PEM beside
+  it (removed with it): the client has no CA option and reads only the OS
+  store, so this is how a case shows it a TLS mirror it may trust (TLS-T0,
+  N6). And `:http_proxy` (an `http://` URL) sets `HTTP_PROXY` to it and
+  unsets `HTTPS_PROXY` for the build, so every plain-http request the
+  client makes, to any host, reaches that URL (N2). Without them, neither
+  the store nor the proxy variables are touched.
+
   Checks:
 
     * `home` - only when a caller-given home is not empty: `:fail`, and
@@ -86,6 +96,8 @@ defmodule ChainTest.Build do
           optional(:keep_build) => boolean(),
           optional(:client_config) => client_config() | nil,
           optional(:client_env) => %{String.t() => Path.t()} | nil,
+          optional(:trust_ca) => binary() | nil,
+          optional(:http_proxy) => String.t() | nil,
           optional(:trust) => ChainTest.Trust.info() | nil,
           optional(:expected) => %{hits: [atom()], never: [atom()]},
           optional(:target_config) => Path.t(),
@@ -201,6 +213,18 @@ defmodule ChainTest.Build do
 
     if Map.get(input, :home_prepared, false) and not is_binary(Map.get(input, :home)),
       do: raise(ArgumentError, "home_prepared: true needs the prepared :home")
+
+    validate_transport!(input)
+  end
+
+  defp validate_transport!(input) do
+    trust_ca = Map.get(input, :trust_ca)
+
+    unless trust_ca == nil or is_binary(trust_ca),
+      do: raise(ArgumentError, "trust_ca must be a DER certificate")
+
+    unless http_proxy?(Map.get(input, :http_proxy)),
+      do: raise(ArgumentError, "http_proxy must be an http:// URL")
   end
 
   # A fresh home per run, so the client's cache, adopted roots and batch
@@ -221,6 +245,13 @@ defmodule ChainTest.Build do
     end
   end
 
+  defp http_proxy?(nil), do: true
+
+  defp http_proxy?(url) when is_binary(url),
+    do: match?(%URI{scheme: "http", host: h} when is_binary(h) and h != "", URI.parse(url))
+
+  defp http_proxy?(_), do: false
+
   defp random(), do: Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
 
   defp build(%{fixture_dir: fixture, target: target, source: source} = input, home) do
@@ -232,7 +263,7 @@ defmodule ChainTest.Build do
     # one installed; every other build starts clean.
     unless Map.get(input, :keep_build, false), do: File.rm_rf!(build_dir)
 
-    client = client_config_file(Map.get(input, :client_config))
+    client = client_config_file(Map.get(input, :client_config), Map.get(input, :trust_ca))
 
     env =
       [
@@ -244,7 +275,8 @@ defmodule ChainTest.Build do
       ] ++
         target_config(Map.get(input, :target_config)) ++
         Enum.map(@unset, &{&1, nil}) ++
-        client_env(Map.get(input, :client_env) || %{})
+        client_env(Map.get(input, :client_env) || %{}) ++
+        proxy_env(Map.get(input, :http_proxy))
 
     timeout = Map.get(input, :timeout_ms, @timeout_ms)
     command = Map.get(input, :command, ["firmware"])
@@ -278,27 +310,48 @@ defmodule ChainTest.Build do
      }}
   end
 
+  @doc false
   # The case's client config as a config file in a private temp dir of its
   # own (never the home, whose contents a case judges), values written with
-  # inspect/1 so each is an Elixir literal.
-  defp client_config_file(nil), do: nil
+  # inspect/1 so each is an Elixir literal; with `trust_ca`, the CA as
+  # `ca.pem` beside it, loaded as the VM's whole store. The caller removes
+  # the dir.
+  @spec client_config_file(client_config() | nil, binary() | nil) :: Path.t() | nil
+  def client_config_file(nil, nil), do: nil
 
-  defp client_config_file(config) do
+  def client_config_file(config, trust_ca) do
     dir = Path.join(System.tmp_dir!(), "chain_client_config-#{random()}")
     File.mkdir_p!(dir)
     File.chmod!(dir, 0o700)
     path = Path.join(dir, "client.exs")
 
-    opts = config |> Enum.sort() |> Enum.map_join(", ", fn {k, v} -> "#{k}: #{inspect(v)}" end)
+    trust =
+      if trust_ca do
+        pem = Path.join(dir, "ca.pem")
+        File.write!(pem, ChainTest.TestCert.pem(trust_ca))
+
+        "# The case's TLS mirror CA, the only one this build trusts.\n" <>
+          ":ok = :public_key.cacerts_load(#{inspect(pem)})\n"
+      else
+        ""
+      end
+
+    opts =
+      (config || %{})
+      |> Enum.sort()
+      |> Enum.map_join(", ", fn {k, v} -> "#{k}: #{inspect(v)}" end)
 
     File.write!(
       path,
       "# A conformance case's client config, for one build.\nimport Config\n" <>
-        "config :elixir_precompiled, #{opts}\n"
+        trust <> if(opts == "", do: "", else: "config :elixir_precompiled, #{opts}\n")
     )
 
     path
   end
+
+  defp proxy_env(nil), do: []
+  defp proxy_env(url), do: [{"HTTP_PROXY", url}, {"HTTPS_PROXY", nil}]
 
   # The case's variables, and every other allowed name unset.
   defp client_env(env) do
