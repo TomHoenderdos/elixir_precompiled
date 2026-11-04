@@ -76,7 +76,10 @@ defmodule ElixirPrecompiled.FetchTest do
       |> get_in(["manifests", "ash"])
 
     assert {:ok, %{"versions" => _}} = Fetch.manifest(config, "ash", sha)
+    # The first success cached the sha; clear it so the network paths run.
+    File.rm_rf!(Path.join(config.home, "manifests"))
     assert {:miss, "no manifest"} = Fetch.manifest(config, "nope", sha)
+    File.rm_rf!(Path.join(config.home, "manifests"))
     F.tamper_manifest(f, "ash")
     assert {:fail, "manifest hash differs from batch"} = Fetch.manifest(config, "ash", sha)
   end
@@ -430,7 +433,8 @@ defmodule ElixirPrecompiled.FetchTest do
     assert {:error, "offline"} =
              Fetch.get_body(config.source <> "/batch.json", Fetch.content_opts(offline))
 
-    assert {:miss, "manifest unavailable: offline"} = Fetch.manifest(offline, "ash", "00")
+    assert {:miss, "offline: manifest not cached"} =
+             Fetch.manifest(offline, "ash", String.duplicate("0", 64))
 
     System.put_env("ELIXIR_PRECOMPILED_OFFLINE", "1")
     on_exit(fn -> System.delete_env("ELIXIR_PRECOMPILED_OFFLINE") end)
@@ -460,5 +464,201 @@ defmodule ElixirPrecompiled.FetchTest do
     c = Map.put(config, :connect_timeout_ms, 1234)
     assert Fetch.content_opts(c)[:connect_timeout_ms] == 1234
     assert Fetch.metadata_opts(c)[:connect_timeout_ms] == 1234
+  end
+
+  defp batch_sha(name) do
+    F.get(:batch)["payload"]
+    |> Base.url_decode64!(padding: false)
+    |> :json.decode()
+    |> get_in(["manifests_v2", name])
+  end
+
+  test "a manifest is fetched once, then read from the cache by its sha", %{f: f, config: config} do
+    F.publish(f, %{"ash" => %{"versions" => %{}}})
+    sha = batch_sha("ash")
+    assert {:ok, _} = Fetch.manifest(config, "ash", sha, "v2/manifests")
+    assert File.exists?(Path.join([config.home, "manifests", sha <> ".json"]))
+    F.clear_requests()
+    assert {:ok, %{"versions" => _}} = Fetch.manifest(config, "ash", sha, "v2/manifests")
+    assert F.requests() == []
+
+    # A cache entry that no longer hashes to its name is ignored and refetched.
+    File.write!(Path.join([config.home, "manifests", sha <> ".json"]), "{}")
+    assert {:ok, %{"versions" => _}} = Fetch.manifest(config, "ash", sha, "v2/manifests")
+    assert length(F.requests()) == 1
+  end
+
+  test "a cached manifest or file that is a symlink is never used", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps,
+    tmp_dir: dir
+  } do
+    F.publish(f, %{"ash" => %{"versions" => %{}}})
+    sha = batch_sha("ash")
+    elsewhere = Path.join(dir, "elsewhere")
+    File.mkdir_p!(elsewhere)
+    File.write!(Path.join(elsewhere, "m"), F.get(:manifests_v2)["ash"])
+    cached = Path.join([config.home, "manifests", sha <> ".json"])
+    File.mkdir_p!(Path.dirname(cached))
+    File.ln_s!(Path.join(elsewhere, "m"), cached)
+
+    F.clear_requests()
+    assert {:ok, _} = Fetch.manifest(config, "ash", sha, "v2/manifests")
+    assert length(F.requests()) == 1
+    assert {:ok, %File.Stat{type: :regular}} = File.lstat(cached)
+
+    beam_sha = F.file(f, "b")
+    File.write!(Path.join(elsewhere, "b"), "b")
+    File.mkdir_p!(Path.join(config.home, "files"))
+    File.ln_s!(Path.join(elsewhere, "b"), Path.join([config.home, "files", beam_sha]))
+
+    F.clear_requests()
+    e = entry(with_app(f, [file_entry(beam_sha, 1)]))
+    assert {:ok, %{cached: 0}} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+    assert Enum.any?(F.requests(), &(&1.path == "/precompiled/files/" <> beam_sha))
+
+    assert {:ok, %File.Stat{type: :regular}} =
+             File.lstat(Path.join([config.home, "files", beam_sha]))
+  end
+
+  test "a batch sha that is not 64 hex digits never becomes a file name", %{config: config} do
+    assert {:fail, "manifest hash malformed"} =
+             Fetch.manifest(config, "ash", "../../x", "v2/manifests")
+  end
+
+  test "offline: a manifest or file not in the cache is a miss, with no request", %{
+    config: config,
+    f: f,
+    build_lib: lib,
+    deps: deps
+  } do
+    F.clear_requests()
+    offline = Map.put(config, :offline, true)
+
+    assert {:miss, "offline: manifest not cached"} =
+             Fetch.manifest(offline, "ash", String.duplicate("a", 64), "v2/manifests")
+
+    e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+
+    assert {:fail, "offline: file not cached" <> _} =
+             Fetch.install(offline, :ash, e, @lock_entry, lib, deps_path: deps)
+
+    assert F.requests() == []
+  end
+
+  test "twenty files of one dep install correctly in parallel", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    files =
+      for i <- 1..20,
+          do: file_entry(F.file(f, "beam #{i}"), byte_size("beam #{i}"), "ebin/Elixir.M#{i}.beam")
+
+    assert {:ok, %{files: 21}} =
+             Fetch.install(config, :ash, entry(with_app(f, files)), @lock_entry, lib,
+               deps_path: deps
+             )
+
+    for i <- 1..20,
+        do: assert(File.read!(Path.join(lib, "ash/ebin/Elixir.M#{i}.beam")) == "beam #{i}")
+  end
+
+  test "a failing file among many reports that file and leaves _build untouched", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    files =
+      for i <- 1..10,
+          do: file_entry(F.file(f, "beam #{i}"), byte_size("beam #{i}"), "ebin/Elixir.M#{i}.beam")
+
+    bad = file_entry(String.duplicate("0", 64), 3, "ebin/Elixir.Bad.beam")
+
+    assert {:fail, "file not available: " <> _} =
+             Fetch.install(config, :ash, entry(with_app(f, files ++ [bad])), @lock_entry, lib,
+               deps_path: deps
+             )
+
+    refute File.exists?(Path.join(lib, "ash"))
+    refute File.exists?(Path.join(lib, ".precompiled/ash"))
+  end
+
+  describe "content origins" do
+    setup %{config: config} do
+      cdn_port = ElixirPrecompiled.TestServer.port() + 2
+      start_supervised!({ElixirPrecompiled.TestServer, port: cdn_port})
+      cdn = "http://127.0.0.1:#{cdn_port}/precompiled"
+      %{cdn_port: cdn_port, config: Map.put(config, :content, [cdn])}
+    end
+
+    test "files and manifests come from the content origin", %{
+      f: f,
+      config: config,
+      cdn_port: p,
+      build_lib: lib,
+      deps: deps
+    } do
+      F.publish(f, %{"ash" => %{"versions" => %{}}})
+      sha = batch_sha("ash")
+      F.clear_requests()
+      assert {:ok, _} = Fetch.manifest(config, "ash", sha, "v2/manifests")
+      e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+      assert {:ok, _} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+      assert F.requests() != []
+      assert Enum.all?(F.requests(), &(&1.port == p))
+    end
+
+    test "a content origin serving wrong bytes falls back to the source", %{
+      f: f,
+      config: config,
+      cdn_port: p,
+      build_lib: lib,
+      deps: deps
+    } do
+      F.corrupt_port(p)
+      F.publish(f, %{"ash" => %{"versions" => %{}}})
+      sha = batch_sha("ash")
+      assert {:ok, %{"versions" => _}} = Fetch.manifest(config, "ash", sha, "v2/manifests")
+      e = entry(with_app(f, [file_entry(F.file(f, "good"), 4)]))
+      assert {:ok, _} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+      assert File.read!(Path.join(lib, "ash/ebin/Elixir.Ash.beam")) == "good"
+      assert Enum.any?(F.requests(), &(&1.port != p))
+    end
+
+    test "an unreachable content origin falls back to the source", %{
+      f: f,
+      config: config,
+      build_lib: lib,
+      deps: deps
+    } do
+      config = Map.put(config, :content, ["http://127.0.0.1:1/precompiled"])
+      F.publish(f, %{"ash" => %{"versions" => %{}}})
+      assert {:ok, _} = Fetch.manifest(config, "ash", batch_sha("ash"), "v2/manifests")
+      e = entry(with_app(f, [file_entry(F.file(f, "good"), 4)]))
+      assert {:ok, _} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+    end
+
+    test "without by-sha (the batch names no content) manifests use the source's name path", %{
+      f: f,
+      config: config
+    } do
+      F.publish(f, %{"ash" => %{"versions" => %{}}})
+      F.clear_requests()
+
+      assert {:ok, _} =
+               Fetch.manifest(
+                 Map.put(config, :by_sha, false),
+                 "ash",
+                 batch_sha("ash"),
+                 "v2/manifests"
+               )
+
+      assert [%{path: "/precompiled/v2/manifests/ash.json"}] = F.requests()
+    end
   end
 end

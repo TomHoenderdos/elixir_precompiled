@@ -119,6 +119,21 @@ defmodule ElixirPrecompiled.TestServer do
     end
   end
 
+  # Content-addressed manifests: `:file` is one segment, so this never
+  # clashes with the by-name route below.
+  get "/precompiled/v2/manifests/by-sha/:file" do
+    sha = String.replace_suffix(file, ".json", "")
+    docs = ElixirPrecompiled.Fixture.get(:manifests_v2) || %{}
+
+    case Enum.find(docs, fn {_name, bytes} -> ElixirPrecompiled.Fixture.sha(bytes) == sha end) do
+      nil ->
+        send_resp(conn, 404, "not found")
+
+      {_name, bytes} ->
+        conn |> put_resp_content_type("application/json") |> send_resp(200, corrupt(conn, bytes))
+    end
+  end
+
   get "/precompiled/v2/manifests/:name" do
     name = String.replace_suffix(name, ".json", "")
 

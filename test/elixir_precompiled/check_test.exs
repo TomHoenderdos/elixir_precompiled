@@ -401,6 +401,59 @@ defmodule ElixirPrecompiled.CheckTest do
       }
     end
 
+    test "a new project on a warm cache downloads no manifest and no file", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      _ = install_ash(f, config, env)
+      File.rm_rf!(lib)
+      F.clear_requests()
+
+      run_capturing(config, %{env | candidates: [hd(env.candidates)]})
+      assert_received {:report, {:ok, %{hits: 1}}}
+      assert [%{path: "/precompiled/batch.json"}] = F.requests()
+    end
+
+    test "by-sha manifest paths are asked for only when the signed batch names content", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      env = %{env | candidates: [hd(env.candidates)]}
+      cdn_port = ElixirPrecompiled.TestServer.port() + 2
+      start_supervised!({ElixirPrecompiled.TestServer, port: cdn_port})
+      cdn = "http://127.0.0.1:#{cdn_port}/precompiled"
+
+      # The project's own :content: files from there, the manifest by name.
+      F.publish(f, ash_packages(f, "1.31.0"), sequence: 1)
+      F.clear_requests()
+      run_capturing(Map.put(config, :content_override, [cdn]), env)
+      assert_received {:report, {:ok, %{hits: 1}}}
+      paths = Enum.map(F.requests(), & &1.path)
+      assert "/precompiled/v2/manifests/ash.json" in paths
+      refute Enum.any?(paths, &String.contains?(&1, "by-sha"))
+      assert Enum.any?(F.requests(), &(&1.port == cdn_port and &1.path =~ "/files/"))
+
+      # The batch names a (here unreachable) content origin: by-sha at the
+      # source after it, which answers.
+      File.rm_rf!(config.home |> Path.join("manifests"))
+      File.rm_rf!(config.home |> Path.join("files"))
+
+      F.publish(f, ash_packages(f, "1.31.0"),
+        sequence: 2,
+        batch_extra: %{"content" => ["https://127.0.0.1:1/precompiled"]}
+      )
+
+      F.clear_requests()
+      run_capturing(config, env)
+      assert_received {:report, {:ok, %{hits: 1}}}
+      paths = Enum.map(F.requests(), & &1.path)
+      assert Enum.any?(paths, &String.starts_with?(&1, "/precompiled/v2/manifests/by-sha/"))
+      refute "/precompiled/v2/manifests/ash.json" in paths
+    end
+
     test "a build the batch still names is left alone, silently", %{
       f: f,
       config: config,
@@ -735,10 +788,10 @@ defmodule ElixirPrecompiled.CheckTest do
       out = run_capturing(Map.put(config, :offline, true), env)
       assert_received {:report, {:ok, report}}
 
-      assert [%{name: "jason", status: :miss, detail: "manifest unavailable: offline"}] =
+      assert [%{name: "jason", status: :miss, detail: "offline: manifest not cached"}] =
                report.lines
 
-      assert out =~ ~r/jason 1\.4\.5\s+MISS\s+manifest unavailable: offline/
+      assert out =~ ~r/jason 1\.4\.5\s+MISS\s+offline: manifest not cached/
       assert F.requests() == []
       refute File.exists?(Path.join(lib, "jason"))
     end

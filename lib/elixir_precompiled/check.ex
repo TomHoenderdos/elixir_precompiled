@@ -90,7 +90,13 @@ defmodule ElixirPrecompiled.Check do
   defp lines_for(candidates, installed, config, env, config_fun) do
     case batch(config) do
       {:ok, batch} ->
-        config = Map.put(config, :content, Map.get(config, :content_override) || batch.content)
+        # Files may come from the project's own :content origins; by-sha
+        # manifest paths are used only where the signed batch says they exist.
+        config =
+          config
+          |> Map.put(:content, Map.get(config, :content_override) || batch.content)
+          |> Map.put(:by_sha, is_list(batch.content))
+
         {revoked, replaced} = recheck(installed, batch, env)
 
         revoked ++ install_lines(candidates ++ replaced, config, batch, env, config_fun)

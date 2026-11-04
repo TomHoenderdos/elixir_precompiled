@@ -19,6 +19,7 @@ defmodule ElixirPrecompiled.Fetch do
   @max_manifest_bytes 67_108_864
   @ok_modes [0o644, 0o755, 0o100644, 0o100755]
   @provenance_file "elixir_precompiled.json"
+  @file_concurrency 8
 
   @spec get_body(String.t(), keyword()) :: {:ok, binary()} | {:error, String.t()}
   def get_body(url, opts \\ []) do
@@ -119,24 +120,105 @@ defmodule ElixirPrecompiled.Fetch do
   The manifest the batch names by `expected_sha`, under `path`: "manifests"
   for a format-1 document, "v2/manifests" for a format-2 one. Either comes
   back as format 2 (see `ElixirPrecompiled.Manifest`).
+
+  Looked up, in order: the cache (`<home>/manifests/<sha>.json`, re-hashed
+  on every read); where by-sha paths exist, `<origin>/<path>/by-sha/<sha>.json`
+  for each content origin and then the source; and last the source's
+  `<path>/<name>.json`, whose answer decides the result. Whatever bytes come
+  back are used only if they hash to `expected_sha`.
   """
   @spec manifest(map(), String.t(), String.t(), String.t()) ::
           {:ok, map()} | {:miss, String.t()} | {:fail, String.t()}
   def manifest(config, name, expected_sha, path \\ "manifests") do
+    if sha256?(expected_sha) do
+      case cached_manifest(config, expected_sha) do
+        {:ok, bytes} -> decode_manifest(bytes)
+        :error -> uncached_manifest(config, name, expected_sha, path)
+      end
+    else
+      {:fail, "manifest hash malformed"}
+    end
+  end
+
+  defp uncached_manifest(config, name, sha, path) do
+    if Map.get(config, :offline, false),
+      do: {:miss, "offline: manifest not cached"},
+      else: fetch_manifest(config, name, sha, path)
+  end
+
+  defp fetch_manifest(config, name, sha, path) do
+    by_sha = for origin <- by_sha_origins(config), do: "#{origin}/#{path}/by-sha/#{sha}.json"
+
+    Enum.find_value(by_sha, &try_manifest(config, &1, sha)) ||
+      named_manifest(config, name, sha, path)
+  end
+
+  # By-sha paths exist where the signed batch advertises content origins:
+  # the portal signs "content" into batches once it serves them. Check sets
+  # :by_sha from the batch; without it, a :content list stands for it.
+  defp by_sha_origins(config) do
+    content = Map.get(config, :content)
+
+    if is_list(content) and Map.get(config, :by_sha, true),
+      do: content ++ [config.source],
+      else: []
+  end
+
+  # Any failure here (unreachable, 404, wrong bytes) only moves on.
+  defp try_manifest(config, url, sha) do
+    with {:ok, bytes} <- get_body(url, [max_bytes: @max_manifest_bytes] ++ content_opts(config)),
+         ^sha <- sha256(bytes) do
+      _ = cache_manifest(config, sha, bytes)
+      decode_manifest(bytes)
+    else
+      _ -> nil
+    end
+  end
+
+  defp named_manifest(config, name, sha, path) do
     case get_body(
            "#{config.source}/#{path}/#{name}.json",
            [max_bytes: @max_manifest_bytes] ++ content_opts(config)
          ) do
       {:ok, bytes} ->
-        if sha256(bytes) == expected_sha,
-          do: with({:ok, map} <- decode(bytes), do: Manifest.normalize(map)),
-          else: {:fail, "manifest hash differs from batch"}
+        if sha256(bytes) == sha do
+          _ = cache_manifest(config, sha, bytes)
+          decode_manifest(bytes)
+        else
+          {:fail, "manifest hash differs from batch"}
+        end
 
       {:error, "Status 404 Not Found"} ->
         {:miss, "no manifest"}
 
       {:error, reason} ->
         {:miss, "manifest unavailable: #{reason}"}
+    end
+  end
+
+  defp decode_manifest(bytes), do: with({:ok, map} <- decode(bytes), do: Manifest.normalize(map))
+
+  defp cached_manifest(config, sha) do
+    case read_regular(manifest_cache_path(config, sha), @max_manifest_bytes) do
+      {:ok, bytes} -> if sha256(bytes) == sha, do: {:ok, bytes}, else: :error
+      :error -> :error
+    end
+  end
+
+  # A cache write that fails costs only the next run a download.
+  defp cache_manifest(config, sha, bytes),
+    do: ElixirPrecompiled.FileUtil.write_atomic(manifest_cache_path(config, sha), bytes)
+
+  defp manifest_cache_path(config, sha), do: Path.join([config.home, "manifests", sha <> ".json"])
+
+  # A cache entry is read only when it is a regular file itself: never
+  # through a symlink, whatever it points at, and never past `max` bytes.
+  defp read_regular(path, max) do
+    with {:ok, %File.Stat{type: :regular, size: size}} when size <= max <- File.lstat(path),
+         {:ok, bytes} <- File.read(path) do
+      {:ok, bytes}
+    else
+      _ -> :error
     end
   end
 
@@ -252,57 +334,105 @@ defmodule ElixirPrecompiled.Fetch do
   @spec safe_mode?(term()) :: boolean()
   def safe_mode?(mode), do: mode in @ok_modes
 
+  # Up to @file_concurrency files of one dep download at once, each bounded
+  # by its declared size and the run deadline; results are taken in order,
+  # so the first failing file (in manifest order) is the one reported.
   defp stage(config, files, staging) do
     File.rm_rf!(staging)
     File.mkdir_p!(staging)
-    cache = Path.join(config.home, "files")
-    File.mkdir_p!(cache)
+    File.mkdir_p!(Path.join(config.home, "files"))
 
-    Enum.reduce_while(files, {:ok, %{files: 0, bytes: 0, cached: 0}}, fn f, {:ok, acc} ->
-      case fetch_file(config, cache, f) do
-        {:ok, cached_path, cached?} ->
-          target = Path.join(staging, f["path"])
-          File.mkdir_p!(Path.dirname(target))
-          File.cp!(cached_path, target)
-          File.chmod!(target, Bitwise.band(f["mode"], 0o777))
+    files
+    |> Task.async_stream(&stage_file(config, &1, staging),
+      max_concurrency: @file_concurrency,
+      timeout: :infinity,
+      ordered: true
+    )
+    |> Enum.reduce_while({:ok, %{files: 0, bytes: 0, cached: 0}}, fn
+      {:ok, {:ok, f, cached?}}, {:ok, acc} ->
+        {:cont,
+         {:ok,
+          %{
+            acc
+            | files: acc.files + 1,
+              bytes: acc.bytes + f["size"],
+              cached: acc.cached + if(cached?, do: 1, else: 0)
+          }}}
 
-          {:cont,
-           {:ok,
-            %{
-              acc
-              | files: acc.files + 1,
-                bytes: acc.bytes + f["size"],
-                cached: acc.cached + if(cached?, do: 1, else: 0)
-            }}}
+      {:ok, {:fail, _} = fail}, _ ->
+        {:halt, fail}
 
-        {:fail, _} = fail ->
-          {:halt, fail}
-      end
+      {:exit, reason}, _ ->
+        {:halt, {:fail, "install failed: #{inspect(reason)}"}}
     end)
   end
 
-  defp fetch_file(config, cache, %{"sha256" => sha, "size" => size, "path" => path}) do
-    cached = Path.join(cache, sha)
+  # Runs in a task linked to the caller: it never raises, or the exit would
+  # take the caller (and the user's build) down with it.
+  defp stage_file(config, f, staging) do
+    with {:ok, bytes, cached?} <- fetch_file(config, f) do
+      target = Path.join(staging, f["path"])
+      File.mkdir_p!(Path.dirname(target))
+      File.write!(target, bytes)
+      File.chmod!(target, Bitwise.band(f["mode"], 0o777))
+      {:ok, f, cached?}
+    end
+  rescue
+    e -> {:fail, "install failed: #{Exception.message(e)}"}
+  catch
+    kind, reason -> {:fail, "install failed: #{inspect({kind, reason})}"}
+  end
 
-    if File.exists?(cached) and verify(cached, sha, size) == :ok do
-      {:ok, cached, true}
-    else
-      tmp = cached <> ".tmp-#{System.unique_integer([:positive])}"
-
-      with {:ok, body} <-
-             get_body("#{config.source}/files/#{sha}", [max_bytes: size] ++ content_opts(config))
-             |> file_error(sha),
-           :ok <- File.write(tmp, body),
-           :ok <- verify(tmp, sha, size) |> name_path(path) do
-        File.rename!(tmp, cached)
-        {:ok, cached, false}
-      else
-        {:fail, _} = fail ->
-          File.rm(tmp)
-          fail
-      end
+  defp fetch_file(config, %{"sha256" => sha, "size" => size, "path" => path}) do
+    case cached_file(config, sha, size) do
+      {:ok, bytes} -> {:ok, bytes, true}
+      :error -> download_file(config, sha, size, path)
     end
   end
+
+  # The cached copy, re-hashed on every use; a symlink, a wrong size or a
+  # wrong hash is no copy at all.
+  defp cached_file(config, sha, size) do
+    with {:ok, bytes} <- read_regular(file_cache_path(config, sha), size),
+         :ok <- check_bytes(bytes, sha, size) do
+      {:ok, bytes}
+    else
+      _ -> :error
+    end
+  end
+
+  # Each content origin, then the source. A content origin's failure
+  # (unreachable, 404, wrong bytes) only moves on to the next URL, and only
+  # bytes that match the manifest's sha and size are ever kept; the last
+  # failure is the one reported.
+  defp download_file(config, sha, size, path) do
+    if Map.get(config, :offline, false) do
+      {:fail, "offline: file not cached (#{path})"}
+    else
+      urls =
+        for(o <- Map.get(config, :content) || [], do: "#{o}/files/#{sha}") ++
+          ["#{config.source}/files/#{sha}"]
+
+      Enum.reduce_while(urls, nil, fn url, _ ->
+        case download(config, url, sha, size, path) do
+          {:ok, _, _} = ok -> {:halt, ok}
+          fail -> {:cont, fail}
+        end
+      end)
+    end
+  end
+
+  defp download(config, url, sha, size, path) do
+    with {:ok, body} <-
+           get_body(url, [max_bytes: size] ++ content_opts(config)) |> file_error(sha),
+         :ok <- check_bytes(body, sha, size) |> name_path(path) do
+      # A cache write that fails costs only the next run a download.
+      _ = ElixirPrecompiled.FileUtil.write_atomic(file_cache_path(config, sha), body)
+      {:ok, body, false}
+    end
+  end
+
+  defp file_cache_path(config, sha), do: Path.join([config.home, "files", sha])
 
   defp file_error({:ok, _} = ok, _), do: ok
 
@@ -311,16 +441,11 @@ defmodule ElixirPrecompiled.Fetch do
 
   defp file_error({:error, reason}, sha), do: {:fail, "file not available: #{sha} (#{reason})"}
 
-  defp verify(path, sha, size) do
-    case File.stat(path) do
-      {:ok, %{size: ^size}} ->
-        if sha256(File.read!(path)) == sha, do: :ok, else: {:fail, "sha256 mismatch"}
-
-      {:ok, _} ->
-        {:fail, "size mismatch"}
-
-      _ ->
-        {:fail, "unreadable"}
+  defp check_bytes(bytes, sha, size) do
+    cond do
+      byte_size(bytes) != size -> {:fail, "size mismatch"}
+      sha256(bytes) != sha -> {:fail, "sha256 mismatch"}
+      true -> :ok
     end
   end
 
