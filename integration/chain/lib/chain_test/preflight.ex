@@ -9,15 +9,15 @@ defmodule ChainTest.Preflight do
     * `ssh` - the device answers `IO.puts(:ok)` with the pinned host key.
     * `portal` - `GET <source>/root.json` answers 200.
     * `toolchain` - `mix archive` lists nerves_bootstrap and fwup is on `PATH`.
-    * `fixture_lock` - the fixture's `mix.lock` names every dependency
-      `expected.exs` lists (hits and nevers, but for literal path deps,
-      which a lock never names) and the target's system.
+    * `fixture_lock` - the fixture's `mix.lock`, read as Mix reads it, names
+      every dependency `expected.exs` lists (hits and nevers, but for
+      literal path deps, which a lock never names) and the target's system.
     * `target_config` - only when the config names one: the operator's
       fixture config file (network, `nerves_ssh` keys) exists, so a target
       build does not stop on it minutes in.
   """
 
-  alias ChainTest.{Cmd, HTTP, Result}
+  alias ChainTest.{Cmd, HTTP, Lock, Result}
 
   @timeout_ms 15_000
 
@@ -195,17 +195,14 @@ defmodule ChainTest.Preflight do
       lock = Path.join(cfg.fixture_dir, "mix.lock")
 
       with {:ok, expected} <- expected_or_error(cfg),
-           {:ok, text} <- File.read(lock) do
-        names = Regex.scan(~r/^\s*"([a-z0-9_]+)":/m, text, capture: :all_but_first)
-        names = MapSet.new(List.flatten(names))
-
-        case Enum.reject(expected, &MapSet.member?(names, &1)) do
+           {:ok, locked} <- Lock.read(lock) do
+        case Enum.reject(expected, &Map.has_key?(locked, &1)) do
           [] -> {:pass, "#{lock} names every expected dependency"}
           missing -> {:fail, "#{lock} does not name: #{Enum.join(missing, ", ")}"}
         end
       else
         {:expected, why} -> {:fail, why}
-        {:error, reason} -> {:fail, "#{lock}: #{:file.format_error(reason)}"}
+        {:error, why} -> {:fail, "#{lock}: #{why}"}
       end
     end)
   end

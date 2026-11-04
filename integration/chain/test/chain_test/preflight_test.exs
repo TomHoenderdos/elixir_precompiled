@@ -219,6 +219,12 @@ defmodule ChainTest.PreflightTest do
       assert %Result{class: :fail, detail: detail} = Preflight.fixture_lock(cfg(tmp))
       assert detail =~ "mix.lock"
     end
+
+    test "a lock that is not valid Elixir fails and names the lock", %{tmp_dir: tmp} do
+      File.write!(Path.join(tmp, "mix.lock"), "%{\n  \"jason\": {:hex,\n")
+      assert %Result{class: :fail, detail: detail} = Preflight.fixture_lock(cfg(tmp))
+      assert detail =~ "mix.lock"
+    end
   end
 
   test "run/1 returns the four checks in order", %{tmp_dir: tmp} do

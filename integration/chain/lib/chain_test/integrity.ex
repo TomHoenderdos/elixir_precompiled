@@ -45,7 +45,7 @@ defmodule ChainTest.Integrity do
   strip what was installed.
   """
 
-  alias ChainTest.{HTTP, Result, Trust}
+  alias ChainTest.{HTTP, Lock, Result, Trust}
 
   @timeout_ms 60_000
   @shown_problems 5
@@ -122,12 +122,7 @@ defmodule ChainTest.Integrity do
     |> Enum.sort()
   end
 
-  defp version(:locked, name, ctx) do
-    case ctx.lock[name] do
-      {:hex, _, vsn, _, _, _, _, _} -> vsn
-      _ -> nil
-    end
-  end
+  defp version(:locked, name, ctx), do: Lock.hex_version(ctx.lock, name)
 
   defp version(vsn, _name, _ctx), do: vsn
 
@@ -137,7 +132,7 @@ defmodule ChainTest.Integrity do
   defp context(input, build_lib, source) do
     lock_path = Map.get(input, :lock_path, Path.expand("../../../mix.lock", build_lib))
 
-    case read_lock(lock_path) do
+    case Lock.read(lock_path) do
       {:ok, lock} ->
         target =
           build_lib |> Path.dirname() |> Path.basename() |> String.replace_suffix("_dev", "")
@@ -147,7 +142,8 @@ defmodule ChainTest.Integrity do
            build_lib: build_lib,
            source: source,
            lock: lock,
-           system: Map.get_lazy(input, :system, fn -> system(lock, target) end),
+           system:
+             Map.get_lazy(input, :system, fn -> Lock.system(lock, target) || {"host", ""} end),
            elixir: Map.get(input, :elixir, System.version()),
            otp: Map.get(input, :otp, System.otp_release()),
            timeout_ms: Map.get(input, :timeout_ms, @timeout_ms),
@@ -176,31 +172,6 @@ defmodule ChainTest.Integrity do
         :unset -> tap(fun.(), &Process.put(key, &1))
         fresh -> fresh
       end
-    end
-  end
-
-  # Read as Mix reads it (mix.lock quotes its keys). String keys, so names
-  # from a manifest never become atoms.
-  defp read_lock(path) do
-    quoted =
-      path
-      |> File.read!()
-      |> Code.string_to_quoted!(file: path, emit_warnings: false)
-
-    case Code.eval_quoted(quoted, [], file: path, emit_warnings: false) do
-      {lock, _} when is_map(lock) -> {:ok, Map.new(lock, fn {k, v} -> {to_string(k), v} end)}
-      _ -> {:error, "not a map"}
-    end
-  rescue
-    e -> {:error, Exception.message(e)}
-  end
-
-  defp system(lock, target) do
-    name = "nerves_system_#{target}"
-
-    case lock[name] do
-      {:hex, _, vsn, _, _, _, _, _} -> {name, vsn}
-      _ -> {"host", ""}
     end
   end
 

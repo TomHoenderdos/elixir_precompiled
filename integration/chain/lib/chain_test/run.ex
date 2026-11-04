@@ -46,6 +46,7 @@ defmodule ChainTest.Run do
     Deploy,
     Device,
     Integrity,
+    Lock,
     Preflight,
     Report,
     Result,
@@ -487,35 +488,13 @@ defmodule ChainTest.Run do
   end
 
   defp lock_info(opts) do
-    lock = read_lock(Path.join(opts.fixture_dir, "mix.lock"))
-    name = "nerves_system_#{opts.target}"
-
-    system =
-      case lock[name] do
-        {:hex, _, vsn, _, _, _, _, _} -> {name, vsn}
-        _ -> nil
+    lock =
+      case Lock.read(Path.join(opts.fixture_dir, "mix.lock")) do
+        {:ok, lock} -> lock
+        {:error, _} -> %{}
       end
 
-    nerves =
-      case lock["nerves"] do
-        {:git, _url, sha, _} -> sha
-        _ -> nil
-      end
-
-    %{system: system, nerves_commit: nerves}
-  end
-
-  # The fixture's own lock, read as Mix reads it; string keys.
-  defp read_lock(path) do
-    with {:ok, text} <- File.read(path),
-         {:ok, quoted} <- Code.string_to_quoted(text, file: path, emit_warnings: false),
-         {lock, _} when is_map(lock) <- Code.eval_quoted(quoted, [], file: path) do
-      Map.new(lock, fn {k, v} -> {to_string(k), v} end)
-    else
-      _ -> %{}
-    end
-  rescue
-    _ -> %{}
+    %{system: Lock.system(lock, opts.target), nerves_commit: Lock.git_ref(lock, "nerves")}
   end
 
   defp system_text({name, vsn}), do: "#{name} #{vsn}"
