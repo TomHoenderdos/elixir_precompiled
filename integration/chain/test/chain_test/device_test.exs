@@ -130,6 +130,15 @@ defmodule ChainTest.DeviceTest do
     assert r["probe"].detail =~ "UndefinedFunctionError"
   end
 
+  test "the probe leading newline puts a glued-on :ok return value before the block", ctx do
+    # nerves_ssh's exec writes the expression's return value (":ok") with no
+    # trailing newline right before the probe's own output; the probe's
+    # leading "\n" is what keeps BEGIN on its own line in that case.
+    out = ":ok\n" <> block(doc())
+    {results, _} = run_with(ctx, out)
+    assert Enum.all?(results, &(&1.class == :pass)), inspect(results)
+  end
+
   test "a BEGIN without an END fails", ctx do
     {results, _} = run_with(ctx, "#{@begin}\n#{JSON.encode!(doc())}\n")
     assert by_check(results)["probe"].class == :fail

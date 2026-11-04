@@ -30,6 +30,14 @@ defmodule ChainFixture.ProbeTest do
     assert length(String.split(out, @finish)) == 2
   end
 
+  test "the block starts on its own line" do
+    # nerves_ssh's exec writes the expression's return value (":ok") with no
+    # trailing newline right before our IO.write; a leading "\n" here is what
+    # puts BEGIN on its own line regardless of what ssh glued onto the front.
+    {out, _doc} = probe([:jason])
+    assert String.starts_with?(out, "\n" <> @begin <> "\n")
+  end
+
   test "lists every ebin and priv file of an app with its sha256" do
     {_out, doc} = probe([:jason])
 

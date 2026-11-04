@@ -7,15 +7,19 @@ defmodule ChainFixture.Probe do
   The on-device half of the chain test, run over ssh as
   `ChainFixture.Probe.run([:jason, ...])`.
 
-  Prints exactly one block
+  Prints exactly one block, led by a blank line
 
+      \n
       -----BEGIN CHAIN PROBE-----
       {"apps": ..., "modules": ..., "smoke": ..., "files": ..., "firmware_uuid": ..., "nerves_system": ...}
       -----END CHAIN PROBE-----
 
   in a single write, so the laptop can find it among an IEx banner and log
-  lines. Nothing here raises: every check that fails is reported as a
-  string starting with `"error: "`.
+  lines. The leading newline guarantees BEGIN starts its own line even when
+  nerves_ssh's exec has already written the expression's return value
+  (`:ok`) immediately before this write, with no newline of its own. Nothing
+  here raises: every check that fails is reported as a string starting with
+  `"error: "`.
 
   The JSON is encoded with Elixir's own `JSON` and the probe calls the test
   subjects only through `apply/3` on a variable, so it depends on none of
@@ -40,7 +44,10 @@ defmodule ChainFixture.Probe do
   @spec run([atom() | String.t()]) :: :ok
   def run(apps) when is_list(apps) do
     json = apps |> Enum.map(&to_app/1) |> collect() |> JSON.encode!()
-    IO.write([@begin, "\n", json, "\n", @finish, "\n"])
+    # A leading "\n" so BEGIN lands on its own line even when nerves_ssh's
+    # exec has already written the expression's return value (":ok") right
+    # before this write, with no newline of its own.
+    IO.write(["\n", @begin, "\n", json, "\n", @finish, "\n"])
     :ok
   end
 
