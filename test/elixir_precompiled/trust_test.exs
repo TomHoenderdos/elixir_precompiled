@@ -833,7 +833,7 @@ defmodule ElixirPrecompiled.TrustTest do
     File.write!(Path.join(state_dir(config), "batch.json"), :binary.copy("x", 8_388_609))
     offline = Map.put(config, :offline, true)
 
-    assert {:error, "offline, no cached batch"} =
+    assert {:error, "batch unavailable: offline, no cached batch"} =
              Trust.fetch_batch_cached(offline, root, &cond_fetch/2)
   end
 
@@ -855,7 +855,7 @@ defmodule ElixirPrecompiled.TrustTest do
     {:ok, root} = Trust.load_root(config)
     offline = Map.put(config, :offline, true)
 
-    assert {:error, "offline, no cached batch"} =
+    assert {:error, "batch unavailable: offline, no cached batch"} =
              Trust.fetch_batch_cached(offline, root, &cond_fetch/2)
 
     {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)

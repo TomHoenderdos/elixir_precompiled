@@ -1312,7 +1312,7 @@ defmodule ElixirPrecompiled.CheckTest do
       F.clear_requests()
 
       out = run_capturing(Map.put(config, :offline, true), env)
-      assert out =~ "offline, no cached batch"
+      assert out =~ "batch unavailable: offline, no cached batch"
       assert F.requests() == []
       assert File.exists?(Path.join(lib, "ash/ebin/Elixir.X.beam"))
     end

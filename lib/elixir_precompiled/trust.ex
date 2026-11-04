@@ -415,7 +415,7 @@ defmodule ElixirPrecompiled.Trust do
 
     cond do
       offline? and cached == nil ->
-        {:error, "offline, no cached batch"}
+        {:error, "batch unavailable: offline, no cached batch"}
 
       offline? ->
         verify_batch(config, root, cached.body, dir)
