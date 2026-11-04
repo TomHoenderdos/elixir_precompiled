@@ -85,6 +85,12 @@ defmodule ElixirPrecompiled.HTTPTest do
 
     assert {:error, "Status 304 Not Modified"} =
              HTTP.get(url("/etag"), headers: [{"if-none-match", ~s("v1")}])
+
+    assert :not_modified = HTTP.request(url("/etag"), headers: [{"If-None-Match", ~s("v1")}])
+  end
+
+  test "a 304 to a request that was not conditional is an error" do
+    assert {:error, "Status 304 Not Modified"} = HTTP.request(url("/always-304"))
   end
 
   test "a run deadline in the past makes no request" do
@@ -123,6 +129,24 @@ defmodule ElixirPrecompiled.HTTPTest do
                same_origin: true,
                allowed_origins: [cdn]
              )
+
+    # The CDN itself redirecting onwards to an origin nobody allowed.
+    assert {:error, :cross_origin_redirect} =
+             HTTP.get(url("/precompiled/redirect_cdn/redirect/x"),
+               same_origin: true,
+               allowed_origins: [cdn]
+             )
+
+    # Scheme and host compare case-insensitively.
+    ElixirPrecompiled.Fixture.clear_requests()
+
+    assert {:error, "Status 404 Not Found"} =
+             HTTP.get(url("/precompiled/redirect_cdn_upper/nothing-here"),
+               same_origin: true,
+               allowed_origins: ["HTTP://localhost:#{cdn_port}"]
+             )
+
+    assert Enum.any?(ElixirPrecompiled.Fixture.requests(), &(&1.port == cdn_port))
   end
 
   test "an allowed origin over plain http off loopback is never followed" do
@@ -138,19 +162,22 @@ defmodule ElixirPrecompiled.HTTPTest do
   test "NO_PROXY becomes httpc's no-proxy list" do
     assert HTTP.no_proxy_list(nil) == []
     assert HTTP.no_proxy_list("*") == :all
+    assert HTTP.no_proxy_list("example.org, *") == :all
 
-    assert HTTP.no_proxy_list("localhost, .corp.example:8080,10.0.0.1") ==
-             [
-               ~c"localhost",
-               ~c"*.localhost",
-               ~c"corp.example",
-               ~c"*.corp.example",
-               ~c"10.0.0.1",
-               ~c"*.10.0.0.1"
-             ]
+    assert HTTP.no_proxy_list("Localhost, .Corp.Example:8080,10.0.0.1") ==
+             [~c"localhost", ~c"*.localhost", ~c"corp.example", ~c"*.corp.example", ~c"10.0.0.1"]
   end
 
-  test "lower-case proxy variables are honoured, and a NO_PROXY host gets no proxy or credentials" do
+  test "NO_PROXY keeps IPv6 literals whole and drops CIDR ranges" do
+    assert HTTP.no_proxy_list("localhost,127.0.0.1,::1,[::1]:8080") ==
+             [~c"localhost", ~c"*.localhost", ~c"127.0.0.1", ~c"::1"]
+
+    assert HTTP.no_proxy_list("[FE80::1],fd00::2:3,10.0.0.0/8,fd00::/8") ==
+             [~c"fe80::1", ~c"fd00::2:3"]
+  end
+
+  # Proxy settings are read once per VM; each case resets that decision.
+  defp with_proxy_env(env) do
     proxy_port = ElixirPrecompiled.TestServer.port() + 3
     start_supervised!({ElixirPrecompiled.TestServer, port: proxy_port})
     keys = ~w(HTTP_PROXY http_proxy HTTPS_PROXY https_proxy NO_PROXY no_proxy)
@@ -162,18 +189,67 @@ defmodule ElixirPrecompiled.HTTPTest do
         {k, nil} -> System.delete_env(k)
         {k, v} -> System.put_env(k, v)
       end)
+
+      HTTP.reset_proxy_config()
     end)
 
-    System.put_env("http_proxy", "http://user:secret@127.0.0.1:#{proxy_port}")
-
+    for {k, v} <- env, do: System.put_env(k, String.replace(v, "PROXY_PORT", "#{proxy_port}"))
+    HTTP.reset_proxy_config()
     ElixirPrecompiled.Fixture.clear_requests()
-    assert {:ok, "Basic " <> _} = HTTP.get(url("/proxy-auth"))
-    assert [%{port: ^proxy_port}] = ElixirPrecompiled.Fixture.requests()
+    proxy_port
+  end
 
+  defp proxied?(proxy_port),
+    do: Enum.any?(ElixirPrecompiled.Fixture.requests(), &(&1.port == proxy_port))
+
+  test "a lower-case proxy variable is honoured, with URI-decoded credentials" do
+    proxy_port = with_proxy_env([{"http_proxy", "http://us%40er:p%3Ass@127.0.0.1:PROXY_PORT"}])
+    assert {:ok, "Basic " <> b64} = HTTP.get(url("/proxy-auth"))
+    assert Base.decode64!(b64) == "us@er:p:ss"
+    assert proxied?(proxy_port)
+  end
+
+  test "a NO_PROXY host gets no proxy and no credentials" do
+    proxy_port =
+      with_proxy_env([
+        {"http_proxy", "http://user:secret@127.0.0.1:PROXY_PORT"},
+        {"no_proxy", "127.0.0.1"}
+      ])
+
+    assert {:ok, ""} = HTTP.get(url("/proxy-auth"))
+    refute proxied?(proxy_port)
+  end
+
+  test "NO_PROXY=* sends nothing through a configured proxy" do
+    proxy_port =
+      with_proxy_env([
+        {"HTTP_PROXY", "http://user:secret@127.0.0.1:PROXY_PORT"},
+        {"NO_PROXY", "*"}
+      ])
+
+    assert {:ok, ""} = HTTP.get(url("/proxy-auth"))
+    refute proxied?(proxy_port)
+  end
+
+  test "upper-case NO_PROXY takes precedence over no_proxy" do
+    proxy_port =
+      with_proxy_env([
+        {"HTTP_PROXY", "http://user:secret@127.0.0.1:PROXY_PORT"},
+        {"NO_PROXY", "other.example"},
+        {"no_proxy", "127.0.0.1"}
+      ])
+
+    assert {:ok, "Basic " <> _} = HTTP.get(url("/proxy-auth"))
+    assert proxied?(proxy_port)
+  end
+
+  test "the proxy decision holds for the run, even when the environment changes" do
+    proxy_port = with_proxy_env([{"http_proxy", "http://127.0.0.1:PROXY_PORT"}])
+    assert {:ok, _} = HTTP.get(url("/proxy-auth"))
     System.put_env("no_proxy", "127.0.0.1")
     ElixirPrecompiled.Fixture.clear_requests()
-    assert {:ok, ""} = HTTP.get(url("/proxy-auth"))
-    refute Enum.any?(ElixirPrecompiled.Fixture.requests(), &(&1.port == proxy_port))
+    assert {:ok, _} = HTTP.get(url("/proxy-auth"))
+    assert proxied?(proxy_port)
   end
 
   @tag :tmp_dir

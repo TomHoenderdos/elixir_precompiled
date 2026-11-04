@@ -26,6 +26,9 @@ defmodule ElixirPrecompiled.HTTP do
   # one of allowed_origins (content origins the signed batch or the project
   # names); an allowed origin counts only over https, or http on loopback.
   #
+  # The caller's headers are sent on every hop, to every allowed origin:
+  # never pass credentials (Authorization, cookies) in them.
+  #
   # Known gap: the max_bytes cap is enforced on streamed 2xx bodies only.
   # httpc buffers a non-2xx body whole before answering, and its handler's
   # max_body_size limit is not settable: inets 9.7.1 (OTP 29) ignores
@@ -118,7 +121,10 @@ defmodule ElixirPrecompiled.HTTP do
   end
 
   defp secure_origin?(%URI{scheme: "https", host: h}) when is_binary(h) and h != "", do: true
-  defp secure_origin?(%URI{scheme: "http", host: h}) when h in @loopback, do: true
+
+  defp secure_origin?(%URI{scheme: "http", host: h}) when is_binary(h),
+    do: String.downcase(h) in @loopback
+
   defp secure_origin?(_uri), do: false
 
   defp origin(%URI{scheme: s, host: h, port: p}), do: {s, h && String.downcase(h), p}
@@ -259,8 +265,10 @@ defmodule ElixirPrecompiled.HTTP do
       {:http, {^request_ref, :stream_end, _headers}} ->
         {:ok, IO.iodata_to_binary(state.acc), state.etag}
 
-      {:http, {^request_ref, {{_, 304, _}, _headers, _body}}} ->
-        :not_modified
+      {:http, {^request_ref, {{_, 304, reason}, _headers, _body}}} ->
+        if conditional?(state.opts),
+          do: :not_modified,
+          else: {:error, format_error(304, reason)}
 
       {:http, {^request_ref, {{_, status_code, reason}, headers, _body}}}
       when div(status_code, 100) == 3 ->
@@ -301,6 +309,13 @@ defmodule ElixirPrecompiled.HTTP do
       nil ->
         {:error, format_error(status_code, reason)}
     end
+  end
+
+  # A 304 answers only a conditional request; to any other it is an error.
+  defp conditional?(opts) do
+    Enum.any?(Keyword.get(opts, :headers, []), fn {k, _} ->
+      String.downcase(k) == "if-none-match"
+    end)
   end
 
   defp too_large(request_ref, state) do
@@ -353,19 +368,15 @@ defmodule ElixirPrecompiled.HTTP do
   # the happy paths and {:error, other} when inets itself is broken; the
   # fetch must not continue past that.
   #
-  # The proxy settings are read from the environment on every request.
-  # httpc cannot unset a proxy through set_options, and a kept-alive session
-  # goes on routing by the options it was opened with, so a profile whose
-  # proxy settings differ from the environment's is restarted with them.
+  # The proxy settings are decided once per VM, on the first request, and
+  # never change under requests in flight: httpc cannot unset a proxy, and
+  # a kept-alive session keeps routing by the options it was opened with.
   defp start_httpc() do
-    proxies = proxy_httpc_options()
-
     with {:ok, _} <- Application.ensure_all_started([:inets, :ssl]),
-         {:ok, _} <- start_profile(),
-         :ok <- restart_on_proxy_change(proxies) do
+         {:ok, _} <- start_profile() do
       :httpc.set_options(
         [max_sessions: 8, max_keep_alive_length: 4, keep_alive_timeout: 120_000] ++
-          Enum.reject(proxies, &match?({_, {:undefined, _}}, &1)),
+          proxy_config().httpc,
         @profile
       )
     else
@@ -373,18 +384,42 @@ defmodule ElixirPrecompiled.HTTP do
     end
   end
 
-  defp restart_on_proxy_change(proxies) do
-    case :httpc.get_options([:proxy, :https_proxy], @profile) do
-      {:ok, current} ->
-        if Enum.sort(current) == Enum.sort(proxies) do
-          :ok
-        else
-          _ = :inets.stop(:httpc, @profile)
-          with {:ok, _} <- start_profile(), do: :ok
-        end
+  @proxy_key {__MODULE__, :proxy_config}
 
-      _ ->
-        :ok
+  defp proxy_config() do
+    case :persistent_term.get(@proxy_key, nil) do
+      nil ->
+        config = read_proxy_config()
+        :persistent_term.put(@proxy_key, config)
+        config
+
+      config ->
+        config
+    end
+  end
+
+  @doc false
+  # Tests only: forget the proxy decision and stop the profile, so the next
+  # request reads the environment again. Never called during a run.
+  @spec reset_proxy_config() :: :ok
+  def reset_proxy_config() do
+    _ = :persistent_term.erase(@proxy_key)
+    _ = :inets.stop(:httpc, @profile)
+    :ok
+  end
+
+  defp read_proxy_config() do
+    case no_proxy() do
+      :all ->
+        %{httpc: [], auth: %{}}
+
+      list ->
+        schemes = [{"http", :proxy}, {"https", :https_proxy}]
+
+        %{
+          httpc: Enum.flat_map(schemes, fn {s, key} -> httpc_proxy(key, proxy_env(s), list) end),
+          auth: Map.new(schemes, fn {s, _} -> {s, proxy_auth(proxy_env(s))} end)
+        }
     end
   end
 
@@ -404,21 +439,7 @@ defmodule ElixirPrecompiled.HTTP do
   # httpc sends proxy_auth only on a request it routes through the proxy,
   # so a NO_PROXY host never sees the proxy's credentials.
   defp proxy_request_options(url) do
-    case URI.parse(url) do
-      %URI{scheme: scheme} when scheme in ["http", "https"] -> proxy_auth(proxy_env(scheme))
-      _ -> []
-    end
-  end
-
-  defp proxy_httpc_options() do
-    case no_proxy() do
-      :all ->
-        [proxy: {:undefined, []}, https_proxy: {:undefined, []}]
-
-      list ->
-        add_httpc_proxy(:proxy, proxy_env("http"), list) ++
-          add_httpc_proxy(:https_proxy, proxy_env("https"), list)
-    end
+    Map.get(proxy_config().auth, URI.parse(url).scheme, [])
   end
 
   defp proxy_auth(nil), do: []
@@ -427,28 +448,34 @@ defmodule ElixirPrecompiled.HTTP do
     case URI.parse(value) do
       %URI{userinfo: auth} when is_binary(auth) ->
         destructure [user, pass], String.split(auth, ":", parts: 2)
-        [proxy_auth: {String.to_charlist(user), String.to_charlist(pass || "")}]
+
+        [
+          proxy_auth:
+            {String.to_charlist(URI.decode(user)), String.to_charlist(URI.decode(pass || ""))}
+        ]
 
       _ ->
         []
     end
   end
 
-  defp add_httpc_proxy(key, nil, _no_proxy), do: [{key, {:undefined, []}}]
+  defp httpc_proxy(_key, nil, _no_proxy), do: []
 
-  defp add_httpc_proxy(key, value, no_proxy) do
+  defp httpc_proxy(key, value, no_proxy) do
     case URI.parse(value) do
       %URI{host: host, port: port} when is_binary(host) and is_integer(port) ->
         [{key, {{String.to_charlist(host), port}, no_proxy}}]
 
       _ ->
-        [{key, {:undefined, []}}]
+        []
     end
   end
 
   @doc false
-  # NO_PROXY as httpc takes it: each host and its subdomains ("*.host"),
-  # ports dropped; "*" means no proxy at all.
+  # NO_PROXY as httpc takes it: each host lower-cased and its subdomains
+  # ("*.host"), an IP literal alone, ports dropped, "[v6]" unbracketed;
+  # "*" means no proxy at all. CIDR ranges (10.0.0.0/8) are not supported
+  # by httpc's matching and are dropped.
   @spec no_proxy_list(String.t() | nil) :: :all | [charlist()]
   def no_proxy_list(nil), do: []
 
@@ -456,16 +483,35 @@ defmodule ElixirPrecompiled.HTTP do
     entries =
       value
       |> String.split(",", trim: true)
-      |> Enum.map(
-        &(&1
-          |> String.trim()
-          |> String.replace(~r/:\d+\z/, "")
-          |> String.trim_leading("."))
-      )
-      |> Enum.reject(&(&1 == ""))
+      |> Enum.map(&no_proxy_entry/1)
+      |> Enum.reject(&(&1 == "" or String.contains?(&1, "/")))
 
     if "*" in entries,
       do: :all,
-      else: Enum.flat_map(entries, &[String.to_charlist(&1), String.to_charlist("*." <> &1)])
+      else: entries |> Enum.flat_map(&no_proxy_patterns/1) |> Enum.uniq()
+  end
+
+  defp no_proxy_entry(entry) do
+    entry = entry |> String.trim() |> String.downcase()
+
+    cond do
+      # [v6] or [v6]:port
+      match = Regex.run(~r/\A\[([^\]]*)\](?::\d*)?\z/, entry) ->
+        Enum.at(match, 1)
+
+      # host:port; a bare IPv6 address has more than one colon and no port
+      length(String.split(entry, ":")) == 2 ->
+        entry |> String.replace(~r/:\d*\z/, "") |> String.trim_leading(".")
+
+      true ->
+        String.trim_leading(entry, ".")
+    end
+  end
+
+  defp no_proxy_patterns(entry) do
+    case :inet.parse_address(String.to_charlist(entry)) do
+      {:ok, _} -> [String.to_charlist(entry)]
+      {:error, _} -> [String.to_charlist(entry), String.to_charlist("*." <> entry)]
+    end
   end
 end

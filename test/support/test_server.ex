@@ -48,6 +48,10 @@ defmodule ElixirPrecompiled.TestServer do
   # which names the origin, not the proxy, on a proxied request.
   defp listener_port(conn), do: get_sock_data(conn).port
 
+  get "/always-304" do
+    send_resp(conn, 304, "")
+  end
+
   get "/etag" do
     conn = put_resp_header(conn, "etag", ~s("v1"))
 
@@ -164,6 +168,16 @@ defmodule ElixirPrecompiled.TestServer do
     |> put_resp_header(
       "location",
       "http://127.0.0.1:#{port() + 2}/precompiled/" <> Enum.join(rest, "/")
+    )
+    |> send_resp(302, "")
+  end
+
+  # The same, naming the content origin's host in upper case.
+  get "/precompiled/redirect_cdn_upper/*rest" do
+    conn
+    |> put_resp_header(
+      "location",
+      "http://LOCALHOST:#{port() + 2}/precompiled/" <> Enum.join(rest, "/")
     )
     |> send_resp(302, "")
   end
