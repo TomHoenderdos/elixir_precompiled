@@ -69,6 +69,28 @@ defmodule Mix.Tasks.Precompiled.CleanTest do
     end)
   end
 
+  test "clean keeps a dep Mix rebuilt after an install and drops only its stale provenance", %{
+    tmp_dir: dir
+  } do
+    in_project(dir, fn ->
+      lib = Path.join(Mix.Project.build_path(), "lib")
+      prov = Path.join(lib, "rebuilt/.mix/elixir_precompiled.json")
+      put(Path.join(lib, "rebuilt/ebin/rebuilt.app"))
+      put(prov, ~s({"batch_sequence":3}))
+      File.touch!(prov, 1_000)
+      put(Path.join(lib, "rebuilt/.mix/compile.elixir"), "m")
+      File.touch!(Path.join(lib, "rebuilt/.mix/compile.elixir"), 2_000)
+      put(Path.join(lib, "jason/ebin/jason.app"))
+      put(Path.join(lib, "jason/.mix/elixir_precompiled.json"), ~s({"batch_sequence":3}))
+
+      Mix.Tasks.Precompiled.Clean.run([])
+      assert_received {:mix_shell, :info, ["precompiled: removed 1 installed build (jason)"]}
+      assert File.ls!(lib) == ["rebuilt"]
+      assert File.regular?(Path.join(lib, "rebuilt/ebin/rebuilt.app"))
+      refute File.exists?(prov)
+    end)
+  end
+
   test "a configured home is the cache status names and clean --cache clears", %{tmp_dir: dir} do
     configured = Path.join(dir, "configured")
     other = Path.join(dir, "other")

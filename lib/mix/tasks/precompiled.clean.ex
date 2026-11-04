@@ -25,11 +25,12 @@ defmodule Mix.Tasks.Precompiled.Clean do
     Mix.Project.get!()
     build_lib = Path.join(Mix.Project.build_path(), "lib")
 
-    removed =
-      for %{name: name} <- Status.installed(build_lib),
-          result = Status.remove(build_lib, name),
-          report(name, result) == :ok,
-          do: name
+    # Status.sweep/1 handles every outcome of Status.remove/2, the stale
+    # provenance of a dep Mix rebuilt since its install included.
+    %{removed: removed, failed: failed} = Status.sweep(build_lib)
+
+    for {name, why} <- failed,
+        do: Mix.shell().error("precompiled: could not remove #{name}: #{why}")
 
     n = length(removed)
 
@@ -52,13 +53,4 @@ defmodule Mix.Tasks.Precompiled.Clean do
 
     :ok
   end
-
-  defp report(_name, :ok), do: :ok
-
-  defp report(name, {:error, why}) do
-    Mix.shell().error("precompiled: could not remove #{name}: #{why}")
-    :error
-  end
-
-  defp report(_name, :not_installed), do: :skip
 end
