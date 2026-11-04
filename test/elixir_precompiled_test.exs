@@ -27,6 +27,35 @@ defmodule ElixirPrecompiledTest do
     assert ElixirPrecompiled.run(env: env, host?: true) == :disabled
   end
 
+  test "allow_host: true runs on the host target; host? still wins", %{env: env} do
+    Application.put_env(:elixir_precompiled, :source, "https://example.test/x")
+    assert Mix.target() == :host
+    assert ElixirPrecompiled.run(env: env) == :disabled
+    assert ElixirPrecompiled.run(env: env, allow_host: true) == :nothing_to_do
+    assert ElixirPrecompiled.run(env: env, allow_host: true, host?: true) == :disabled
+    assert ElixirPrecompiled.run(env: env, allow_host: false, host?: false) == :nothing_to_do
+  end
+
+  test "without :env, a second run in one VM returns the first result", %{env: env} do
+    Application.put_env(:elixir_precompiled, :source, "https://example.test/x")
+    key = {ElixirPrecompiled, :ran, Mix.Project.build_path()}
+    saved = :persistent_term.get(key, :none)
+
+    on_exit(fn ->
+      if saved == :none, do: :persistent_term.erase(key), else: :persistent_term.put(key, saved)
+    end)
+
+    # The first call loads this project's own deps: all compiled, nothing to do.
+    :persistent_term.erase(key)
+    assert ElixirPrecompiled.run(allow_host: true) == :nothing_to_do
+    assert :persistent_term.get(key) == :nothing_to_do
+
+    :persistent_term.put(key, :first_result)
+    assert ElixirPrecompiled.run(allow_host: true) == :first_result
+    # An explicit :env is never memoised.
+    assert ElixirPrecompiled.run(env: env, allow_host: true) == :nothing_to_do
+  end
+
   test "with a source and a target, an empty env is nothing to do", %{env: env} do
     Application.put_env(:elixir_precompiled, :source, "https://example.test/x")
     assert ElixirPrecompiled.run(env: env, host?: false) == :nothing_to_do

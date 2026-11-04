@@ -5,6 +5,7 @@
 defmodule ElixirPrecompiled.Integration.InstallTest do
   use ExUnit.Case, async: false
   @moduletag :integration
+  @moduletag :production
   @moduletag :tmp_dir
   @moduletag timeout: 300_000
 

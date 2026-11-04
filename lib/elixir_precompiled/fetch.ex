@@ -252,6 +252,9 @@ defmodule ElixirPrecompiled.Fetch do
 
     File.mkdir_p!(Path.join(staging, ".mix"))
     File.write!(Path.join([staging, ".mix", "compile.elixir_scm"]), marker)
+    # deps.compile's mark: without it Elixir 1.17 to 1.19 count a Hex dep
+    # as freshly fetched and compile it over the install. 1.20 ignores it.
+    File.touch!(Path.join([staging, ".mix", "compile.fetch"]))
   end
 
   # Which signed manifest this install came from, so a later run can tell a
