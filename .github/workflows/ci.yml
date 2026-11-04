@@ -18,3 +18,25 @@ jobs:
       - run: mix credo --strict
       - run: mix test
       - run: MIX_ENV=prod mix archive.build -o /tmp/elixir_precompiled.ez
+  chain:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+      - run: mix deps.get
+      - run: mix credo --strict --config-name chain
+      - name: harness format, compile, tests
+        working-directory: integration/chain
+        run: |
+          mix format --check-formatted
+          mix compile --warnings-as-errors
+          mix test
+      - run: mix archive.install hex nerves_bootstrap --force
+      - name: fixture tests (host)
+        working-directory: integration/chain/fixture
+        run: |
+          mix deps.get
+          mix test

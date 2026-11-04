@@ -10,6 +10,7 @@ defmodule ChainTest.Synthetic do
   """
 
   @doc "Lowercase hex sha256."
+  @spec sha(binary()) :: String.t()
   def sha(bytes), do: Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
 
   @doc """
@@ -17,6 +18,7 @@ defmodule ChainTest.Synthetic do
   (`<root>/_build/<target>_dev/lib`). `lock` is `%{dep => {version, outer}}`;
   the system `nerves_system_<target>` is locked at `system_version`.
   """
+  @spec tree(Path.t(), String.t(), %{atom() => {String.t(), String.t()}}, String.t()) :: Path.t()
   def tree(root, target, lock, system_version \\ "2.2.1") do
     system = :"nerves_system_#{target}"
 
@@ -41,6 +43,8 @@ defmodule ChainTest.Synthetic do
   client writes), `:elixir` (Mix compiled an Elixir dep), `:scm` (a rebar or
   make dep Mix compiled: marker only).
   """
+  @spec dep(Path.t(), atom(), %{String.t() => binary()}, :installed | :elixir | :scm, map()) ::
+          Path.t()
   def dep(build_lib, dep, files, kind, provenance \\ %{}) do
     dir = Path.join(build_lib, to_string(dep))
 
@@ -69,6 +73,7 @@ defmodule ChainTest.Synthetic do
   end
 
   @doc "A manifest file entry for `path` with `bytes`."
+  @spec file_entry(String.t(), binary(), non_neg_integer()) :: map()
   def file_entry(path, bytes, mode \\ 0o100644),
     do: %{"path" => path, "sha256" => sha(bytes), "size" => byte_size(bytes), "mode" => mode}
 
@@ -76,6 +81,7 @@ defmodule ChainTest.Synthetic do
   One format-2 build. `opts`: `:target` (default `"pure_elixir"`),
   `:system_version`, `:elixir`, `:otp`, `:outer`, `:run_id`.
   """
+  @spec build(%{String.t() => binary()} | [{String.t(), binary()}], keyword()) :: map()
   def build(files, opts) do
     {ebin, priv} = Enum.split_with(files, fn {p, _} -> String.starts_with?(p, "ebin/") end)
 
@@ -97,10 +103,12 @@ defmodule ChainTest.Synthetic do
   end
 
   @doc "A format-2 manifest document with `builds` for `version`."
+  @spec manifest(String.t(), [map()]) :: String.t()
   def manifest(version, builds),
     do: JSON.encode!(%{"format" => 2, "versions" => %{version => %{"builds" => builds}}})
 
   @doc "Writes `bytes` as `<served>/<dir>/<name>.json`."
+  @spec serve_manifest(Path.t(), String.t(), String.t(), binary()) :: :ok
   def serve_manifest(served, dir, name, bytes) do
     path = Path.join([served, dir, name <> ".json"])
     File.mkdir_p!(Path.dirname(path))
@@ -108,10 +116,12 @@ defmodule ChainTest.Synthetic do
   end
 
   @doc "A verified-batch info map, as `ChainTest.Trust.check/1` returns it."
+  @spec info(integer(), map(), map()) :: map()
   def info(sequence, v2, v1 \\ %{}),
     do: %{sequence: sequence, root_version: 1, manifests: v1, manifests_v2: v2}
 
   @doc "A client report map with `lines` of `{name, version, status, detail}`."
+  @spec report([{String.t(), String.t(), String.t(), String.t()}]) :: map()
   def report(lines) do
     %{
       "format" => 1,

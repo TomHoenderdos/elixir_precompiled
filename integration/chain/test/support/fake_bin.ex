@@ -18,6 +18,8 @@ defmodule ChainTest.FakeBin do
   `PATH`; `path: :only` uses the stub dir plus `/bin:/usr/bin`, so a tool that
   is not stubbed is not found.
   """
+  @spec with_stubs(%{String.t() => String.t()}, (Path.t() -> result), keyword()) :: result
+        when result: term()
   def with_stubs(stubs, fun, opts \\ []) do
     dir = Path.join(System.tmp_dir!(), "chain_fake_bin_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
@@ -48,6 +50,7 @@ defmodule ChainTest.FakeBin do
   end
 
   @doc "The argv the stub `name` was last called with, or `nil` if it never ran."
+  @spec argv(Path.t(), String.t()) :: [String.t()] | nil
   def argv(dir, name) do
     case File.read(Path.join(dir, name <> ".argv")) do
       {:ok, text} -> String.split(text, "\n", trim: true)

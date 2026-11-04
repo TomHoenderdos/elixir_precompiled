@@ -53,7 +53,7 @@ defmodule ChainTest.Deploy do
 
   @doc "The Elixir expression the poll runs on the device."
   @spec query() :: String.t()
-  def query, do: @query
+  def query(), do: @query
 
   @doc "Runs step 5; `expected_uuid` is `nil` when the image names none."
   @spec run(input()) :: {[Result.t()], %{expected_uuid: String.t() | nil}}
@@ -265,7 +265,7 @@ defmodule ChainTest.Deploy do
   defp show(""), do: "(none)"
   defp show(uuid), do: uuid
 
-  defp now, do: System.monotonic_time(:millisecond)
+  defp now(), do: System.monotonic_time(:millisecond)
 
   defp lines(out), do: out |> String.split("\n") |> Enum.map(&String.trim(&1))
 

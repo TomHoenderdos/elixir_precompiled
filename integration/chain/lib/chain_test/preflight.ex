@@ -35,11 +35,11 @@ defmodule ChainTest.Preflight do
 
   @doc "The time each network check gets."
   @spec timeout_ms() :: pos_integer()
-  def timeout_ms, do: @timeout_ms
+  def timeout_ms(), do: @timeout_ms
 
   @doc "The targets the harness supports."
   @spec targets() :: [String.t()]
-  def targets, do: Map.keys(@systems) |> Enum.sort(:desc)
+  def targets(), do: Map.keys(@systems) |> Enum.sort(:desc)
 
   @doc """
   The dependencies the fixture's `mix.lock` must name for `target`: every

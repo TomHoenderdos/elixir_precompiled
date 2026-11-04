@@ -37,11 +37,11 @@ defmodule ChainTest.Report do
 
   @doc "The \"known, not testable\" items every report names."
   @spec known_gaps() :: [String.t()]
-  def known_gaps, do: @known_gaps
+  def known_gaps(), do: @known_gaps
 
   @doc "The meta keys a report carries."
   @spec meta_keys() :: [atom()]
-  def meta_keys, do: @meta_keys
+  def meta_keys(), do: @meta_keys
 
   @spec write(Path.t(), String.t(), [Result.t()], map()) :: {:ok, %{md: Path.t(), json: Path.t()}}
   def write(dir, target, results, meta) do

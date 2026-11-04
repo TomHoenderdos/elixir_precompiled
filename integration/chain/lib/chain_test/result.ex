@@ -48,7 +48,7 @@ defmodule ChainTest.Result do
 
   @doc "Every result class."
   @spec classes() :: [class()]
-  def classes, do: @classes
+  def classes(), do: @classes
 
   @doc "The process exit code: 1 when any result is a failing class, else 0."
   @spec exit_code([t()]) :: 0 | 1

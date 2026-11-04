@@ -17,7 +17,7 @@ defmodule ChainTest.HTTP do
 
   @doc "The default body cap in bytes."
   @spec max_bytes() :: pos_integer()
-  def max_bytes, do: @max_bytes
+  def max_bytes(), do: @max_bytes
 
   @doc """
   GETs `url`. `{:ok, body}` on 200, `{:error, reason}` otherwise, where

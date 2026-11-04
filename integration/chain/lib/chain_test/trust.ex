@@ -72,11 +72,11 @@ defmodule ChainTest.Trust do
 
   @doc "The harness's pinned root."
   @spec pinned_root_path() :: Path.t()
-  def pinned_root_path, do: @pinned_root
+  def pinned_root_path(), do: @pinned_root
 
   @doc "The root the library ships, which the pinned root must equal."
   @spec library_root_path() :: Path.t()
-  def library_root_path, do: @library_root
+  def library_root_path(), do: @library_root
 
   @doc "`cfg` with the defaults filled in."
   @spec config(config()) :: map()

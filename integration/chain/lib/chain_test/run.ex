@@ -203,7 +203,7 @@ defmodule ChainTest.Run do
     {results, meta}
   end
 
-  defp default_steps do
+  defp default_steps() do
     %{
       preflight: &Preflight.run/1,
       trust: &Trust.check/1,

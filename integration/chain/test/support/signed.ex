@@ -12,15 +12,18 @@ defmodule ChainTest.Signed do
   """
 
   @doc "A fresh Ed25519 key."
-  def key do
+  @spec key() :: {binary(), binary()}
+  def key() do
     {pub, priv} = :crypto.generate_key(:eddsa, :ed25519)
     {pub, priv}
   end
 
   @doc "The key id: lowercase hex sha256 of the raw public key."
+  @spec keyid({binary(), binary()}) :: String.t()
   def keyid({pub, _priv}), do: Base.encode16(:crypto.hash(:sha256, pub), case: :lower)
 
   @doc "The envelope JSON over `payload`, one signature per key in `keys`."
+  @spec envelope(binary(), [{binary(), binary()}]) :: String.t()
   def envelope(payload, keys) when is_binary(payload) do
     sigs =
       Enum.map(keys, fn {_pub, priv} = key ->
@@ -41,6 +44,7 @@ defmodule ChainTest.Signed do
   Options: `:batch_key`, `:batch_keys` (a list, overrides `:batch_key`),
   `:batch_threshold` (1), `:version` (1), `:expires` (a year ahead).
   """
+  @spec root({binary(), binary()}, keyword()) :: String.t()
   def root(root_key, opts \\ []) do
     batch_keys = Keyword.get(opts, :batch_keys, [Keyword.get(opts, :batch_key, root_key)])
     expires = Keyword.get(opts, :expires, DateTime.add(DateTime.utc_now(), 365, :day))
@@ -74,6 +78,7 @@ defmodule ChainTest.Signed do
   Options: `:sequence` (7), `:issued`, `:expires`, `:manifests`,
   `:manifests_v2` (omitted when nil).
   """
+  @spec batch_payload(keyword()) :: String.t()
   def batch_payload(opts \\ []) do
     issued = Keyword.get(opts, :issued, DateTime.utc_now())
     expires = Keyword.get(opts, :expires, DateTime.add(issued, 24, :hour))
@@ -95,5 +100,6 @@ defmodule ChainTest.Signed do
   end
 
   @doc "A batch envelope signed by `keys` (a key or a list of keys)."
+  @spec batch({binary(), binary()} | [{binary(), binary()}], keyword()) :: String.t()
   def batch(keys, opts \\ []), do: envelope(batch_payload(opts), List.wrap(keys))
 end

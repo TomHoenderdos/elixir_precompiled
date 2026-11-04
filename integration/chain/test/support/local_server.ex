@@ -9,6 +9,7 @@ defmodule ChainTest.LocalServer do
   """
 
   @doc "Serves `dir`; returns `{base_url, pid}`. Stop it with `stop/1`."
+  @spec serve(Path.t()) :: {String.t(), pid()}
   def serve(dir) do
     {:ok, pid} =
       :inets.start(:httpd,
@@ -24,5 +25,6 @@ defmodule ChainTest.LocalServer do
     {"http://127.0.0.1:#{port}", pid}
   end
 
+  @spec stop(pid()) :: :ok | {:error, term()}
   def stop(pid), do: :inets.stop(:httpd, pid)
 end

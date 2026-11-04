@@ -43,7 +43,7 @@ defmodule ChainTest.CLI do
 
   @doc "The usage line."
   @spec usage() :: String.t()
-  def usage, do: @usage
+  def usage(), do: @usage
 
   @doc "Parses and validates `argv`; raises `Mix.Error` with the usage line."
   @spec parse!([String.t()]) :: opts()
@@ -82,7 +82,7 @@ defmodule ChainTest.CLI do
   def main(argv), do: Run.main(argv)
 
   # Reports never go into the repository tree.
-  defp default_report_dir do
+  defp default_report_dir() do
     stamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%dT%H%M%SZ")
     Path.join(System.tmp_dir!(), "chain_test-" <> stamp)
   end

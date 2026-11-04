@@ -68,7 +68,7 @@ defmodule ChainTest.Build do
 
   @doc "The client's refusal reason prefixes."
   @spec refusals() :: [String.t()]
-  def refusals, do: @refusals
+  def refusals(), do: @refusals
 
   @doc "Whether a client detail is a refusal."
   @spec refusal?(String.t()) :: boolean()
@@ -131,7 +131,7 @@ defmodule ChainTest.Build do
     end
   end
 
-  defp random, do: Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+  defp random(), do: Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
 
   defp build(%{fixture_dir: fixture, target: target, source: source} = input, home) do
     build_dir = Path.join([fixture, "_build", "#{target}_dev"])

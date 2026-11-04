@@ -71,7 +71,7 @@ defmodule ChainTest.Cmd do
   end
 
   # The system perl first, so a stub dir on PATH cannot replace the wrapper.
-  defp perl do
+  defp perl() do
     if File.regular?("/usr/bin/perl"),
       do: "/usr/bin/perl",
       else: System.find_executable("perl") || raise("ChainTest.Cmd needs perl")
