@@ -103,10 +103,10 @@ defmodule ChainTest.Conformance.Case do
       Enum.sort(Map.keys(c)) != @keys ->
         {:error, "case #{id}: keys must be #{inspect(@keys)}, got #{inspect(Map.keys(c))}"}
 
-      not (is_binary(c.id) and c.id =~ ~r/\A[A-Za-z0-9][A-Za-z0-9.-]{0,31}\z/) ->
+      not id?(c.id) ->
         {:error, "case #{id}: an id is a letter or digit, then letters, digits, . or -"}
 
-      not (is_binary(c.description) and c.description != "") ->
+      not description?(c.description) ->
         {:error, "case #{id}: description must be a sentence"}
 
       not Transform.valid?(c.transform) ->
@@ -126,6 +126,10 @@ defmodule ChainTest.Conformance.Case do
   end
 
   defp problem(other), do: {:error, "a case must be a map, got #{inspect(other)}"}
+
+  defp id?(id), do: is_binary(id) and id =~ ~r/\A[A-Za-z0-9][A-Za-z0-9.-]{0,31}\z/
+
+  defp description?(description), do: is_binary(description) and description != ""
 
   defp client?(%{default: default, deps: deps} = client)
        when map_size(client) == 2 and is_map(deps),

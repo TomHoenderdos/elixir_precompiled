@@ -26,8 +26,8 @@ defmodule ChainTest.Synthetic do
       lock
       |> Map.put(system, {system_version, String.duplicate("e", 64)})
       |> Enum.map(fn {dep, {vsn, outer}} ->
-        "  \"#{dep}\": {:hex, #{inspect(dep)}, #{inspect(vsn)}, \"inner\", [:mix], [], " <>
-          "\"hexpm\", #{inspect(outer)}},\n"
+        ~s(  "#{dep}": {:hex, #{inspect(dep)}, #{inspect(vsn)}, "inner", [:mix], [], ) <>
+          ~s("hexpm", #{inspect(outer)}},\n)
       end)
 
     File.mkdir_p!(root)

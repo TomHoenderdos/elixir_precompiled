@@ -16,6 +16,19 @@ checks = [
   {Credo.Check.Design.TagTODO, exit_status: 0}
 ]
 
+# Credo merges only the config named "default" with its built-in checks;
+# any other named config runs exactly the checks it lists. The chain config
+# starts from credo's own default set, so both configs run the same checks.
+credo_default_checks =
+  Mix.Project.deps_paths()
+  |> Map.fetch!(:credo)
+  |> Path.join(".credo.exs")
+  |> Code.eval_file()
+  |> elem(0)
+  |> Map.fetch!(:configs)
+  |> Enum.find(&(&1.name == "default"))
+  |> get_in([:checks, :enabled])
+
 %{
   configs: [
     %{
@@ -38,7 +51,7 @@ checks = [
         excluded: []
       },
       strict: true,
-      checks: checks
+      checks: Keyword.merge(credo_default_checks, checks)
     }
   ]
 }

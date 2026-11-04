@@ -275,36 +275,33 @@ defmodule ChainTest.Build do
   end
 
   defp hits(expected, report, _status) do
-    for dep <- expected do
-      check = "hit:#{dep}"
+    for dep <- expected, do: hit(dep, line(report, dep))
+  end
 
-      case line(report, dep) do
-        nil ->
-          result(check, :fail, "#{dep} not in report.json")
+  defp hit(dep, nil), do: result("hit:#{dep}", :fail, "#{dep} not in report.json")
 
-        %{"status" => "hit"} = l ->
-          result(check, :pass, "#{dep} #{l["version"]} hit (#{l["detail"]})")
+  defp hit(dep, %{"status" => "hit"} = l),
+    do: result("hit:#{dep}", :pass, "#{dep} #{l["version"]} hit (#{l["detail"]})")
 
-        %{"status" => status, "detail" => detail} = l ->
-          cond do
-            refusal?(detail) ->
-              result(check, :refused, detail)
+  defp hit(dep, %{"status" => status, "detail" => detail} = l) do
+    check = "hit:#{dep}"
 
-            status == "miss" and broken_miss?(detail) ->
-              result(check, :fail, "#{dep} #{l["version"]} miss: #{detail}")
+    cond do
+      refusal?(detail) ->
+        result(check, :refused, detail)
 
-            status == "miss" ->
-              result(check, :miss, detail)
+      status == "miss" and broken_miss?(detail) ->
+        result(check, :fail, "#{dep} #{l["version"]} miss: #{detail}")
 
-            true ->
-              result(check, :fail, "#{dep} #{l["version"]} #{status}: #{detail}")
-          end
+      status == "miss" ->
+        result(check, :miss, detail)
 
-        l ->
-          result(check, :fail, "malformed report line #{inspect(l)}")
-      end
+      true ->
+        result(check, :fail, "#{dep} #{l["version"]} #{status}: #{detail}")
     end
   end
+
+  defp hit(dep, l), do: result("hit:#{dep}", :fail, "malformed report line #{inspect(l)}")
 
   # A miss that says the portal served something unusable is an error in
   # the chain, not a dep without a build.

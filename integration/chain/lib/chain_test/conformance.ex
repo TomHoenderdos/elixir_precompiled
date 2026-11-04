@@ -75,14 +75,8 @@ defmodule ChainTest.Conformance do
       do: Mix.raise("unexpected arguments\n" <> @usage)
 
     target = opts[:target] || "rpi4"
-
-    unless target in Preflight.targets(),
-      do: Mix.raise("unsupported target #{target}; supported: rpi4, rpi0_2\n" <> @usage)
-
-    only = opts[:only] && String.split(opts[:only], ",", trim: true)
-
-    if only == [],
-      do: Mix.raise("--only names no case\n" <> @usage)
+    supported_target!(target)
+    only = only!(opts[:only])
 
     %{
       target: target,
@@ -93,6 +87,20 @@ defmodule ChainTest.Conformance do
       report_dir: Path.expand(opts[:report_dir] || default_report_dir()),
       fixture_dir: Path.join(CLI.root(), "fixture")
     }
+  end
+
+  defp supported_target!(target) do
+    unless target in Preflight.targets(),
+      do: Mix.raise("unsupported target #{target}; supported: rpi4, rpi0_2\n" <> @usage)
+  end
+
+  defp only!(nil), do: nil
+
+  defp only!(only) do
+    case String.split(only, ",", trim: true) do
+      [] -> Mix.raise("--only names no case\n" <> @usage)
+      ids -> ids
+    end
   end
 
   @doc "Parses `argv`, runs every case, writes the verdict report; returns the exit code."

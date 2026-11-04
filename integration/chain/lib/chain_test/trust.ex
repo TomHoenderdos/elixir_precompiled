@@ -311,26 +311,16 @@ defmodule ChainTest.Trust do
     {[result("batch_signature", :fail, why, ms) | not_exercised(tl(@batch_checks), why)], nil}
   end
 
+  defp signature_result([], ms),
+    do: result("batch_signature", :fail, "batch carries no signatures", ms)
+
   defp signature_result(verdicts, ms) do
     valid = for {:valid, k} <- verdicts, do: short(k)
     bad = for {:invalid, k} <- verdicts, do: short(k)
-    unnamed = for {:unnamed, k} <- verdicts, do: short(k)
     malformed = Enum.count(verdicts, &match?({:malformed, _}, &1))
-
-    notes =
-      Enum.reject(
-        [
-          bad != [] && "signature by #{Enum.join(bad, ", ")} does not verify",
-          unnamed != [] && "signed by #{Enum.join(unnamed, ", ")}: not named by the batch role",
-          malformed > 0 && "#{malformed} malformed signature entries"
-        ],
-        &(&1 == false)
-      )
+    notes = signature_notes(verdicts, bad, malformed)
 
     cond do
-      verdicts == [] ->
-        result("batch_signature", :fail, "batch carries no signatures", ms)
-
       valid != [] and bad == [] and malformed == 0 ->
         detail = Enum.join(["valid signature by #{Enum.join(valid, ", ")}" | notes], "; ")
         result("batch_signature", :pass, detail, ms)
@@ -342,6 +332,19 @@ defmodule ChainTest.Trust do
       true ->
         result("batch_signature", :fail, Enum.join(notes, "; "), ms)
     end
+  end
+
+  defp signature_notes(verdicts, bad, malformed) do
+    unnamed = for {:unnamed, k} <- verdicts, do: short(k)
+
+    Enum.reject(
+      [
+        bad != [] && "signature by #{Enum.join(bad, ", ")} does not verify",
+        unnamed != [] && "signed by #{Enum.join(unnamed, ", ")}: not named by the batch role",
+        malformed > 0 && "#{malformed} malformed signature entries"
+      ],
+      &(&1 == false)
+    )
   end
 
   defp batch_payload(payload, root, now) do
@@ -484,24 +487,25 @@ defmodule ChainTest.Trust do
   # {:ok, %{keyid => raw public key}, threshold}: only ed25519 keys whose id
   # is the sha256 of their public bytes.
   defp role(root, name) do
-    with %{"keyids" => ids, "threshold" => t} when is_list(ids) and is_integer(t) and t > 0 <-
-           get_in_map(root, ["roles", name]) do
-      keys = root["keys"]
+    case get_in_map(root, ["roles", name]) do
+      %{"keyids" => ids, "threshold" => t} when is_list(ids) and is_integer(t) and t > 0 ->
+        keys = root["keys"]
 
-      resolved =
-        for id <- ids,
-            is_binary(id),
-            is_map(keys),
-            %{"type" => "ed25519", "public" => pub} when is_binary(pub) <- [keys[id]],
-            {:ok, raw} <- [b64(pub)],
-            byte_size(raw) == 32,
-            sha256_hex(raw) == id,
-            into: %{},
-            do: {id, raw}
+        resolved =
+          for id <- ids,
+              is_binary(id),
+              is_map(keys),
+              %{"type" => "ed25519", "public" => pub} when is_binary(pub) <- [keys[id]],
+              {:ok, raw} <- [b64(pub)],
+              byte_size(raw) == 32,
+              sha256_hex(raw) == id,
+              into: %{},
+              do: {id, raw}
 
-      {:ok, resolved, t}
-    else
-      _ -> {:error, "role #{name} missing or malformed"}
+        {:ok, resolved, t}
+
+      _ ->
+        {:error, "role #{name} missing or malformed"}
     end
   end
 

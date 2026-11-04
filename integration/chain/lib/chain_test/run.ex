@@ -249,90 +249,93 @@ defmodule ChainTest.Run do
 
   # batch sequence
 
-  defp reconcile(s, opts, step1, step1_results, client) do
-    cond do
-      client == nil ->
-        %{sequence: nil, used: step1, results: [], harness: verdict(step1, step1_results)}
+  defp reconcile(_s, _opts, step1, step1_results, nil),
+    do: %{sequence: nil, used: step1, results: [], harness: verdict(step1, step1_results)}
 
-      step1 != nil and step1.sequence == client ->
-        %{sequence: nil, used: step1, results: [], harness: verdict(step1, step1_results)}
+  defp reconcile(_s, _opts, %{sequence: sequence} = step1, step1_results, client)
+       when sequence == client,
+       do: %{sequence: nil, used: step1, results: [], harness: verdict(step1, step1_results)}
 
-      true ->
-        path = "batches/#{client}.json"
-        {results, info} = s.trust.(%{source: opts.source, batch_path: path})
-        tagged = client_batch_results(results)
-        named = info != nil and info.sequence == client
+  defp reconcile(s, opts, step1, _step1_results, client) do
+    path = "batches/#{client}.json"
+    {results, info} = s.trust.(%{source: opts.source, batch_path: path})
+    tagged = client_batch_results(results)
+    named = info != nil and info.sequence == client
 
-        unavailable? =
-          Enum.any?(results, &match?(%Result{check: "batch_signature", cause: :unavailable}, &1))
+    unavailable? =
+      Enum.any?(results, &match?(%Result{check: "batch_signature", cause: :unavailable}, &1))
 
-        case verdict(info, results) do
-          {:accepted, _} when named ->
-            step1_text =
-              if step1,
-                do: "step 1 verified batch #{step1.sequence}",
-                else: "step 1 verified none"
+    case verdict(info, results) do
+      {:accepted, _} when named ->
+        client_batch_accepted(step1, client, path, info, tagged)
 
-            %{
-              sequence:
-                result(
-                  :build,
-                  "sequence",
-                  :pass,
-                  "the client used batch #{client} (#{step1_text}); the harness verified " <>
-                    "#{path} itself and checks step 3 against it"
-                ),
-              used: info,
-              results: tagged,
-              harness: {:accepted, "batch #{client}"}
-            }
+      # Only a batch the harness could not fetch means production moved
+      # out from under it; one it fetched and rejects is the client
+      # installing from a bad batch.
+      {:rejected, why} when unavailable? and step1 != nil ->
+        client_batch_unavailable(step1, client, path, why, tagged)
 
-          # Only a batch the harness could not fetch means production moved
-          # out from under it; one it fetched and rejects is the client
-          # installing from a bad batch.
-          {:rejected, why} when unavailable? and step1 != nil ->
-            %{
-              sequence:
-                result(
-                  :build,
-                  "sequence",
-                  :rerun,
-                  "step 1 verified batch #{step1.sequence}, the client used #{client}, and " <>
-                    "#{path} is unavailable: #{why}; run again"
-                ),
-              used: step1,
-              results: Enum.map(tagged, &rerun_row/1),
-              harness: :unknown
-            }
-
-          other ->
-            why =
-              case other do
-                {:accepted, _} -> "#{path} names sequence #{info.sequence}, not #{client}"
-                {:rejected, why} -> why
-              end
-
-            step1_text =
-              if step1,
-                do: "step 1 verified batch #{step1.sequence}",
-                else: "step 1 verified none"
-
-            %{
-              sequence:
-                result(
-                  :build,
-                  "sequence",
-                  :fail,
-                  "the client used batch #{client} (#{step1_text}), which the harness " <>
-                    "rejects: #{why}"
-                ),
-              used: step1,
-              results: tagged,
-              harness: {:rejected, "#{path}: #{why}"}
-            }
-        end
+      other ->
+        client_batch_rejected(step1, client, path, info, other, tagged)
     end
   end
+
+  defp client_batch_accepted(step1, client, path, info, tagged) do
+    %{
+      sequence:
+        result(
+          :build,
+          "sequence",
+          :pass,
+          "the client used batch #{client} (#{step1_text(step1)}); the harness verified " <>
+            "#{path} itself and checks step 3 against it"
+        ),
+      used: info,
+      results: tagged,
+      harness: {:accepted, "batch #{client}"}
+    }
+  end
+
+  defp client_batch_unavailable(step1, client, path, why, tagged) do
+    %{
+      sequence:
+        result(
+          :build,
+          "sequence",
+          :rerun,
+          "step 1 verified batch #{step1.sequence}, the client used #{client}, and " <>
+            "#{path} is unavailable: #{why}; run again"
+        ),
+      used: step1,
+      results: Enum.map(tagged, &rerun_row/1),
+      harness: :unknown
+    }
+  end
+
+  defp client_batch_rejected(step1, client, path, info, verdict, tagged) do
+    why =
+      case verdict do
+        {:accepted, _} -> "#{path} names sequence #{info.sequence}, not #{client}"
+        {:rejected, why} -> why
+      end
+
+    %{
+      sequence:
+        result(
+          :build,
+          "sequence",
+          :fail,
+          "the client used batch #{client} (#{step1_text(step1)}), which the harness " <>
+            "rejects: #{why}"
+        ),
+      used: step1,
+      results: tagged,
+      harness: {:rejected, "#{path}: #{why}"}
+    }
+  end
+
+  defp step1_text(nil), do: "step 1 verified none"
+  defp step1_text(step1), do: "step 1 verified batch #{step1.sequence}"
 
   # Production moved past step 1's batch to one the harness could not verify:
   # the client batch's checks say why, but it is a rerun, not a failure.

@@ -382,43 +382,52 @@ defmodule ChainTest.Integrity do
   defp select(manifest, name, version, ctx) do
     dir = Path.join(ctx.build_lib, name)
     builds = version_builds(manifest, version)
-    eligible = eligible_builds(manifest, name, version, ctx)
 
-    case eligible do
+    case eligible_builds(manifest, name, version, ctx) do
+      [] -> none_eligible(builds, dir, name, version, ctx)
+      [selected | _] -> check_selected(selected, builds, dir, name, ctx)
+    end
+  end
+
+  defp none_eligible(builds, dir, name, version, ctx) do
+    installed =
+      case Enum.find(builds, &(problems(&1, dir, name, ctx) == [])) do
+        nil -> "the installed files match no build in it"
+        b -> "the installed files are #{describe(b)}"
+      end
+
+    {:disagreement,
+     "the manifest has no build of #{version} the harness finds eligible for " <>
+       "#{system_name(ctx.system)}, Elixir #{ctx.elixir}, OTP #{ctx.otp}; #{installed}"}
+  end
+
+  defp check_selected(selected, builds, dir, name, ctx) do
+    case problems(selected, dir, name, ctx) do
       [] ->
-        installed =
-          case Enum.find(builds, &(problems(&1, dir, name, ctx) == [])) do
-            nil -> "the installed files match no build in it"
-            b -> "the installed files are #{describe(b)}"
-          end
+        {:ok, selected, describe(selected)}
 
-        {:disagreement,
-         "the manifest has no build of #{version} the harness finds eligible for " <>
-           "#{system_name(ctx.system)}, Elixir #{ctx.elixir}, OTP #{ctx.otp}; #{installed}"}
-
-      [selected | _] ->
-        case problems(selected, dir, name, ctx) do
-          [] ->
-            {:ok, selected, describe(selected)}
-
-          problems ->
-            case Enum.find(builds -- [selected], &(problems(&1, dir, name, ctx) == [])) do
-              nil ->
-                shown = Enum.take(problems, @shown_problems)
-                more = length(problems) - length(shown)
-
-                {:disagreement,
-                 "#{length(problems)} files differ from #{describe(selected)}: " <>
-                   Enum.join(shown, "; ") <> if(more > 0, do: "; #{more} more", else: "")}
-
-              other ->
-                {:disagreement,
-                 "the installed files are #{describe(other)}, but the harness selects " <>
-                   "#{describe(selected)} (the harness does not repeat the client's " <>
-                   "compile_env rule)"}
-            end
+      problems ->
+        case Enum.find(builds -- [selected], &(problems(&1, dir, name, ctx) == [])) do
+          nil -> files_differ(selected, problems)
+          other -> other_build(selected, other)
         end
     end
+  end
+
+  defp files_differ(selected, problems) do
+    shown = Enum.take(problems, @shown_problems)
+    more = length(problems) - length(shown)
+
+    {:disagreement,
+     "#{length(problems)} files differ from #{describe(selected)}: " <>
+       Enum.join(shown, "; ") <> if(more > 0, do: "; #{more} more", else: "")}
+  end
+
+  defp other_build(selected, other) do
+    {:disagreement,
+     "the installed files are #{describe(other)}, but the harness selects " <>
+       "#{describe(selected)} (the harness does not repeat the client's " <>
+       "compile_env rule)"}
   end
 
   defp system_name({"host", _}), do: "pure_elixir"

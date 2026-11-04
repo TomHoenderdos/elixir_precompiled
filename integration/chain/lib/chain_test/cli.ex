@@ -57,22 +57,12 @@ defmodule ChainTest.CLI do
   @spec parse!([String.t()]) :: opts()
   def parse!(argv) do
     {opts, rest, invalid} = OptionParser.parse(argv, strict: @switches)
-
-    if rest != [] or invalid != [] do
-      bad = rest ++ Enum.map(invalid, fn {k, _} -> k end)
-      Mix.raise("unexpected arguments: #{Enum.join(bad, " ")}\n" <> @usage)
-    end
+    no_extra_arguments!(rest, invalid)
 
     target = opts[:target] || Mix.raise("--target is required\n" <> @usage)
     device = opts[:device] || Mix.raise("--device is required\n" <> @usage)
-
-    unless target in Preflight.targets() do
-      Mix.raise("unsupported target #{target}; supported: rpi4, rpi0_2\n" <> @usage)
-    end
-
-    if String.starts_with?(device, "-") do
-      Mix.raise("--device must be a host name, got #{device}\n" <> @usage)
-    end
+    supported_target!(target)
+    host_name!(device)
 
     %{
       target: target,
@@ -83,6 +73,25 @@ defmodule ChainTest.CLI do
       report_dir: Path.expand(opts[:report_dir] || default_report_dir()),
       fixture_dir: Path.join(@root, "fixture")
     }
+  end
+
+  defp no_extra_arguments!([], []), do: :ok
+
+  defp no_extra_arguments!(rest, invalid) do
+    bad = rest ++ Enum.map(invalid, fn {k, _} -> k end)
+    Mix.raise("unexpected arguments: #{Enum.join(bad, " ")}\n" <> @usage)
+  end
+
+  defp supported_target!(target) do
+    unless target in Preflight.targets() do
+      Mix.raise("unsupported target #{target}; supported: rpi4, rpi0_2\n" <> @usage)
+    end
+  end
+
+  defp host_name!(device) do
+    if String.starts_with?(device, "-") do
+      Mix.raise("--device must be a host name, got #{device}\n" <> @usage)
+    end
   end
 
   @doc "Runs the chain test (`ChainTest.Run`) and returns the exit code."
