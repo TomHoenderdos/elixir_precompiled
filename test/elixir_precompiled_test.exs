@@ -245,4 +245,24 @@ defmodule ElixirPrecompiledTest do
     assert ElixirPrecompiled.run(env: env, host?: true) == :disabled
     assert File.exists?(Path.join(lib, "ash"))
   end
+
+  # Off means off on the host target too: host builds (pure_elixir, from
+  # `mix precompiled.install`'s allow_host) are removed as well.
+  @tag :tmp_dir
+  test "turned off, the host target's installs are removed too", %{tmp_dir: dir} do
+    lib = Path.join(dir, "_build/dev/lib")
+    File.mkdir_p!(Path.join(lib, "jason/.mix"))
+    File.write!(Path.join(lib, "jason/.mix/elixir_precompiled.json"), "{}")
+    env = %Env{candidates: [], lock: %{}, build_lib: lib, deps_path: dir}
+    System.put_env("ELIXIR_PRECOMPILED", "0")
+    on_exit(fn -> System.delete_env("ELIXIR_PRECOMPILED") end)
+
+    out =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert ElixirPrecompiled.run(env: env, host?: true) == :disabled
+      end)
+
+    assert out =~ "removed 1 installed build"
+    refute File.exists?(Path.join(lib, "jason"))
+  end
 end

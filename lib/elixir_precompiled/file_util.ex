@@ -28,7 +28,10 @@ defmodule ElixirPrecompiled.FileUtil do
   # Sets a cache entry's access and modification times to now, so the
   # cache gc evicts by last use. Unlike File.touch/1 it never creates the
   # file: an entry another run evicted meanwhile stays gone. Any failure
-  # (a read-only home) is ignored.
+  # (a read-only home) is ignored. It follows a link: Erlang has no
+  # lutimes, so a swap to a link right after the caller's lstat (by
+  # someone who can already write the cache) changes the link target's
+  # times only, never its content.
   @spec mark_used(Path.t()) :: :ok
   def mark_used(path) do
     t = System.os_time(:second)

@@ -68,4 +68,34 @@ defmodule Mix.Tasks.Precompiled.CleanTest do
       assert File.exists?(Path.join(home, "batch.json"))
     end)
   end
+
+  test "a configured home is the cache status names and clean --cache clears", %{tmp_dir: dir} do
+    configured = Path.join(dir, "configured")
+    other = Path.join(dir, "other")
+    # Lower precedence than the app env, as in a run; stands in for the default.
+    System.put_env("ELIXIR_PRECOMPILED_HOME", other)
+    Application.put_env(:elixir_precompiled, :home, configured)
+
+    on_exit(fn ->
+      System.delete_env("ELIXIR_PRECOMPILED_HOME")
+      Application.delete_env(:elixir_precompiled, :home)
+    end)
+
+    put(Path.join(configured, "files/" <> String.duplicate("a", 64)))
+    put(Path.join(other, "files/" <> String.duplicate("b", 64)))
+
+    in_project(dir, fn ->
+      Mix.Tasks.Precompiled.Status.run([])
+      out = infos()
+      assert out =~ "cache #{configured}", out
+      refute out =~ other, out
+
+      Mix.Tasks.Precompiled.Clean.run(["--cache"])
+      out = infos()
+      assert out =~ "cleared the download cache in #{configured}", out
+      refute out =~ other, out
+      refute File.exists?(Path.join(configured, "files"))
+      assert File.exists?(Path.join(other, "files/" <> String.duplicate("b", 64)))
+    end)
+  end
 end

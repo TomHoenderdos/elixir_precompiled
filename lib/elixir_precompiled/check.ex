@@ -72,23 +72,21 @@ defmodule ElixirPrecompiled.Check do
   @doc false
   # Off means compile from source: every build an earlier run installed
   # goes, so Mix compiles it in this same run. Only a dir that carries the
-  # provenance file an install writes is removed, checked again by lstat
-  # right before (ElixirPrecompiled.Status.remove/2), so a dep Mix built
-  # stays. A dir that will not go is one line naming it; Mix then compiles
-  # what is left over it.
-  @spec remove_installed(Env.t()) :: non_neg_integer()
-  def remove_installed(%Env{installed: []}), do: 0
+  # provenance file an install writes is removed, checked by lstat right
+  # before (ElixirPrecompiled.Status.remove/2), so a dep Mix built stays.
+  # The build lib is walked, no dep is loaded: this runs for every project
+  # that has the library and is not opted in. A dir that will not go is
+  # one line naming it; Mix then compiles what is left over it.
+  @spec remove_installed(Env.t() | Path.t()) :: non_neg_integer()
+  def remove_installed(%Env{build_lib: build_lib}), do: remove_installed(build_lib)
 
-  def remove_installed(env) do
-    results =
-      for dep <- env.installed do
-        {dep, ElixirPrecompiled.Status.remove(env.build_lib, Atom.to_string(dep))}
-      end
+  def remove_installed(build_lib) when is_binary(build_lib) do
+    %{removed: removed, failed: failed} = ElixirPrecompiled.Status.sweep(build_lib)
 
-    for {dep, {:error, why}} <- results,
+    for {dep, why} <- failed,
         do: Output.warning("precompiled: could not remove the installed #{dep}: #{why}")
 
-    n = Enum.count(results, &match?({_, :ok}, &1))
+    n = length(removed)
 
     if n > 0 do
       Output.warning(
@@ -100,20 +98,24 @@ defmodule ElixirPrecompiled.Check do
     n
   end
 
+  def remove_installed(_), do: 0
+
   @doc false
   # The home must take writes (trust state, cache). One that cannot (none
   # at all, read-only, or a pre-seeded CI cache) moves to _build for this
   # run.
   @spec with_home(map(), Env.t()) :: map()
   def with_home(config, env) do
-    home = config.home
+    case Config.run_home(config.home, env.build_lib) do
+      {:ok, _} ->
+        config
 
-    if is_binary(home) and FileUtil.writable_dir?(home) do
-      config
-    else
-      fallback = Path.join([env.build_lib, ".precompiled", "home"])
-      Output.warning("precompiled: cache dir #{inspect(home)} is not writable; using #{fallback}")
-      %{config | home: fallback}
+      {:fallback, fallback} ->
+        Output.warning(
+          "precompiled: cache dir #{inspect(config.home)} is not writable; using #{fallback}"
+        )
+
+        %{config | home: fallback}
     end
   end
 
@@ -153,7 +155,9 @@ defmodule ElixirPrecompiled.Check do
 
         lines = revoked ++ install_lines(candidates ++ replaced, config, batch, env, config_fun)
         # Once a day, the cache back under its bound. Only after a run with
-        # a verified batch: a refused one changes nothing on disk (R14).
+        # a verified batch: a refused one changes nothing on disk (R14). A
+        # project with nothing to check never gets here, so it never gc's
+        # a shared home; the next project that checks something does.
         ElixirPrecompiled.Cache.maybe_gc(config)
         lines
 

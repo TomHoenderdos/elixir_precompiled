@@ -64,13 +64,18 @@ defmodule ElixirPrecompiled do
   # Off means compile from source: builds an earlier run installed are
   # removed, so Mix compiles them in this same run. Only when a project is
   # there to look at; a script without one has nothing installed.
+  # The build lib is walked as it is; no dep is loaded.
   defp off(opts) do
-    if Keyword.has_key?(opts, :env) or Mix.Project.get() != nil do
-      _ = Check.remove_installed(Keyword.get_lazy(opts, :env, &Env.MixProject.load/0))
+    cond do
+      Keyword.has_key?(opts, :env) -> _ = Check.remove_installed(Keyword.fetch!(opts, :env))
+      Mix.Project.get() != nil -> _ = Check.remove_installed(build_lib())
+      true -> :ok
     end
 
     :disabled
   end
+
+  defp build_lib(), do: Path.join(Mix.Project.build_path(), "lib")
 
   # `host?:` (the old option) wins; `allow_host: true` is what the Mix task
   # passes, so a plain project on the host target gets pure_elixir builds;
@@ -101,7 +106,7 @@ defmodule ElixirPrecompiled do
     end
   end
 
-  defp proof(result), do: memo_proof(result, Path.join(Mix.Project.build_path(), "lib"))
+  defp proof(result), do: memo_proof(result, build_lib())
 
   defp remember(key, fun) do
     result = fun.()

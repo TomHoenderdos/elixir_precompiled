@@ -103,4 +103,26 @@ defmodule ElixirPrecompiled.StatusTest do
     assert Status.clean(Path.join(dir, "lib")) == 0
     assert File.dir?(Path.join(real, "jason"))
   end
+
+  test "a dep Mix compiled after an install is Mix's build: only its stale provenance goes", %{
+    tmp_dir: lib
+  } do
+    dep(lib, "rebuilt", "1.0.0", "{}")
+    prov = Path.join(lib, "rebuilt/.mix/elixir_precompiled.json")
+    File.touch!(prov, 1_000)
+    File.write!(Path.join(lib, "rebuilt/.mix/compile.elixir"), "m")
+    File.touch!(Path.join(lib, "rebuilt/.mix/compile.elixir"), 2_000)
+
+    # A Mix manifest older than the provenance file: an install after it.
+    dep(lib, "reinstalled", "1.0.0", "{}")
+    File.write!(Path.join(lib, "reinstalled/.mix/compile.erlang"), "m")
+    File.touch!(Path.join(lib, "reinstalled/.mix/compile.erlang"), 1)
+
+    assert [%{name: "reinstalled"}] = Status.installed(lib)
+    assert %{removed: ["reinstalled"], failed: []} = Status.sweep(lib)
+    assert File.ls!(lib) == ["rebuilt"]
+    refute File.exists?(prov)
+    assert File.regular?(Path.join(lib, "rebuilt/ebin/rebuilt.app"))
+    assert File.regular?(Path.join(lib, "rebuilt/.mix/compile.elixir"))
+  end
 end

@@ -39,9 +39,10 @@ defmodule Mix.Tasks.Precompiled.Clean do
     )
 
     if opts[:cache] do
-      # The configured home, and the fallback a run uses when that one
-      # takes no writes.
-      homes = Enum.filter([Config.home_dir(), Path.join(build_lib, ".precompiled/home")], & &1)
+      # The home a run in this project uses (by the run's own rule), and
+      # the fallback under this _build, which an earlier run may have used.
+      {_, home} = Config.run_home(Config.configured_home(), build_lib)
+      homes = Enum.uniq([home, Config.fallback_home(build_lib)])
 
       for home <- homes, File.dir?(home) do
         :ok = Cache.clear(home)

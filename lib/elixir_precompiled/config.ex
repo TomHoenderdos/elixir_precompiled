@@ -149,6 +149,30 @@ defmodule ElixirPrecompiled.Config do
   @spec home_dir(keyword()) :: Path.t() | nil
   def home_dir(opts \\ []), do: opts[:home] || env_var("_HOME") || default_home()
 
+  @doc false
+  # The home a run in this project starts from, with the precedence load/1
+  # uses: `config :elixir_precompiled, home:` (or an old config key), then
+  # `ELIXIR_PRECOMPILED_HOME`, then the user cache dir.
+  @spec configured_home() :: Path.t() | nil
+  def configured_home(), do: home_dir(app_env())
+
+  @doc false
+  # The home a run actually uses: `home` when it takes writes, else the
+  # fallback under the build lib (none at all, read-only, a pre-seeded CI
+  # cache). Shared by the run (Check.with_home/2) and the Mix tasks, so
+  # `precompiled.status` and `precompiled.clean --cache` name the same dir
+  # a run writes. Probing creates the dir, as a run does.
+  @spec run_home(Path.t() | nil, Path.t()) :: {:ok, Path.t()} | {:fallback, Path.t()}
+  def run_home(home, build_lib) do
+    if is_binary(home) and ElixirPrecompiled.FileUtil.writable_dir?(home),
+      do: {:ok, home},
+      else: {:fallback, fallback_home(build_lib)}
+  end
+
+  @doc false
+  @spec fallback_home(Path.t()) :: Path.t()
+  def fallback_home(build_lib), do: Path.join([build_lib, ".precompiled", "home"])
+
   # :filename.basedir/2 raises when neither HOME nor XDG_CACHE_HOME is set
   # (distroless images, some systemd units); Check then falls back to _build.
   # It reads the home the VM started with (`init:get_argument(home)`), not

@@ -23,10 +23,17 @@ defmodule Mix.Tasks.Precompiled.Status do
 
     config = Config.load()
 
+    # The cache a run in this project would use, by the run's own rule.
+    cache =
+      case Config.run_home(Config.configured_home(), build_lib) do
+        {:ok, home} -> home
+        {:fallback, home} -> "#{home} (#{inspect(Config.configured_home())} is not writable)"
+      end
+
     Mix.shell().info(
       "precompiled: #{length(installed)} installed in #{build_lib}; " <>
         "source #{if config, do: config.source, else: "not configured (off)"}; " <>
-        "cache #{inspect(Config.home_dir())}" <>
+        "cache #{cache}" <>
         if(Config.offline?(), do: "; offline", else: "")
     )
   end

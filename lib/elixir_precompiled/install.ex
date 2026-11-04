@@ -91,12 +91,9 @@ defmodule ElixirPrecompiled.Install do
   # install project go, so Mix.install/2 compiles them. Never in the way
   # of the install itself.
   defp remove_installed(deps, mix_opts) do
-    dir = project_dir(deps, mix_opts)
-
-    if File.dir?(Path.join(dir, "_build")) do
-      _ = Check.remove_installed(Env.MixInstall.load(dir, deps))
-    end
-
+    # The build lib Env.MixInstall reads, walked as it is: no lock is read.
+    lib = Path.join([project_dir(deps, mix_opts), "_build", Atom.to_string(Mix.env()), "lib"])
+    _ = Check.remove_installed(lib)
     :ok
   rescue
     _ -> :ok
