@@ -124,6 +124,48 @@ defmodule ChainTest.Integrity do
     |> Enum.sort()
   end
 
+  @typedoc """
+  What build selection needs: the lock, the target's system
+  (`{"host", ""}` selects `pure_elixir` builds only), Elixir and OTP.
+  """
+  @type selection :: %{
+          lock: ChainTest.Lock.t(),
+          system: {String.t(), String.t()},
+          elixir: String.t(),
+          otp: String.t()
+        }
+
+  @doc "Manifest bytes as a format-2 document (format 1 translated as the client does)."
+  @spec normalize_manifest(binary()) :: {:ok, map()} | {:error, String.t()}
+  def normalize_manifest(bytes) do
+    case normalize(bytes) do
+      {:ok, doc} -> {:ok, doc}
+      {_class, _why} -> {:error, "not a format-1 or format-2 manifest"}
+    end
+  end
+
+  @doc """
+  The builds of `version` in `doc` the client could select for `selection`,
+  best first by the client's ranking. The client's `compile_env` rule is not
+  repeated (see the moduledoc).
+  """
+  @spec eligible_builds(map(), String.t(), String.t(), selection()) :: [map()]
+  def eligible_builds(doc, name, version, selection) do
+    doc
+    |> version_builds(version)
+    |> Enum.filter(&eligible?(&1, selection.lock[name], selection))
+    |> Enum.sort_by(&rank(&1, selection))
+  end
+
+  defp version_builds(doc, version) do
+    with %{} = versions <- doc["versions"],
+         %{"builds" => builds} when is_list(builds) <- versions[version] do
+      Enum.filter(builds, &is_map/1)
+    else
+      _ -> []
+    end
+  end
+
   defp version(:locked, name, ctx), do: Lock.hex_version(ctx.lock, name)
 
   defp version(vsn, _name, _ctx), do: vsn
@@ -339,10 +381,8 @@ defmodule ChainTest.Integrity do
 
   defp select(manifest, name, version, ctx) do
     dir = Path.join(ctx.build_lib, name)
-    builds = manifest |> get_in(["versions", version, "builds"]) |> List.wrap()
-    builds = Enum.filter(builds, &is_map/1)
-    lock_entry = ctx.lock[name]
-    eligible = Enum.filter(builds, &eligible?(&1, lock_entry, ctx))
+    builds = version_builds(manifest, version)
+    eligible = eligible_builds(manifest, name, version, ctx)
 
     case eligible do
       [] ->
@@ -356,9 +396,7 @@ defmodule ChainTest.Integrity do
          "the manifest has no build of #{version} the harness finds eligible for " <>
            "#{system_name(ctx.system)}, Elixir #{ctx.elixir}, OTP #{ctx.otp}; #{installed}"}
 
-      _ ->
-        selected = Enum.min_by(eligible, &rank(&1, ctx))
-
+      [selected | _] ->
         case problems(selected, dir, name, ctx) do
           [] ->
             {:ok, selected, describe(selected)}

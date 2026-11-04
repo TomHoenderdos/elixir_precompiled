@@ -45,6 +45,14 @@ defmodule ChainTest.CLI do
   @spec usage() :: String.t()
   def usage(), do: @usage
 
+  @doc "The production precompiled source."
+  @spec default_source() :: String.t()
+  def default_source(), do: @default_source
+
+  @doc "The harness's own directory, `integration/chain`."
+  @spec root() :: Path.t()
+  def root(), do: @root
+
   @doc "Parses and validates `argv`; raises `Mix.Error` with the usage line."
   @spec parse!([String.t()]) :: opts()
   def parse!(argv) do

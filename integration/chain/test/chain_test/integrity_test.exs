@@ -467,4 +467,55 @@ defmodule ChainTest.IntegrityTest do
     File.rm!(Path.join(ctx.build_lib, "jason/.mix/elixir_precompiled.json"))
     assert [%Result{check: "integrity", class: :not_exercised}] = Integrity.run(input)
   end
+
+  describe "build selection for other steps" do
+    test "eligible_builds/4 returns the builds the client could select, best first" do
+      lock = %{"jason" => {:hex, :jason, "1.4.5", "inner", [:mix], [], "hexpm", @outer}}
+
+      sel = %{
+        lock: lock,
+        system: {"host", ""},
+        elixir: System.version(),
+        otp: System.otp_release()
+      }
+
+      bytes =
+        Synthetic.manifest("1.4.5", [
+          Synthetic.build(@files, outer: @outer, run_id: "run-1"),
+          Synthetic.build(@files, outer: @outer, run_id: "run-2"),
+          Synthetic.build(@files, outer: String.duplicate("b", 64), run_id: "run-3"),
+          Synthetic.build(@files, outer: @outer, target: "rpi4", system_version: "2.2.1")
+        ])
+
+      assert {:ok, doc} = Integrity.normalize_manifest(bytes)
+
+      assert ["run-2", "run-1"] =
+               doc
+               |> Integrity.eligible_builds("jason", "1.4.5", sel)
+               |> Enum.map(& &1["build"]["run_id"])
+
+      assert Integrity.eligible_builds(doc, "jason", "9.9.9", sel) == []
+    end
+
+    test "eligible_builds/4 tolerates a document without a usable versions map" do
+      lock = %{"jason" => {:hex, :jason, "1.4.5", "inner", [:mix], [], "hexpm", @outer}}
+
+      sel = %{
+        lock: lock,
+        system: {"host", ""},
+        elixir: System.version(),
+        otp: System.otp_release()
+      }
+
+      assert Integrity.eligible_builds(%{"versions" => []}, "jason", "1.4.5", sel) == []
+
+      assert Integrity.eligible_builds(%{"versions" => %{"1.4.5" => 3}}, "jason", "1.4.5", sel) ==
+               []
+    end
+
+    test "normalize_manifest/1 refuses what is not a manifest" do
+      assert {:error, _} = Integrity.normalize_manifest("not json")
+      assert {:error, _} = Integrity.normalize_manifest(~s({"format": 3}))
+    end
+  end
 end
