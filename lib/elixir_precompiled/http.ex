@@ -26,6 +26,10 @@ defmodule ElixirPrecompiled.HTTP do
   # one of allowed_origins (content origins the signed batch or the project
   # names); an allowed origin counts only over https, or http on loopback.
   #
+  # Offline (the :offline option, or ELIXIR_PRECOMPILED_OFFLINE set) no
+  # request is ever made: every call answers {:error, "offline"} before it
+  # connects, whoever the caller is.
+  #
   # The caller's headers are sent on every hop, to every allowed origin:
   # never pass credentials (Authorization, cookies) in them.
   #
@@ -52,7 +56,8 @@ defmodule ElixirPrecompiled.HTTP do
           deadline_at: integer(),
           connect_timeout_ms: pos_integer(),
           headers: [{String.t(), String.t()}],
-          allowed_origins: [String.t()]
+          allowed_origins: [String.t()],
+          offline: boolean()
         ]
   @type error ::
           String.t()
@@ -69,7 +74,8 @@ defmodule ElixirPrecompiled.HTTP do
     :deadline_at,
     :connect_timeout_ms,
     :headers,
-    :allowed_origins
+    :allowed_origins,
+    :offline
   ]
 
   @spec get(String.t(), opts()) :: {:ok, binary()} | {:error, error()}
@@ -94,13 +100,20 @@ defmodule ElixirPrecompiled.HTTP do
     own = now + Keyword.get(opts, :deadline_ms, @deadline_ms)
     deadline = min(own, Keyword.get(opts, :deadline_at, own))
 
-    with :ok <- before(deadline, now),
+    with :ok <- online(opts),
+         :ok <- before(deadline, now),
          :ok <- start_httpc(),
          {:ok, cacerts} <- cacerts() do
       url
       |> start_request(opts, cacerts, 0, {deadline, deadline - now}, origins(url, opts))
       |> await_response()
     end
+  end
+
+  defp online(opts) do
+    if Keyword.get(opts, :offline, false) or ElixirPrecompiled.Config.offline?(),
+      do: {:error, "offline"},
+      else: :ok
   end
 
   defp before(deadline, now) when deadline > now, do: :ok

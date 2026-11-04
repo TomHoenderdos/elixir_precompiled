@@ -705,9 +705,86 @@ defmodule ElixirPrecompiled.CheckTest do
       F.clear_requests()
 
       assert run_capturing(config, env) == ""
-      paths = Enum.map(F.requests(), & &1.path)
-      assert "/precompiled/root.json" in paths
+
+      assert Enum.map(F.requests(), & &1.path) == [
+               "/precompiled/batch.json",
+               "/precompiled/root.json",
+               "/precompiled/batch.json"
+             ]
+
       assert_received {:report, {:ok, %{fails: 0}}}
+    end
+
+    test "offline: a candidate the cached batch names compiles, nothing is fetched", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      jason = %{
+        "versions" => %{"1.4.5" => %{"builds" => [good_entry(f, "jason", "1.31.0")]}}
+      }
+
+      F.publish(f, Map.put(ash_packages(f, "1.31.0"), "jason", jason))
+      [ash, jason_dep] = env.candidates
+      run_capturing(config, %{env | candidates: [ash]})
+      assert_received {:report, {:ok, %{hits: 1}}}
+      F.clear_requests()
+
+      env = %{env | candidates: [jason_dep], installed: [:ash]}
+      out = run_capturing(Map.put(config, :offline, true), env)
+      assert_received {:report, {:ok, report}}
+
+      assert [%{name: "jason", status: :miss, detail: "manifest unavailable: offline"}] =
+               report.lines
+
+      assert out =~ ~r/jason 1\.4\.5\s+MISS\s+manifest unavailable: offline/
+      assert F.requests() == []
+      refute File.exists?(Path.join(lib, "jason"))
+    end
+
+    test "an unreachable source: installs are rechecked against the cached batch", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      env = install_ash(f, config, env)
+      F.withdraw_batch()
+      F.clear_requests()
+
+      out = run_capturing(config, env)
+      assert_received {:report, {:ok, %{lines: []}}}
+      assert out =~ "source unreachable (Status 503"
+      assert out =~ "using the cached batch (sequence 1)"
+      assert [%{path: "/precompiled/batch.json"}] = F.requests()
+    end
+
+    test "a passed deadline uses the cached batch without a request", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      env = install_ash(f, config, env)
+      F.clear_requests()
+
+      out = run_capturing(Map.put(config, :deadline_ms, 0), env)
+      assert_received {:report, {:ok, %{lines: []}}}
+      assert out =~ "source unreachable (run deadline passed)"
+      assert F.requests() == []
+    end
+
+    test "a refused batch never falls back to the cached one", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      env = install_ash(f, config, env)
+      F.publish(f, ash_packages(f, "1.31.0"), sequence: 2, expires: "2020-01-01T00:00:00Z")
+
+      out = run_capturing(config, env)
+      assert_received {:report, {:ok, report}}
+      assert [%{name: "ash", status: :fail, detail: "batch expired" <> _}] = report.lines
+      refute out =~ "cached batch"
     end
 
     test "offline: installs are rechecked against the cached batch, no request", %{

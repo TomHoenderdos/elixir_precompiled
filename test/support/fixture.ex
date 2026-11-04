@@ -104,6 +104,10 @@ defmodule ElixirPrecompiled.Fixture do
     fixture
   end
 
+  # The source has no batch to serve: batch.json answers 503.
+  @spec withdraw_batch() :: :ok
+  def withdraw_batch(), do: put(:batch, nil)
+
   @spec file(map(), binary()) :: String.t()
   def file(_fixture, bytes) do
     s = sha(bytes)

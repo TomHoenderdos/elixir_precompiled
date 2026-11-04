@@ -24,7 +24,13 @@ defmodule ElixirPrecompiled.Fetch do
   def get_body(url, opts \\ []) do
     http_opts =
       [max_bytes: Keyword.get(opts, :max_bytes, @max_body_bytes), same_origin: true] ++
-        Keyword.take(opts, [:deadline_at, :connect_timeout_ms, :deadline_ms, :allowed_origins])
+        Keyword.take(opts, [
+          :deadline_at,
+          :connect_timeout_ms,
+          :deadline_ms,
+          :allowed_origins,
+          :offline
+        ])
 
     case ElixirPrecompiled.HTTP.get(url, http_opts) do
       {:ok, body} -> {:ok, body}
@@ -34,10 +40,16 @@ defmodule ElixirPrecompiled.Fetch do
 
   @doc """
   GET a metadata document (the batch), sending `etag` as `If-None-Match`
-  when there is one: the body and its ETag, or `:not_modified`.
+  when there is one: the body and its ETag, or `:not_modified`. A failure
+  to reach the source (transport error, timeout, the run deadline, a 5xx,
+  offline) is `{:error, {:unreachable, reason}}`; anything the source
+  actually answered (a 4xx, an oversized or refused redirect) is
+  `{:error, reason}`.
   """
   @spec get_conditional(map(), String.t(), String.t() | nil) ::
-          {:ok, binary(), String.t() | nil} | :not_modified | {:error, String.t()}
+          {:ok, binary(), String.t() | nil}
+          | :not_modified
+          | {:error, String.t() | {:unreachable, String.t()}}
   def get_conditional(config, url, etag) do
     headers = if is_binary(etag), do: [{"if-none-match", etag}], else: []
 
@@ -47,23 +59,47 @@ defmodule ElixirPrecompiled.Fetch do
     case ElixirPrecompiled.HTTP.request(url, opts) do
       {:ok, body, etag} -> {:ok, body, etag}
       :not_modified -> :not_modified
-      {:error, reason} -> {:error, describe_error(reason)}
+      {:error, reason} -> {:error, classify(reason)}
     end
   end
+
+  defp classify(reason) do
+    why = describe_error(reason)
+    if unreachable?(reason), do: {:unreachable, why}, else: why
+  end
+
+  defp unreachable?("Status 5" <> _), do: true
+  defp unreachable?("offline"), do: true
+  defp unreachable?("run deadline passed"), do: true
+  defp unreachable?("no response within " <> _), do: true
+  defp unreachable?("no data for " <> _), do: true
+  defp unreachable?(reason) when is_binary(reason), do: false
+  defp unreachable?(:too_many_redirects), do: false
+  defp unreachable?(:cross_origin_redirect), do: false
+  defp unreachable?({:too_large, _}), do: false
+  # httpc's own transport errors: {:failed_connect, _}, :socket_closed_remotely, ...
+  defp unreachable?(_), do: true
 
   @doc false
   # Root and batch: a short connect timeout, and both together inside
   # :metadata_timeout_ms (Check narrows :deadline_at for them).
   @spec metadata_opts(map()) :: keyword()
-  def metadata_opts(config),
-    do: [connect_timeout_ms: Map.get(config, :connect_timeout_ms, 5_000)] ++ deadline_opt(config)
+  def metadata_opts(config), do: common_opts(config) ++ deadline_opt(config)
 
   @doc false
   # Manifests and files: the run deadline, and redirects to the content
   # origins the batch (or the project) allows.
   @spec content_opts(map()) :: keyword()
   def content_opts(config),
-    do: [allowed_origins: Map.get(config, :content) || []] ++ deadline_opt(config)
+    do:
+      [allowed_origins: Map.get(config, :content) || []] ++
+        common_opts(config) ++ deadline_opt(config)
+
+  defp common_opts(config),
+    do: [
+      connect_timeout_ms: Map.get(config, :connect_timeout_ms, 5_000),
+      offline: Map.get(config, :offline, false)
+    ]
 
   defp deadline_opt(config) do
     case Map.get(config, :deadline_at) do

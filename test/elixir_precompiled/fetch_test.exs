@@ -418,4 +418,47 @@ defmodule ElixirPrecompiled.FetchTest do
     assert {:error, "redirect to another host refused"} =
              Fetch.get_body(config.source <> "/redirect_port/batch.json")
   end
+
+  test "offline: no request at all, whatever the caller", %{config: config, f: f} do
+    F.publish(f, %{})
+    F.clear_requests()
+    offline = Map.put(config, :offline, true)
+
+    assert {:error, {:unreachable, "offline"}} =
+             Fetch.get_conditional(offline, config.source <> "/batch.json", nil)
+
+    assert {:error, "offline"} =
+             Fetch.get_body(config.source <> "/batch.json", Fetch.content_opts(offline))
+
+    assert {:miss, "manifest unavailable: offline"} = Fetch.manifest(offline, "ash", "00")
+
+    System.put_env("ELIXIR_PRECOMPILED_OFFLINE", "1")
+    on_exit(fn -> System.delete_env("ELIXIR_PRECOMPILED_OFFLINE") end)
+    assert {:error, "offline"} = ElixirPrecompiled.HTTP.get(config.source <> "/batch.json")
+    assert F.requests() == []
+  end
+
+  test "a failure to reach the source is told apart from a refused answer", %{config: config} do
+    F.withdraw_batch()
+
+    assert {:error, {:unreachable, "Status 503" <> _}} =
+             Fetch.get_conditional(config, config.source <> "/batch.json", nil)
+
+    assert {:error, "Status 404 Not Found"} =
+             Fetch.get_conditional(config, config.source <> "/manifests/none.json", nil)
+
+    assert {:error, {:unreachable, _}} =
+             Fetch.get_conditional(config, "http://127.0.0.1:1/precompiled/batch.json", nil)
+
+    late = Map.put(config, :deadline_at, System.monotonic_time(:millisecond) - 1)
+
+    assert {:error, {:unreachable, "run deadline passed"}} =
+             Fetch.get_conditional(late, config.source <> "/batch.json", nil)
+  end
+
+  test "content and metadata requests carry the connect timeout", %{config: config} do
+    c = Map.put(config, :connect_timeout_ms, 1234)
+    assert Fetch.content_opts(c)[:connect_timeout_ms] == 1234
+    assert Fetch.metadata_opts(c)[:connect_timeout_ms] == 1234
+  end
 end

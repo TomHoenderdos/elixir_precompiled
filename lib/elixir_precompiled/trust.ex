@@ -286,7 +286,10 @@ defmodule ElixirPrecompiled.Trust do
     case fetch.(config.source <> "/root.json") do
       {:ok, body} ->
         # Fetched is checked, adopted or not: the next check is due an
-        # interval from now (see root_check_due?/1).
+        # interval from now (see root_check_due?/1). That includes a 2xx
+        # root.json that does not chain from the root in use. Safe: a batch
+        # signed under a root this client has not adopted fails its
+        # signature, and Check then fetches the root again regardless.
         _ = write_atomic(state_dir(config), "root_checked", Integer.to_string(unix_now(config)))
         adopt_served(config, root, body)
 
@@ -406,6 +409,12 @@ defmodule ElixirPrecompiled.Trust do
   however often the source answers 304. New bytes replace the cache only
   once they verify. Offline, the cached batch is checked the same way and
   no request is made.
+
+  When the source cannot be reached (`{:error, {:unreachable, why}}` from
+  `fetch`: a transport error, timeout, 5xx or the run deadline), the cached
+  batch is used under the same rule as offline and one line says so. A
+  response the source did give and that is refused (bad signature, an
+  older sequence, malformed bytes, a 4xx) never falls back to the cache.
   """
   @spec fetch_batch_cached(map(), root(), conditional_fetch()) ::
           {:ok, batch()} | {:error, String.t()}
@@ -422,22 +431,44 @@ defmodule ElixirPrecompiled.Trust do
         verify_batch(config, root, cached.body, dir)
 
       true ->
-        case fetch.(config.source <> "/batch.json", cached && cached.etag) do
-          :not_modified when cached != nil ->
-            verify_batch(config, root, cached.body, dir)
-
-          {:ok, body, etag} when is_binary(body) ->
-            with {:ok, batch} <- verify_batch(config, root, body, dir) do
-              cache_batch(dir, body, etag)
-              {:ok, batch}
-            end
-
-          _ ->
-            {:error, "batch unavailable"}
-        end
+        online_batch(config, root, fetch, cached, dir)
     end
   rescue
     _ -> {:error, "batch malformed"}
+  end
+
+  defp online_batch(config, root, fetch, cached, dir) do
+    case fetch.(config.source <> "/batch.json", cached && cached.etag) do
+      :not_modified when cached != nil ->
+        verify_batch(config, root, cached.body, dir)
+
+      {:ok, body, etag} when is_binary(body) ->
+        with {:ok, batch} <- verify_batch(config, root, body, dir) do
+          cache_batch(dir, body, etag, batch.sequence)
+          {:ok, batch}
+        end
+
+      {:error, {:unreachable, why}} when cached != nil ->
+        from_cache(config, root, cached.body, dir, why)
+
+      _ ->
+        {:error, "batch unavailable"}
+    end
+  end
+
+  defp from_cache(config, root, body, dir, why) do
+    case verify_batch(config, root, body, dir) do
+      {:ok, batch} ->
+        Output.warning(
+          "precompiled: source unreachable (#{why}); using the cached batch " <>
+            "(sequence #{batch.sequence})"
+        )
+
+        {:ok, batch}
+
+      {:error, _} ->
+        {:error, "batch unavailable"}
+    end
   end
 
   # Same cap as a batch off the network.
@@ -487,7 +518,16 @@ defmodule ElixirPrecompiled.Trust do
 
   # The body first, then its ETag, each written atomically. An old ETag
   # left next to a new body names the old body's sha and is ignored.
-  defp cache_batch(dir, body, etag) do
+  # A concurrent run that already verified a newer sequence (the state
+  # file is past this batch's) keeps its batch: this one would only be
+  # refused as older by the next run.
+  defp cache_batch(dir, body, etag, seq) do
+    if read_counter(Path.join(dir, "state"), "sequence") > seq,
+      do: :ok,
+      else: write_cache(dir, body, etag)
+  end
+
+  defp write_cache(dir, body, etag) do
     case write_atomic(dir, "batch.json", body) do
       :ok when is_binary(etag) ->
         if etag?(etag),
@@ -592,17 +632,21 @@ defmodule ElixirPrecompiled.Trust do
   defp batch_fields(_), do: {:error, "batch malformed"}
 
   # Content origins the portal signs into the batch: where files and
-  # by-sha manifests may also come from. Anything not https is dropped; a
+  # by-sha manifests may also come from. Anything not https is dropped
+  # (http on loopback only through the project's own :content config); a
   # field of the wrong shape is ignored rather than refusing the batch.
   defp content(list) when is_list(list),
-    do:
-      for(
-        o <- list,
-        ElixirPrecompiled.Config.content_origin?(o),
-        do: String.trim_trailing(o, "/")
-      )
+    do: for(o <- list, https_origin?(o), do: String.trim_trailing(o, "/"))
 
   defp content(_), do: nil
+
+  defp https_origin?(o) when is_binary(o) do
+    match?(%URI{scheme: "https", host: h} when is_binary(h) and h != "", URI.parse(o))
+  rescue
+    _ -> false
+  end
+
+  defp https_origin?(_), do: false
 
   defp or_error({:ok, _} = ok, _), do: ok
   defp or_error(_, msg), do: {:error, msg}

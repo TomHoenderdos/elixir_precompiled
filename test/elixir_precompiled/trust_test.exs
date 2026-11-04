@@ -856,4 +856,122 @@ defmodule ElixirPrecompiled.TrustTest do
     # A stamp from the future (a clock set back) is due too.
     assert Trust.root_check_due?(Map.put(config, :clock_offset_seconds, -60))
   end
+
+  describe "an unreachable source falls back to the cached batch" do
+    setup %{config: config, f: f} do
+      F.publish(f, %{}, sequence: 5)
+      {:ok, root} = Trust.load_root(config)
+      {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+      %{root: root}
+    end
+
+    defp answer(result), do: fn _url, _etag -> result end
+
+    test "on a transport error, timeout, 5xx or deadline", %{config: config, root: root} do
+      for why <- ["Status 503 Service Unavailable", "run deadline passed", "econnrefused"] do
+        out =
+          ExUnit.CaptureIO.capture_io(fn ->
+            assert {:ok, %{sequence: 5}} =
+                     Trust.fetch_batch_cached(config, root, answer({:error, {:unreachable, why}}))
+          end)
+
+        assert out =~ "source unreachable (#{why}); using the cached batch (sequence 5)"
+      end
+    end
+
+    test "only while the cached batch passes every check", %{config: config, root: root} do
+      later = Map.put(config, :clock_offset_seconds, 25 * 3600)
+      unreachable = answer({:error, {:unreachable, "Status 502 Bad Gateway"}})
+      assert {:error, "batch unavailable"} = Trust.fetch_batch_cached(later, root, unreachable)
+    end
+
+    test "never on a response the source gave and that is refused", %{
+      config: config,
+      root: root,
+      f: f
+    } do
+      assert {:error, "batch unavailable"} =
+               Trust.fetch_batch_cached(config, root, answer({:error, "Status 404 Not Found"}))
+
+      assert {:error, "batch signature invalid"} =
+               Trust.fetch_batch_cached(
+                 config,
+                 root,
+                 answer({:ok, F.sign("{}", []) |> :json.encode() |> IO.iodata_to_binary(), nil})
+               )
+
+      assert {:error, "batch signature invalid"} =
+               Trust.fetch_batch_cached(config, root, answer({:ok, "not json", nil}))
+
+      F.publish(f, %{}, sequence: 4)
+
+      assert {:error, "batch sequence 4 is older than 5"} =
+               Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    end
+
+    test "a 503 from the real source is unreachable", %{config: config, root: root} do
+      F.withdraw_batch()
+      fetch = &ElixirPrecompiled.Fetch.get_conditional(config, &1, &2)
+
+      out =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert {:ok, %{sequence: 5}} = Trust.fetch_batch_cached(config, root, fetch)
+        end)
+
+      assert out =~ "source unreachable (Status 503"
+    end
+  end
+
+  test "runs writing the cache while new batches are published keep a verifiable cache", %{
+    config: config,
+    f: f
+  } do
+    F.publish(f, %{}, sequence: 1)
+    {:ok, root} = Trust.load_root(config)
+
+    publisher =
+      Task.async(fn ->
+        for seq <- 2..12 do
+          F.publish(f, %{}, sequence: seq)
+          Process.sleep(2)
+        end
+      end)
+
+    results =
+      1..8
+      |> Task.async_stream(fn _ ->
+        for _ <- 1..4, do: Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+      end)
+      |> Enum.flat_map(fn {:ok, r} -> r end)
+
+    Task.await(publisher)
+
+    assert Enum.all?(results, fn
+             {:ok, %{sequence: s}} -> s in 1..12
+             {:error, "batch sequence " <> _} -> true
+             _ -> false
+           end)
+
+    # Whatever the race left, the next online run settles on the newest
+    # batch and the cache then serves it offline.
+    assert {:ok, %{sequence: 12}} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    assert {:ok, %{sequence: 12}} =
+             Trust.fetch_batch_cached(Map.put(config, :offline, true), root, &cond_fetch/2)
+  end
+
+  test "batch content origins are https only, even on loopback", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    F.publish(f, %{},
+      batch_extra: %{"content" => ["http://127.0.0.1:9", "https://cdn.example.test"]}
+    )
+
+    {:ok, root} = Trust.load_root(config)
+
+    assert {:ok, %{content: ["https://cdn.example.test"]}} =
+             Trust.fetch_batch(config, root, fetch)
+  end
 end
