@@ -104,6 +104,87 @@ defmodule ChainTest.Snapshot do
   def older(snap, name) when name in [:previous, :old],
     do: Map.get(snap, name, {:missing, "the snapshot holds no #{name} batch"})
 
+  @typedoc """
+  What a case may need of the snapshot (a transform's or setup's
+  `needs/1`): an older batch (`:previous`, `:old`); `:previous_manifests`,
+  a previous batch naming the same manifest as `N` for every dep the
+  snapshot holds a build of (the portal serves only `N`'s manifest bytes,
+  so a case that installs from `N-1` can only be served those); or
+  `:batch_threshold_2`, a root whose batch role needs at least two
+  signatures (with one, a duplicated signature cannot count twice).
+  """
+  @type need :: older_name() | :previous_manifests | :batch_threshold_2
+
+  @needs [:previous, :old, :previous_manifests, :batch_threshold_2]
+
+  @doc "Every `t:need/0`."
+  @spec need_names() :: [need()]
+  def need_names(), do: @needs
+
+  @doc """
+  `:ok` when the snapshot has what `need` names, else `{:missing, why}`:
+  the case that needs it is not testable here.
+  """
+  @spec available(map(), need()) :: :ok | {:missing, String.t()}
+  def available(snap, name) when name in [:previous, :old] do
+    case older(snap, name) do
+      {:ok, _} -> :ok
+      {:missing, why} -> {:missing, "the #{name} batch: #{why}"}
+    end
+  end
+
+  def available(snap, :previous_manifests) do
+    case older(snap, :previous) do
+      {:ok, previous} -> same_manifests(snap, previous)
+      {:missing, why} -> {:missing, "the previous batch: #{why}"}
+    end
+  end
+
+  def available(snap, :batch_threshold_2) do
+    case batch_threshold(Path.join(snap.dir, "root.json")) do
+      {:ok, t} when t >= 2 ->
+        :ok
+
+      {:ok, t} ->
+        {:missing,
+         "the root's batch role has threshold #{t}: one signature meets it, so a duplicated " <>
+           "signature has nothing to count twice towards"}
+
+      {:error, why} ->
+        {:missing, why}
+    end
+  end
+
+  defp same_manifests(snap, previous) do
+    differ =
+      for {name, %{builds: n}} <- Enum.sort(Map.get(snap, :deps, %{})),
+          is_integer(n) and n > 0,
+          Trust.manifest_sha(previous.info, name) != Trust.manifest_sha(snap.info, name),
+          do: name
+
+    case differ do
+      [] ->
+        :ok
+
+      names ->
+        {:missing,
+         "the previous batch names other manifests than batch #{snap.sequence} for " <>
+           Enum.join(names, ", ") <> ", and the portal serves only the current batch's"}
+    end
+  end
+
+  defp batch_threshold(path) do
+    with {:ok, body} <- File.read(path),
+         {:ok, %{"payload" => p}} when is_binary(p) <- JSON.decode(body),
+         {:ok, payload} <- Base.url_decode64(p, padding: false),
+         {:ok, %{"roles" => %{"batch" => %{"threshold" => t}}}} when is_integer(t) <-
+           JSON.decode(payload) do
+      {:ok, t}
+    else
+      _ -> {:error, "the snapshot's root.json names no batch threshold"}
+    end
+  end
+
   @doc "A fresh directory name under the system tmp dir."
   @spec default_dir() :: Path.t()
   def default_dir() do

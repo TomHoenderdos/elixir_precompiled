@@ -21,9 +21,10 @@ defmodule ChainTest.Mirror.Transform do
       `second_url` the second mirror's base URL (on mirror 1 of a
       two-mirror case only).
 
-  A module that needs an older batch of the snapshot (`ChainTest.Snapshot`:
-  `:previous`, `:old`) says so in `needs/1`; a case whose snapshot lacks one
-  is not testable here and is never run.
+  A module that needs something of the snapshot (`t:ChainTest.Snapshot.need/0`:
+  an older batch, `:previous`, `:old`; `:previous_manifests`;
+  `:batch_threshold_2`) says so in `needs/1`; a case whose snapshot lacks
+  it is not testable here and is never run.
   """
 
   @callback transform(path :: String.t(), bytes :: binary(), args :: map()) ::
@@ -32,12 +33,10 @@ defmodule ChainTest.Mirror.Transform do
   @doc "Whether `args` is an args map this transform accepts. Optional: without it, any map is."
   @callback valid_args?(args :: map()) :: boolean()
 
-  @doc "The snapshot's older batches the transform needs. Optional: without it, none."
-  @callback needs(args :: map()) :: [ChainTest.Snapshot.older_name()]
+  @doc "What the transform needs of the snapshot. Optional: without it, nothing."
+  @callback needs(args :: map()) :: [ChainTest.Snapshot.need()]
 
   @optional_callbacks valid_args?: 1, needs: 1
-
-  @older [:previous, :old]
 
   @doc """
   The mirror hook for `{module, args}`; `context`, when given, is put in the
@@ -55,8 +54,7 @@ defmodule ChainTest.Mirror.Transform do
   @doc """
   Whether `term` is `{module, args}` with a loaded module implementing
   `transform/3`, `args` without the reserved `:case`, `mirrors` (when given)
-  1 or 2, `needs/1` (when defined) naming only older batches the snapshot
-  can hold, and `valid_args?/1` (when defined) accepting `args`.
+  1 or 2, `needs/1` (when defined) naming only `t:ChainTest.Snapshot.need/0`s, and `valid_args?/1` (when defined) accepting `args`.
   """
   @spec valid?(term()) :: boolean()
   def valid?({module, args}) when is_atom(module) and is_map(args) do
@@ -71,8 +69,8 @@ defmodule ChainTest.Mirror.Transform do
   @spec mirrors({module(), map()}) :: 1 | 2
   def mirrors({_module, args}), do: Map.get(args, :mirrors, 1)
 
-  @doc "The older batches `{module, args}` needs (`needs/1`, else none)."
-  @spec needs({module(), map()}) :: [ChainTest.Snapshot.older_name()]
+  @doc "What `{module, args}` needs of the snapshot (`needs/1`, else nothing)."
+  @spec needs({module(), map()}) :: [ChainTest.Snapshot.need()]
   def needs({module, args}), do: module_needs(module, args)
 
   @doc false
@@ -88,7 +86,7 @@ defmodule ChainTest.Mirror.Transform do
   @spec needs_valid?(module(), map()) :: boolean()
   def needs_valid?(module, args) do
     case module_needs(module, args) do
-      list when is_list(list) -> Enum.all?(list, &(&1 in @older))
+      list when is_list(list) -> Enum.all?(list, &(&1 in ChainTest.Snapshot.need_names()))
       _ -> false
     end
   end

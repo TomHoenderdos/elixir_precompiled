@@ -13,16 +13,16 @@ defmodule ChainTest.Conformance do
   `--snapshot-dir` already holds (`ChainTest.Snapshot.obtain/1`: re-verified,
   under 24 hours old, same source, target and fixture lock, else the run is
   refused), and starts a reference mirror
-  that serves it unchanged. Per case: a case that needs an older batch the
-  snapshot lacks (`ChainTest.Snapshot.older/2`) is `:not_exercised`, "not
-  testable here", and nothing runs; otherwise a mirror over the snapshot
+  that serves it unchanged. Per case: a case that needs something the
+  snapshot lacks (`ChainTest.Snapshot.available/2`: an older batch, say) is
+  `:not_exercised`, "not testable here", and nothing runs; otherwise a mirror over the snapshot
   with the case's transform (two when its args say `mirrors: 2`: the second
   is started first, so the case mirror knows its URL); a fresh, empty client
   home (a private temp dir, removed after the case) and the case's
   `setup` in it (a failed setup fails the case, unbuilt); the fixture build
   (`ChainTest.Build`, `mix compile` for the target, that home, the client's
-  source at the case's mirror, the case's `client_config`, an empty site
-  config); step 3 (`ChainTest.Integrity`) against the snapshot's verified
+  source at the case's mirror, the case's `client_config` and `client_env`
+  (a `{:home, rel}` path resolved under that home), an empty site config); step 3 (`ChainTest.Integrity`) against the snapshot's verified
   batch through the reference mirror, never the case's; step 4
   (`ChainTest.Compiled`); what the home and `_build` hold, for the case's
   `after`; then the case's verdict. A case that raises is a `:fail`
@@ -246,14 +246,14 @@ defmodule ChainTest.Conformance do
     end
   end
 
-  # Every older batch the case's transform or setup needs is in the snapshot.
+  # The snapshot has everything the case's transform or setup needs.
   defp testable(c, snap) do
     setup = if Map.has_key?(c, :setup), do: Setup.needs(c.setup), else: []
 
     missing =
       for name <- Enum.uniq(Transform.needs(c.transform) ++ setup),
-          {:missing, why} <- [Snapshot.older(snap, name)],
-          do: "the #{name} batch: #{why}"
+          {:missing, why} <- [Snapshot.available(snap, name)],
+          do: why
 
     case missing do
       [] -> :ok
@@ -360,6 +360,7 @@ defmodule ChainTest.Conformance do
             home: home,
             home_prepared: true,
             client_config: Map.get(c, :client_config),
+            client_env: client_env(Map.get(c, :client_env), home),
             trust: snap.info,
             target_config: run.site,
             command: ["compile"]
@@ -407,6 +408,16 @@ defmodule ChainTest.Conformance do
       tooling: tooling,
       observed: observed
     })
+  end
+
+  # The case's variables, a `{:home, rel}` path resolved under the case home.
+  defp client_env(nil, _home), do: nil
+
+  defp client_env(env, home) do
+    Map.new(env, fn
+      {name, {:home, rel}} -> {name, Path.join(home, rel)}
+      {name, path} -> {name, path}
+    end)
   end
 
   # A fresh, private client home for one case.

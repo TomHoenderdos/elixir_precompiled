@@ -234,6 +234,51 @@ defmodule ChainTest.BuildTest do
     end
   end
 
+  describe "client_env" do
+    test "passes the variables a case names to its build only", ctx do
+      env_in = %{"ELIXIR_PRECOMPILED_ROOT" => "/a/root.json"}
+      {env, _} = client_run(ctx, %{client_env: env_in})
+      assert env =~ ~r/^ELIXIR_PRECOMPILED_ROOT=\/a\/root.json$/m
+      refute env =~ ~r/^NERVES_PRECOMPILED_ROOT=/m
+    end
+
+    test "every allowed name not given is unset, even when the caller has it", ctx do
+      for name <- Build.client_env_names(), do: System.put_env(name, "/leftover.json")
+
+      try do
+        {env, _} = client_run(ctx, %{})
+
+        for name <- Build.client_env_names(),
+            do: refute(env =~ ~r/^#{name}=/m, name)
+      after
+        for name <- Build.client_env_names(), do: System.delete_env(name)
+      end
+    end
+
+    test "a name outside the allowed ones or a relative path raises" do
+      for bad <- [
+            %{"ELIXIR_PRECOMPILED_HOME" => "/h"},
+            %{"ELIXIR_PRECOMPILED" => "0"},
+            %{"ELIXIR_PRECOMPILED_ROOT" => "root.json"},
+            %{"ELIXIR_PRECOMPILED_ROOT" => {:home, "root.json"}},
+            [{"ELIXIR_PRECOMPILED_ROOT", "/a"}]
+          ] do
+        assert_raise ArgumentError, fn ->
+          Build.run(%{fixture_dir: "/nonexistent", target: "rpi4", source: "x", client_env: bad})
+        end
+      end
+    end
+
+    test "the allowed names are the root-path ones only" do
+      assert "ELIXIR_PRECOMPILED_ROOT" in Build.client_env_names()
+      assert "NERVES_PRECOMPILED_ROOT" in Build.client_env_names()
+
+      for name <- Build.client_env_names() do
+        assert name =~ ~r/^(ELIXIR|NERVES)_PRECOMPILED_ROOT/
+      end
+    end
+  end
+
   test "home_prepared without a home is refused before anything runs" do
     assert_raise ArgumentError, ~r/home_prepared/, fn ->
       Build.run(%{fixture_dir: "/nonexistent", target: "rpi4", source: "x", home_prepared: true})

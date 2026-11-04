@@ -415,6 +415,54 @@ defmodule ChainTest.ConformanceTest do
       refute_received {:build, _}
     end
 
+    test "client_env reaches the build, a {:home, rel} path under the case home", ctx do
+      c =
+        v2(@t0, %{
+          setup: {ChainTest.Conformance.Setup.PlantRoot, %{path: "attacker/root.json"}},
+          client_env: %{
+            "ELIXIR_PRECOMPILED_ROOT" => {:home, "attacker/root.json"},
+            "NERVES_PRECOMPILED_ROOT" => "/abs/root.json"
+          }
+        })
+
+      cases!(ctx.opts, [c, %{@t0 | id: "T0b"}])
+      s = v2_steps(self(), ctx.snapshot)
+
+      build = fn input ->
+        if env = input.client_env,
+          do:
+            send(:conformance_env_test, {:planted, File.exists?(env["ELIXIR_PRECOMPILED_ROOT"])})
+
+        s.build.(input)
+      end
+
+      Process.register(self(), :conformance_env_test)
+      Conformance.run(ctx.opts, %{s | build: build})
+
+      assert_received {:build, %{home: home, client_env: env}}
+      assert env["ELIXIR_PRECOMPILED_ROOT"] == Path.join(home, "attacker/root.json")
+      assert env["NERVES_PRECOMPILED_ROOT"] == "/abs/root.json"
+      assert_received {:planted, true}
+      assert_received {:build, %{client_env: nil}}
+    end
+
+    test "a case needing a snapshot fact it lacks is not testable here, unbuilt", ctx do
+      File.write!(
+        Path.join(ctx.snapshot.dir, "root.json"),
+        ChainTest.Signed.root(ChainTest.Signed.key())
+      )
+
+      t = %{@t0 | id: "T3", transform: {ChainTest.TestTransform, %{needs: [:batch_threshold_2]}}}
+      cases!(ctx.opts, [t])
+
+      assert {[%Result{check: "T3", class: :not_exercised, detail: detail}], _} =
+               Conformance.run(ctx.opts, v2_steps(self(), ctx.snapshot))
+
+      assert detail =~ "not testable here"
+      assert detail =~ "threshold 1"
+      refute_received {:build, _}
+    end
+
     test "mirrors: 2 starts a second mirror the case mirror knows; both are stopped", ctx do
       test = self()
 

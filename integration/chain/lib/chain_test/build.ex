@@ -16,7 +16,10 @@ defmodule ChainTest.Build do
   merged into the fixture's `config :elixir_precompiled` through a config
   file the fixture imports from `CHAIN_CLIENT_CONFIG` (written outside the
   home, removed after the build; without a `:client_config` the variable is
-  unset, so nothing reaches the next build).
+  unset, so nothing reaches the next build). And `:client_env`: a few
+  environment variables (`client_env_names/0`, the names a client might
+  wrongly read a root path from) set for this build; every allowed name
+  not given is unset.
 
   Checks:
 
@@ -57,6 +60,12 @@ defmodule ChainTest.Build do
   @unset ~w(ELIXIR_PRECOMPILED NERVES_PRECOMPILED NERVES_PRECOMPILED_HOME MIX_BUILD_PATH
             MIX_BUILD_ROOT MIX_DEPS_PATH MIX_EXS MIX_LOCKFILE)
 
+  # Names a client might take a root path from, were it to read one from the
+  # environment at all (T9). Nothing else: a case cannot turn the client
+  # off or move its home through this.
+  @client_env ~w(ELIXIR_PRECOMPILED_ROOT NERVES_PRECOMPILED_ROOT ELIXIR_PRECOMPILED_ROOT_PATH
+                 NERVES_PRECOMPILED_ROOT_PATH)
+
   @type client_config :: %{
           optional(:clock_offset_seconds) => integer(),
           optional(:root) => Path.t(),
@@ -70,6 +79,7 @@ defmodule ChainTest.Build do
           optional(:home) => Path.t(),
           optional(:home_prepared) => boolean(),
           optional(:client_config) => client_config() | nil,
+          optional(:client_env) => %{String.t() => Path.t()} | nil,
           optional(:trust) => ChainTest.Trust.info() | nil,
           optional(:expected) => %{hits: [atom()], never: [atom()]},
           optional(:target_config) => Path.t(),
@@ -91,6 +101,20 @@ defmodule ChainTest.Build do
   @doc "The variables the fixture build unsets."
   @spec unset_env() :: [String.t()]
   def unset_env(), do: @unset
+
+  @doc "The variables a case may set for its build through `:client_env`."
+  @spec client_env_names() :: [String.t()]
+  def client_env_names(), do: @client_env
+
+  @doc "Whether `env` maps allowed names (`client_env_names/0`) to absolute paths."
+  @spec client_env?(term()) :: boolean()
+  def client_env?(env) when is_map(env) do
+    Enum.all?(env, fn {name, path} ->
+      name in @client_env and is_binary(path) and Path.type(path) == :absolute
+    end)
+  end
+
+  def client_env?(_), do: false
 
   @doc "Whether `config` is a `t:client_config/0`: known keys, each with a value of its type."
   @spec client_config?(term()) :: boolean()
@@ -163,6 +187,11 @@ defmodule ChainTest.Build do
     unless client == nil or client_config?(client),
       do: raise(ArgumentError, "not a client config: #{inspect(client)}")
 
+    env = Map.get(input, :client_env)
+
+    unless env == nil or client_env?(env),
+      do: raise(ArgumentError, "not a client env: #{inspect(env)}")
+
     if Map.get(input, :home_prepared, false) and not is_binary(Map.get(input, :home)),
       do: raise(ArgumentError, "home_prepared: true needs the prepared :home")
   end
@@ -204,7 +233,9 @@ defmodule ChainTest.Build do
         {"CHAIN_SOURCE", source},
         {"CHAIN_CLIENT_CONFIG", client}
       ] ++
-        target_config(Map.get(input, :target_config)) ++ Enum.map(@unset, &{&1, nil})
+        target_config(Map.get(input, :target_config)) ++
+        Enum.map(@unset, &{&1, nil}) ++
+        client_env(Map.get(input, :client_env) || %{})
 
     timeout = Map.get(input, :timeout_ms, @timeout_ms)
     command = Map.get(input, :command, ["firmware"])
@@ -257,6 +288,11 @@ defmodule ChainTest.Build do
     )
 
     path
+  end
+
+  # The case's variables, and every other allowed name unset.
+  defp client_env(env) do
+    Enum.map(@client_env, &{&1, Map.get(env, &1)})
   end
 
   # The fixture's config/target.exs imports the operator file named here.

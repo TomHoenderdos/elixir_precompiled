@@ -61,6 +61,31 @@ defmodule ChainTest.Conformance.CaseTest do
       assert {:ok, [%{id: "T0"} | _]} = Case.load(path)
     end
 
+    test "the repository's case file has the layer-1 batch and freshness cases" do
+      {:ok, cases} = Case.load(Path.join(ChainTest.CLI.root(), "conformance/cases.exs"))
+      ids = cases |> Enum.flat_map(&String.split(&1.id, ".")) |> MapSet.new()
+
+      for id <- ~w(T0 R8 R0 T1 T3-removed T3-duplicated T4 R3 T5 T6 T9 R1 R6 T10 R2 R4-previous
+                   R4-old R5 R7 R12 R13 R19) do
+        assert id in ids, "no case for #{id}"
+      end
+    end
+
+    test "every refusal in the repository's case file leaves state, _build and cache alone (R14)" do
+      {:ok, cases} = Case.load(Path.join(ChainTest.CLI.root(), "conformance/cases.exs"))
+      refusals = Enum.filter(cases, &match?(%{client: %{default: {:fail, _}}}, &1))
+      assert length(refusals) >= 10
+
+      for c <- refusals do
+        assert %{state_sequence: :unchanged, installed: :none, cache: :untouched} =
+                 Map.get(c, :after),
+               c.id
+
+        {:fail, reason} = c.client.default
+        assert ChainTest.Build.refusal?(reason), "#{c.id}: #{reason} is no client refusal"
+      end
+    end
+
     # {name, key, value}: the case with `key` set to `value` (`:delete` removes it).
     for {name, key, value} <- [
           {"an unknown key", :expected, :pass},
@@ -425,6 +450,15 @@ defmodule ChainTest.Conformance.CaseTest do
 
       assert {:ok, _} = Case.load(write(tmp, [%{@v2 | after: %{installed: :snapshot}}]))
       assert {:ok, _} = Case.load(write(tmp, [%{@v2 | client_config: %{}}]))
+      assert {:ok, _} = Case.load(write(tmp, [%{@v2 | after: %{state_sequence: :previous}}]))
+      assert {:ok, _} = Case.load(write(tmp, [%{@v2 | after: %{other_states: :unchanged}}]))
+
+      for env <- [
+            %{"ELIXIR_PRECOMPILED_ROOT" => {:home, "attacker/root.json"}},
+            %{"NERVES_PRECOMPILED_ROOT" => "/abs/root.json"}
+          ] do
+        assert {:ok, _} = Case.load(write(tmp, [Map.put(@v2, :client_env, env)]))
+      end
     end
 
     for {name, key, value} <- [
@@ -441,7 +475,15 @@ defmodule ChainTest.Conformance.CaseTest do
           {"a bad state_sequence", :after, %{state_sequence: "7"}},
           {"a bad installed", :after, %{installed: :all}},
           {"a bad cache", :after, %{cache: :empty}},
-          {"an empty after", :after, %{}}
+          {"an empty after", :after, %{}},
+          {"a bad other_states", :after, %{other_states: :gone}},
+          {"a client_env name the harness does not allow", :client_env,
+           %{"ELIXIR_PRECOMPILED_HOME" => "/h"}},
+          {"a client_env value outside the home", :client_env,
+           %{"ELIXIR_PRECOMPILED_ROOT" => {:home, "../root.json"}}},
+          {"a relative client_env path", :client_env,
+           %{"ELIXIR_PRECOMPILED_ROOT" => "root.json"}},
+          {"an empty client_env", :client_env, %{}}
         ] do
       test "refuses #{name}", %{tmp_dir: tmp} do
         bad = Map.put(@v2, unquote(key), unquote(Macro.escape(value)))
@@ -492,6 +534,42 @@ defmodule ChainTest.Conformance.CaseTest do
         assert %Result{class: :fail, detail: d} = judged(%{state_sequence: :unchanged}, moved)
         assert d =~ "state_sequence"
       end
+    end
+
+    test "state_sequence: :previous is the snapshot's previous batch's sequence" do
+      seen = %{before: obs(%{}), after: obs(%{"abc/state" => "6"}), installed: ["jason"]}
+      previous = %{previous: {:ok, %{sequence: 6}}}
+      assert %Result{class: :pass} = judged(%{state_sequence: :previous}, seen, previous)
+
+      assert %Result{class: :fail, detail: detail} =
+               judged(
+                 %{state_sequence: :previous},
+                 %{seen | after: obs(%{"abc/state" => "7"})},
+                 previous
+               )
+
+      assert detail =~ "hold 6"
+
+      assert %Result{class: :fail, detail: detail} =
+               judged(%{state_sequence: :previous}, seen, %{previous: {:missing, "pruned"}})
+
+      assert detail =~ "pruned"
+    end
+
+    test "other_states: :unchanged allows the own state to move, no other" do
+      before = obs(%{"zzz/state" => "9"})
+      own_moved = %{before: before, after: obs(%{"zzz/state" => "9", "abc/state" => "6"})}
+      assert %Result{class: :pass} = judged(%{other_states: :unchanged}, own_moved)
+
+      for post <- [%{"zzz/state" => "6"}, %{}, %{"zzz/state" => "9", "yyy/state" => "1"}] do
+        moved = %{before: before, after: obs(post)}
+        assert %Result{class: :fail, detail: d} = judged(%{other_states: :unchanged}, moved)
+        assert d =~ "other_states"
+      end
+
+      unnamed = %{own_moved | after: obs(%{"zzz/state" => "9"}, [], {:error, "no root"})}
+      assert %Result{class: :fail, detail: d} = judged(%{other_states: :unchanged}, unnamed)
+      assert d =~ "no root"
     end
 
     test "state_sequence: :absent means no own state file" do

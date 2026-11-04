@@ -30,8 +30,8 @@ defmodule ChainTest.Conformance.Setup do
   @doc "Whether `args` is an args map this setup accepts. Optional: without it, any map is."
   @callback valid_args?(args :: map()) :: boolean()
 
-  @doc "The snapshot's older batches the setup needs. Optional: without it, none."
-  @callback needs(args :: map()) :: [ChainTest.Snapshot.older_name()]
+  @doc "What the setup needs of the snapshot. Optional: without it, nothing."
+  @callback needs(args :: map()) :: [ChainTest.Snapshot.need()]
 
   @optional_callbacks valid_args?: 1, needs: 1
 
@@ -49,8 +49,8 @@ defmodule ChainTest.Conformance.Setup do
 
   def valid?(_), do: false
 
-  @doc "The older batches `{module, args}` needs (`needs/1`, else none)."
-  @spec needs({module(), map()}) :: [ChainTest.Snapshot.older_name()]
+  @doc "What `{module, args}` needs of the snapshot (`needs/1`, else nothing)."
+  @spec needs({module(), map()}) :: [ChainTest.Snapshot.need()]
   def needs({module, args}), do: Transform.module_needs(module, args)
 
   @doc """

@@ -153,9 +153,10 @@ Cases are data, in `conformance/cases.exs`, one map per case:
 | `transform` | `{module, args}`: a `ChainTest.Mirror.Transform` and its args. `ChainTest.Mirror.Identity` serves unchanged; `ChainTest.Mirror.Status` takes `%{paths: ["v2/manifests/jason.json", ...], status: 500}` (a non-empty list of snapshot paths and an HTTP status 100-599; nothing else) and answers that status with an empty body for those paths. A transform may define `valid_args?/1`; the case file is refused before any download when it returns false. A transform gets each response's path relative to the snapshot (`"v2/manifests/jason.json"`) and bytes, and returns `{status, bytes}`. |
 | `client` | `%{default: expect, deps: %{dep => expect}}`: what `report.json` must say for each expected hit, each dep in `deps` and each dep the snapshot holds a build of, except the deps `nerves` pulls in (Nerves tooling the client leaves to `nerves_bootstrap`; read from the lock and the compiled `nerves.app`) (`deps[dep]`, else `default`). `expect` is `:hit`, `:miss`, `:fail`, `{status, "detail prefix"}`, or `:snapshot` (a hit when the snapshot holds a build the client could select). |
 | `harness` | `%{"step/check" => class}`: harness results that must have that class. `step` is `build`, `integrity` or `compiled`, `check` as the per-case report prints it (`"build/hit:jason"`, `"integrity/integrity:ash"`, `"compiled/reported_miss:jason"`). Every other result must be `pass` or `miss`; a `rerun` is a difference, since the snapshot never moves. |
-| `setup` (optional) | `{module, args}`: a `ChainTest.Conformance.Setup` run against the case's fresh client home before the build (write a state file, fill the cache, plant a symlink). It gets the home, the snapshot with the case's `source`, `root` and mirror URLs under `:case`, and its args; `ChainTest.Conformance.Setup.state_dir/3` names the client's state dir. A setup that fails fails the case, unbuilt. |
+| `setup` (optional) | `{module, args}`: a `ChainTest.Conformance.Setup` run against the case's fresh client home before the build (write a state file, fill the cache, plant a symlink). It gets the home, the snapshot with the case's `source`, `root` and mirror URLs under `:case`, and its args; `ChainTest.Conformance.Setup.state_dir/3` names the client's state dir. A setup that fails fails the case, unbuilt. `ChainTest.Conformance.Setup.State` writes the batch sequence state (`sequence: :snapshot`, `{:below, n}` or `:corrupt`; `source: :second` for the second mirror's); `ChainTest.Conformance.Setup.PlantRoot` writes an attacker's self-signed root at `path` under the home. |
 | `client_config` (optional) | Merged into the fixture's `config :elixir_precompiled` for this case's build only, after the operator's site config: `clock_offset_seconds` (integer), `root` (an absolute path), `source` (URL). |
-| `after` (optional) | Post-conditions after the build: `state_sequence` (the client's state file for the case's source and root holds an integer, or `:snapshot`, the snapshot batch's sequence; `:absent`; or `:unchanged`, every state file in the home as setup left it), `installed` (`:none`: no `.mix/elixir_precompiled.json` in the target's `_build`; `:snapshot`: exactly the deps the snapshot holds a build of), `cache: :untouched` (no cache entry beyond what setup wrote), and, with `mirrors: 2`, `second_mirror` (`:requested`: the client asked the second mirror for something; `:untouched`: it asked nothing). |
+| `client_env` (optional) | Environment variables for this case's build only, from the names a client might wrongly read a root path from (`ChainTest.Build.client_env_names/0`: `ELIXIR_PRECOMPILED_ROOT`, `NERVES_PRECOMPILED_ROOT` and their `_PATH` forms): an absolute path, or `{:home, rel}` for a path under the case home. Every allowed name a case does not give is unset. |
+| `after` (optional) | Post-conditions after the build: `state_sequence` (the client's state file for the case's source and root holds an integer, or `:snapshot`, the snapshot batch's sequence, or `:previous`, the previous batch's; `:absent`; or `:unchanged`, every state file in the home as setup left it), `other_states` (`:unchanged`: every state file but that one as setup left it), `installed` (`:none`: no `.mix/elixir_precompiled.json` in the target's `_build`; `:snapshot`: exactly the deps the snapshot holds a build of), `cache: :untouched` (no cache entry beyond what setup wrote), and, with `mirrors: 2`, `second_mirror` (`:requested`: the client asked the second mirror for something; `:untouched`: it asked nothing). |
 
 A transform answers `{status, bytes}` or, to misbehave in other ways,
 `{status, headers, body}`, `{:redirect, 3xx, location}`, `{:stream, status,
@@ -167,7 +168,21 @@ cannot hang the run. Anything but `{200, bytes}` with the snapshot's own
 bytes counts as a change for the "not exercised" check. A transform that crashes or answers a malformed shape gets the client a 500 and fails the case, naming the error, so a typo never stands in for the change it meant. Both mirrors of a two-mirror case are judged this way. A transform whose
 args say `mirrors: 2` gets a second mirror (a cross-origin redirect target,
 say), whose URL it finds under the args' `:case` key; `needs/1` on a
-transform or setup names the older batches it needs.
+transform or setup names what it needs of the snapshot: an older batch
+(`:previous`, `:old`), `:previous_manifests` (the previous batch names the
+current batch's manifest for every held dep, since only those bytes can be
+served) or `:batch_threshold_2` (a root whose batch role needs two
+signatures). A case whose snapshot lacks one is `not_exercised`, "not
+testable here", with the reason.
+
+The layer-1 transforms over real signed bytes:
+`ChainTest.Mirror.BatchSignatures` (`change: :flip_bit | :remove |
+:duplicate` on `batch.json`), `ChainTest.Mirror.OlderBatch` (`batch:
+:previous | :old` served as `batch.json`; `hits: true` when the case
+installs from it) and `ChainTest.Mirror.RootSwap` (an attacker's newer,
+self-signed `root.json`). A case standing for several spec rows joins
+their ids with `.` (`T4.R3`): every case home is a fresh
+`ELIXIR_PRECOMPILED_HOME`, so T10 and R6 run as R1 and R2.
 
 A case passes when the client used its mirror and the client and the
 harness say what it expects. Using the mirror means the mirror's log has a

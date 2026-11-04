@@ -528,4 +528,91 @@ defmodule ChainTest.SnapshotTest do
       assert {:missing, _} = Snapshot.older(%{}, :previous)
     end
   end
+
+  describe "needs" do
+    defp needs_snap(tmp, opts) do
+      key = Signed.key()
+      keys = Keyword.get(opts, :batch_keys, [key])
+
+      File.write!(
+        Path.join(tmp, "root.json"),
+        Signed.root(key, batch_keys: keys, batch_threshold: Keyword.get(opts, :threshold, 1))
+      )
+
+      sha = String.duplicate("a", 64)
+
+      %{
+        dir: tmp,
+        sequence: 7,
+        info: Synthetic.info(7, %{"jason" => sha}),
+        deps: %{
+          "jason" => %{version: "1.4.5", manifest: "v2/manifests/jason.json", builds: 1},
+          "nobuild" => %{version: "0.1.0", manifest: nil, builds: 0}
+        },
+        previous:
+          Keyword.get(
+            opts,
+            :previous,
+            {:ok, %{sequence: 6, info: Synthetic.info(6, %{"jason" => sha})}}
+          ),
+        old: Keyword.get(opts, :old, {:missing, "the portal keeps no batch that old"})
+      }
+    end
+
+    @tag :tmp_dir
+    test "the older batches are available when the snapshot holds them", %{tmp_dir: tmp} do
+      snap = needs_snap(tmp, [])
+      assert Snapshot.available(snap, :previous) == :ok
+      assert {:missing, why} = Snapshot.available(snap, :old)
+      assert why == "the old batch: the portal keeps no batch that old"
+    end
+
+    @tag :tmp_dir
+    test "previous_manifests: the previous batch names N's manifest for every held dep",
+         %{tmp_dir: tmp} do
+      assert Snapshot.available(needs_snap(tmp, []), :previous_manifests) == :ok
+
+      other =
+        {:ok, %{sequence: 6, info: Synthetic.info(6, %{"jason" => String.duplicate("b", 64)})}}
+
+      assert {:missing, why} =
+               Snapshot.available(needs_snap(tmp, previous: other), :previous_manifests)
+
+      assert why =~ "jason"
+      assert why =~ "previous"
+
+      # A held dep the previous batch does not name at all is a difference too.
+      none = {:ok, %{sequence: 6, info: Synthetic.info(6, %{})}}
+
+      assert {:missing, why} =
+               Snapshot.available(needs_snap(tmp, previous: none), :previous_manifests)
+
+      assert why =~ "jason"
+
+      missing = {:missing, "404"}
+
+      assert {:missing, why} =
+               Snapshot.available(needs_snap(tmp, previous: missing), :previous_manifests)
+
+      assert why =~ "404"
+    end
+
+    @tag :tmp_dir
+    test "batch_threshold_2: the root's batch role needs two signatures", %{tmp_dir: tmp} do
+      assert {:missing, why} = Snapshot.available(needs_snap(tmp, []), :batch_threshold_2)
+      assert why =~ "threshold 1"
+
+      two = [Signed.key(), Signed.key()]
+
+      assert Snapshot.available(
+               needs_snap(tmp, batch_keys: two, threshold: 2),
+               :batch_threshold_2
+             ) == :ok
+    end
+
+    test "need_names/0 lists every need a transform or setup may name" do
+      assert Enum.sort(Snapshot.need_names()) ==
+               Enum.sort([:previous, :old, :previous_manifests, :batch_threshold_2])
+    end
+  end
 end

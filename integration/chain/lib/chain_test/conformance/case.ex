@@ -46,13 +46,22 @@ defmodule ChainTest.Conformance.Case do
       :elixir_precompiled` for this case's build only
       (`ChainTest.Build.client_config?/1`): `clock_offset_seconds`
       (integer), `root` (an absolute path), `source` (URL).
+    * `client_env` - environment variables for this case's build only, from
+      the few `ChainTest.Build.client_env_names/0` allows (the names a
+      client might wrongly take a root path from: T9): each an absolute
+      path or `{:home, rel}`, a path under the case's client home (written
+      by its setup, say). The build unsets every allowed name it is not
+      given.
     * `after` - post-conditions on the client home and `_build` after the
       build, a non-empty map of:
       * `state_sequence` - the client's state file for the case's source
         and root under the case home (`ChainTest.Conformance.Setup.state_dir/3`):
         an integer it must hold, `:snapshot` (the snapshot batch's
-        sequence), `:absent` (no such file), or `:unchanged` (every state
-        file in the home, this one included, as setup left it).
+        sequence), `:previous` (the snapshot's previous batch's sequence),
+        `:absent` (no such file), or `:unchanged` (every state file in the
+        home, this one included, as setup left it).
+      * `other_states` - `:unchanged`: every state file in the home other
+        than that one as setup left it (a second source's, R19).
       * `installed` - `:none` (no `.mix/elixir_precompiled.json` anywhere
         in the target's `_build`) or `:snapshot` (one for exactly the deps
         the snapshot holds a build of, the Nerves tooling aside).
@@ -83,14 +92,16 @@ defmodule ChainTest.Conformance.Case do
       harness result match, `:fail` naming each difference.
   """
 
-  alias ChainTest.{Build, Mirror, Result}
+  alias ChainTest.{Build, Mirror, Result, Snapshot}
   alias ChainTest.Conformance.Setup
+  alias ChainTest.Conformance.Setup.PlantRoot
   alias ChainTest.Mirror.Transform
 
   @type status :: :hit | :miss | :fail
   @type expect :: :snapshot | status() | {status(), String.t()}
   @type post :: %{
-          optional(:state_sequence) => integer() | :snapshot | :absent | :unchanged,
+          optional(:state_sequence) => integer() | :snapshot | :previous | :absent | :unchanged,
+          optional(:other_states) => :unchanged,
           optional(:installed) => :none | :snapshot,
           optional(:cache) => :untouched,
           optional(:second_mirror) => :requested | :untouched
@@ -103,6 +114,7 @@ defmodule ChainTest.Conformance.Case do
           required(:harness) => %{String.t() => Result.class()},
           optional(:setup) => {module(), map()},
           optional(:client_config) => ChainTest.Build.client_config(),
+          optional(:client_env) => %{String.t() => Path.t() | {:home, Path.t()}},
           optional(:after) => post()
         }
 
@@ -125,8 +137,8 @@ defmodule ChainTest.Conformance.Case do
         }
 
   @keys [:client, :description, :harness, :id, :transform]
-  @optional [:after, :client_config, :setup]
-  @post_keys [:cache, :installed, :second_mirror, :state_sequence]
+  @optional [:after, :client_config, :client_env, :setup]
+  @post_keys [:cache, :installed, :other_states, :second_mirror, :state_sequence]
   @statuses [:hit, :miss, :fail]
   @benign [:pass, :miss]
   @identity ChainTest.Mirror.Identity
@@ -206,6 +218,10 @@ defmodule ChainTest.Conformance.Case do
         "client_config must map clock_offset_seconds to an integer, root to an absolute " <>
           "path and source to a non-empty string, got #{inspect(c.client_config)}"
 
+      Map.has_key?(c, :client_env) and not client_env?(c.client_env) ->
+        "client_env must map names from #{inspect(Build.client_env_names())} to an " <>
+          "absolute path or {:home, relative path}, got #{inspect(c.client_env)}"
+
       Map.has_key?(c, :after) ->
         after_problem(c.after, c.transform)
 
@@ -217,8 +233,8 @@ defmodule ChainTest.Conformance.Case do
   defp after_problem(post, transform) do
     cond do
       not post?(post) ->
-        "after must be a non-empty map of state_sequence (integer, :snapshot, :absent, " <>
-          ":unchanged), installed (:none, :snapshot), cache (:untouched), second_mirror " <>
+        "after must be a non-empty map of state_sequence (integer, :snapshot, :previous, " <>
+          ":absent, :unchanged), other_states (:unchanged), installed (:none, :snapshot), cache (:untouched), second_mirror " <>
           "(:requested, :untouched), got " <> inspect(post)
 
       Map.has_key?(post, :second_mirror) and Transform.mirrors(transform) != 2 ->
@@ -228,6 +244,17 @@ defmodule ChainTest.Conformance.Case do
         nil
     end
   end
+
+  defp client_env?(env) when is_map(env) and map_size(env) > 0 do
+    Enum.all?(env, fn {name, value} ->
+      name in Build.client_env_names() and client_env_value?(value)
+    end)
+  end
+
+  defp client_env?(_env), do: false
+
+  defp client_env_value?({:home, rel}), do: PlantRoot.inside?(rel)
+  defp client_env_value?(path), do: is_binary(path) and Path.type(path) == :absolute
 
   defp id?(id), do: is_binary(id) and id =~ ~r/\A[A-Za-z0-9][A-Za-z0-9.-]{0,31}\z/
 
@@ -258,7 +285,9 @@ defmodule ChainTest.Conformance.Case do
   defp post?(_), do: false
 
   defp post_value?(:state_sequence, v),
-    do: is_integer(v) or v in [:snapshot, :absent, :unchanged]
+    do: is_integer(v) or v in [:snapshot, :previous, :absent, :unchanged]
+
+  defp post_value?(:other_states, v), do: v == :unchanged
 
   defp post_value?(:installed, v), do: v in [:none, :snapshot]
   defp post_value?(:cache, v), do: v == :untouched
@@ -468,6 +497,23 @@ defmodule ChainTest.Conformance.Case do
             "#{state(before[rel])}, is #{state(now[rel])}"
   end
 
+  defp post_problem(:other_states, :unchanged, seen, _snap, _input) do
+    case seen.after.own do
+      {:error, why} ->
+        ["after other_states: cannot name the client's state dir: #{why}"]
+
+      {:ok, own} ->
+        before = Map.delete(seen.before.states, own)
+        now = Map.delete(seen.after.states, own)
+
+        for rel <- Enum.sort(Enum.uniq(Map.keys(before) ++ Map.keys(now))),
+            before[rel] != now[rel],
+            do:
+              "after other_states: expected every other state unchanged, #{rel} was " <>
+                "#{state(before[rel])}, is #{state(now[rel])}"
+    end
+  end
+
   defp post_problem(:state_sequence, want, seen, snap, _input) do
     case seen.after.own do
       {:error, why} ->
@@ -529,10 +575,20 @@ defmodule ChainTest.Conformance.Case do
     end
   end
 
-  defp sequence(:snapshot, snap), do: snap.sequence
-  defp sequence(n, _snap), do: n
+  defp sequence(:snapshot, snap), do: {:ok, snap.sequence}
 
-  defp sequence_problem(n, got, rel) do
+  defp sequence(:previous, snap) do
+    case Snapshot.older(snap, :previous) do
+      {:ok, %{sequence: n}} -> {:ok, n}
+      {:missing, why} -> {:error, "the snapshot has no previous batch: #{why}"}
+    end
+  end
+
+  defp sequence(n, _snap), do: {:ok, n}
+
+  defp sequence_problem({:error, why}, _got, _rel), do: ["after state_sequence: #{why}"]
+
+  defp sequence_problem({:ok, n}, got, rel) do
     if is_binary(got) and Integer.parse(String.trim(got)) == {n, ""},
       do: [],
       else: ["after state_sequence: expected #{rel} to hold #{n}, it holds #{state(got)}"]

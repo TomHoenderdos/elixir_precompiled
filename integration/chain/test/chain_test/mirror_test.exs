@@ -613,6 +613,8 @@ defmodule ChainTest.MirrorTest do
     assert Transform.valid?({ChainTest.TestTransform, %{mirrors: 2, needs: [:previous, :old]}})
     refute Transform.valid?({ChainTest.TestTransform, %{mirrors: 3}})
     refute Transform.valid?({ChainTest.TestTransform, %{mirrors: 0}})
+    assert Transform.valid?({ChainTest.TestTransform, %{needs: [:previous_manifests]}})
+    assert Transform.valid?({ChainTest.TestTransform, %{needs: [:batch_threshold_2]}})
     refute Transform.valid?({ChainTest.TestTransform, %{needs: [:newer]}})
     refute Transform.valid?({ChainTest.TestTransform, %{needs: :old}})
     refute Transform.valid?({Identity, %{case: %{}}})
