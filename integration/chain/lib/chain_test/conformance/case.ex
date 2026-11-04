@@ -29,8 +29,17 @@ defmodule ChainTest.Conformance.Case do
       pulls in (`ChainTest.Lock.nerves_children/2`), which the client
       never considers: `deps[dep]`, else `default`.
       An expectation is a report status (`:hit`, `:miss`, `:fail`), a status
-      with a detail prefix (`{:miss, "batch stale"}`), or `:snapshot`: a hit
-      when the snapshot holds a build the client could select, else a miss.
+      with a detail prefix (`{:miss, "batch stale"}`), or one the snapshot
+      decides per dep: `:snapshot`, a hit when the snapshot holds a build
+      the client could select, else a miss; `:older_manifest` (M3), a
+      hash failure for a dep served an older batch's manifest
+      (`ChainTest.Snapshot.older_manifests/1`), else `:snapshot`;
+      `:recheck` (R16, `runs: 2` only), from `ChainTest.Snapshot.recheck/1`:
+      a hash failure for a held dep the previous batch names another
+      manifest for, `revoked: no longer in the current batch` for one it
+      names none for, no report line for any other (the install kept). A
+      dep the last two make anything but a hit has no fixed `build/hit:`
+      row class; its client line is judged instead.
     * `harness` - harness results by `"<step>/<check>"` (as the reports
       print them; step `build`, `integrity` or `compiled`) and the class each
       must have. Every result not named must be `:pass` or `:miss`. A
@@ -39,6 +48,9 @@ defmodule ChainTest.Conformance.Case do
 
   Optional keys, each absent by default:
 
+    * `runs` - `2`: a cold build first (served unchanged by the reference
+      mirror, in a throwaway home; every check must pass), then the case's
+      own build over that warm `_build` (R16).
     * `setup` - `{module, args}`: a `ChainTest.Conformance.Setup` and its
       args (checked like a transform's), run against the case's fresh client
       home before the build.
@@ -67,10 +79,18 @@ defmodule ChainTest.Conformance.Case do
       * `log` - a non-empty string, or a non-empty list of them, the
         build's output must contain (a warning the client must print, R4).
       * `installed` - `:none` (no `.mix/elixir_precompiled.json` anywhere
-        in the target's `_build`) or `:snapshot` (one for exactly the deps
-        the snapshot holds a build of, the Nerves tooling aside).
-      * `cache` - `:untouched`: no entry in the client cache (`files/`
-        under the home) beyond what setup wrote.
+        in the target's `_build`), `:snapshot` (one for exactly the deps
+        the snapshot holds a build of, the Nerves tooling aside), or those
+        but some: `{:without, [dep]}`, `:older_manifest`, `:recheck` (the
+        deps the matching `client` expectation fails).
+      * `cache` - the client cache (`files/` under the home), by
+        `t:fingerprint/0`: `:untouched`, every entry as setup left it
+        (bytes, link target, kind; nothing gained or removed);
+        `:verified`, every entry a regular file directly in `files/` whose
+        bytes hash to its name.
+      * `outside` - `:untouched`: what setup planted under
+        `ChainTest.Conformance.Setup.outside_dir/0` (symlink targets, C2)
+        as it left it; a setup that planted nothing there fails it.
       * `second_mirror` - only with a transform that asks for `mirrors: 2`:
         `:requested` (the client asked the second mirror for something, a
         redirect it followed, say) or `:untouched` (it asked nothing).
@@ -102,13 +122,14 @@ defmodule ChainTest.Conformance.Case do
   alias ChainTest.Mirror.Transform
 
   @type status :: :hit | :miss | :fail
-  @type expect :: :snapshot | status() | {status(), String.t()}
+  @type expect :: :snapshot | :recheck | :older_manifest | status() | {status(), String.t()}
   @type post :: %{
           optional(:state_sequence) => integer() | :snapshot | :previous | :absent | :unchanged,
           optional(:other_states) => :unchanged,
           optional(:log) => String.t() | [String.t()],
-          optional(:installed) => :none | :snapshot,
-          optional(:cache) => :untouched,
+          optional(:installed) => :none | :snapshot | :recheck | {:without, [String.t()]},
+          optional(:cache) => :untouched | :verified,
+          optional(:outside) => :untouched,
           optional(:second_mirror) => :requested | :untouched
         }
   @type t :: %{
@@ -120,6 +141,7 @@ defmodule ChainTest.Conformance.Case do
           optional(:setup) => {module(), map()},
           optional(:client_config) => ChainTest.Build.client_config(),
           optional(:client_env) => %{String.t() => Path.t() | {:home, Path.t()}},
+          optional(:runs) => 2,
           optional(:after) => post()
         }
 
@@ -137,14 +159,22 @@ defmodule ChainTest.Conformance.Case do
           optional(:log) => String.t()
         }
   @type home_view :: %{
-          states: %{String.t() => binary()},
-          cache: MapSet.t(String.t()),
-          own: {:ok, String.t()} | {:error, String.t()}
+          required(:states) => %{String.t() => binary()},
+          required(:cache) => %{String.t() => fingerprint()},
+          optional(:outside) => %{String.t() => fingerprint()},
+          required(:own) => {:ok, String.t()} | {:error, String.t()}
         }
+  @typedoc """
+  One entry under the home, never following a symlink: a directory, a
+  regular file by the sha256 (lowercase hex) of its bytes, a symlink by its
+  target, or anything else by its type.
+  """
+  @type fingerprint ::
+          :dir | {:file, String.t()} | {:link, String.t()} | {:other, atom()}
 
   @keys [:client, :description, :harness, :id, :transform]
-  @optional [:after, :client_config, :client_env, :setup]
-  @post_keys [:cache, :installed, :log, :other_states, :second_mirror, :state_sequence]
+  @optional [:after, :client_config, :client_env, :runs, :setup]
+  @post_keys [:cache, :installed, :log, :other_states, :outside, :second_mirror, :state_sequence]
   @statuses [:hit, :miss, :fail]
   @benign [:pass, :miss]
   @identity ChainTest.Mirror.Identity
@@ -214,7 +244,22 @@ defmodule ChainTest.Conformance.Case do
     end
   end
 
-  defp optional_problem(c) do
+  defp optional_problem(c), do: runs_problem(c) || setup_problem(c)
+
+  defp runs_problem(c) do
+    cond do
+      Map.has_key?(c, :runs) and c.runs != 2 ->
+        "runs must be 2 (a warm build first), got #{inspect(c.runs)}"
+
+      recheck?(c.client) and runs(c) != 2 ->
+        "the :recheck client expectation needs runs: 2"
+
+      true ->
+        nil
+    end
+  end
+
+  defp setup_problem(c) do
     cond do
       Map.has_key?(c, :setup) and not Setup.valid?(c.setup) ->
         "setup #{inspect(c.setup)} is not {module, args} with a " <>
@@ -242,7 +287,8 @@ defmodule ChainTest.Conformance.Case do
       not post?(post) ->
         "after must be a non-empty map of state_sequence (integer, :snapshot, " <>
           ":previous, :absent, :unchanged), other_states (:unchanged), installed " <>
-          "(:none, :snapshot), cache (:untouched), log (non-empty strings), " <>
+          "(:none, :snapshot, :recheck, {:without, [dep name]}), cache (:untouched, " <>
+          ":verified), outside (:untouched), log (non-empty strings), " <>
           "second_mirror (:requested, :untouched), got " <> inspect(post)
 
       Map.has_key?(post, :second_mirror) and Transform.mirrors(transform) != 2 ->
@@ -275,6 +321,8 @@ defmodule ChainTest.Conformance.Case do
   defp client?(_), do: false
 
   defp expect?(:snapshot), do: true
+  defp expect?(:recheck), do: true
+  defp expect?(:older_manifest), do: true
   defp expect?(s) when s in @statuses, do: true
   defp expect?({s, prefix}) when s in @statuses and is_binary(prefix), do: true
   defp expect?(_), do: false
@@ -299,9 +347,22 @@ defmodule ChainTest.Conformance.Case do
   defp post_value?(:log, v) when is_list(v), do: v != [] and Enum.all?(v, &post_value?(:log, &1))
   defp post_value?(:log, v), do: is_binary(v) and v != ""
 
-  defp post_value?(:installed, v), do: v in [:none, :snapshot]
-  defp post_value?(:cache, v), do: v == :untouched
+  defp post_value?(:installed, {:without, [_ | _] = deps}),
+    do: Enum.all?(deps, &(is_binary(&1) and &1 != ""))
+
+  defp post_value?(:installed, v), do: v in [:none, :snapshot, :recheck, :older_manifest]
+  defp post_value?(:cache, v), do: v in [:untouched, :verified]
+  defp post_value?(:outside, v), do: v == :untouched
   defp post_value?(:second_mirror, v), do: v in [:requested, :untouched]
+
+  @doc "How many builds the case runs: 2 with `runs: 2` (a warm build first), else 1."
+  @spec runs(t()) :: 1 | 2
+  def runs(c), do: Map.get(c, :runs, 1)
+
+  defp recheck?(%{default: default, deps: deps}),
+    do: default == :recheck or Enum.any?(deps, fn {_, v} -> v == :recheck end)
+
+  defp recheck?(_client), do: false
 
   @doc "The case's verdict on one run (see the moduledoc)."
   @spec judge(t(), %{
@@ -340,7 +401,7 @@ defmodule ChainTest.Conformance.Case do
           unused ++
             client_problems(c, report, snap, hits, input) ++
             unheld_hits(report, snap) ++
-            harness_problems(c, rows) ++ post_problems(c, input, snap)
+            harness_problems(c, rows, snap) ++ post_problems(c, input, snap)
 
         case problems do
           [] -> result(c, :pass, "as expected: #{c.description}")
@@ -424,7 +485,30 @@ defmodule ChainTest.Conformance.Case do
 
   defp resolve(:snapshot, snap, name), do: if(held?(snap, name), do: :hit, else: :miss)
 
+  # R16, the second build over a warm `_build`: a dep the previous batch
+  # names another manifest for is matched again and fails that manifest's
+  # hash (the mirror serves only N's bytes); one it names no manifest for is
+  # revoked; any other installed build is kept, without a report line.
+  defp resolve(:recheck, snap, name) do
+    case Map.get(Snapshot.recheck(snap), name) do
+      :differs -> {:fail, "manifest hash differs from batch"}
+      :unnamed -> {:miss, "revoked: no longer in the current batch"}
+      nil -> :kept
+    end
+  end
+
+  # M3: a dep served the manifest an older batch names fails its hash; the
+  # others are as the snapshot holds them.
+  defp resolve(:older_manifest, snap, name) do
+    if name in older_manifest_deps(snap),
+      do: {:fail, "manifest hash differs from batch"},
+      else: resolve(:snapshot, snap, name)
+  end
+
   defp resolve(expect, _snap, _name), do: expect
+
+  defp older_manifest_deps(snap),
+    do: snap |> Snapshot.older_manifests() |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
 
   # Whether the snapshot holds a build of `name` the client could select.
   defp held?(snap, name) do
@@ -440,6 +524,7 @@ defmodule ChainTest.Conformance.Case do
         do: "client #{name}: a hit, but the snapshot holds no build of it"
   end
 
+  defp matches?(:kept, got), do: got == nil
   defp matches?(_want, nil), do: false
 
   defp matches?({status, prefix}, %{"status" => got, "detail" => detail}) when is_binary(detail),
@@ -449,13 +534,24 @@ defmodule ChainTest.Conformance.Case do
   defp matches?(status, %{"status" => got}), do: Atom.to_string(status) == got
   defp matches?(_want, _line), do: false
 
+  defp describe(:kept), do: "no report line (the installed build kept)"
   defp describe({status, prefix}), do: "#{status} (#{inspect(prefix)}...)"
   defp describe(status), do: to_string(status)
 
   defp describe_line(nil), do: "no report line"
   defp describe_line(l), do: "#{l["status"]} (#{inspect(l["detail"])})"
 
-  defp harness_problems(c, rows) do
+  defp derived_misses(c, snap) do
+    named = Map.new(c.client.deps, fn {dep, want} -> {to_string(dep), want} end)
+
+    for {name, _} <- snap.deps,
+        want = Map.get(named, name, c.client.default),
+        want in [:recheck, :older_manifest],
+        resolve(want, snap, name) != :hit,
+        do: "hit:#{name}"
+  end
+
+  defp harness_problems(c, rows, snap) do
     keyed = Map.new(rows, &{key(&1), &1})
 
     named =
@@ -469,9 +565,15 @@ defmodule ChainTest.Conformance.Case do
         end
       end)
 
+    # A dep whose expectation the snapshot decides (`:recheck`,
+    # `:older_manifest`) and that is no hit has no fixed `hit:` row class to
+    # name; its client line, judged above, says what the row would.
+    derived = derived_misses(c, snap)
+
     unnamed =
       for r <- rows,
           not Map.has_key?(c.harness, key(r)),
+          not (r.step == :build and r.check in derived),
           r.class not in @benign,
           do: "unexpected #{r.class} #{key(r)}: #{r.detail}"
 
@@ -559,10 +661,19 @@ defmodule ChainTest.Conformance.Case do
     end
   end
 
-  defp post_problem(:installed, :snapshot, seen, snap, input) do
+  defp post_problem(:installed, want, seen, snap, input) do
     tooling = Map.get(input, :tooling, [])
-    want = for {name, _} <- snap.deps, held?(snap, name), name not in tooling, do: name
-    want = Enum.sort(want)
+    held = for {name, _} <- snap.deps, held?(snap, name), name not in tooling, do: name
+
+    left_out =
+      case want do
+        :snapshot -> []
+        {:without, deps} -> deps
+        :recheck -> Map.keys(Snapshot.recheck(snap))
+        :older_manifest -> older_manifest_deps(snap)
+      end
+
+    want = Enum.sort(held -- left_out)
     got = Enum.sort(seen.installed)
 
     if got == want,
@@ -590,12 +701,66 @@ defmodule ChainTest.Conformance.Case do
     end
   end
 
-  defp post_problem(:cache, :untouched, seen, _snap, _input) do
-    case seen.after.cache |> MapSet.difference(seen.before.cache) |> Enum.sort() do
-      [] -> []
-      new -> ["after cache: expected the cache untouched, it gained #{Enum.join(new, ", ")}"]
+  defp post_problem(:cache, :untouched, seen, _snap, _input),
+    do: tree_changes("cache", "the cache untouched", seen.before.cache, seen.after.cache)
+
+  # No mutated or stray bytes stayed in the cache: every entry below
+  # `files/` is a regular file named by the sha256 its bytes hash to.
+  defp post_problem(:cache, :verified, seen, _snap, _input) do
+    for {rel, fp} <- Enum.sort(seen.after.cache),
+        why = unverified(rel, fp),
+        do: "after cache: expected only verified files, #{rel} #{why}"
+  end
+
+  defp post_problem(:outside, :untouched, seen, _snap, _input) do
+    before = Map.get(seen.before, :outside, %{})
+
+    if before == %{},
+      do: ["after outside: the case's setup planted nothing outside the cache to watch"],
+      else:
+        tree_changes(
+          "outside",
+          "everything outside the cache as setup left it",
+          before,
+          Map.get(seen.after, :outside, %{})
+        )
+  end
+
+  defp unverified("files", :dir), do: nil
+  defp unverified("files", {:link, to}), do: "is a symlink to #{to}"
+  defp unverified(_rel, {:link, to}), do: "is a symlink to #{to}"
+  defp unverified(_rel, :dir), do: "is a directory"
+  defp unverified(_rel, {:other, type}), do: "is a #{type}"
+
+  defp unverified(rel, {:file, sha}) do
+    case Path.split(rel) do
+      ["files", ^sha] -> nil
+      ["files", name] -> if sha256?(name), do: "does not hash to its name", else: "is no sha256"
+      _ -> "is not directly in files/"
     end
   end
+
+  defp sha256?(name), do: name =~ ~r/\A[0-9a-f]{64}\z/
+
+  # Every entry gained, removed or changed (bytes, link target, type)
+  # between two fingerprinted trees.
+  defp tree_changes(key, wanted, before, now) do
+    for rel <- Enum.sort(Enum.uniq(Map.keys(before) ++ Map.keys(now))),
+        why = tree_change(before[rel], now[rel], rel),
+        do: "after #{key}: expected #{wanted}, #{why}"
+  end
+
+  defp tree_change(same, same, _rel), do: nil
+  defp tree_change(nil, _now, rel), do: "it gained #{rel}"
+  defp tree_change(_before, nil, rel), do: "#{rel} was removed"
+
+  defp tree_change(before, now, rel),
+    do: "#{rel} changed from #{fingerprint(before)} to #{fingerprint(now)}"
+
+  defp fingerprint(:dir), do: "a directory"
+  defp fingerprint({:file, sha}), do: "a file (sha256 #{String.slice(sha, 0, 12)})"
+  defp fingerprint({:link, to}), do: "a symlink to #{to}"
+  defp fingerprint({:other, type}), do: "a #{type}"
 
   defp sequence(:snapshot, snap), do: {:ok, snap.sequence}
 

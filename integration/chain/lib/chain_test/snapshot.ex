@@ -128,11 +128,30 @@ defmodule ChainTest.Snapshot do
   snapshot holds a build of (the portal serves only `N`'s manifest bytes,
   so a case that installs from `N-1` can only be served those); or
   `:batch_threshold_2`, a root whose batch role needs at least two
-  signatures (with one, a duplicated signature cannot count twice).
+  signatures (with one, a duplicated signature cannot count twice);
+  `:previous_differs`, a previous batch that names another manifest, or
+  none, for at least one dep the snapshot holds a build of (`recheck/1`:
+  a warm `_build` installed from `N` holds a build that batch no longer
+  vouches for, R16); `:older_manifest_bytes`, the bytes of a manifest an
+  older batch names and `N` does not (M3), which the snapshot holds only
+  as `older_manifests/<sha256>.json` (the portal serves only the current
+  batch's manifests, so today it never does).
   """
-  @type need :: older_name() | :previous_manifests | :batch_threshold_2
+  @type need ::
+          older_name()
+          | :previous_manifests
+          | :batch_threshold_2
+          | :previous_differs
+          | :older_manifest_bytes
 
-  @needs [:previous, :old, :previous_manifests, :batch_threshold_2]
+  @needs [
+    :previous,
+    :old,
+    :previous_manifests,
+    :batch_threshold_2,
+    :previous_differs,
+    :older_manifest_bytes
+  ]
 
   @doc "Every `t:need/0`."
   @spec need_names() :: [need()]
@@ -172,6 +191,112 @@ defmodule ChainTest.Snapshot do
 
       {:error, why} ->
         {:missing, why}
+    end
+  end
+
+  def available(snap, :previous_differs) do
+    case older(snap, :previous) do
+      {:ok, previous} ->
+        if recheck(snap) == %{},
+          do:
+            {:missing,
+             "the previous batch (#{previous.sequence}) names the same manifest as batch " <>
+               "#{snap.sequence} for every dep the snapshot holds a build of: no installed " <>
+               "build of N is one it no longer vouches for"},
+          else: :ok
+
+      {kind, why} when kind in @absent ->
+        {kind, "the previous batch: #{why}"}
+    end
+  end
+
+  def available(snap, :older_manifest_bytes) do
+    case older_manifests(snap) do
+      [_ | _] ->
+        :ok
+
+      [] ->
+        lacking =
+          for name <- [:previous, :old],
+              {kind, why} <- [older(snap, name)],
+              kind in @absent,
+              do: {kind, "the #{name} batch: #{why}"}
+
+        older_manifest_lack(snap, lacking)
+    end
+  end
+
+  # Without the bytes: the worst reason an older batch is lacking, else why
+  # the ones it has give nothing to serve.
+  defp older_manifest_lack(snap, lacking) do
+    by = fn kind -> for {^kind, why} <- lacking, do: why end
+
+    cond do
+      by.(:invalid) != [] ->
+        {:invalid, Enum.join(by.(:invalid), "; ")}
+
+      by.(:unavailable) != [] ->
+        {:unavailable, Enum.join(by.(:unavailable), "; ")}
+
+      true ->
+        named =
+          for name <- [:previous, :old],
+              {:ok, b} <- [older(snap, name)],
+              {dep, _} <- b.manifests,
+              do: "#{dep} (batch #{b.sequence})"
+
+        why =
+          if named == [],
+            do:
+              "no older batch the snapshot holds names a fixture manifest batch " <>
+                "#{snap.sequence} does not",
+            else:
+              "older batches name other manifests (#{Enum.join(Enum.uniq(named), ", ")}), " <>
+                "but the portal serves only the current batch's manifest bytes"
+
+        {:missing, Enum.join(by.(:missing) ++ [why], "; ")}
+    end
+  end
+
+  @doc """
+  The older manifests whose bytes the snapshot holds: for each dep an older
+  batch (`:previous`, then `:old`) names another manifest for than `N`,
+  `{dep, path}` when `older_manifests/<sha256>.json` exists under the
+  snapshot and hashes to that sha (M3).
+  """
+  @spec older_manifests(map()) :: [{String.t(), Path.t()}]
+  def older_manifests(snap) do
+    for name <- [:previous, :old],
+        {:ok, b} <- [older(snap, name)],
+        {dep, %{sha256: sha}} <- Enum.sort(b.manifests),
+        rel = "older_manifests/#{sha}.json",
+        {:ok, bytes} <- [File.read(Path.join(snap.dir, rel))],
+        sha256(bytes) == sha,
+        uniq: true,
+        do: {dep, rel}
+  end
+
+  @doc """
+  The held deps (a build of each in the snapshot) the previous batch names
+  another manifest for than `N` (`:differs`) or none (`:unnamed`); empty
+  without a previous batch. A warm `_build` installed from `N` holds a
+  build of each that the previous batch no longer vouches for (R16).
+  """
+  @spec recheck(map()) :: %{String.t() => :differs | :unnamed}
+  def recheck(snap) do
+    case older(snap, :previous) do
+      {:ok, previous} ->
+        for {name, %{builds: n}} <- Map.get(snap, :deps, %{}),
+            is_integer(n) and n > 0,
+            # A tuple, never falsy: a `nil` binding would filter the dep out.
+            {ours, theirs} =
+              {Trust.manifest_sha(snap.info, name), Trust.manifest_sha(previous.info, name)},
+            theirs != ours,
+            into: %{},
+            do: {name, if(theirs == nil, do: :unnamed, else: :differs)}
+
+      _ ->
+        %{}
     end
   end
 

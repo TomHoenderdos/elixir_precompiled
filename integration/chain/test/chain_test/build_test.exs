@@ -76,6 +76,26 @@ defmodule ChainTest.BuildTest do
 
   defp find(results, check), do: Enum.find(results, &(&1.check == check))
 
+  test "keep_build: true starts from the _build an earlier build left (R16's warm run)",
+       ctx do
+    warm = Path.join(ctx.fixture, "_build/rpi4_dev/lib/jason/ebin/jason.app")
+    File.mkdir_p!(Path.dirname(warm))
+    File.write!(warm, "installed")
+
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, @hits, sequence: 7)}, fn _dir ->
+      Build.run(%{
+        fixture_dir: ctx.fixture,
+        target: "rpi4",
+        source: "http://127.0.0.1:1/api/precompiled",
+        home: ctx.home,
+        trust: Synthetic.info(7, %{}),
+        keep_build: true
+      })
+
+      assert File.read!(warm) == "installed"
+    end)
+  end
+
   test "a clean build with every expected hit passes", ctx do
     stale = Path.join(ctx.fixture, "_build/rpi4_dev/stale")
     File.mkdir_p!(Path.dirname(stale))

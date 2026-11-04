@@ -49,6 +49,14 @@ defmodule ChainTest.Conformance.Setup do
 
   def valid?(_), do: false
 
+  @doc """
+  The directory under the home, outside the client's cache (`files/`), where
+  a setup puts what its symlinks point at (C2); a case's `after: %{outside:
+  :untouched}` checks it is as setup left it.
+  """
+  @spec outside_dir() :: String.t()
+  def outside_dir(), do: "outside"
+
   @doc "What `{module, args}` needs of the snapshot (`needs/1`, else nothing)."
   @spec needs({module(), map()}) :: [ChainTest.Snapshot.need()]
   def needs({module, args}), do: Transform.module_needs(module, args)

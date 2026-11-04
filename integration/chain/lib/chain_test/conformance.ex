@@ -289,7 +289,11 @@ defmodule ChainTest.Conformance do
   defp start_mirrors(c, run) do
     start = fn mirror, second_url ->
       context = %{mirror: mirror, second_url: second_url, snapshot: run.snap}
-      run.steps.mirror.(run.snap.dir, transform: Transform.fun(c.transform, context))
+
+      run.steps.mirror.(
+        run.snap.dir,
+        [transform: Transform.fun(c.transform, context)] ++ Transform.mirror_opts(c.transform)
+      )
     end
 
     result =
@@ -369,7 +373,57 @@ defmodule ChainTest.Conformance do
   defp setup(%{setup: setup}, home, snap), do: Setup.run(setup, home, snap)
   defp setup(_c, _home, _snap), do: :ok
 
-  defp build_and_judge(c, run, [mirror | _] = mirrors, home, context) do
+  # A `runs: 2` case first builds cold, served unchanged by the reference
+  # mirror, in a home of its own that is removed afterwards; its build is
+  # then the warm `_build` the case's own build starts from. A warm build
+  # that did not install every expected hit leaves nothing to judge.
+  defp build_and_judge(c, run, mirrors, home, context) do
+    case warm_build(c, run) do
+      :ok ->
+        judged_build(c, run, mirrors, home, context)
+
+      {:error, why} ->
+        %Result{
+          step: :conformance,
+          check: c.id,
+          class: :fail,
+          detail: "the warm build, before the case's own, did not install: #{why}"
+        }
+    end
+  end
+
+  defp warm_build(c, run) do
+    if Case.runs(c) == 2, do: cold_build(run), else: :ok
+  end
+
+  defp cold_build(%{opts: opts, steps: s, snap: snap} = run) do
+    home = case_home()
+
+    try do
+      {rows, _build} =
+        s.build.(%{
+          fixture_dir: opts.fixture_dir,
+          target: opts.target,
+          source: run.ref.url,
+          home: home,
+          home_prepared: true,
+          client_config: nil,
+          client_env: nil,
+          trust: snap.info,
+          target_config: run.site,
+          command: ["compile"]
+        })
+
+      case for r <- rows, r.class != :pass, do: "#{r.step}/#{r.check} #{r.class} (#{r.detail})" do
+        [] -> :ok
+        bad -> {:error, Enum.join(bad, "; ")}
+      end
+    after
+      File.rm_rf(home)
+    end
+  end
+
+  defp judged_build(c, run, [mirror | _] = mirrors, home, context) do
     %{opts: opts, steps: s, snap: snap} = run
     before = home_view(home, context)
 
@@ -382,6 +436,7 @@ defmodule ChainTest.Conformance do
             source: mirror.url,
             home: home,
             home_prepared: true,
+            keep_build: Case.runs(c) == 2,
             client_config: client_config(Map.get(c, :client_config), snap),
             client_env: client_env(Map.get(c, :client_env), home),
             trust: snap.info,
@@ -489,7 +544,45 @@ defmodule ChainTest.Conformance do
         {:error, why} -> {:error, why}
       end
 
-    %{states: states, cache: MapSet.new(entries(home, "files")), own: own}
+    %{
+      states: states,
+      cache: fingerprints(home, "files"),
+      outside: fingerprints(home, Setup.outside_dir()),
+      own: own
+    }
+  end
+
+  # Every entry under `home/rel` by its `t:ChainTest.Conformance.Case.fingerprint/0`.
+  defp fingerprints(home, rel),
+    do: Map.new(entries(home, rel), &{&1, fingerprint(Path.join(home, &1))})
+
+  defp fingerprint(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :directory}} -> :dir
+      {:ok, %File.Stat{type: :regular}} -> file_fingerprint(path)
+      {:ok, %File.Stat{type: :symlink}} -> link_fingerprint(path)
+      {:ok, %File.Stat{type: type}} -> {:other, type}
+      {:error, why} -> {:other, why}
+    end
+  end
+
+  defp file_fingerprint(path) do
+    hash =
+      path
+      |> File.stream!(65_536)
+      |> Enum.reduce(:crypto.hash_init(:sha256), &:crypto.hash_update(&2, &1))
+      |> :crypto.hash_final()
+
+    {:file, Base.encode16(hash, case: :lower)}
+  rescue
+    e in File.Error -> {:other, e.reason}
+  end
+
+  defp link_fingerprint(path) do
+    case File.read_link(path) do
+      {:ok, to} -> {:link, to}
+      {:error, why} -> {:other, why}
+    end
   end
 
   defp read_or_error(path) do

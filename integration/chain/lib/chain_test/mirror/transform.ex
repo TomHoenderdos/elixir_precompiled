@@ -9,12 +9,16 @@ defmodule ChainTest.Mirror.Transform do
   case. `fun/2` turns it into the mirror's `(path, bytes) ->
   ChainTest.Mirror.response()` hook.
 
-  Two args keys mean something to the runner, so a module that takes them
-  must accept them in `valid_args?/1`:
+  Three args keys mean something to the runner, so a module that takes
+  them must accept them in `valid_args?/1`:
 
     * `mirrors: 2` - the case gets a second mirror over the snapshot (a
       cross-origin redirect target, say), started before the case's own.
       Both run this transform; see `:case` below.
+    * `stream_max_ms` - the case mirror's cap on a streamed body
+      (`ChainTest.Mirror.start/2`), 1 to 600000 ms instead of the default
+      120 s: a drip that must outlast the client's own deadline (N4).
+      `mirror_opts/1` hands it to the runner.
     * `:case` - reserved: never in a case file. At run time the runner puts
       the case's context there: `%{mirror: 1 | 2, second_url: url | nil,
       snapshot: snapshot}`, `mirror` saying which mirror is answering and
@@ -61,10 +65,38 @@ defmodule ChainTest.Mirror.Transform do
   def valid?({module, args}) when is_atom(module) and is_map(args) do
     Code.ensure_loaded?(module) and function_exported?(module, :transform, 3) and
       not Map.has_key?(args, :case) and Map.get(args, :mirrors, 1) in [1, 2] and
-      valid_args?(module, args) and needs_valid?(module, args)
+      stream_cap?(args) and valid_args?(module, args) and needs_valid?(module, args)
   end
 
   def valid?(_), do: false
+
+  @doc "`bytes` with its middle byte changed (one bit flipped), the size kept."
+  @spec flip_byte(binary()) :: binary()
+  def flip_byte(bytes) when byte_size(bytes) > 0 do
+    i = div(byte_size(bytes), 2)
+
+    binary_part(bytes, 0, i) <>
+      <<Bitwise.bxor(:binary.at(bytes, i), 1)>> <>
+      binary_part(bytes, i + 1, byte_size(bytes) - i - 1)
+  end
+
+  @doc "Whether `path` is a manifest's: `manifests/<name>.json` or `v2/manifests/<name>.json`."
+  @spec manifest_path?(String.t()) :: boolean()
+  def manifest_path?(path), do: path =~ ~r|\A(v2/)?manifests/[^/]+\.json\z|
+
+  @doc "Whether `path` is a file's: `files/<sha256>`."
+  @spec file_path?(String.t()) :: boolean()
+  def file_path?(path), do: String.starts_with?(path, "files/")
+
+  @max_stream_ms 600_000
+
+  defp stream_cap?(%{stream_max_ms: ms}), do: is_integer(ms) and ms in 1..@max_stream_ms
+  defp stream_cap?(_args), do: true
+
+  @doc "The mirror options the args ask for: `stream_max_ms`, when given."
+  @spec mirror_opts({module(), map()}) :: keyword()
+  def mirror_opts({_module, %{stream_max_ms: ms}}), do: [stream_max_ms: ms]
+  def mirror_opts({_module, _args}), do: []
 
   @doc "How many mirrors the case runs: 2 when the args say `mirrors: 2`, else 1."
   @spec mirrors({module(), map()}) :: 1 | 2

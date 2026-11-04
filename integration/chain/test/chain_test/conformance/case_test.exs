@@ -94,8 +94,16 @@ defmodule ChainTest.Conformance.CaseTest do
 
     test "every refusal in the repository's case file leaves state, _build and cache alone (R14)" do
       {:ok, cases} = Case.load(Path.join(ChainTest.CLI.root(), "conformance/cases.exs"))
-      refusals = Enum.filter(cases, &match?(%{client: %{default: {:fail, _}}}, &1))
-      assert length(refusals) >= 9
+      # Batch-level: every dep fails for the batch's (or the clock's) sake.
+      # A batch that never arrived (`batch unavailable`) is no refusal
+      # reason, but leaves the same post-conditions.
+      refusals =
+        Enum.filter(cases, fn c ->
+          match?(%{client: %{default: {:fail, "batch" <> _}}}, c) or
+            match?(%{client: %{default: {:fail, "clock" <> _}}}, c)
+        end)
+
+      assert length(refusals) >= 11
 
       for c <- refusals do
         assert %{state_sequence: :unchanged, installed: :none, cache: :untouched} =
@@ -103,7 +111,9 @@ defmodule ChainTest.Conformance.CaseTest do
                c.id
 
         {:fail, reason} = c.client.default
-        assert ChainTest.Build.refusal?(reason), "#{c.id}: #{reason} is no client refusal"
+
+        assert reason == "batch unavailable" or ChainTest.Build.refusal?(reason),
+               "#{c.id}: #{reason} is no client refusal"
       end
     end
 
@@ -530,7 +540,7 @@ defmodule ChainTest.Conformance.CaseTest do
 
   describe "judge/2 post-conditions" do
     defp obs(states, cache \\ [], own \\ {:ok, "abc/state"}),
-      do: %{states: states, cache: MapSet.new(cache), own: own}
+      do: %{states: states, cache: Map.new(cache, &{&1, {:file, "x"}}), own: own}
 
     defp judged(post, observed, snap_extra \\ %{}) do
       c = Map.put(@t0, :after, post)

@@ -11,6 +11,10 @@ defmodule ChainTest.Build do
   in this run. The client's `report.json` and its batch `state` file are read
   afterwards, and the build's whole output is kept as `log`.
 
+  `:keep_build` (`true` for a conformance case's second, warm build) keeps
+  the target's `_build` as the build before left it; every other build
+  removes it first.
+
   A conformance case changes two things, for its own build only: a home its
   setup prepared (`:home_prepared`, taken as it is), and `:client_config`,
   merged into the fixture's `config :elixir_precompiled` through a config
@@ -79,6 +83,7 @@ defmodule ChainTest.Build do
           required(:source) => String.t(),
           optional(:home) => Path.t(),
           optional(:home_prepared) => boolean(),
+          optional(:keep_build) => boolean(),
           optional(:client_config) => client_config() | nil,
           optional(:client_env) => %{String.t() => Path.t()} | nil,
           optional(:trust) => ChainTest.Trust.info() | nil,
@@ -223,7 +228,9 @@ defmodule ChainTest.Build do
     build_lib = Path.join(build_dir, "lib")
     expected = Map.get_lazy(input, :expected, fn -> expected(fixture) end)
 
-    File.rm_rf!(build_dir)
+    # A warm second build (`:keep_build`, R16) starts from what the first
+    # one installed; every other build starts clean.
+    unless Map.get(input, :keep_build, false), do: File.rm_rf!(build_dir)
 
     client = client_config_file(Map.get(input, :client_config))
 

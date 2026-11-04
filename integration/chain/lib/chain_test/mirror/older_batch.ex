@@ -16,6 +16,11 @@ defmodule ChainTest.Mirror.OlderBatch do
 
   With `mirrors: 2` the second mirror serves the snapshot unchanged: a
   second source whose state the case can set up.
+
+  `recheck: true` (only with `:previous`, not with `hits`) is R16's second
+  build over a warm `_build` installed from `N`: it also needs
+  `:previous_differs`, `N-1` naming another manifest, or none, for a held
+  dep, so the warm `_build` holds a build `N-1` no longer vouches for.
   """
   @behaviour ChainTest.Mirror.Transform
 
@@ -24,15 +29,18 @@ defmodule ChainTest.Mirror.OlderBatch do
   @impl true
   def valid_args?(%{batch: batch} = args) do
     batch in [:previous, :old] and
-      Enum.all?(Map.keys(args), &(&1 in [:batch, :hits, :mirrors])) and
+      Enum.all?(Map.keys(args), &(&1 in [:batch, :hits, :mirrors, :recheck])) and
       Map.get(args, :hits, false) in [true, false] and
-      not (batch == :old and Map.get(args, :hits, false))
+      Map.get(args, :recheck, false) in [true, false] and
+      not (batch == :old and Map.get(args, :hits, false)) and
+      not (Map.get(args, :recheck, false) and (batch == :old or Map.get(args, :hits, false)))
   end
 
   def valid_args?(_args), do: false
 
   @impl true
   def needs(%{batch: :previous, hits: true}), do: [:previous, :previous_manifests]
+  def needs(%{batch: :previous, recheck: true}), do: [:previous, :previous_differs]
   def needs(%{batch: batch}), do: [batch]
 
   @impl true

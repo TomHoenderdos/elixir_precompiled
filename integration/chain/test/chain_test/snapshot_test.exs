@@ -665,7 +665,14 @@ defmodule ChainTest.SnapshotTest do
 
     test "need_names/0 lists every need a transform or setup may name" do
       assert Enum.sort(Snapshot.need_names()) ==
-               Enum.sort([:previous, :old, :previous_manifests, :batch_threshold_2])
+               Enum.sort([
+                 :previous,
+                 :old,
+                 :previous_manifests,
+                 :batch_threshold_2,
+                 :previous_differs,
+                 :older_manifest_bytes
+               ])
     end
   end
 end

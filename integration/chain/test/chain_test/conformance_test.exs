@@ -681,4 +681,152 @@ defmodule ChainTest.ConformanceTest do
       assert detail =~ "transform error"
     end
   end
+
+  describe "layer-1 runner support" do
+    @sha String.duplicate("b", 64)
+
+    # A fake build that also runs `touch.(home)` against the case home.
+    defp touching(test, snapshot, touch) do
+      s = steps(test, snapshot)
+
+      %{
+        s
+        | build: fn input ->
+            touch.(input.home)
+            s.build.(input)
+          end
+      }
+    end
+
+    # Runs twice in one test: keep the snapshot between them.
+    defp kept(ctx), do: %{ctx.opts | snapshot_dir: ctx.snapshot.dir}
+
+    defp planting(files),
+      do: {ChainTest.TestSetup, %{files: files}}
+
+    test "cache: :untouched sees bytes changed in a planted cache file", ctx do
+      c =
+        Map.merge(@t0, %{
+          setup: planting(%{"files/#{@sha}" => "planted"}),
+          after: %{cache: :untouched}
+        })
+
+      cases!(ctx.opts, [c])
+      same = touching(self(), ctx.snapshot, fn _home -> :ok end)
+      assert {[%Result{class: :pass}], _} = Conformance.run(kept(ctx), same)
+
+      rewrite = fn home -> File.write!(Path.join(home, "files/#{@sha}"), "other") end
+
+      assert {[%Result{class: :fail, detail: detail}], _} =
+               Conformance.run(kept(ctx), touching(self(), ctx.snapshot, rewrite))
+
+      assert detail =~ "files/#{@sha} changed"
+    end
+
+    test "cache: :untouched sees a re-pointed symlink, without following it", ctx do
+      c =
+        Map.merge(@t0, %{
+          setup: {ChainTest.Conformance.Setup.Cache, %{plant: :link_entries}},
+          after: %{cache: :untouched}
+        })
+
+      cases!(ctx.opts, [c])
+
+      repoint = fn home ->
+        [link | _] = Path.wildcard(Path.join(home, "files/*"))
+        File.rm!(link)
+        File.ln_s!("/nonexistent/elsewhere", link)
+      end
+
+      snapshot = with_file(ctx.snapshot)
+
+      assert {[%Result{class: :fail, detail: detail}], _} =
+               Conformance.run(kept(ctx), touching(self(), snapshot, repoint))
+
+      assert detail =~ "/nonexistent/elsewhere"
+    end
+
+    test "outside: :untouched sees a write into the planted tree", ctx do
+      c =
+        Map.merge(@t0, %{
+          setup: {ChainTest.Conformance.Setup.Cache, %{plant: :link_dir}},
+          after: %{outside: :untouched}
+        })
+
+      cases!(ctx.opts, [c])
+      snapshot = with_file(ctx.snapshot)
+
+      assert {[%Result{class: :pass}], _} =
+               Conformance.run(kept(ctx), touching(self(), snapshot, fn _ -> :ok end))
+
+      # The client writes through the linked cache dir.
+      write = fn home -> File.write!(Path.join(home, "files/#{@sha}"), "x") end
+
+      assert {[%Result{class: :fail, detail: detail}], _} =
+               Conformance.run(kept(ctx), touching(self(), snapshot, write))
+
+      assert detail =~ "after outside"
+    end
+
+    test "runs: 2 builds twice: first cold, served unchanged, in its own home; then warm",
+         ctx do
+      cases!(ctx.opts, [Map.put(@t0, :runs, 2)])
+
+      assert {[%Result{class: :pass}], _} =
+               Conformance.run(kept(ctx), steps(self(), ctx.snapshot))
+
+      assert_received {:build, first}
+      assert_received {:build, second}
+      refute Map.get(first, :keep_build, false)
+      assert second.keep_build == true
+      assert first.home != second.home
+      refute File.exists?(first.home)
+      assert first.client_config == nil
+    end
+
+    test "runs: 2 fails the case, unjudged, when the warm build does not install", ctx do
+      cases!(ctx.opts, [Map.put(@t0, :runs, 2)])
+      s = steps(self(), ctx.snapshot)
+
+      build = fn input ->
+        {rows, info} = s.build.(input)
+
+        if Map.get(input, :keep_build),
+          do: {rows, info},
+          else: {[%Result{step: :build, check: "hit:jason", class: :fail, detail: "no"}], info}
+      end
+
+      assert {[%Result{class: :fail, detail: detail}], _} =
+               Conformance.run(kept(ctx), %{s | build: build})
+
+      assert detail =~ "warm build"
+      assert detail =~ "hit:jason"
+    end
+
+    test "a transform's stream_max_ms reaches its mirror, and only its own", ctx do
+      test = self()
+
+      mirror = fn dir, opts ->
+        send(test, {:mirror_opts, opts})
+        ChainTest.Mirror.start(dir, opts)
+      end
+
+      c = %{@t0 | transform: {ChainTest.Mirror.Drip, %{paths: :batch, stream_max_ms: 1_000}}}
+      cases!(ctx.opts, [c])
+      s = Map.put(steps(self(), ctx.snapshot), :mirror, mirror)
+      Conformance.run(kept(ctx), s)
+
+      assert_received {:mirror_opts, reference}
+      assert_received {:mirror_opts, case_opts}
+      refute Keyword.has_key?(reference, :stream_max_ms)
+      assert case_opts[:stream_max_ms] == 1_000
+    end
+  end
+
+  # The snapshot with one file of jason's build stored.
+  defp with_file(snapshot) do
+    File.mkdir_p!(Path.join(snapshot.dir, "files"))
+    File.write!(Path.join(snapshot.dir, "files/" <> String.duplicate("b", 64)), "bytes")
+    put_in(snapshot.deps["jason"][:file_shas], [String.duplicate("b", 64)])
+  end
 end
