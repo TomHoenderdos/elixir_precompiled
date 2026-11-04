@@ -40,33 +40,62 @@ defmodule ElixirPrecompiled.Check do
       debug("precompiled: no dependencies to check")
       :nothing_to_do
     else
-      config = config |> with_home(env) |> with_deadline() |> with_toolchain(opts)
-      # Temp files a killed run left behind; an hour back, so a run sharing
-      # this home mid-write keeps its own.
-      Fetch.sweep_tmp(config, System.os_time(:second) - 3600)
-      debug_skipped(skipped)
-      config_fun = Keyword.get(opts, :config_fun, &CompileEnv.lookup/2)
+      # Origins that fail to connect are not asked again this run.
+      dead = Fetch.new_dead_origins()
 
-      lines =
-        except_lines(excepted, env) ++ lines_for(candidates, installed, config, env, config_fun)
+      try do
+        config =
+          config
+          |> with_home(env)
+          |> with_deadline()
+          |> with_toolchain(opts)
+          |> Map.put(:dead_origins, dead)
 
-      # Installs kept on a refused or missing batch are one warning, not a
-      # FAIL line each: an offline warm build is a correct build. The
-      # report still lists them.
-      {kept, shown} = Enum.split_with(lines, &Map.get(&1, :kept, false))
-      {noted, kept} = Enum.split_with(kept, &Map.get(&1, :note, false))
-      Enum.each(shown, &print/1)
-      print_kept(kept)
-      Enum.each(noted, &print_note/1)
-      ms = System.monotonic_time(:millisecond) - started
-      report = summarize(lines, ms)
-      # A warm build whose installs the batch still names has nothing to say.
-      if shown != [], do: print_summary(summarize(shown, ms), length(shown))
-      print_stripped(Enum.count(lines, &Map.get(&1, :stripped, false)))
-      # Nothing to say also means nothing to record: keep the last report.
-      if lines != [], do: write_report(env.build_lib, report)
-      {:ok, report}
+        run_check(config, env, opts, %{
+          started: started,
+          candidates: candidates,
+          skipped: skipped,
+          excepted: excepted,
+          installed: installed
+        })
+      after
+        :ets.delete(dead)
+      end
     end
+  end
+
+  defp run_check(config, env, opts, %{
+         started: started,
+         candidates: candidates,
+         skipped: skipped,
+         excepted: excepted,
+         installed: installed
+       }) do
+    # Temp files a killed run left behind; an hour back, so a run sharing
+    # this home mid-write keeps its own.
+    Fetch.sweep_tmp(config, System.os_time(:second) - 3600)
+    debug_skipped(skipped)
+    config_fun = Keyword.get(opts, :config_fun, &CompileEnv.lookup/2)
+
+    lines =
+      except_lines(excepted, env) ++ lines_for(candidates, installed, config, env, config_fun)
+
+    # Installs kept on a refused or missing batch are one warning, not a
+    # FAIL line each: an offline warm build is a correct build. The
+    # report still lists them.
+    {kept, shown} = Enum.split_with(lines, &Map.get(&1, :kept, false))
+    {noted, kept} = Enum.split_with(kept, &Map.get(&1, :note, false))
+    Enum.each(shown, &print/1)
+    print_kept(kept)
+    Enum.each(noted, &print_note/1)
+    ms = System.monotonic_time(:millisecond) - started
+    report = summarize(lines, ms)
+    # A warm build whose installs the batch still names has nothing to say.
+    if shown != [], do: print_summary(summarize(shown, ms), length(shown))
+    print_stripped(Enum.count(lines, &Map.get(&1, :stripped, false)))
+    # Nothing to say also means nothing to record: keep the last report.
+    if lines != [], do: write_report(env.build_lib, report)
+    {:ok, report}
   end
 
   @doc false

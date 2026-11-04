@@ -55,8 +55,72 @@ defmodule ElixirPrecompiled.Fetch do
           :offline
         ])
 
-    ElixirPrecompiled.HTTP.get(url, http_opts)
+    guarded(opts, url, fn -> ElixirPrecompiled.HTTP.get(url, http_opts) end)
   end
+
+  @doc false
+  # The origins that failed to connect so far in one run (Check makes one
+  # per run and passes it as :dead_origins). A later request to one of them
+  # fails at once as unreachable instead of waiting out another connect
+  # timeout: once the source is down and a cached batch stands in, every
+  # manifest and file it would serve misses fast. Only connection failures
+  # count; an origin that answered (a 5xx, a 404, wrong bytes) is asked
+  # again.
+  @spec new_dead_origins() :: :ets.tid()
+  def new_dead_origins(), do: :ets.new(__MODULE__, [:set, :public])
+
+  # A dead origin answers with the error it failed with first, so the line
+  # a user reads is the same either way.
+  defp guarded(opts, url, request) do
+    table = Keyword.get(opts, :dead_origins)
+    key = origin_key(url)
+
+    case dead(table, key) do
+      {:error, _} = error ->
+        error
+
+      nil ->
+        result = request.()
+        if connect_failure?(result), do: mark_dead(table, key, result)
+        result
+    end
+  end
+
+  defp origin_key(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host, port: port} when is_binary(host) -> {scheme, host, port}
+      _ -> nil
+    end
+  end
+
+  # A table from a run that is over (deleted) is no table.
+  defp dead(nil, _), do: nil
+  defp dead(_, nil), do: nil
+
+  defp dead(table, key) do
+    case :ets.lookup(table, key) do
+      [{^key, error}] -> error
+      [] -> nil
+    end
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp mark_dead(nil, _, _), do: :ok
+  defp mark_dead(_, nil, _), do: :ok
+
+  defp mark_dead(table, key, error) do
+    :ets.insert_new(table, {key, error})
+    :ok
+  rescue
+    ArgumentError -> :ok
+  end
+
+  @connect_errors [:econnrefused, :ehostunreach, :enetunreach, :nxdomain, :connect_timeout]
+
+  defp connect_failure?({:error, {:failed_connect, _}}), do: true
+  defp connect_failure?({:error, reason}) when reason in @connect_errors, do: true
+  defp connect_failure?(_), do: false
 
   @doc """
   GET a metadata document (the batch), sending `etag` as `If-None-Match`
@@ -76,7 +140,9 @@ defmodule ElixirPrecompiled.Fetch do
     opts =
       [headers: headers, max_bytes: @max_body_bytes, same_origin: true] ++ metadata_opts(config)
 
-    case ElixirPrecompiled.HTTP.request(url, opts) do
+    http_opts = Keyword.delete(opts, :dead_origins)
+
+    case guarded(opts, url, fn -> ElixirPrecompiled.HTTP.request(url, http_opts) end) do
       {:ok, body, etag} -> {:ok, body, etag}
       :not_modified -> :not_modified
       {:error, reason} -> {:error, classify(reason)}
@@ -123,7 +189,8 @@ defmodule ElixirPrecompiled.Fetch do
   defp common_opts(config),
     do: [
       connect_timeout_ms: Map.get(config, :connect_timeout_ms, 5_000),
-      offline: Map.get(config, :offline, false)
+      offline: Map.get(config, :offline, false),
+      dead_origins: Map.get(config, :dead_origins)
     ]
 
   defp deadline_opt(config) do

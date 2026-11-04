@@ -375,7 +375,7 @@ Igniter's installer needs Elixir 1.18.
 | `batch unavailable: <why>` | The source did not deliver a batch (network error, 4xx/5xx, refused redirect) and no cached one could stand in: everything compiles from source. |
 | `batch signature invalid`, `batch stale: ...`, `batch expired at ...`, `batch sequence N is older than M`, `batch lifetime ...`, `batch malformed` | A batch was delivered but failed that check; it is never used, and nothing installs this run. A stale or expired batch usually means the source stopped publishing. |
 | `batch unavailable: offline, no cached batch` | `ELIXIR_PRECOMPILED_OFFLINE=1` is set and this home holds no batch yet: everything compiles from source. Run once online to fill the cache. |
-| `source unreachable (<why>); using the cached batch` | The network failed; a cached batch that still passes every check stood in. |
+| `source unreachable (<why>); using the cached batch` | The network failed; a cached batch that still passes every check stood in. Manifests and files not in the cache then miss at once: an origin that failed to connect is not asked again in that run. |
 | `no fresh batch (<why>); N installed builds kept, not rechecked` | Earlier installs stay as they are until a batch is available again. |
 | `clock is before ...` | The machine's clock is wrong (a device before NTP). Set it; nothing installs until then. |
 | `cache dir ... is not writable; using ...` | The run used a fresh cache under `_build`. Fix the permissions or set `ELIXIR_PRECOMPILED_HOME`. |
