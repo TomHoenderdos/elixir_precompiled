@@ -65,7 +65,7 @@ defmodule ChainTest.Conformance.CaseTest do
       {:ok, cases} = Case.load(Path.join(ChainTest.CLI.root(), "conformance/cases.exs"))
       ids = cases |> Enum.flat_map(&String.split(&1.id, ".")) |> MapSet.new()
 
-      for id <- ~w(T0 R8 R0 T1 T3-removed T3-duplicated T4 R3 T5 T6 T9 R1 R6 T10 R2 R4-previous
+      for id <- ~w(T0 R8 R0 T1 T3-removed T4 R3 T5 T6 T9 R1 R6 T10 R2 R4-previous
                    R4-old R5 R7 R12 R13 R19) do
         assert id in ids, "no case for #{id}"
       end
@@ -80,12 +80,19 @@ defmodule ChainTest.Conformance.CaseTest do
       end
 
       assert by_id["R13"].client.default == {:fail, "batch stale"}
+      assert by_id["R12"].client.default == {:fail, "clock is before"}
+      assert by_id["R2.R6.T10"].client.default == {:fail, "batch stale"}
+
+      for id <- ["R4-previous", "R4-old"],
+          do: assert(by_id[id].after.log == "is unreadable; treating it as 0", id)
+
+      refute Map.has_key?(by_id, "T3-duplicated")
     end
 
     test "every refusal in the repository's case file leaves state, _build and cache alone (R14)" do
       {:ok, cases} = Case.load(Path.join(ChainTest.CLI.root(), "conformance/cases.exs"))
       refusals = Enum.filter(cases, &match?(%{client: %{default: {:fail, _}}}, &1))
-      assert length(refusals) >= 10
+      assert length(refusals) >= 9
 
       for c <- refusals do
         assert %{state_sequence: :unchanged, installed: :none, cache: :untouched} =
@@ -469,6 +476,7 @@ defmodule ChainTest.Conformance.CaseTest do
 
       assert {:ok, _} = Case.load(write(tmp, [%{@v2 | after: %{state_sequence: :previous}}]))
       assert {:ok, _} = Case.load(write(tmp, [%{@v2 | after: %{other_states: :unchanged}}]))
+      assert {:ok, _} = Case.load(write(tmp, [%{@v2 | after: %{log: "treating it as 0"}}]))
 
       for env <- [
             %{"ELIXIR_PRECOMPILED_ROOT" => {:home, "attacker/root.json"}},
@@ -496,6 +504,8 @@ defmodule ChainTest.Conformance.CaseTest do
           {"a bad cache", :after, %{cache: :empty}},
           {"an empty after", :after, %{}},
           {"a bad other_states", :after, %{other_states: :gone}},
+          {"an empty log", :after, %{log: ""}},
+          {"a log that is not a string", :after, %{log: :warned}},
           {"a client_env name the harness does not allow", :client_env,
            %{"ELIXIR_PRECOMPILED_HOME" => "/h"}},
           {"a client_env value outside the home", :client_env,
@@ -589,6 +599,23 @@ defmodule ChainTest.Conformance.CaseTest do
       unnamed = %{own_moved | after: obs(%{"zzz/state" => "9"}, [], {:error, "no root"})}
       assert %Result{class: :fail, detail: d} = judged(%{other_states: :unchanged}, unnamed)
       assert d =~ "no root"
+    end
+
+    test "log: the build's output must contain the substring" do
+      seen = %{
+        before: obs(%{}),
+        after: obs(%{}),
+        installed: ["jason"],
+        log: "a\nx is unreadable; treating it as 0\n"
+      }
+
+      assert %Result{class: :pass} = judged(%{log: "treating it as 0"}, seen)
+
+      assert %Result{class: :fail, detail: detail} = judged(%{log: "never said"}, seen)
+      assert detail =~ "after log"
+      assert detail =~ "never said"
+
+      assert %Result{class: :fail} = judged(%{log: "treating it as 0"}, Map.delete(seen, :log))
     end
 
     test "state_sequence: :absent means no own state file" do

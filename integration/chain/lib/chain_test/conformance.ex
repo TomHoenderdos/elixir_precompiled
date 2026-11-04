@@ -12,17 +12,20 @@ defmodule ChainTest.Conformance do
   (`ChainTest.Snapshot`; good for 24 hours), or loads the one a
   `--snapshot-dir` already holds (`ChainTest.Snapshot.obtain/1`: re-verified,
   under 24 hours old, same source, target and fixture lock, else the run is
-  refused), and starts a reference mirror
-  that serves it unchanged. Per case: a case that needs something the
-  snapshot lacks (`ChainTest.Snapshot.available/2`: an older batch, say) is
-  `:not_exercised`, "not testable here", and nothing runs; otherwise a mirror over the snapshot
-  with the case's transform (two when its args say `mirrors: 2`: the second
-  is started first, so the case mirror knows its URL); a fresh, empty client
-  home (a private temp dir, removed after the case) and the case's
-  `setup` in it (a failed setup fails the case, unbuilt); the fixture build
-  (`ChainTest.Build`, `mix compile` for the target, that home, the client's
-  source at the case's mirror, the case's `client_config` and `client_env`
-  (a `{:home, rel}` path resolved under that home), an empty site config); step 3 (`ChainTest.Integrity`) against the snapshot's verified
+  refused), and starts a reference mirror that serves it unchanged. Per
+  case: a case that needs something the snapshot lacks
+  (`ChainTest.Snapshot.available/2`: an older batch, say) is
+  `:not_testable`, "not testable here", decided from snapshot facts alone,
+  and nothing runs; it does not fail the run. Otherwise a mirror over the
+  snapshot with the case's transform (two when its args say `mirrors: 2`:
+  the second is started first, so the case mirror knows its URL); a fresh,
+  empty client home (a private temp dir, removed after the case) and the
+  case's `setup` in it (a failed setup fails the case, unbuilt); the
+  fixture build (`ChainTest.Build`, `mix compile` for the target, that
+  home, the client's source at the case's mirror, the case's
+  `client_config` and `client_env` (a `{:home, rel}` path resolved under
+  that home), an empty site config); step 3 (`ChainTest.Integrity`)
+  against the snapshot's verified
   batch through the reference mirror, never the case's; step 4
   (`ChainTest.Compiled`); what the home and `_build` hold, for the case's
   `after`; then the case's verdict. A case that raises is a `:fail`
@@ -239,8 +242,8 @@ defmodule ChainTest.Conformance do
         Enum.each(mirrors, &Mirror.stop/1)
       end
     else
-      {:not_exercised, why} ->
-        verdict = %Result{step: :conformance, check: c.id, class: :not_exercised, detail: why}
+      {class, why} when class in [:not_testable, :not_exercised] ->
+        verdict = %Result{step: :conformance, check: c.id, class: class, detail: why}
         CLI.print(verdict)
         verdict
     end
@@ -257,7 +260,7 @@ defmodule ChainTest.Conformance do
 
     case missing do
       [] -> :ok
-      _ -> {:not_exercised, "not testable here: " <> Enum.join(missing, "; ")}
+      _ -> {:not_testable, "not testable here: " <> Enum.join(missing, "; ")}
     end
   end
 
@@ -385,7 +388,8 @@ defmodule ChainTest.Conformance do
         observed = %{
           before: before,
           after: home_view(home, context),
-          installed: installed(Path.join([opts.fixture_dir, "_build", "#{opts.target}_dev"]))
+          installed: installed(Path.join([opts.fixture_dir, "_build", "#{opts.target}_dev"])),
+          log: Map.get(build, :log, "")
         }
 
         second = Enum.flat_map(tl(mirrors), &Mirror.requests/1)

@@ -46,7 +46,8 @@ defmodule ChainTest.Conformance.Case do
       :elixir_precompiled` for this case's build only
       (`ChainTest.Build.client_config?/1`): `clock_offset_seconds`
       (integer, or `{:age, seconds}`: the client's clock that long after
-      the snapshot batch's `issued`, `ChainTest.Conformance.Clock`), `root` (an absolute path), `source` (URL).
+      the snapshot batch's `issued`, `ChainTest.Conformance.Clock`),
+      `root` (an absolute path), `source` (URL).
     * `client_env` - environment variables for this case's build only, from
       the few `ChainTest.Build.client_env_names/0` allows (the names a
       client might wrongly take a root path from: T9): each an absolute
@@ -63,6 +64,8 @@ defmodule ChainTest.Conformance.Case do
         home, this one included, as setup left it).
       * `other_states` - `:unchanged`: every state file in the home other
         than that one as setup left it (a second source's, R19).
+      * `log` - a non-empty string the build's output must contain (a
+        warning the client must print, R4).
       * `installed` - `:none` (no `.mix/elixir_precompiled.json` anywhere
         in the target's `_build`) or `:snapshot` (one for exactly the deps
         the snapshot holds a build of, the Nerves tooling aside).
@@ -103,6 +106,7 @@ defmodule ChainTest.Conformance.Case do
   @type post :: %{
           optional(:state_sequence) => integer() | :snapshot | :previous | :absent | :unchanged,
           optional(:other_states) => :unchanged,
+          optional(:log) => String.t(),
           optional(:installed) => :none | :snapshot,
           optional(:cache) => :untouched,
           optional(:second_mirror) => :requested | :untouched
@@ -127,9 +131,10 @@ defmodule ChainTest.Conformance.Case do
   the deps `_build` holds a provenance file for (a stray one by its path).
   """
   @type observed :: %{
-          before: home_view(),
-          after: home_view(),
-          installed: [String.t()]
+          required(:before) => home_view(),
+          required(:after) => home_view(),
+          required(:installed) => [String.t()],
+          optional(:log) => String.t()
         }
   @type home_view :: %{
           states: %{String.t() => binary()},
@@ -139,7 +144,7 @@ defmodule ChainTest.Conformance.Case do
 
   @keys [:client, :description, :harness, :id, :transform]
   @optional [:after, :client_config, :client_env, :setup]
-  @post_keys [:cache, :installed, :other_states, :second_mirror, :state_sequence]
+  @post_keys [:cache, :installed, :log, :other_states, :second_mirror, :state_sequence]
   @statuses [:hit, :miss, :fail]
   @benign [:pass, :miss]
   @identity ChainTest.Mirror.Identity
@@ -216,8 +221,9 @@ defmodule ChainTest.Conformance.Case do
           "ChainTest.Conformance.Setup and args it accepts"
 
       Map.has_key?(c, :client_config) and not Clock.case_config?(c.client_config) ->
-        "client_config must map clock_offset_seconds to an integer or {:age, integer}, root to an absolute " <>
-          "path and source to a non-empty string, got #{inspect(c.client_config)}"
+        "client_config must map clock_offset_seconds to an integer or {:age, integer}, " <>
+          "root to an absolute path and source to a non-empty string, got " <>
+          inspect(c.client_config)
 
       Map.has_key?(c, :client_env) and not client_env?(c.client_env) ->
         "client_env must map names from #{inspect(Build.client_env_names())} to an " <>
@@ -234,9 +240,10 @@ defmodule ChainTest.Conformance.Case do
   defp after_problem(post, transform) do
     cond do
       not post?(post) ->
-        "after must be a non-empty map of state_sequence (integer, :snapshot, :previous, " <>
-          ":absent, :unchanged), other_states (:unchanged), installed (:none, :snapshot), cache (:untouched), second_mirror " <>
-          "(:requested, :untouched), got " <> inspect(post)
+        "after must be a non-empty map of state_sequence (integer, :snapshot, " <>
+          ":previous, :absent, :unchanged), other_states (:unchanged), installed " <>
+          "(:none, :snapshot), cache (:untouched), log (a non-empty string), " <>
+          "second_mirror (:requested, :untouched), got " <> inspect(post)
 
       Map.has_key?(post, :second_mirror) and Transform.mirrors(transform) != 2 ->
         "after second_mirror needs a transform with mirrors: 2"
@@ -289,6 +296,7 @@ defmodule ChainTest.Conformance.Case do
     do: is_integer(v) or v in [:snapshot, :previous, :absent, :unchanged]
 
   defp post_value?(:other_states, v), do: v == :unchanged
+  defp post_value?(:log, v), do: is_binary(v) and v != ""
 
   defp post_value?(:installed, v), do: v in [:none, :snapshot]
   defp post_value?(:cache, v), do: v == :untouched
@@ -496,6 +504,16 @@ defmodule ChainTest.Conformance.Case do
         do:
           "after state_sequence: expected the state unchanged, #{rel} was " <>
             "#{state(before[rel])}, is #{state(now[rel])}"
+  end
+
+  defp post_problem(:log, want, seen, _snap, _input) do
+    log = Map.get(seen, :log)
+
+    cond do
+      not is_binary(log) -> ["after log: the runner kept no build output to check"]
+      String.contains?(log, want) -> []
+      true -> ["after log: the build's output never says #{inspect(want)}"]
+    end
   end
 
   defp post_problem(:other_states, :unchanged, seen, _snap, _input) do

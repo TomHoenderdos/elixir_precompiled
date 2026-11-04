@@ -10,8 +10,9 @@ defmodule ChainTest.ResultTest do
   defp results(classes),
     do: Enum.map(classes, &%Result{step: :test, check: "c", class: &1, detail: "", ms: 0})
 
-  test "exit code is 0 for pass, miss and rerun" do
-    assert Result.exit_code(results([:pass, :miss, :rerun])) == 0
+  test "exit code is 0 for pass, miss, rerun and not testable here" do
+    assert Result.exit_code(results([:pass, :miss, :rerun, :not_testable])) == 0
+    assert :not_testable in Result.classes()
     assert Result.exit_code([]) == 0
   end
 

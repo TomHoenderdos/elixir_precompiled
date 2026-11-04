@@ -106,8 +106,9 @@ says `FAIL`.
 | `refused` | The client refused where it should have installed; the detail is the client's reason. | 1 |
 | `disagreement` | The client's account and the harness's own check differ: a hit whose files do not match its manifest, a device file that differs from the release image, a verdict on the batch that differs. | 1 |
 | `not_exercised` | The check could not run, so it proves nothing (an earlier step failed). | 1 |
+| `not_testable` | Conformance only: a case the snapshot cannot back, decided from snapshot facts alone before anything ran (an older batch the portal no longer keeps, a root with batch threshold 1). Listed in the report's "Not testable here" section; the heading counts them, e.g. `PASS (1 not testable here)`. | 0 |
 
-A run whose report is all `pass`, `miss` and `rerun` exits 0. The report's
+A run whose report is all `pass`, `miss`, `rerun` and `not_testable` exits 0. The report's
 heading is `PASS` only without a `rerun`; with one it is `RERUN`, and the run
 should be repeated before it counts. When step 1 could not verify any batch
 either, the client batch's failed checks stay failures.
@@ -141,7 +142,7 @@ except for their age: `previous` (`N-1`) and `old` (the newest batch issued
 more than 25 hours before `N`), with the fixture deps each names another
 manifest for than `N` does (only their hashes: the portal serves the current
 batch's manifests only). The portal may not have them; a case that needs one
-it lacks is `not_exercised`, "not testable here", with the reason, and is not
+it lacks is `not_testable`, "not testable here", with the reason, and is not
 run.
 
 Cases are data, in `conformance/cases.exs`, one map per case:
@@ -156,7 +157,7 @@ Cases are data, in `conformance/cases.exs`, one map per case:
 | `setup` (optional) | `{module, args}`: a `ChainTest.Conformance.Setup` run against the case's fresh client home before the build (write a state file, fill the cache, plant a symlink). It gets the home, the snapshot with the case's `source`, `root` and mirror URLs under `:case`, and its args; `ChainTest.Conformance.Setup.state_dir/3` names the client's state dir. A setup that fails fails the case, unbuilt. `ChainTest.Conformance.Setup.State` writes the batch sequence state (`sequence: :snapshot`, `{:below, n}` or `:corrupt`; `source: :second` for the second mirror's); `ChainTest.Conformance.Setup.PlantRoot` writes an attacker's self-signed root at `path` under the home. |
 | `client_config` (optional) | Merged into the fixture's `config :elixir_precompiled` for this case's build only, after the operator's site config: `clock_offset_seconds` (integer, or `{:age, seconds}`: the client's clock that long after the snapshot batch's `issued`, resolved just before the build, so the case does not depend on the snapshot's age or the run's order), `root` (an absolute path), `source` (URL). |
 | `client_env` (optional) | Environment variables for this case's build only, from the names a client might wrongly read a root path from (`ChainTest.Build.client_env_names/0`: `ELIXIR_PRECOMPILED_ROOT` and `NERVES_PRECOMPILED_ROOT` only, the names the client's own pattern would give; it reads neither today, and T9 pins that): an absolute path, or `{:home, rel}` for a path under the case home. Every allowed name a case does not give is unset. |
-| `after` (optional) | Post-conditions after the build: `state_sequence` (the client's state file for the case's source and root holds an integer, or `:snapshot`, the snapshot batch's sequence, or `:previous`, the previous batch's; `:absent`; or `:unchanged`, every state file in the home as setup left it), `other_states` (`:unchanged`: every state file but that one as setup left it), `installed` (`:none`: no `.mix/elixir_precompiled.json` in the target's `_build`; `:snapshot`: exactly the deps the snapshot holds a build of), `cache: :untouched` (no cache entry beyond what setup wrote), and, with `mirrors: 2`, `second_mirror` (`:requested`: the client asked the second mirror for something; `:untouched`: it asked nothing). |
+| `after` (optional) | Post-conditions after the build: `state_sequence` (the client's state file for the case's source and root holds an integer, or `:snapshot`, the snapshot batch's sequence, or `:previous`, the previous batch's; `:absent`; or `:unchanged`, every state file in the home as setup left it), `other_states` (`:unchanged`: every state file but that one as setup left it), `installed` (`:none`: no `.mix/elixir_precompiled.json` in the target's `_build`; `:snapshot`: exactly the deps the snapshot holds a build of), `cache: :untouched` (no cache entry beyond what setup wrote), `log` (a non-empty string the build's output must contain, a client warning say), and, with `mirrors: 2`, `second_mirror` (`:requested`: the client asked the second mirror for something; `:untouched`: it asked nothing). |
 
 A transform answers `{status, bytes}` or, to misbehave in other ways,
 `{status, headers, body}`, `{:redirect, 3xx, location}`, `{:stream, status,
@@ -172,8 +173,8 @@ transform or setup names what it needs of the snapshot: an older batch
 (`:previous`, `:old`), `:previous_manifests` (the previous batch names the
 current batch's manifest for every held dep, since only those bytes can be
 served) or `:batch_threshold_2` (a root whose batch role needs two
-signatures). A case whose snapshot lacks one is `not_exercised`, "not
-testable here", with the reason.
+signatures). A case whose snapshot lacks one is `not_testable`, "not
+testable here", with the reason; it does not fail the run.
 
 The layer-1 transforms over real signed bytes:
 `ChainTest.Mirror.BatchSignatures` (`change: :flip_bit | :remove |

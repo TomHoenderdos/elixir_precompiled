@@ -600,7 +600,7 @@ defmodule ChainTest.SnapshotTest do
     @tag :tmp_dir
     test "batch_threshold_2: the root's batch role needs two signatures", %{tmp_dir: tmp} do
       assert {:missing, why} = Snapshot.available(needs_snap(tmp, []), :batch_threshold_2)
-      assert why =~ "batch threshold is 1 in production"
+      assert why =~ "batch threshold is 1 in the snapshot's root"
 
       two = [Signed.key(), Signed.key()]
 

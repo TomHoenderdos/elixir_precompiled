@@ -18,12 +18,25 @@ defmodule ChainTest.Result do
     * `:not_exercised` - the check never ran, so it proves nothing.
     * `:rerun` - production moved under the run (a new batch between
       step 1 and step 2); run again.
+    * `:not_testable` - a conformance case the snapshot cannot back,
+      decided from snapshot facts alone before anything ran (an older
+      batch the portal no longer keeps, say): reported in its own section,
+      never failing the run. Anything else that did not run is
+      `:not_exercised`.
   """
 
   @enforce_keys [:step, :check, :class]
   defstruct [:step, :check, :class, detail: "", ms: 0, cause: nil]
 
-  @type class :: :pass | :fail | :refused | :miss | :disagreement | :not_exercised | :rerun
+  @type class ::
+          :pass
+          | :fail
+          | :refused
+          | :miss
+          | :disagreement
+          | :not_exercised
+          | :rerun
+          | :not_testable
   @type t :: %__MODULE__{
           step: atom(),
           check: String.t(),
@@ -43,7 +56,7 @@ defmodule ChainTest.Result do
   """
   @type cause :: nil | :batch_mismatch | :unavailable
 
-  @classes [:pass, :fail, :refused, :miss, :disagreement, :not_exercised, :rerun]
+  @classes [:pass, :fail, :refused, :miss, :disagreement, :not_exercised, :rerun, :not_testable]
   @failing [:fail, :refused, :disagreement, :not_exercised]
 
   @doc "Every result class."

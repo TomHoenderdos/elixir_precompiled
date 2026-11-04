@@ -6,6 +6,7 @@
 # ChainTest.Conformance.Case and in README.md, "Conformance". Ids are the
 # spec's (docs: "Attack vectors"); one case may stand for several rows when
 # this harness runs them the same way, its id joining theirs with ".".
+# T3's duplicated signature needs a batch threshold of 2: a test-key case.
 
 # The fixture's expected hits: a refused batch makes every one of them a
 # refusal, compiled from source instead.
@@ -83,12 +84,6 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     description: "The batch served with its signatures removed: refused.",
     transform: {ChainTest.Mirror.BatchSignatures, %{change: :remove}}
   }),
-  Map.merge(refused.("batch signature invalid", :not_exercised), %{
-    id: "T3-duplicated",
-    description:
-      "One valid signature served twice: one key counts once towards the threshold, so the batch is refused. Not testable while the batch threshold is 1 in production; Task 4 runs it under a test key.",
-    transform: {ChainTest.Mirror.BatchSignatures, %{change: :duplicate}}
-  }),
   Map.merge(refused.("batch sequence", nil), %{
     id: "T4.R3",
     description:
@@ -134,7 +129,7 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
   Map.merge(refused.("batch stale", :not_exercised), %{
     id: "R2.R6.T10",
     description:
-      "A fresh home is served a batch issued over 25 hours ago: refused as stale, state or not.",
+      "A fresh home is served a batch issued over 25 hours ago: refused as stale, state or not. Real 24-hour batches that old are also expired; the pinned batch stale prefix proves the freshness bound is what refused.",
     transform: {ChainTest.Mirror.OlderBatch, %{batch: :old}}
   }),
   Map.merge(accepted_previous, %{
@@ -143,9 +138,15 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
       "A corrupt state file counts as 0: the batch before the current one is accepted and replaces it.",
     transform: {ChainTest.Mirror.OlderBatch, %{batch: :previous, hits: true}},
     setup: {ChainTest.Conformance.Setup.State, %{sequence: :corrupt}},
-    after: %{state_sequence: :previous, installed: :snapshot}
+    after: %{
+      state_sequence: :previous,
+      installed: :snapshot,
+      log: "is unreadable; treating it as 0"
+    }
   }),
-  Map.merge(refused.("batch stale", :not_exercised), %{
+  refused.("batch stale", :not_exercised)
+  |> put_in([:after, :log], "is unreadable; treating it as 0")
+  |> Map.merge(%{
     id: "R4-old",
     description:
       "A corrupt state file counts as 0, yet a batch issued over 25 hours ago is still refused as stale.",
@@ -167,7 +168,9 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     transform: {ChainTest.Mirror.Identity, %{}},
     client_config: %{clock_offset_seconds: {:age, 25 * 3600}}
   }),
-  Map.merge(refused.("clock", :not_exercised), %{
+  # "clock is before": the floor check's own reason, not the future-issue
+  # one ("clock: batch issued at ...").
+  Map.merge(refused.("clock is before", :not_exercised), %{
     id: "R12",
     description:
       "The client's clock is 30 days before the library was built: refused, and everything compiles.",

@@ -101,9 +101,10 @@ defmodule ChainTest.BuildTest do
       assert info.fw_path ==
                Path.join(ctx.fixture, "_build/rpi4_dev/nerves/images/chain_fixture.fw")
 
-      refute Map.has_key?(info, :log)
       refute Map.has_key?(info, :home)
       assert length(info.report["lines"]) == 3
+
+      assert info.log =~ "precompiled: building"
 
       env = File.read!(Path.join(ctx.tmp, "mix.env"))
       assert env =~ "MIX_TARGET=rpi4\n"

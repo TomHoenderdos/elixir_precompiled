@@ -405,8 +405,8 @@ defmodule ChainTest.ConformanceTest do
       snapshot = Map.put(ctx.snapshot, :old, {:missing, "the portal keeps no old batch"})
 
       assert {[
-                %Result{check: "T0", class: :not_exercised, detail: detail},
-                %Result{check: "T2", class: :not_exercised, detail: detail2}
+                %Result{check: "T0", class: :not_testable, detail: detail},
+                %Result{check: "T2", class: :not_testable, detail: detail2}
               ], _} = Conformance.run(ctx.opts, v2_steps(self(), snapshot))
 
       assert detail =~ "not testable here"
@@ -497,6 +497,34 @@ defmodule ChainTest.ConformanceTest do
       refute File.exists?(home)
     end
 
+    test "the build's output reaches the after log check", ctx do
+      s = v2_steps(self(), ctx.snapshot)
+
+      build = fn input ->
+        {rows, info} = s.build.(input)
+        {rows, Map.put(info, :log, "precompiled: state x is unreadable; treating it as 0\n")}
+      end
+
+      cases!(ctx.opts, [
+        v2(@t0, %{id: "L1", after: %{log: "is unreadable; treating it as 0"}}),
+        v2(@t0, %{id: "L2", after: %{log: "something the client never said"}})
+      ])
+
+      assert {[%Result{check: "L1", class: :pass}, %Result{check: "L2", class: :fail} = l2], _} =
+               Conformance.run(ctx.opts, %{s | build: build})
+
+      assert l2.detail =~ "something the client never said"
+    end
+
+    test "not testable here does not fail the run's exit code", ctx do
+      t = %{@t0 | id: "T2", transform: {ChainTest.TestTransform, %{needs: [:old]}}}
+      cases!(ctx.opts, [@t0, t])
+      snapshot = Map.put(ctx.snapshot, :old, {:missing, "pruned"})
+      {verdicts, _} = Conformance.run(ctx.opts, v2_steps(self(), snapshot))
+      assert [%Result{class: :pass}, %Result{class: :not_testable}] = verdicts
+      assert Result.exit_code(verdicts) == 0
+    end
+
     test "a case needing a snapshot fact it lacks is not testable here, unbuilt", ctx do
       File.write!(
         Path.join(ctx.snapshot.dir, "root.json"),
@@ -506,11 +534,11 @@ defmodule ChainTest.ConformanceTest do
       t = %{@t0 | id: "T3", transform: {ChainTest.TestTransform, %{needs: [:batch_threshold_2]}}}
       cases!(ctx.opts, [t])
 
-      assert {[%Result{check: "T3", class: :not_exercised, detail: detail}], _} =
+      assert {[%Result{check: "T3", class: :not_testable, detail: detail}], _} =
                Conformance.run(ctx.opts, v2_steps(self(), ctx.snapshot))
 
       assert detail =~ "not testable here"
-      assert detail =~ "batch threshold is 1 in production"
+      assert detail =~ "batch threshold is 1 in the snapshot's root"
       refute_received {:build, _}
     end
 

@@ -54,7 +54,8 @@ defmodule ChainTest.Mirror.Transform do
   @doc """
   Whether `term` is `{module, args}` with a loaded module implementing
   `transform/3`, `args` without the reserved `:case`, `mirrors` (when given)
-  1 or 2, `needs/1` (when defined) naming only `t:ChainTest.Snapshot.need/0`s, and `valid_args?/1` (when defined) accepting `args`.
+  1 or 2, `needs/1` (when defined) naming only `t:ChainTest.Snapshot.need/0`s,
+  and `valid_args?/1` (when defined) accepting `args`.
   """
   @spec valid?(term()) :: boolean()
   def valid?({module, args}) when is_atom(module) and is_map(args) do

@@ -9,7 +9,7 @@ defmodule ChainTest.Build do
   The target's `_build/<target>_dev` is removed first and the client gets a
   fresh `ELIXIR_PRECOMPILED_HOME`, so every hit is downloaded and verified
   in this run. The client's `report.json` and its batch `state` file are read
-  afterwards.
+  afterwards, and the build's whole output is kept as `log`.
 
   A conformance case changes two things, for its own build only: a home its
   setup prepared (`:home_prepared`, taken as it is), and `:client_config`,
@@ -92,7 +92,8 @@ defmodule ChainTest.Build do
           report: map(),
           build_lib: Path.t(),
           fw_path: Path.t() | nil,
-          sequence: integer() | nil
+          sequence: integer() | nil,
+          log: String.t()
         }
 
   @doc "The client's refusal reason prefixes."
@@ -178,7 +179,7 @@ defmodule ChainTest.Build do
             Enum.map(expected.never, &result("never:#{&1}", :not_exercised, skipped)) ++
             [result("sequence", :not_exercised, skipped)]
 
-        {results, %{report: %{}, build_lib: build_lib, fw_path: nil, sequence: nil}}
+        {results, %{report: %{}, build_lib: build_lib, fw_path: nil, sequence: nil, log: ""}}
     end
   end
 
@@ -265,7 +266,8 @@ defmodule ChainTest.Build do
        report: report || %{},
        build_lib: build_lib,
        fw_path: fw,
-       sequence: sequence
+       sequence: sequence,
+       log: log
      }}
   end
 

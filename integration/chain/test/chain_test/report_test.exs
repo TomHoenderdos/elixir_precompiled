@@ -112,6 +112,35 @@ defmodule ChainTest.ReportTest do
     assert heading.([rerun, fail], "f") == "# Chain test: rpi4 (FAIL)"
   end
 
+  test "not testable here counts in the heading and gets its own section", %{tmp_dir: dir} do
+    write = fn results, name ->
+      {:ok, %{md: md}} = Report.write(Path.join(dir, name), "rpi4", results, %{})
+      File.read!(md)
+    end
+
+    pass = %Result{step: :conformance, check: "T0", class: :pass}
+
+    untestable = %Result{
+      step: :conformance,
+      check: "X1",
+      class: :not_testable,
+      detail: "not testable here: no old batch"
+    }
+
+    fail = %Result{step: :conformance, check: "F", class: :fail}
+    miss = %Result{step: :build, check: "hit:a", class: :miss}
+
+    md = write.([pass, untestable], "t")
+    assert hd(String.split(md, "\n")) == "# Chain test: rpi4 (PASS (1 not testable here))"
+    assert md =~ "## Not testable here\n\n- X1: not testable here: no old batch\n"
+
+    assert hd(String.split(write.([pass, untestable, miss], "m"), "\n")) ==
+             "# Chain test: rpi4 (PASS (1 miss, 1 not testable here))"
+
+    assert hd(String.split(write.([untestable, fail], "f"), "\n")) == "# Chain test: rpi4 (FAIL)"
+    refute write.([pass], "p") =~ "## Not testable here"
+  end
+
   test "the heading counts expected hits that missed", %{tmp_dir: dir} do
     heading = fn results, name ->
       {:ok, %{md: md}} = Report.write(Path.join(dir, name), "rpi4", results, %{})

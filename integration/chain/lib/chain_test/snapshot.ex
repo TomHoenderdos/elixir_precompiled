@@ -145,10 +145,12 @@ defmodule ChainTest.Snapshot do
       {:ok, t} when t >= 2 ->
         :ok
 
+      # The snapshot's root.json is the served root, which equals the trusted
+      # one: the client adopts only roots that chain from it.
       {:ok, t} ->
         {:missing,
-         "batch threshold is #{t} in production: one signature meets it, so a duplicated " <>
-           "signature has nothing to count twice towards"}
+         "batch threshold is #{t} in the snapshot's root: one signature meets it, so a " <>
+           "duplicated signature has nothing to count twice towards"}
 
       {:error, why} ->
         {:missing, why}

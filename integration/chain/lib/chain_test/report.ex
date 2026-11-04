@@ -114,15 +114,28 @@ defmodule ChainTest.Report do
     | step | check | class | ms | detail |
     | --- | --- | --- | --- | --- |
     #{result_rows}
-    #{step_times(results)}
+    #{step_times(results)}#{not_testable(results)}
     ## Known, not testable
 
     #{gaps}\
     """
   end
 
+  # Cases the snapshot could not back, apart from the results that ran.
+  defp not_testable(results) do
+    case Enum.filter(results, &(&1.class == :not_testable)) do
+      [] ->
+        ""
+
+      rs ->
+        "\n## Not testable here\n\n" <>
+          Enum.map_join(rs, "", &"- #{cell(&1.check)}: #{cell(&1.detail)}\n")
+    end
+  end
+
   # A rerun exits 0 but does not count as a pass: run again.
-  # "PASS (2 miss)" when expected hits fell back to compiling.
+  # "PASS (2 miss)" when expected hits fell back to compiling, "PASS (1 not
+  # testable here)" when a case could not be backed by the snapshot.
   defp verdict(results) do
     base =
       cond do
@@ -132,7 +145,14 @@ defmodule ChainTest.Report do
       end
 
     misses = Enum.count(results, &(&1.class == :miss and String.starts_with?(&1.check, "hit:")))
-    if base != "FAIL" and misses > 0, do: "#{base} (#{misses} miss)", else: base
+    untestable = Enum.count(results, &(&1.class == :not_testable))
+
+    notes =
+      [{misses, "miss"}, {untestable, "not testable here"}]
+      |> Enum.filter(fn {n, _} -> n > 0 end)
+      |> Enum.map_join(", ", fn {n, what} -> "#{n} #{what}" end)
+
+    if base != "FAIL" and notes != "", do: "#{base} (#{notes})", else: base
   end
 
   defp step_times(results) do
