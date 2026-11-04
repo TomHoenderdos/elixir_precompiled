@@ -239,10 +239,12 @@ defmodule ChainTest.ReportTest do
   end
 
   test "known_gaps/0 names N3's positive control: the client has no CA option" do
-    assert Enum.any?(Report.known_gaps(), &(&1 =~ "N3" and &1 =~ "no CA option"))
+    assert [gap] = Enum.filter(Report.known_gaps(), &(&1 =~ "N3"))
+    assert gap =~ "no CA option"
+    assert gap =~ "no N3 trust case (self-signed, wrong-host)"
   end
 
-  test "known_gaps/0 says R20 is its own check, outside the case run" do
-    assert Enum.any?(Report.known_gaps(), &(&1 =~ "R20" and &1 =~ "--policy"))
+  test "known_gaps/0 does not list R20: --policy tests it" do
+    refute Enum.any?(Report.known_gaps(), &(&1 =~ "R20"))
   end
 end

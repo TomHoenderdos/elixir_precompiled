@@ -13,7 +13,8 @@ defmodule ChainTest.Policy do
   all). Then, by the portal's promise:
 
     * `expires - issued` is positive and at most 24 h;
-    * `now - issued` is at most 15 minutes at fetch time (a batch every
+    * `now - issued` is at most 15 minutes, `now` the time the response
+      arrived (taken as soon as the fetch returns; a batch every
       15 minutes), and the batch is not issued more than 300 s ahead of
       this clock (the skew the harness allows elsewhere).
 
@@ -31,7 +32,8 @@ defmodule ChainTest.Policy do
   @doc """
   Checks the source's current batch. Input `%{source}`, optional
   `:trust_opts` (merged into the `ChainTest.Trust` config) and `:now`
-  (default the time the batch was fetched).
+  (default: the clock read as soon as the fetch returned, the time the
+  response arrived).
   """
   @spec check(map()) :: Result.t()
   def check(%{source: source} = input) do
@@ -71,7 +73,7 @@ defmodule ChainTest.Policy do
         [
           lifetime <= 0 && "expires is not after issued",
           lifetime > @max_lifetime_s && "lifetime #{lifetime} s exceeds #{@max_lifetime_s} s",
-          age > @max_age_s && "age #{age} s exceeds #{@max_age_s} s at fetch time",
+          age > @max_age_s && "age #{age} s exceeds #{@max_age_s} s when the response arrived",
           age < -@max_ahead_s &&
             "issued #{-age} s ahead of this clock (more than #{@max_ahead_s} s)"
         ],
@@ -81,7 +83,7 @@ defmodule ChainTest.Policy do
     facts =
       "batch #{seq}: issued #{DateTime.to_iso8601(issued)}, expires " <>
         "#{DateTime.to_iso8601(expires)}; lifetime #{lifetime} s (at most #{@max_lifetime_s}), " <>
-        "age #{age} s at fetch time (at most #{@max_age_s})"
+        "age #{age} s when the response arrived (at most #{@max_age_s})"
 
     case problems do
       [] -> result(:pass, facts)

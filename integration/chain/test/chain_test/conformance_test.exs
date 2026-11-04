@@ -928,7 +928,7 @@ defmodule ChainTest.ConformanceTest do
           id: "N3",
           description: "Untrusted.",
           transform: {ChainTest.Mirror.Identity, %{tls: :ip}},
-          after: %{installed: :none, tls: :rejected}
+          after: %{installed: :none, tls: {:rejected, :unknown_ca}}
         })
 
       cases!(ctx.opts, [control, n3])

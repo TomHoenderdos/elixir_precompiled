@@ -445,14 +445,16 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     description:
       "HTTPS with a self-signed certificate for 127.0.0.1: every handshake refused, nothing fetched, everything compiles.",
     transform: {ChainTest.Mirror.Identity, %{tls: :self_signed}},
-    after: Map.put(no_batch.after, :tls, :rejected)
+    after: Map.put(no_batch.after, :tls, {:rejected, :bad_certificate})
   }),
   Map.merge(no_batch, %{
     id: "N3-wrong-host",
     description:
       "HTTPS with a certificate for another host, from a CA the client does not know: every handshake refused.",
     transform: {ChainTest.Mirror.Identity, %{tls: :wrong_host}},
-    after: Map.put(no_batch.after, :tls, :rejected)
+    # Its CA is unknown to the client: that is the alert, before any
+    # hostname check.
+    after: Map.put(no_batch.after, :tls, {:rejected, :unknown_ca})
   }),
   Map.merge(no_batch, %{
     id: "N3-hostname",
@@ -460,7 +462,9 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     description:
       "HTTPS with a certificate for another host from the CA the build trusts (TLS-T0's): refused on the hostname alone.",
     transform: {ChainTest.Mirror.Identity, %{tls: :wrong_host, trust_ca: true}},
-    after: Map.put(no_batch.after, :tls, :rejected)
+    # The CA is trusted, so only the hostname check can refuse it: an
+    # :unknown_ca here would mean the CA never reached the build.
+    after: Map.put(no_batch.after, :tls, {:rejected, :bad_certificate})
   }),
   none_installed.({:fail, "file not available:"})
   |> Map.merge(%{

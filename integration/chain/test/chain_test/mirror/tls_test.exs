@@ -17,7 +17,11 @@ defmodule ChainTest.Mirror.TlsTest do
       end
 
       assert Transform.valid?({Identity, %{tls: :ip, trust_ca: true}})
+      assert Transform.valid?({Identity, %{tls: :wrong_host, trust_ca: true}})
       assert Transform.trust_ca?({Identity, %{tls: :ip, trust_ca: true}})
+
+      # a self-signed certificate has no CA to trust
+      refute Transform.valid?({Identity, %{tls: :self_signed, trust_ca: true}})
 
       refute Transform.valid?({Identity, %{tls: :other}})
       refute Transform.valid?({Identity, %{trust_ca: true}})

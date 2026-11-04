@@ -104,10 +104,12 @@ defmodule ChainTest.Conformance.Case do
       * `root_version` - the `root_version` file in the client's state dir
         for the case's source and root: `:absent` (no root adopted), or the
         integer it must hold (an adopted root's version, R17).
-      * `tls` - only with a `tls` transform: `:rejected`, the client
-        opened at least one connection to the case mirror and aborted every
-        handshake with a certificate alert (`:bad_certificate`,
-        `:unknown_ca`, ...), and no request got through (N3); `:clean`, no
+      * `tls` - only with a `tls` transform: `{:rejected, alert}`, the
+        client opened at least one connection to the case mirror and
+        aborted every handshake with `alert`, a certificate alert
+        (`:bad_certificate`, `:unknown_ca`, ...), and no request got
+        through (N3; the alert says why: an unknown CA is `:unknown_ca`, a
+        self-signed or wrong-host certificate `:bad_certificate`); `:clean`, no
         handshake failed at all, so the client never sent plain http to
         the TLS port (N6).
       * `proxied` - only with `proxy: :mirror`: `:none`, neither mirror
@@ -141,10 +143,10 @@ defmodule ChainTest.Conformance.Case do
   snapshot holds no build of it the client could select is a difference:
   the client installed something the portal never served it.
 
-  A case whose `after` has `tls: :rejected` or `proxied` is judged by the
+  A case whose `after` has `tls: {:rejected, alert}` or `proxied` is judged by the
   mirror's log alone, as those say, instead of the two checks below: the
   client cannot have used a mirror it refused, or never asked (N3, N2).
-  For `tls: :rejected` a log without a single handshake is
+  For `tls: {:rejected, alert}` a log without a single handshake is
   `:not_exercised`: the client never connected.
 
   The case's mirror must show that the client used it: a `GET batch.json`
@@ -185,7 +187,7 @@ defmodule ChainTest.Conformance.Case do
           optional(:second_mirror) => :requested | :untouched,
           optional(:root_version) => :absent | non_neg_integer(),
           optional(:unrequested) => [String.t()],
-          optional(:tls) => :rejected | :clean,
+          optional(:tls) => {:rejected, atom()} | :clean,
           optional(:proxied) => :none | :requested
         }
   @type t :: %{
@@ -488,7 +490,7 @@ defmodule ChainTest.Conformance.Case do
           "(:none, :snapshot, :recheck, {:without, [dep name]}), cache (:untouched, " <>
           ":verified), outside (:untouched), log (non-empty strings), " <>
           "second_mirror (:requested, :untouched), root_version (:absent, integer), " <>
-          "unrequested ([path]), tls (:rejected, :clean), proxied (:none, :requested), got " <>
+          "unrequested ([path]), tls ({:rejected, certificate alert}, :clean), proxied (:none, :requested), got " <>
           inspect(post)
 
       Map.has_key?(post, :second_mirror) and Transform.mirrors(transform) != 2 ->
@@ -561,7 +563,8 @@ defmodule ChainTest.Conformance.Case do
     do: Enum.all?(paths, &(is_binary(&1) and &1 != ""))
 
   defp post_value?(:unrequested, _v), do: false
-  defp post_value?(:tls, v), do: v in [:rejected, :clean]
+  defp post_value?(:tls, {:rejected, alert}), do: alert in @cert_alerts
+  defp post_value?(:tls, v), do: v == :clean
   defp post_value?(:proxied, v), do: v in [:none, :requested]
 
   @doc "How many builds the case runs: 2 with `runs: 2` (a warm build first), else 1."
@@ -602,7 +605,7 @@ defmodule ChainTest.Conformance.Case do
       broken != [] ->
         result(c, :fail, Enum.join(broken, "; "))
 
-      post[:tls] == :rejected or Map.has_key?(post, :proxied) ->
+      match?({:rejected, _}, post[:tls]) or Map.has_key?(post, :proxied) ->
         by_log(c, input)
 
       identity? and unused != [] ->
@@ -622,7 +625,7 @@ defmodule ChainTest.Conformance.Case do
   # N3, N2: the client cannot have used a mirror it refused or never asked;
   # the mirror's log, as the case's `after` says, is the evidence.
   defp by_log(c, %{rows: rows, report: report, requests: requests, snapshot: snap} = input) do
-    if c.after[:tls] == :rejected and not Enum.any?(requests, &handshake?/1) do
+    if match?({:rejected, _}, c.after[:tls]) and not Enum.any?(requests, &handshake?/1) do
       result(
         c,
         :not_exercised,
@@ -965,10 +968,10 @@ defmodule ChainTest.Conformance.Case do
     end
   end
 
-  defp post_problem(:tls, :rejected, _seen, _snap, input) do
+  defp post_problem(:tls, {:rejected, alert}, _seen, _snap, input) do
     for r <- input.requests,
-        why = rejected_problem(r),
-        do: "after tls: expected every connection refused on the certificate, " <> why
+        why = rejected_problem(r, alert),
+        do: "after tls: expected every connection refused with #{inspect(alert)}, " <> why
   end
 
   defp post_problem(:tls, :clean, _seen, _snap, input) do
@@ -1151,12 +1154,13 @@ defmodule ChainTest.Conformance.Case do
   defp state(nil), do: "absent"
   defp state(bytes), do: inspect(bytes, limit: 8, printable_limit: 32)
 
-  defp rejected_problem(%{method: "TLS", tls_alert: alert}) when alert in @cert_alerts, do: nil
+  defp rejected_problem(%{method: "TLS", tls_alert: alert}, alert), do: nil
 
-  defp rejected_problem(%{method: "TLS"} = r),
-    do: "a handshake failed without a certificate alert: #{tls_why(r)}"
+  defp rejected_problem(%{method: "TLS"} = r, _alert),
+    do: "a handshake failed with #{tls_why(r)}"
 
-  defp rejected_problem(r), do: "a request got through: #{r.method} #{r.path} (#{r.status})"
+  defp rejected_problem(r, _alert),
+    do: "a request got through: #{r.method} #{r.path} (#{r.status})"
 
   defp tls_why(%{tls_alert: alert}), do: inspect(alert)
   defp tls_why(%{tls_error: why}), do: why

@@ -48,11 +48,9 @@ defmodule ChainTest.Report do
     "N3's positive control through a client CA option: the client has no CA option (it " <>
       "trusts the OS store only), so it cannot be told to trust a test CA the way a user " <>
       "would. TLS-T0 stands in: the run's test CA loaded as the build VM's whole store " <>
-      "(:public_key.cacerts_load/1 from the case's config file), which no N3 case gets; " <>
-      "N3-hostname uses the same store to reach the hostname check alone.",
-    "R20, the portal's signing policy (expires - issued at most 24 h, a batch at most " <>
-      "15 minutes old at fetch time), is its own read-only check against the portal, " <>
-      "mix chain_conformance --policy, never part of a case run."
+      "(:public_key.cacerts_load/1 from the case's config file), which no N3 trust case " <>
+      "(self-signed, wrong-host) gets; N3-hostname uses the same store to reach the " <>
+      "hostname check alone."
   ]
 
   @doc "The \"known, not testable\" items every report names."

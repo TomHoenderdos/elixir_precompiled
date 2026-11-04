@@ -22,7 +22,8 @@ defmodule ChainTest.Mirror.Transform do
     * `tls` - `:ip`, `:self_signed` or `:wrong_host`: the case mirror
       speaks HTTPS with a new certificate of that kind
       (`ChainTest.TestCert`), not with `mirrors: 2`.
-    * `trust_ca` - `true`, only with `tls`: the case's build trusts that
+    * `trust_ca` - `true`, only with a `tls` kind that has a CA (`:ip`,
+      `:wrong_host`; a self-signed one has none): the case's build trusts that
       certificate's CA, and only it (`ChainTest.Build`'s `:trust_ca`).
       Without it, the build keeps the OS store, which knows no test CA.
     * `:case` - reserved: never in a case file. At run time the runner puts
@@ -104,13 +105,17 @@ defmodule ChainTest.Mirror.Transform do
         true
 
       {{:ok, kind}, trust} ->
-        kind in @tls_kinds and trust in [:error, {:ok, true}] and
+        kind in @tls_kinds and trust_ok?(kind, trust) and
           Map.get(args, :mirrors, 1) == 1
 
       {:error, _} ->
         false
     end
   end
+
+  defp trust_ok?(_kind, :error), do: true
+  defp trust_ok?(kind, {:ok, true}), do: kind in [:ip, :wrong_host]
+  defp trust_ok?(_kind, _trust), do: false
 
   @doc "The certificate kind the case mirror presents (`tls`), or `nil` for plain http."
   @spec tls({module(), map()}) :: ChainTest.TestCert.kind() | nil

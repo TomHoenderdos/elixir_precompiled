@@ -49,7 +49,7 @@ defmodule ChainTest.PolicyTest do
 
     assert detail =~ "batch 41"
     assert detail =~ "lifetime 86400 s"
-    assert detail =~ "age 120 s"
+    assert detail =~ "age 120 s when the response arrived"
   end
 
   test "a lifetime over 24 hours fails, naming it", ctx do
@@ -64,7 +64,7 @@ defmodule ChainTest.PolicyTest do
     now = DateTime.utc_now()
     batch = Signed.batch(ctx.key, issued: DateTime.add(now, -16 * 60, :second))
     assert %Result{class: :fail, detail: detail} = check(ctx, batch, now: now)
-    assert detail =~ "age 960 s exceeds 900 s"
+    assert detail =~ "age 960 s exceeds 900 s when the response arrived"
   end
 
   test "15 minutes exactly and 24 hours exactly pass", ctx do

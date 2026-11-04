@@ -19,7 +19,7 @@ defmodule ChainTest.Conformance.CaseTlsTest do
         id: "N3-self-signed",
         description: "A self-signed certificate.",
         transform: {ChainTest.Mirror.Identity, %{tls: :self_signed}},
-        after: %{tls: :rejected, installed: :none}
+        after: %{tls: {:rejected, :bad_certificate}, installed: :none}
       })
 
   @n2 %{
@@ -84,8 +84,12 @@ defmodule ChainTest.Conformance.CaseTlsTest do
     test "refuses them where they mean nothing", %{tmp_dir: tmp} do
       for bad <- [
             # tls post-conditions need a TLS mirror
-            put_in(@n2, [:after], %{tls: :rejected}),
+            put_in(@n2, [:after], %{tls: {:rejected, :bad_certificate}}),
             put_in(@n3, [:after, :tls], :other),
+            # the alert is named, and is a certificate alert
+            put_in(@n3, [:after, :tls], :rejected),
+            put_in(@n3, [:after, :tls], {:rejected, :protocol_version}),
+            put_in(@n3, [:after, :tls], {:rejected, "bad_certificate"}),
             # proxied needs proxy: :mirror
             Map.delete(@n2, :proxy),
             put_in(@n2, [:after, :proxied], :sometimes),
@@ -98,11 +102,19 @@ defmodule ChainTest.Conformance.CaseTlsTest do
     end
   end
 
-  describe "tls: :rejected (N3)" do
-    test "passes when every connection was a handshake the client aborted on the certificate" do
-      for alert <- [:unknown_ca, :bad_certificate] do
-        assert %Result{class: :pass} = judge(@n3, [handshake(alert), handshake(alert)])
-      end
+  describe "tls: {:rejected, alert} (N3)" do
+    test "passes when every connection was a handshake aborted with the named alert" do
+      assert %Result{class: :pass} =
+               judge(@n3, [handshake(:bad_certificate), handshake(:bad_certificate)])
+
+      n3 = put_in(@n3, [:after, :tls], {:rejected, :unknown_ca})
+      assert %Result{class: :pass} = judge(n3, [handshake(:unknown_ca)])
+    end
+
+    test "fails on another certificate alert than the one named" do
+      assert %Result{class: :fail, detail: detail} = judge(@n3, [handshake(:unknown_ca)])
+      assert detail =~ ":bad_certificate"
+      assert detail =~ ":unknown_ca"
     end
 
     test "is not exercised when the client never connected to the TLS mirror" do
@@ -112,7 +124,7 @@ defmodule ChainTest.Conformance.CaseTlsTest do
 
     test "fails when a request got through, or a handshake failed for another reason" do
       assert %Result{class: :fail, detail: d1} =
-               judge(@n3, [handshake(:unknown_ca), get("batch.json")])
+               judge(@n3, [handshake(:bad_certificate), get("batch.json")])
 
       assert d1 =~ "batch.json"
 
@@ -132,7 +144,7 @@ defmodule ChainTest.Conformance.CaseTlsTest do
 
     test "still judges the client's lines and the other post-conditions" do
       assert %Result{class: :fail, detail: detail} =
-               judge(@n3, [handshake(:unknown_ca)], lines: [{"jason", "1.4.5", "hit", ""}])
+               judge(@n3, [handshake(:bad_certificate)], lines: [{"jason", "1.4.5", "hit", ""}])
 
       assert detail =~ "client jason"
     end
@@ -215,8 +227,10 @@ defmodule ChainTest.Conformance.CaseTlsTest do
     test "no N3 case that tests trust is told to trust the test CA", %{by: by} do
       for id <- ~w(N3-self-signed N3-wrong-host) do
         refute ChainTest.Mirror.Transform.trust_ca?(by[id].transform), id
-        assert by[id].after.tls == :rejected, id
       end
+
+      assert by["N3-self-signed"].after.tls == {:rejected, :bad_certificate}
+      assert by["N3-wrong-host"].after.tls == {:rejected, :unknown_ca}
 
       assert ChainTest.Mirror.Transform.tls(by["N3-self-signed"].transform) == :self_signed
       assert ChainTest.Mirror.Transform.tls(by["N3-wrong-host"].transform) == :wrong_host
@@ -232,7 +246,8 @@ defmodule ChainTest.Conformance.CaseTlsTest do
       end
 
       assert ChainTest.Mirror.Transform.tls(by["N3-hostname"].transform) == :wrong_host
-      assert by["N3-hostname"].after.tls == :rejected
+      # The CA is trusted, so only the hostname check can refuse it.
+      assert by["N3-hostname"].after.tls == {:rejected, :bad_certificate}
     end
 
     test "N6 refuses the downgrade by its reason and never sends plain http", %{by: by} do
@@ -266,19 +281,29 @@ defmodule ChainTest.Conformance.CaseTlsTest do
     end
   end
 
-  test "the README's case table names exactly the cases in the file, with their spec ids" do
+  test "the README's case table names exactly the cases, their spec ids, layers and gates" do
     {:ok, cases} = Case.load(Path.join(ChainTest.CLI.root(), "conformance/cases.exs"))
     readme = File.read!(Path.join(ChainTest.CLI.root(), "README.md"))
     [_, table] = String.split(readme, "| Case | Spec | Layer | What it shows |", parts: 2)
 
     rows =
       for line <- String.split(table, "\n"),
-          [_, id, spec] <- [Regex.run(~r/^\| `([^`]+)` \| ([^|]*) \|/, line)],
-          do: {id, String.trim(spec)}
+          [_, id, spec, layer, what] <-
+            [Regex.run(~r/^\| `([^`]+)` \| ([^|]*) \| ([^|]*) \| (.*) \|$/, line)],
+          do: {id, String.trim(spec), String.trim(layer), what}
 
     assert Enum.map(rows, &elem(&1, 0)) == Enum.map(cases, & &1.id)
+    by = Map.new(cases, &{&1.id, &1})
 
-    for {id, spec} <- rows,
-        do: assert(spec == Enum.join(ChainTest.Report.spec_ids(id), ", "), id)
+    for {id, spec, layer, what} <- rows do
+      c = by[id]
+      assert spec == Enum.join(ChainTest.Report.spec_ids(id), ", "), id
+      assert layer == if(Case.layer2?(c), do: "2", else: "1"), id
+
+      case Case.gate(c) do
+        nil -> refute what =~ ~r/\(after [^)]+\)$/, id
+        gate -> assert String.ends_with?(what, "(after #{gate})"), id
+      end
+    end
   end
 end
