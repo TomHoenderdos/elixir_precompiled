@@ -14,7 +14,7 @@ defmodule ElixirPrecompiled.Config do
           source: String.t(),
           except: [atom()],
           root_path: Path.t(),
-          home: Path.t(),
+          home: Path.t() | nil,
           clock_offset_seconds: integer()
         }
 
@@ -29,7 +29,7 @@ defmodule ElixirPrecompiled.Config do
         source: String.trim_trailing(source, "/"),
         except: except(opts[:except]),
         root_path: opts[:root] || Path.join(priv_dir(), "precompiled/root.json"),
-        home: opts[:home] || env_var("_HOME") || default_home(),
+        home: home_dir(opts),
         clock_offset_seconds: clock_offset(opts[:clock_offset_seconds])
       }
     else
@@ -73,7 +73,28 @@ defmodule ElixirPrecompiled.Config do
       System.get_env("NERVES_PRECOMPILED" <> suffix)
   end
 
-  defp default_home(), do: to_string(:filename.basedir(:user_cache, "elixir_precompiled"))
+  @doc "The cache home a run would use: `:home`, `ELIXIR_PRECOMPILED_HOME`, else the user cache dir; nil when the OS has none."
+  @spec home_dir(keyword()) :: Path.t() | nil
+  def home_dir(opts \\ []), do: opts[:home] || env_var("_HOME") || default_home()
+
+  # :filename.basedir/2 raises when neither HOME nor XDG_CACHE_HOME is set
+  # (distroless images, some systemd units); Check then falls back to _build.
+  # It reads the home the VM started with (`init:get_argument(home)`), not
+  # the environment now, so on Unix the variables are checked here as well.
+  defp default_home() do
+    if no_user_dirs?(),
+      do: nil,
+      else: to_string(:filename.basedir(:user_cache, "elixir_precompiled"))
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp no_user_dirs?() do
+    match?({:unix, _}, :os.type()) and System.get_env("HOME") in [nil, ""] and
+      System.get_env("XDG_CACHE_HOME") in [nil, ""]
+  end
 
   @doc false
   # The root of trust ships in the library's priv/; a cwd-relative fallback

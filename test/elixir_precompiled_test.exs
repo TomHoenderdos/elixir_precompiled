@@ -31,4 +31,48 @@ defmodule ElixirPrecompiledTest do
     Application.put_env(:elixir_precompiled, :source, "https://example.test/x")
     assert ElixirPrecompiled.run(env: env, host?: false) == :nothing_to_do
   end
+
+  test "an internal error is one warning and :disabled, never a raise" do
+    Application.put_env(:elixir_precompiled, :source, "https://example.test/x")
+
+    out =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert ElixirPrecompiled.run(env: :not_an_env, host?: false) == :disabled
+      end)
+
+    assert out =~ "precompiled: internal error, compiling from source"
+  end
+
+  @tag :tmp_dir
+  test "no HOME: run/1 falls back to a cache under _build", %{tmp_dir: dir} do
+    saved = for v <- ~w(HOME XDG_CACHE_HOME ELIXIR_PRECOMPILED_HOME), do: {v, System.get_env(v)}
+
+    on_exit(fn ->
+      for {v, val} <- saved, do: if(val, do: System.put_env(v, val), else: System.delete_env(v))
+    end)
+
+    for {v, _} <- saved, do: System.delete_env(v)
+
+    Application.put_env(:elixir_precompiled, :source, "http://127.0.0.1:1/x")
+    assert ElixirPrecompiled.Config.load().home == nil
+
+    lib = Path.join(dir, "_build/dev/lib")
+    jason = {:hex, :jason, "1.4.5", "i", [:mix], [], "hexpm", "JOUTER"}
+
+    env = %Env{
+      candidates: [%{name: :jason, version: "1.4.5", lock_entry: jason, dep_env: "prod"}],
+      lock: %{jason: jason},
+      build_lib: lib,
+      deps_path: Path.join(dir, "deps")
+    }
+
+    out =
+      ExUnit.CaptureIO.capture_io(fn ->
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert {:ok, %{fails: 1}} = ElixirPrecompiled.run(env: env, host?: false)
+        end)
+      end)
+
+    assert out =~ "is not writable; using #{Path.join(lib, ".precompiled/home")}"
+  end
 end

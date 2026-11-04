@@ -53,13 +53,31 @@ defmodule ElixirPrecompiled.Install do
     if forced?, do: File.rm_rf!(dir)
     resolve(dir, deps, mix_opts)
 
-    _ =
-      Check.check(config, Env.MixInstall.load(dir, deps), Keyword.take(test_opts, [:config_fun]))
+    check =
+      Keyword.get(test_opts, :check, fn ->
+        Check.check(
+          config,
+          Env.MixInstall.load(dir, deps),
+          Keyword.take(test_opts, [:config_fun])
+        )
+      end)
+
+    # Mix.install/2 runs whatever happened here; it compiles what is missing.
+    try do
+      _ = check.()
+    rescue
+      e -> internal_error(Exception.message(e))
+    catch
+      kind, reason -> internal_error(Exception.format_banner(kind, reason))
+    end
 
     # Only now, so a forced install that failed above is still forced on retry.
     if forced?, do: System.delete_env("MIX_INSTALL_FORCE")
     installer.(deps, mix_opts)
   end
+
+  defp internal_error(why),
+    do: Output.warning("precompiled: internal error, compiling from source (#{why})")
 
   @doc false
   @spec ensure_mix!(boolean()) :: :ok

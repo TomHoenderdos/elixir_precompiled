@@ -720,4 +720,20 @@ defmodule ElixirPrecompiled.TrustTest do
     assert {keys, 1} = Trust.root_keys(root, "batch")
     assert Map.keys(keys) == [good.keyid]
   end
+
+  test "two concurrent batch fetches on one home both succeed", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    F.publish(f, %{"ash" => %{"versions" => %{}}}, sequence: 5)
+    {:ok, root} = Trust.load_root(config)
+
+    results =
+      1..8
+      |> Task.async_stream(fn _ -> Trust.fetch_batch(config, root, fetch) end, max_concurrency: 8)
+      |> Enum.map(fn {:ok, r} -> r end)
+
+    assert Enum.all?(results, &match?({:ok, %{sequence: 5}}, &1))
+  end
 end

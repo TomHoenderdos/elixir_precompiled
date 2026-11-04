@@ -285,11 +285,11 @@ defmodule ElixirPrecompiled.Trust do
   def update_root(config, root, fetch) do
     with {:ok, body} <- fetch.(config.source <> "/root.json"),
          {:ok, env} when is_map(env) <- safe_decode(body),
-         {:ok, candidate} <- adopt(env, root) do
-      shipped = shipped_root(config)
-      dir = state_dir(config, shipped)
-      {_, adopted} = fold_chain(shipped, read_chain(dir))
-      write_atomic(dir, "roots.json", :json.encode(adopted ++ [env]))
+         {:ok, candidate} <- adopt(env, root),
+         shipped = shipped_root(config),
+         dir = state_dir(config, shipped),
+         {_, adopted} = fold_chain(shipped, read_chain(dir)),
+         :ok <- write_atomic(dir, "roots.json", :json.encode(adopted ++ [env])) do
       write_root_version(dir, candidate["version"])
       {:ok, candidate}
     else
@@ -300,29 +300,27 @@ defmodule ElixirPrecompiled.Trust do
   end
 
   # Keeps the higher of what was already stored and the newly adopted
-  # version, like `write_state/2`. Neither failure here must unwind the
-  # root this call already adopted and is about to return — so both are
-  # caught locally and only logged, never raised further: `write_atomic/3`
-  # raises `File.Error` from `mkdir_p!/1` and `write!/2`, but `File.RenameError`
-  # from `rename!/2` (e.g. `root_version` already exists as a directory).
+  # version, like `write_state/2`. A failure here must not unwind the root
+  # this call already adopted and is about to return, so it is only logged.
   defp write_root_version(dir, version) do
     stored = read_counter(Path.join(dir, "root_version"), "root version")
-    write_atomic(dir, "root_version", Integer.to_string(max(stored, version)))
-  rescue
-    e in [File.Error, File.RenameError] ->
-      Output.warning(
-        "precompiled: could not write root version state " <>
-          "#{Path.join(dir, "root_version")}: #{inspect(e.reason)}"
-      )
+
+    case write_atomic(dir, "root_version", Integer.to_string(max(stored, version))) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Output.warning(
+          "precompiled: could not write root version state " <>
+            "#{Path.join(dir, "root_version")}: #{inspect(reason)}"
+        )
+    end
   end
 
-  defp write_atomic(dir, name, data) do
-    File.mkdir_p!(dir)
-    final = Path.join(dir, name)
-    tmp = final <> ".tmp"
-    File.write!(tmp, data)
-    File.rename!(tmp, final)
-  end
+  # A unique temp name per writer: two runs sharing one home never trip
+  # over each other's half-written file.
+  defp write_atomic(dir, name, data),
+    do: ElixirPrecompiled.FileUtil.write_atomic(Path.join(dir, name), data)
 
   # The newest batch is signed every 15 minutes; one older than this is
   # refused whatever its `expires`, which bounds a replayed or frozen batch,
@@ -413,9 +411,10 @@ defmodule ElixirPrecompiled.Trust do
   # Written like roots.json, so a crash mid-write never leaves a torn
   # sequence number behind.
   defp write_state(dir, seq) do
-    write_atomic(dir, "state", Integer.to_string(seq))
-  rescue
-    e in File.Error -> {:error, "state dir unwritable: #{inspect(e.reason)}"}
+    case write_atomic(dir, "state", Integer.to_string(seq)) do
+      :ok -> :ok
+      {:error, reason} -> {:error, "state dir unwritable: #{inspect(reason)}"}
+    end
   end
 
   # "manifests" names format-1 documents; "manifests_v2", when present,

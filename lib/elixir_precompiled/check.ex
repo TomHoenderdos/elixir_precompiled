@@ -7,7 +7,7 @@ defmodule ElixirPrecompiled.Check do
   # The shared engine: every candidate becomes a HIT, MISS or FAIL line with
   # a reason; the same list lands in `<build_lib>/.precompiled/report.json`.
 
-  alias ElixirPrecompiled.{CompileEnv, Config, Env, Fetch, Match, Output, Trust}
+  alias ElixirPrecompiled.{CompileEnv, Config, Env, Fetch, FileUtil, Match, Output, Trust}
 
   @type line :: %{
           name: String.t(),
@@ -35,6 +35,7 @@ defmodule ElixirPrecompiled.Check do
       debug("precompiled: no dependencies to check")
       :nothing_to_do
     else
+      config = with_home(config, env)
       debug_skipped(skipped)
       config_fun = Keyword.get(opts, :config_fun, &CompileEnv.lookup/2)
 
@@ -55,6 +56,23 @@ defmodule ElixirPrecompiled.Check do
       # Nothing to say also means nothing to record: keep the last report.
       if lines != [], do: write_report(env.build_lib, report)
       {:ok, report}
+    end
+  end
+
+  @doc false
+  # The home must take writes (trust state, cache). One that cannot (none
+  # at all, read-only, or a pre-seeded CI cache) moves to _build for this
+  # run; its files/ stay readable as :ro_home.
+  @spec with_home(map(), Env.t()) :: map()
+  def with_home(config, env) do
+    home = config.home
+
+    if is_binary(home) and FileUtil.writable_dir?(home) do
+      config
+    else
+      fallback = Path.join([env.build_lib, ".precompiled", "home"])
+      Output.warning("precompiled: cache dir #{inspect(home)} is not writable; using #{fallback}")
+      Map.merge(config, %{home: fallback, ro_home: home})
     end
   end
 
@@ -425,14 +443,10 @@ defmodule ElixirPrecompiled.Check do
         )
     }
 
-    final = Path.join(dir, "report.json")
-    tmp = final <> ".tmp"
+    case FileUtil.write_atomic(Path.join(dir, "report.json"), :json.encode(json)) do
+      :ok ->
+        :ok
 
-    with :ok <- File.mkdir_p(dir),
-         :ok <- File.write(tmp, :json.encode(json)),
-         :ok <- File.rename(tmp, final) do
-      :ok
-    else
       {:error, reason} ->
         Output.warning("precompiled: could not write report.json: #{inspect(reason)}")
         :ok

@@ -877,4 +877,29 @@ defmodule ElixirPrecompiled.CheckTest do
       refute File.exists?(Path.join(lib, "ash"))
     end
   end
+
+  test "an unwritable home falls back to _build and still reads the old cache", %{
+    f: f,
+    config: config,
+    env: env,
+    lib: lib,
+    tmp_dir: dir
+  } do
+    blocker = Path.join(dir, "blocker")
+    File.write!(blocker, "")
+
+    F.publish(f, %{
+      "ash" => %{"versions" => %{"3.5.2" => %{"builds" => [good_entry(f, "ash", "1.31.0")]}}}
+    })
+
+    out =
+      run_capturing(%{config | home: Path.join(blocker, "home")}, %{
+        env
+        | candidates: [hd(env.candidates)]
+      })
+
+    assert_received {:report, {:ok, %{hits: 1}}}
+    assert out =~ "is not writable; using #{Path.join(lib, ".precompiled/home")}"
+    assert File.dir?(Path.join(lib, ".precompiled/home/files"))
+  end
 end

@@ -163,4 +163,25 @@ defmodule ElixirPrecompiled.InstallTest do
 
     assert System.get_env("MIX_INSTALL_FORCE") == "1"
   end
+
+  test "a crashing precompiled step still runs Mix.install", %{config: config} do
+    parent = self()
+
+    installer = fn deps, opts ->
+      send(parent, {:installed, deps, opts})
+      :ok
+    end
+
+    out =
+      capture_io(fn ->
+        assert Install.run([], [], config,
+                 installer: installer,
+                 in_project?: false,
+                 check: fn -> raise "boom" end
+               ) == :ok
+      end)
+
+    assert out =~ "precompiled: internal error, compiling from source (boom)"
+    assert_received {:installed, [], []}
+  end
 end

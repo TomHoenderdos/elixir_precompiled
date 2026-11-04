@@ -23,6 +23,14 @@ defmodule ElixirPrecompiled do
   """
   @spec run(keyword()) :: :disabled | :nothing_to_do | {:ok, Check.report()}
   def run(opts \\ []) do
+    do_run(opts)
+  rescue
+    e -> internal_error(Exception.message(e))
+  catch
+    kind, reason -> internal_error(Exception.format_banner(kind, reason))
+  end
+
+  defp do_run(opts) do
     config = Config.load()
 
     cond do
@@ -39,6 +47,15 @@ defmodule ElixirPrecompiled do
           Keyword.take(opts, [:config_fun])
         )
     end
+  end
+
+  # The build must go on: whatever went wrong here, Mix compiles the deps.
+  defp internal_error(why) do
+    ElixirPrecompiled.Output.warning(
+      "precompiled: internal error, compiling from source (#{why})"
+    )
+
+    :disabled
   end
 
   @doc """

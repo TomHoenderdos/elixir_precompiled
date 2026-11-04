@@ -187,4 +187,16 @@ defmodule ElixirPrecompiled.ConfigTest do
       assert %{source: ^source} = Config.load()
     end
   end
+
+  test "without HOME or XDG_CACHE_HOME the home is nil, not a crash" do
+    saved = for v <- ~w(HOME XDG_CACHE_HOME), do: {v, System.get_env(v)}
+
+    on_exit(fn ->
+      for {v, val} <- saved, do: if(val, do: System.put_env(v, val), else: System.delete_env(v))
+    end)
+
+    for {v, _} <- saved, do: System.delete_env(v)
+    configure(source: "https://x")
+    assert %{home: nil} = Config.load()
+  end
 end
