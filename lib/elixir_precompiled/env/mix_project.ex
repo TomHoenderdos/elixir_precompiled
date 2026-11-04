@@ -6,13 +6,9 @@ defmodule ElixirPrecompiled.Env.MixProject do
   @moduledoc false
   # Build time, inside a Mix project: the deps Mix is about to compile, the
   # project's lock and build dir, and the Nerves system from the build plan
-  # when nerves is loaded.
+  # when the loaded nerves has one (the Nerves fork).
 
   alias ElixirPrecompiled.{Env, Fetch}
-
-  # nerves is not a dependency; its build plan is read only when the module
-  # is there, so the compiler must not warn about the remote call.
-  @compile {:no_warn_undefined, [Nerves]}
 
   # Mix.Dep.load_and_cache/0 and Mix.Dep.Lock.read/0 raise only when the
   # project itself is broken, in which case Mix is about to fail the same
@@ -94,10 +90,18 @@ defmodule ElixirPrecompiled.Env.MixProject do
     Env.hex_candidates(lock, Enum.map(pairs, &elem(&1, 0)), Map.new(pairs))
   end
 
-  # Nerves.build_plan/0 raises only when the project itself is broken; it
-  # already ran, unguarded, one line earlier in nerves.init's export_env/0.
-  defp system() do
-    if Code.ensure_loaded?(Nerves), do: system_from_plan(Nerves.build_plan()), else: nil
+  defp system(), do: system_from_module(Nerves)
+
+  @doc false
+  # Only the Nerves fork has build_plan/0; released nerves 1.x does not, so
+  # there the system is nil and only pure_elixir builds match. When it is
+  # there, it raises only when the project itself is broken; it already
+  # ran, unguarded, one line earlier in the fork's nerves.init export_env/0.
+  @spec system_from_module(module()) :: {String.t(), String.t()} | nil
+  def system_from_module(module) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :build_plan, 0),
+      do: system_from_plan(module.build_plan()),
+      else: nil
   end
 
   @doc false

@@ -142,6 +142,12 @@ Either works:
 
 Both together are fine: a second call in one Mix run reuses the first.
 
+Builds made for a Nerves system need the fork: the system and its version
+come from its `Nerves.build_plan/0`, which released nerves 1.x does not
+have. With released nerves the alias still works, but only `pure_elixir`
+builds match (rule 1 below; rule 8 still applies) and every other
+dependency compiles from source.
+
 On a device, `ElixirPrecompiled.install/2` above works with the running
 Nerves system, read from `/usr/lib/os-release` (written by every Nerves
 system's `nerves_system_br` post-build script). It needs:

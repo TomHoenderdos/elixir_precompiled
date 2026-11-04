@@ -5,7 +5,9 @@
 * Any Mix project can use it: `mix precompiled.install`, reached through a
   `deps.loadpaths` alias (`mix igniter.install elixir_precompiled` adds it),
   installs builds before Mix compiles dependencies in plain projects,
-  umbrellas and Phoenix apps, and for Nerves with released nerves too.
+  umbrellas and Phoenix apps, and for Nerves with released nerves too,
+  where only `pure_elixir` builds match: system (target) builds need the
+  Nerves fork's `Nerves.build_plan/0` to name the system.
   `ElixirPrecompiled.run/1` for the nerves hook is unchanged. The Igniter
   installer sets the dependency `runtime: false`, `:source` in
   `config/config.exs` and the alias, prepended to an existing one; Igniter

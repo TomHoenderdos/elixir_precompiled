@@ -21,6 +21,28 @@ defmodule ElixirPrecompiled.Env.MixProjectTest do
     assert MixProject.system_from_plan(nil) == nil
   end
 
+  defmodule NervesWithoutPlan do
+    # Released nerves 1.x: the module is there, build_plan/0 is not.
+    @spec version() :: String.t()
+    def version(), do: "1.11.0"
+  end
+
+  defmodule NervesWithPlan do
+    @spec build_plan() :: map()
+    def build_plan() do
+      %{
+        packages: [%{app: :nerves_system_rpi4, version: "1.31.0"}],
+        actions: [{Nerves.BuildAction.NervesV1System, app: :nerves_system_rpi4}]
+      }
+    end
+  end
+
+  test "system_from_module reads no system from a nerves without build_plan/0" do
+    assert MixProject.system_from_module(NervesWithoutPlan) == nil
+    assert MixProject.system_from_module(NoSuchNervesModule) == nil
+    assert MixProject.system_from_module(NervesWithPlan) == {"nerves_system_rpi4", "1.31.0"}
+  end
+
   test "candidates_from keeps Hex deps Mix would compile now" do
     lock = %{ash: @ash, jason: @jason, decimal: @decimal}
     dep = fn app, status, scm -> %Mix.Dep{app: app, status: status, scm: scm} end
