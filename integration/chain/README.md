@@ -144,8 +144,9 @@ Cases are data, in `conformance/cases.exs`, one map per case:
 
 A case passes when the client used its mirror and the client and the
 harness say what it expects. Using the mirror means the mirror's log has a
-`GET batch.json` and a `GET` of the manifest of every dep the report calls a
-hit; without that, an identity case is `not_exercised` and any other case
+`GET batch.json` and, for every dep the report calls a hit, a `GET` of its
+manifest that the mirror answered 200 (or whose response the case's own
+transform changed); without that, an identity case is `not_exercised` and any other case
 fails. Whatever a case expects, a report line calling a dep a hit when the
 snapshot holds no build of it fails the case: the client installed something
 it was never served. A case whose transform changed nothing the client asked

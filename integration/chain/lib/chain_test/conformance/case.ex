@@ -39,8 +39,10 @@ defmodule ChainTest.Conformance.Case do
   the client installed something the portal never served it.
 
   The case's mirror must show that the client used it: a `GET batch.json`
-  and a `GET` of the snapshot's manifest path for every dep the report
-  calls a hit. Without that, the client may have read another source.
+  and, for every dep the report calls a hit, a `GET` of the snapshot's
+  manifest path the mirror answered 200 (or whose response the case's own
+  transform changed). Without that, the client may have read another
+  source.
 
   Verdict, one `conformance/<id>` result:
 
@@ -183,9 +185,18 @@ defmodule ChainTest.Conformance.Case do
   end
 
   # What the mirror's log lacks to show that the client read the batch and
-  # every manifest it reports a hit from through the case's mirror.
+  # every manifest it reports a hit from through the case's mirror. A hit's
+  # manifest must have been answered 200, unless the case's own transform
+  # changed that response.
   defp unused_mirror(report, requests, snap) do
     asked = MapSet.new(for %{method: "GET", path: path} <- requests, do: path)
+
+    served =
+      MapSet.new(
+        for %{method: "GET", path: path} = r <- requests,
+            r.status == 200 or r.mutated,
+            do: path
+      )
 
     batch =
       if MapSet.member?(asked, "batch.json"),
@@ -196,8 +207,10 @@ defmodule ChainTest.Conformance.Case do
       for {name, %{"status" => "hit"}} <- Enum.sort(lines(report)),
           path = manifest_path(snap, name),
           is_binary(path),
-          not MapSet.member?(asked, path),
-          do: "mirror: the client reports #{name} a hit but never asked the mirror for #{path}"
+          not MapSet.member?(served, path),
+          do:
+            "mirror: the client reports #{name} a hit but the case's mirror never " <>
+              "answered #{path} with 200"
 
     batch ++ manifests
   end

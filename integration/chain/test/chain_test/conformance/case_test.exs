@@ -276,6 +276,40 @@ defmodule ChainTest.Conformance.CaseTest do
       assert %Result{class: :pass} = Case.judge(@t0, %{input | requests: served(["jason"])})
     end
 
+    test "a hit whose manifest the mirror did not answer 200 is not from the mirror" do
+      report = Synthetic.report([{"jason", "1.4.5", "hit", "0.3 MB"}])
+
+      input = %{
+        rows: [row(:build, "hit:jason", :pass)],
+        report: report,
+        requests: [get("batch.json"), get("v2/manifests/jason.json", 404)],
+        snapshot: snap(%{"jason" => 1}),
+        hits: [:jason]
+      }
+
+      assert %Result{class: :not_exercised, detail: detail} = Case.judge(@t0, input)
+      assert detail =~ "v2/manifests/jason.json"
+
+      # A 200 for it later in the log is the client's use of the mirror.
+      requests = input.requests ++ [get("v2/manifests/jason.json")]
+      assert %Result{class: :pass} = Case.judge(@t0, %{input | requests: requests})
+    end
+
+    test "a hit on a manifest the case's own transform changed counts as served" do
+      report = Synthetic.report([{"jason", "1.4.5", "hit", "0.3 MB"}])
+
+      assert %Result{detail: detail} =
+               Case.judge(@status, %{
+                 rows: [row(:build, "hit:jason", :fail)],
+                 report: report,
+                 requests: [get("batch.json"), get("v2/manifests/jason.json", 500, true)],
+                 snapshot: snap(%{"jason" => 1}),
+                 hits: [:jason]
+               })
+
+      refute detail =~ "mirror:"
+    end
+
     test "a transform case without the client's use of the mirror fails" do
       report = Synthetic.report([{"jason", "1.4.5", "miss", "manifest unavailable: Status 500"}])
 
