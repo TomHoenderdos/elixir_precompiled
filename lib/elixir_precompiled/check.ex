@@ -35,7 +35,7 @@ defmodule ElixirPrecompiled.Check do
       debug("precompiled: no dependencies to check")
       :nothing_to_do
     else
-      config = with_home(config, env)
+      config = config |> with_home(env) |> with_deadline()
       debug_skipped(skipped)
       config_fun = Keyword.get(opts, :config_fun, &CompileEnv.lookup/2)
 
@@ -76,12 +76,21 @@ defmodule ElixirPrecompiled.Check do
     end
   end
 
+  # The whole run, every request in it, ends at :deadline_at; whatever is
+  # still waiting then compiles from source.
+  defp with_deadline(config) do
+    Map.put_new_lazy(config, :deadline_at, fn ->
+      System.monotonic_time(:millisecond) + Map.get(config, :deadline_ms, 300_000)
+    end)
+  end
+
   # Nothing left that needs the batch (only excepted installs): no fetch.
   defp lines_for([], [], _config, _env, _config_fun), do: []
 
   defp lines_for(candidates, installed, config, env, config_fun) do
     case batch(config) do
       {:ok, batch} ->
+        config = Map.put(config, :content, Map.get(config, :content_override) || batch.content)
         {revoked, replaced} = recheck(installed, batch, env)
 
         revoked ++ install_lines(candidates ++ replaced, config, batch, env, config_fun)
@@ -265,11 +274,43 @@ defmodule ElixirPrecompiled.Check do
     )
   end
 
+  # One conditional batch request on a warm run. The root is fetched only
+  # when its check is due (hourly) or when the batch stops verifying under
+  # the root in use (a rotation since the last check); never offline. Root
+  # and batch together get :metadata_timeout_ms of the run's deadline.
   defp batch(config) do
-    with {:ok, root} <- Trust.load_root(config),
-         {:ok, root} <- Trust.update_root(config, root, &Fetch.get_body/1) do
-      Trust.fetch_batch(config, root, &Fetch.get_body/1)
+    meta =
+      Map.update!(
+        config,
+        :deadline_at,
+        &min(
+          &1,
+          System.monotonic_time(:millisecond) + Map.get(config, :metadata_timeout_ms, 15_000)
+        )
+      )
+
+    offline? = Map.get(meta, :offline, false)
+    fetch = &Fetch.get_conditional(meta, &1, &2)
+
+    with {:ok, root} <- Trust.load_root(meta) do
+      checked? = not offline? and Trust.root_check_due?(meta)
+      root = if checked?, do: refresh_root(meta, root), else: root
+
+      case Trust.fetch_batch_cached(meta, root, fetch) do
+        {:error, "batch signature invalid"} when not checked? and not offline? ->
+          Trust.fetch_batch_cached(meta, refresh_root(meta, root), fetch)
+
+        other ->
+          other
+      end
     end
+  end
+
+  defp refresh_root(config, root) do
+    {:ok, root} =
+      Trust.update_root(config, root, &Fetch.get_body(&1, Fetch.metadata_opts(config)))
+
+    root
   end
 
   defp one(

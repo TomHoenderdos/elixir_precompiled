@@ -53,6 +53,38 @@ defmodule ElixirPrecompiled.ConfigTest do
     assert c.home == to_string(:filename.basedir(:user_cache, "elixir_precompiled"))
   end
 
+  test "offline, deadlines, root check interval and content origins" do
+    configure(
+      source: "https://x",
+      deadline_seconds: 30,
+      root_check_seconds: 60,
+      content: ["https://cdn.example.test/p/", "http://evil.example.test", 7]
+    )
+
+    {c, out} = ExUnit.CaptureIO.with_io(fn -> Config.load() end)
+    assert out =~ "ignoring content origins that are not https"
+    assert %{offline: false, deadline_ms: 30_000, root_check_seconds: 60} = c
+    assert c.content_override == ["https://cdn.example.test/p"]
+
+    System.put_env("ELIXIR_PRECOMPILED_OFFLINE", "1")
+    on_exit(fn -> System.delete_env("ELIXIR_PRECOMPILED_OFFLINE") end)
+    configure(source: "https://x")
+    assert Config.load().offline
+    assert Config.offline?()
+    System.delete_env("ELIXIR_PRECOMPILED_OFFLINE")
+
+    assert %{deadline_ms: 300_000, root_check_seconds: 3600, content_override: nil} =
+             Config.load()
+  end
+
+  test "content origins are https, or http on loopback" do
+    assert Config.content_origin?("https://cdn.example.test")
+    assert Config.content_origin?("http://127.0.0.1:4000")
+    refute Config.content_origin?("http://cdn.example.test")
+    refute Config.content_origin?("ftp://cdn.example.test")
+    refute Config.content_origin?(7)
+  end
+
   test "without the library on the code path its root cannot be found" do
     assert_raise ArgumentError, ~r/no_such_app.*code path/, fn ->
       Config.priv_dir(:no_such_app)

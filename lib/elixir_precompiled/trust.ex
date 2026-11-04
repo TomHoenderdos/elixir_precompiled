@@ -283,8 +283,22 @@ defmodule ElixirPrecompiled.Trust do
   @spec update_root(map(), root(), (String.t() -> {:ok, binary()} | {:error, term()})) ::
           {:ok, root()}
   def update_root(config, root, fetch) do
-    with {:ok, body} <- fetch.(config.source <> "/root.json"),
-         {:ok, env} when is_map(env) <- safe_decode(body),
+    case fetch.(config.source <> "/root.json") do
+      {:ok, body} ->
+        # Fetched is checked, adopted or not: the next check is due an
+        # interval from now (see root_check_due?/1).
+        _ = write_atomic(state_dir(config), "root_checked", Integer.to_string(unix_now(config)))
+        adopt_served(config, root, body)
+
+      _ ->
+        {:ok, root}
+    end
+  rescue
+    _ -> {:ok, root}
+  end
+
+  defp adopt_served(config, root, body) do
+    with {:ok, env} when is_map(env) <- safe_decode(body),
          {:ok, candidate} <- adopt(env, root),
          shipped = shipped_root(config),
          dir = state_dir(config, shipped),
@@ -295,9 +309,30 @@ defmodule ElixirPrecompiled.Trust do
     else
       _ -> {:ok, root}
     end
-  rescue
-    _ -> {:ok, root}
   end
+
+  @doc """
+  Whether the served root should be fetched this run: never stamped, the
+  stamp `:root_check_seconds` (default an hour) old or older, or a stamp in
+  the future (a clock set back). A batch that fails to verify fetches the
+  root regardless (see `ElixirPrecompiled.Check`).
+  """
+  @spec root_check_due?(map()) :: boolean()
+  def root_check_due?(config) do
+    interval = Map.get(config, :root_check_seconds, 3600)
+    now = unix_now(config)
+
+    with {:ok, s} <- File.read(Path.join(state_dir(config), "root_checked")),
+         {n, ""} <- Integer.parse(String.trim(s)) do
+      n > now or now - n >= interval
+    else
+      _ -> true
+    end
+  rescue
+    _ -> true
+  end
+
+  defp unix_now(config), do: DateTime.to_unix(now(config))
 
   # Keeps the higher of what was already stored and the newly adopted
   # version, like `write_state/2`. A failure here must not unwind the root
@@ -341,21 +376,140 @@ defmodule ElixirPrecompiled.Trust do
   def now(config),
     do: DateTime.add(DateTime.utc_now(), Map.get(config, :clock_offset_seconds, 0), :second)
 
+  @type batch :: %{
+          sequence: integer(),
+          manifests: %{String.t() => String.t()},
+          manifests_v2: %{String.t() => String.t()} | nil,
+          content: [String.t()] | nil
+        }
+
+  @type conditional_fetch ::
+          (String.t(), String.t() | nil ->
+             {:ok, binary(), String.t() | nil} | :not_modified | {:error, term()})
+
   @spec fetch_batch(map(), root(), (String.t() -> {:ok, binary()} | {:error, term()})) ::
-          {:ok,
-           %{
-             sequence: integer(),
-             manifests: %{String.t() => String.t()},
-             manifests_v2: %{String.t() => String.t()} | nil
-           }}
-          | {:error, String.t()}
+          {:ok, batch()} | {:error, String.t()}
   def fetch_batch(config, root, fetch) do
+    with {:ok, body} <- fetch.(config.source <> "/batch.json") |> or_error("batch unavailable") do
+      verify_batch(config, root, body, state_dir(config))
+    end
+  rescue
+    _ -> {:error, "batch malformed"}
+  end
+
+  @doc """
+  The current batch, asking the source only whether it changed: the last
+  verified batch and its ETag are kept in the state dir and the ETag is sent
+  as `If-None-Match`. A 304 says only that the source still serves those
+  bytes: they go through the same signature, freshness, clock and sequence
+  checks as fresh ones, every run, so a batch older than a day is refused
+  however often the source answers 304. New bytes replace the cache only
+  once they verify. Offline, the cached batch is checked the same way and
+  no request is made.
+  """
+  @spec fetch_batch_cached(map(), root(), conditional_fetch()) ::
+          {:ok, batch()} | {:error, String.t()}
+  def fetch_batch_cached(config, root, fetch) do
+    dir = state_dir(config)
+    cached = read_cached_batch(dir)
+    offline? = Map.get(config, :offline, false)
+
+    cond do
+      offline? and cached == nil ->
+        {:error, "offline, no cached batch"}
+
+      offline? ->
+        verify_batch(config, root, cached.body, dir)
+
+      true ->
+        case fetch.(config.source <> "/batch.json", cached && cached.etag) do
+          :not_modified when cached != nil ->
+            verify_batch(config, root, cached.body, dir)
+
+          {:ok, body, etag} when is_binary(body) ->
+            with {:ok, batch} <- verify_batch(config, root, body, dir) do
+              cache_batch(dir, body, etag)
+              {:ok, batch}
+            end
+
+          _ ->
+            {:error, "batch unavailable"}
+        end
+    end
+  rescue
+    _ -> {:error, "batch malformed"}
+  end
+
+  # Same cap as a batch off the network.
+  @max_cached_batch_bytes 8_388_608
+  @max_etag_bytes 512
+
+  # The cached body (nil when absent, unreadable or over the cap) and its
+  # ETag. The ETag file names the sha256 of the body it belongs to: an ETag
+  # whose body was replaced (a crash between the two writes, or two runs
+  # racing) is never sent, so a 304 can only ever vouch for the bytes it
+  # was issued for. Whether the body is any good is verify_batch/4's job.
+  defp read_cached_batch(dir) do
+    case read_capped(Path.join(dir, "batch.json"), @max_cached_batch_bytes) do
+      {:ok, body} -> %{body: body, etag: cached_etag(dir, body)}
+      _ -> nil
+    end
+  end
+
+  defp cached_etag(dir, body) do
+    with {:ok, line} <- read_capped(Path.join(dir, "batch.etag"), @max_etag_bytes + 80),
+         [sha, etag] <- String.split(line, " ", parts: 2),
+         true <- sha == sha256_hex(body),
+         true <- etag?(etag) do
+      etag
+    else
+      _ -> nil
+    end
+  end
+
+  # An ETag is sent back as a header: printable ASCII only, bounded.
+  defp etag?(etag) when is_binary(etag) do
+    etag != "" and byte_size(etag) <= @max_etag_bytes and
+      String.match?(etag, ~r/\A[\x21-\x7e]+\z/)
+  end
+
+  defp etag?(_), do: false
+
+  defp read_capped(path, max) do
+    with {:ok, %File.Stat{type: :regular, size: size}} when size <= max <- File.stat(path),
+         {:ok, body} <- File.read(path),
+         true <- byte_size(body) <= max do
+      {:ok, body}
+    else
+      _ -> :error
+    end
+  end
+
+  # The body first, then its ETag, each written atomically. An old ETag
+  # left next to a new body names the old body's sha and is ignored.
+  defp cache_batch(dir, body, etag) do
+    case write_atomic(dir, "batch.json", body) do
+      :ok when is_binary(etag) ->
+        if etag?(etag),
+          do: write_atomic(dir, "batch.etag", sha256_hex(body) <> " " <> etag),
+          else: File.rm(Path.join(dir, "batch.etag"))
+
+      :ok ->
+        File.rm(Path.join(dir, "batch.etag"))
+
+      {:error, reason} ->
+        Output.warning("precompiled: could not cache the batch in #{dir}: #{inspect(reason)}")
+    end
+
+    :ok
+  end
+
+  defp verify_batch(config, root, body, dir) do
     {keys, t} = root_keys(root, "batch")
 
-    with {:ok, body} <- fetch.(config.source <> "/batch.json") |> or_error("batch unavailable"),
-         {:ok, payload} <- verify_envelope(body, keys, t) |> or_error("batch signature invalid"),
+    with {:ok, payload} <- verify_envelope(body, keys, t) |> or_error("batch signature invalid"),
          {:ok, decoded} <- safe_decode(payload) |> or_error("batch malformed"),
-         {:ok, seq, issued, exp, manifests, v2} <- batch_fields(decoded),
+         {:ok, seq, issued, exp, manifests, v2, content} <- batch_fields(decoded),
          now = now(config),
          :ok <- sane_clock(now),
          {:ok, issued_at} <- parse_instant(issued),
@@ -364,13 +518,10 @@ defmodule ElixirPrecompiled.Trust do
          :ok <- lifetime(issued_at, expires_at),
          :ok <- fresh(issued_at, now),
          :ok <- not_expired(expires_at, now),
-         dir = state_dir(config),
          :ok <- monotonic(dir, seq),
          :ok <- write_state(dir, seq) do
-      {:ok, %{sequence: seq, manifests: manifests, manifests_v2: v2}}
+      {:ok, %{sequence: seq, manifests: manifests, manifests_v2: v2, content: content}}
     end
-  rescue
-    _ -> {:error, "batch malformed"}
   end
 
   defp sane_clock(now) do
@@ -430,12 +581,28 @@ defmodule ElixirPrecompiled.Trust do
        )
        when is_integer(seq) and is_binary(issued) and is_binary(exp) and is_map(manifests) do
     case Map.get(decoded, "manifests_v2") do
-      v2 when is_map(v2) or is_nil(v2) -> {:ok, seq, issued, exp, manifests, v2}
-      _ -> {:error, "batch malformed"}
+      v2 when is_map(v2) or is_nil(v2) ->
+        {:ok, seq, issued, exp, manifests, v2, content(Map.get(decoded, "content"))}
+
+      _ ->
+        {:error, "batch malformed"}
     end
   end
 
   defp batch_fields(_), do: {:error, "batch malformed"}
+
+  # Content origins the portal signs into the batch: where files and
+  # by-sha manifests may also come from. Anything not https is dropped; a
+  # field of the wrong shape is ignored rather than refusing the batch.
+  defp content(list) when is_list(list),
+    do:
+      for(
+        o <- list,
+        ElixirPrecompiled.Config.content_origin?(o),
+        do: String.trim_trailing(o, "/")
+      )
+
+  defp content(_), do: nil
 
   defp or_error({:ok, _} = ok, _), do: ok
   defp or_error(_, msg), do: {:error, msg}

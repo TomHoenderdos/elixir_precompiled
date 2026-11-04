@@ -22,12 +22,53 @@ defmodule ElixirPrecompiled.Fetch do
 
   @spec get_body(String.t(), keyword()) :: {:ok, binary()} | {:error, String.t()}
   def get_body(url, opts \\ []) do
-    case ElixirPrecompiled.HTTP.get(url,
-           max_bytes: Keyword.get(opts, :max_bytes, @max_body_bytes),
-           same_origin: true
-         ) do
+    http_opts =
+      [max_bytes: Keyword.get(opts, :max_bytes, @max_body_bytes), same_origin: true] ++
+        Keyword.take(opts, [:deadline_at, :connect_timeout_ms, :deadline_ms, :allowed_origins])
+
+    case ElixirPrecompiled.HTTP.get(url, http_opts) do
       {:ok, body} -> {:ok, body}
       {:error, reason} -> {:error, describe_error(reason)}
+    end
+  end
+
+  @doc """
+  GET a metadata document (the batch), sending `etag` as `If-None-Match`
+  when there is one: the body and its ETag, or `:not_modified`.
+  """
+  @spec get_conditional(map(), String.t(), String.t() | nil) ::
+          {:ok, binary(), String.t() | nil} | :not_modified | {:error, String.t()}
+  def get_conditional(config, url, etag) do
+    headers = if is_binary(etag), do: [{"if-none-match", etag}], else: []
+
+    opts =
+      [headers: headers, max_bytes: @max_body_bytes, same_origin: true] ++ metadata_opts(config)
+
+    case ElixirPrecompiled.HTTP.request(url, opts) do
+      {:ok, body, etag} -> {:ok, body, etag}
+      :not_modified -> :not_modified
+      {:error, reason} -> {:error, describe_error(reason)}
+    end
+  end
+
+  @doc false
+  # Root and batch: a short connect timeout, and both together inside
+  # :metadata_timeout_ms (Check narrows :deadline_at for them).
+  @spec metadata_opts(map()) :: keyword()
+  def metadata_opts(config),
+    do: [connect_timeout_ms: Map.get(config, :connect_timeout_ms, 5_000)] ++ deadline_opt(config)
+
+  @doc false
+  # Manifests and files: the run deadline, and redirects to the content
+  # origins the batch (or the project) allows.
+  @spec content_opts(map()) :: keyword()
+  def content_opts(config),
+    do: [allowed_origins: Map.get(config, :content) || []] ++ deadline_opt(config)
+
+  defp deadline_opt(config) do
+    case Map.get(config, :deadline_at) do
+      at when is_integer(at) -> [deadline_at: at]
+      _ -> []
     end
   end
 
@@ -46,7 +87,10 @@ defmodule ElixirPrecompiled.Fetch do
   @spec manifest(map(), String.t(), String.t(), String.t()) ::
           {:ok, map()} | {:miss, String.t()} | {:fail, String.t()}
   def manifest(config, name, expected_sha, path \\ "manifests") do
-    case get_body("#{config.source}/#{path}/#{name}.json", max_bytes: @max_manifest_bytes) do
+    case get_body(
+           "#{config.source}/#{path}/#{name}.json",
+           [max_bytes: @max_manifest_bytes] ++ content_opts(config)
+         ) do
       {:ok, bytes} ->
         if sha256(bytes) == expected_sha,
           do: with({:ok, map} <- decode(bytes), do: Manifest.normalize(map)),
@@ -210,7 +254,8 @@ defmodule ElixirPrecompiled.Fetch do
       tmp = cached <> ".tmp-#{System.unique_integer([:positive])}"
 
       with {:ok, body} <-
-             get_body("#{config.source}/files/#{sha}", max_bytes: size) |> file_error(sha),
+             get_body("#{config.source}/files/#{sha}", [max_bytes: size] ++ content_opts(config))
+             |> file_error(sha),
            :ok <- File.write(tmp, body),
            :ok <- verify(tmp, sha, size) |> name_path(path) do
         File.rename!(tmp, cached)

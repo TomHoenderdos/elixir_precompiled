@@ -736,4 +736,124 @@ defmodule ElixirPrecompiled.TrustTest do
 
     assert Enum.all?(results, &match?({:ok, %{sequence: 5}}, &1))
   end
+
+  defp cond_fetch(url, etag) do
+    headers = if etag, do: [{"if-none-match", etag}], else: []
+    ElixirPrecompiled.HTTP.request(url, headers: headers)
+  end
+
+  test "a cached batch is revalidated with its etag and reused on 304", %{config: config, f: f} do
+    F.publish(f, %{"ash" => %{"versions" => %{}}}, sequence: 5)
+    {:ok, root} = Trust.load_root(config)
+    assert {:ok, %{sequence: 5}} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    F.clear_requests()
+
+    assert {:ok, %{sequence: 5, manifests_v2: %{"ash" => _}}} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    assert [%{path: "/precompiled/batch.json", if_none_match: "\"" <> _}] = F.requests()
+  end
+
+  test "a 304 still runs every freshness rule on the cached batch", %{config: config, f: f} do
+    F.publish(f, %{}, sequence: 5)
+    {:ok, root} = Trust.load_root(config)
+    {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    # 25 hours later the same batch (still a 304) is stale.
+    later = Map.put(config, :clock_offset_seconds, 25 * 3600)
+    assert {:error, "batch stale" <> _} = Trust.fetch_batch_cached(later, root, &cond_fetch/2)
+  end
+
+  test "a 304 never re-verifies a cached batch under another root", %{config: config, f: f} do
+    F.publish(f, %{}, sequence: 5)
+    {:ok, root} = Trust.load_root(config)
+    {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    other = put_in(root, ["roles", "batch", "keyids"], ["0000"])
+    F.clear_requests()
+
+    assert {:error, "batch signature invalid"} =
+             Trust.fetch_batch_cached(config, other, &cond_fetch/2)
+
+    assert [%{if_none_match: "\"" <> _}] = F.requests()
+  end
+
+  test "a corrupt cached batch is refetched, never trusted", %{config: config, f: f} do
+    F.publish(f, %{}, sequence: 5)
+    {:ok, root} = Trust.load_root(config)
+    {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    File.write!(Path.join(state_dir(config), "batch.json"), "{not json")
+    F.clear_requests()
+
+    assert {:ok, %{sequence: 5}} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    assert [%{path: "/precompiled/batch.json", if_none_match: nil}] = F.requests()
+  end
+
+  test "a cached batch past the size cap is ignored", %{config: config, f: f} do
+    F.publish(f, %{}, sequence: 5)
+    {:ok, root} = Trust.load_root(config)
+    {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    File.write!(Path.join(state_dir(config), "batch.json"), :binary.copy("x", 8_388_609))
+    offline = Map.put(config, :offline, true)
+
+    assert {:error, "offline, no cached batch"} =
+             Trust.fetch_batch_cached(offline, root, &cond_fetch/2)
+  end
+
+  test "a newer batch replaces the cache only once it verifies", %{config: config, f: f} do
+    F.publish(f, %{}, sequence: 7)
+    {:ok, root} = Trust.load_root(config)
+    {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    F.publish(f, %{}, sequence: 6)
+
+    assert {:error, "batch sequence 6 is older than 7"} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    offline = Map.put(config, :offline, true)
+    assert {:ok, %{sequence: 7}} = Trust.fetch_batch_cached(offline, root, &cond_fetch/2)
+  end
+
+  test "offline uses the cached batch and makes no request", %{config: config, f: f} do
+    F.publish(f, %{}, sequence: 5)
+    {:ok, root} = Trust.load_root(config)
+    offline = Map.put(config, :offline, true)
+
+    assert {:error, "offline, no cached batch"} =
+             Trust.fetch_batch_cached(offline, root, &cond_fetch/2)
+
+    {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    F.clear_requests()
+    assert {:ok, %{sequence: 5}} = Trust.fetch_batch_cached(offline, root, &cond_fetch/2)
+    assert F.requests() == []
+
+    # Offline, a cached batch that has gone stale is refused like any other.
+    stale = Map.put(offline, :clock_offset_seconds, 25 * 3600)
+    assert {:error, "batch stale" <> _} = Trust.fetch_batch_cached(stale, root, &cond_fetch/2)
+  end
+
+  test "a batch's content origins are read, https only", %{config: config, f: f, fetch: fetch} do
+    F.publish(f, %{},
+      batch_extra: %{"content" => ["https://cdn.example.test/p/", "http://cdn.example.test"]}
+    )
+
+    {:ok, root} = Trust.load_root(config)
+
+    assert {:ok, %{content: ["https://cdn.example.test/p"]}} =
+             Trust.fetch_batch(config, root, fetch)
+
+    F.publish(f, %{}, sequence: 2, batch_extra: %{"content" => "not a list"})
+    assert {:ok, %{content: nil}} = Trust.fetch_batch(config, root, fetch)
+  end
+
+  test "the root is due for a check until a fetch of it is stamped", %{
+    config: config,
+    fetch: fetch
+  } do
+    assert Trust.root_check_due?(config)
+    {:ok, root} = Trust.load_root(config)
+    {:ok, _} = Trust.update_root(config, root, fetch)
+    refute Trust.root_check_due?(config)
+    refute Trust.root_check_due?(Map.put(config, :clock_offset_seconds, 3599))
+    assert Trust.root_check_due?(Map.put(config, :clock_offset_seconds, 3600))
+    # A stamp from the future (a clock set back) is due too.
+    assert Trust.root_check_due?(Map.put(config, :clock_offset_seconds, -60))
+  end
 end

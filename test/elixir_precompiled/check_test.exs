@@ -671,6 +671,97 @@ defmodule ElixirPrecompiled.CheckTest do
       assert File.exists?(Path.join(lib, "ash/ebin/Elixir.X.beam"))
       assert File.exists?(Path.join(lib, "ash/.mix/elixir_precompiled.json"))
     end
+
+    test "a warm run asks for nothing but a conditional batch", %{f: f, config: config, env: env} do
+      env = install_ash(f, config, env)
+      F.clear_requests()
+
+      assert run_capturing(config, env) == ""
+      assert_received {:report, {:ok, %{lines: []}}}
+      assert [%{path: "/precompiled/batch.json", if_none_match: "\"" <> _}] = F.requests()
+    end
+
+    test "a source without ETags still costs one batch request", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      F.set_etags(false)
+      env = install_ash(f, config, env)
+      F.clear_requests()
+
+      assert run_capturing(config, env) == ""
+      assert [%{path: "/precompiled/batch.json", if_none_match: nil}] = F.requests()
+    end
+
+    test "a root rotated since the last check is fetched when the batch stops verifying", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      env = install_ash(f, config, env)
+      k2 = F.rotate_root(f, version: 2)
+      F.publish(f, ash_packages(f, "1.31.0"), sequence: 2, signers: [k2])
+      F.clear_requests()
+
+      assert run_capturing(config, env) == ""
+      paths = Enum.map(F.requests(), & &1.path)
+      assert "/precompiled/root.json" in paths
+      assert_received {:report, {:ok, %{fails: 0}}}
+    end
+
+    test "offline: installs are rechecked against the cached batch, no request", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      env = install_ash(f, config, env)
+      F.clear_requests()
+      assert run_capturing(Map.put(config, :offline, true), env) == ""
+      assert_received {:report, {:ok, %{lines: []}}}
+      assert F.requests() == []
+    end
+
+    test "offline with no cached batch keeps installs and makes no request", %{
+      config: config,
+      env: env,
+      lib: lib,
+      f: f
+    } do
+      env = install_ash(f, config, env)
+      [dir] = Path.wildcard(Path.join(config.home, "*/batch.json"))
+      File.rm!(dir)
+      F.clear_requests()
+
+      out = run_capturing(Map.put(config, :offline, true), env)
+      assert out =~ "offline, no cached batch"
+      assert F.requests() == []
+      assert File.exists?(Path.join(lib, "ash/ebin/Elixir.X.beam"))
+    end
+
+    test "two concurrent runs on one home both get the batch", %{f: f, config: config, env: env} do
+      env = install_ash(f, config, env)
+
+      results =
+        1..4
+        |> Task.async_stream(fn _ ->
+          ElixirPrecompiled.Check.check(config, env, config_fun: fn _, _ -> :error end)
+        end)
+        |> Enum.map(fn {:ok, r} -> r end)
+
+      assert Enum.all?(results, &match?({:ok, %{fails: 0}}, &1))
+    end
+  end
+
+  test "a run whose deadline has passed makes no request and compiles", %{
+    config: config,
+    env: env
+  } do
+    F.clear_requests()
+    out = run_capturing(Map.put(config, :deadline_ms, 0), env)
+    assert_received {:report, {:ok, %{fails: 2}}}
+    assert out =~ ~r/FAIL\s+batch unavailable/
+    assert F.requests() == []
   end
 
   defp with_beam(f, entry, beam) do
@@ -723,7 +814,9 @@ defmodule ElixirPrecompiled.CheckTest do
       dir
       |> Path.join("**/*")
       |> Path.wildcard(match_dot: true)
-      |> Enum.reject(&File.dir?/1)
+      # When the root was last fetched says nothing about the batch: a
+      # refused batch must leave no sequence, cached batch or ETag behind.
+      |> Enum.reject(&(File.dir?(&1) or Path.basename(&1) == "root_checked"))
       |> Enum.map(&{Path.relative_to(&1, dir), File.read!(&1)})
       |> Enum.sort()
     else

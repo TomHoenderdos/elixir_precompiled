@@ -8,6 +8,13 @@ defmodule ElixirPrecompiled.Config do
   `except: [dep, ...]` and `root: path`; `ElixirPrecompiled.install/2` passes
   the same keys as options. `ELIXIR_PRECOMPILED=0` disables a run and
   `ELIXIR_PRECOMPILED_HOME` moves the cache.
+
+  Also: `deadline_seconds:` (default 300) bounds a whole run, after which
+  every dependency still waiting compiles from source; `root_check_seconds:`
+  (default 3600) is how often the served root is fetched; `content: [url]`
+  names CDN or mirror origins the files may come from (https only).
+  `ELIXIR_PRECOMPILED_OFFLINE=1` makes no request: the last verified batch
+  and the cache only, and only while that batch is still fresh.
   """
 
   @type t :: %{
@@ -15,8 +22,16 @@ defmodule ElixirPrecompiled.Config do
           except: [atom()],
           root_path: Path.t(),
           home: Path.t() | nil,
-          clock_offset_seconds: integer()
+          clock_offset_seconds: integer(),
+          offline: boolean(),
+          deadline_ms: non_neg_integer(),
+          metadata_timeout_ms: pos_integer(),
+          connect_timeout_ms: pos_integer(),
+          root_check_seconds: non_neg_integer(),
+          content_override: [String.t()] | nil
         }
+
+  @loopback ["127.0.0.1", "::1", "localhost"]
 
   @spec load(keyword()) :: t() | nil
   def load(overrides \\ []) do
@@ -30,7 +45,14 @@ defmodule ElixirPrecompiled.Config do
         except: except(opts[:except]),
         root_path: opts[:root] || Path.join(priv_dir(), "precompiled/root.json"),
         home: home_dir(opts),
-        clock_offset_seconds: clock_offset(opts[:clock_offset_seconds])
+        clock_offset_seconds: clock_offset(opts[:clock_offset_seconds]),
+        offline: offline?(),
+        deadline_ms: seconds(opts[:deadline_seconds], 300) * 1000,
+        # Root and batch together; connects to any host.
+        metadata_timeout_ms: 15_000,
+        connect_timeout_ms: 5_000,
+        root_check_seconds: seconds(opts[:root_check_seconds], 3600),
+        content_override: content(opts[:content])
       }
     else
       _ -> nil
@@ -46,6 +68,51 @@ defmodule ElixirPrecompiled.Config do
   @doc "True when `ELIXIR_PRECOMPILED` (or the old `NERVES_PRECOMPILED`) is `0`, `false` or `no`."
   @spec disabled?() :: boolean()
   def disabled?(), do: env_var("") in ["0", "false", "no"]
+
+  @doc "True when `ELIXIR_PRECOMPILED_OFFLINE` is `1`, `true` or `yes`: no network, the cached batch and cache only."
+  @spec offline?() :: boolean()
+  def offline?(), do: env_var("_OFFLINE") in ["1", "true", "yes"]
+
+  defp seconds(n, _default) when is_integer(n) and n >= 0, do: n
+  defp seconds(_, default), do: default
+
+  @doc false
+  # A content origin (a CDN or mirror for files and manifests): https, or
+  # http on loopback, like the source.
+  @spec content_origin?(term()) :: boolean()
+  def content_origin?(origin) when is_binary(origin) do
+    case URI.parse(origin) do
+      %URI{scheme: "https", host: h} when is_binary(h) and h != "" -> true
+      %URI{scheme: "http", host: h} when is_binary(h) -> String.downcase(h) in @loopback
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  def content_origin?(_), do: false
+
+  defp content(nil), do: nil
+
+  defp content(list) when is_list(list) do
+    {good, bad} = Enum.split_with(list, &content_origin?/1)
+
+    if bad != [] do
+      ElixirPrecompiled.Output.warning(
+        "precompiled: ignoring content origins that are not https: #{inspect(bad)}"
+      )
+    end
+
+    Enum.map(good, &String.trim_trailing(&1, "/"))
+  end
+
+  defp content(other) do
+    ElixirPrecompiled.Output.warning(
+      "precompiled: ignoring content, not a list: #{inspect(other)}"
+    )
+
+    nil
+  end
 
   @doc "True when `ELIXIR_PRECOMPILED_DEBUG` (or the old `NERVES_PRECOMPILED_DEBUG`) is `1`."
   @spec debug?() :: boolean()
@@ -114,8 +181,6 @@ defmodule ElixirPrecompiled.Config do
         to_string(dir)
     end
   end
-
-  @loopback ["127.0.0.1", "::1", "localhost"]
 
   # Signatures make the content tamper-proof, but plain http still leaks
   # which dependencies a project uses and lets a network attacker withhold

@@ -33,6 +33,12 @@ defmodule ElixirPrecompiled.Integration.AliasTest do
     File.write!(Path.join(proj, "test/test_helper.exs"), "ExUnit.start()\n")
     out = C.mix!(proj, ["test"], [{"MIX_ENV", "test"}])
     assert out =~ ~r/precompiled: jason 1\.4\.5\s+HIT/, out
+
+    # The bench: a warm second compile asks for one conditional batch only.
+    F.clear_requests()
+    out = C.mix!(proj, ["compile"])
+    refute out =~ "precompiled:", out
+    assert [%{path: "/precompiled/batch.json", if_none_match: "\"" <> _}] = F.requests()
   end
 
   # clean deletes _build and reenables deps.loadpaths: the second install
