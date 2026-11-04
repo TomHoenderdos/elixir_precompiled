@@ -16,7 +16,8 @@ defmodule ChainTest.Mirror do
   directory) is passed through the transform, `(path, bytes) -> {status,
   bytes}`, with `path` relative to the snapshot, before it is sent; one it
   does not hold is a 404 that never reaches the transform. A transform that
-  raises, or answers anything but `{100..599, binary}`, is answered 500.
+  raises, throws or exits, or answers anything but `{100..599, binary}`, is
+  answered 500 and logged.
 
   Every request is logged in arrival order as `%{method, path, status,
   mutated}`, `mutated` true when the transform answered anything but
@@ -50,6 +51,7 @@ defmodule ChainTest.Mirror do
   @request_timeout_ms 5_000
   @max_connections 64
   @send_timeout_ms 5_000
+  @accept_backoff_ms 50
 
   @routes [
     ~r|\Aroot\.json\z|,
@@ -195,7 +197,10 @@ defmodule ChainTest.Mirror do
       {:error, :closed} ->
         exit(:shutdown)
 
+      # Out of file descriptors or similar: back off instead of spinning
+      # on an accept that fails again at once.
       {:error, _} ->
+        Process.sleep(@accept_backoff_ms)
         accept(listen, server, config, live)
     end
   end
@@ -358,6 +363,8 @@ defmodule ChainTest.Mirror do
     end
   rescue
     e -> {500, Exception.message(e), rel, true}
+  catch
+    kind, reason -> {500, Exception.format_banner(kind, reason), rel, true}
   end
 
   defp respond(sock, status, body, path) do

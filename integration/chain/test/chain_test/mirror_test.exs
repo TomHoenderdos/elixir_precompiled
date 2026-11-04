@@ -42,6 +42,15 @@ defmodule ChainTest.MirrorTest do
     mirror
   end
 
+  # Polls `fun` until it is true, for at most 5 s.
+  defp eventually(fun, deadline \\ System.monotonic_time(:millisecond) + 5_000) do
+    cond do
+      fun.() -> true
+      System.monotonic_time(:millisecond) >= deadline -> false
+      true -> Process.sleep(10) || eventually(fun, deadline)
+    end
+  end
+
   # One raw request line; returns the status code the mirror answers.
   defp raw(mirror, request_line) do
     {:ok, sock} = :gen_tcp.connect({127, 0, 0, 1}, mirror.port, [:binary, active: false])
@@ -206,13 +215,14 @@ defmodule ChainTest.MirrorTest do
         s
       end
 
-    # Let the acceptor take both before the third connects.
-    Process.sleep(100)
+    # The acceptor takes connections in order, so both are held by the
+    # time it takes the third.
     assert code(raw_bytes(mirror, "GET /root.json HTTP/1.1\r\n\r\n")) == 503
 
+    # Their handlers end once they see the close; until the acceptor has
+    # reaped them a new connection may still be one past the cap.
     Enum.each(held, &:gen_tcp.close/1)
-    Process.sleep(100)
-    assert {:ok, _} = HTTP.get(mirror.url <> "/root.json", 5_000)
+    assert eventually(fn -> match?({:ok, _}, HTTP.get(mirror.url <> "/root.json", 5_000)) end)
   end
 
   test "a client that hangs up mid-request does not take the mirror down", %{dir: dir} do
@@ -229,7 +239,11 @@ defmodule ChainTest.MirrorTest do
     :gen_tcp.send(s, "GET /files/#{@sha} HTTP/1.1\r\n\r\n")
     :gen_tcp.close(s)
 
-    Process.sleep(100)
+    # The last one is logged once its handler has read the whole head.
+    assert eventually(fn ->
+             Enum.any?(Mirror.requests(mirror), &(&1.path == "files/#{@sha}"))
+           end)
+
     assert Process.alive?(mirror.pid)
     assert {:ok, _} = HTTP.get(mirror.url <> "/root.json", 5_000)
   end
@@ -308,6 +322,27 @@ defmodule ChainTest.MirrorTest do
 
     assert raw(mirror, "GET /root.json HTTP/1.1") == 500
     assert {:ok, _} = HTTP.get(mirror.url <> "/batch.json", 5_000)
+  end
+
+  test "a transform that throws or exits is a logged 500", %{dir: dir} do
+    mirror =
+      start!(dir,
+        transform: fn
+          "root.json", _ -> throw(:boom)
+          "batch.json", _ -> exit(:boom)
+          _, b -> {200, b}
+        end
+      )
+
+    assert raw(mirror, "GET /root.json HTTP/1.1") == 500
+    assert raw(mirror, "GET /batch.json HTTP/1.1") == 500
+    assert {:ok, _} = HTTP.get(mirror.url <> "/batches/7.json", 5_000)
+
+    assert [
+             %{path: "root.json", status: 500, mutated: true},
+             %{path: "batch.json", status: 500, mutated: true},
+             %{path: "batches/7.json", status: 200, mutated: false}
+           ] = Mirror.requests(mirror)
   end
 
   test "a transform answering a bad shape is a 500", %{dir: dir} do
