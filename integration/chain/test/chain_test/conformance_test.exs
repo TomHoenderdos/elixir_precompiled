@@ -446,6 +446,57 @@ defmodule ChainTest.ConformanceTest do
       assert_received {:build, %{client_env: nil}}
     end
 
+    test "a clock age is resolved against the snapshot batch's issue, however old it is", ctx do
+      issued = DateTime.add(DateTime.utc_now(), -2 * 3600, :second)
+
+      File.write!(
+        Path.join(ctx.snapshot.dir, "batch.json"),
+        ChainTest.Signed.batch(ChainTest.Signed.key(), issued: issued)
+      )
+
+      cases!(ctx.opts, [
+        v2(@t0, %{id: "R8", client_config: %{clock_offset_seconds: {:age, 23 * 3600}}}),
+        v2(@t0, %{id: "R7", client_config: %{clock_offset_seconds: {:age, 25 * 3600}}})
+      ])
+
+      Conformance.run(ctx.opts, v2_steps(self(), ctx.snapshot))
+
+      for age <- [23 * 3600, 25 * 3600] do
+        assert_received {:build, %{client_config: %{clock_offset_seconds: offset}}}
+        clock = DateTime.add(DateTime.utc_now(), offset, :second)
+        assert_in_delta DateTime.diff(clock, issued), age, 5
+      end
+    end
+
+    test "a case whose build crashes still removes its home", ctx do
+      cases!(ctx.opts, [@t0])
+      s = v2_steps(self(), ctx.snapshot)
+
+      build = fn input ->
+        send(self(), {:crash_home, input.home})
+        raise "build blew up"
+      end
+
+      assert {[%Result{check: "T0", class: :fail, detail: detail}], _} =
+               Conformance.run(ctx.opts, %{s | build: build})
+
+      assert detail =~ "build blew up"
+      assert_received {:crash_home, home}
+      refute File.exists?(home), "the case home outlives a crashed case"
+    end
+
+    test "a case whose setup fails still removes its home", ctx do
+      Process.register(self(), :conformance_home_test)
+
+      c =
+        v2(@t0, %{setup: {ChainTest.TestSetup, %{fail: "no", notify: :conformance_home_test}}})
+
+      cases!(ctx.opts, [c])
+      Conformance.run(ctx.opts, v2_steps(self(), ctx.snapshot))
+      assert_received {:setup, home, _}
+      refute File.exists?(home)
+    end
+
     test "a case needing a snapshot fact it lacks is not testable here, unbuilt", ctx do
       File.write!(
         Path.join(ctx.snapshot.dir, "root.json"),
@@ -459,7 +510,7 @@ defmodule ChainTest.ConformanceTest do
                Conformance.run(ctx.opts, v2_steps(self(), ctx.snapshot))
 
       assert detail =~ "not testable here"
-      assert detail =~ "threshold 1"
+      assert detail =~ "batch threshold is 1 in production"
       refute_received {:build, _}
     end
 

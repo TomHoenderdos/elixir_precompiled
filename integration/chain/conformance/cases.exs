@@ -45,14 +45,15 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     client: %{default: :snapshot, deps: %{}},
     harness: %{}
   },
-  # First after T0: its clock is only 1 hour short of the batch's 24, so the
-  # snapshot must still be fresh when it runs.
+  # Clock offsets are ages from the snapshot batch's `issued` ({:age, s}),
+  # resolved just before each build, so no case depends on the run's order
+  # or the snapshot's age.
   Map.merge(accepted, %{
     id: "R8",
     description:
-      "Freeze: the client's clock runs 23 hours ahead of the current batch; still fresh, it is accepted.",
+      "Freeze: the client's clock is 23 hours past the current batch's issue; still fresh, it is accepted.",
     transform: {ChainTest.Mirror.Identity, %{}},
-    client_config: %{clock_offset_seconds: 23 * 3600},
+    client_config: %{clock_offset_seconds: {:age, 23 * 3600}},
     after: %{state_sequence: :snapshot, installed: :snapshot}
   }),
   %{
@@ -85,7 +86,7 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
   Map.merge(refused.("batch signature invalid", :not_exercised), %{
     id: "T3-duplicated",
     description:
-      "One valid signature served twice: one key counts once towards the threshold, so the batch is refused.",
+      "One valid signature served twice: one key counts once towards the threshold, so the batch is refused. Not testable while the batch threshold is 1 in production; Task 4 runs it under a test key.",
     transform: {ChainTest.Mirror.BatchSignatures, %{change: :duplicate}}
   }),
   Map.merge(refused.("batch sequence", nil), %{
@@ -112,14 +113,12 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
   Map.merge(accepted, %{
     id: "T9",
     description:
-      "Only environment variables name a root path, an attacker's: the client ignores them and installs as in T0.",
+      "Pins today's behaviour: only environment variables name a root path, an attacker's, and the client, which reads none, installs as in T0.",
     transform: {ChainTest.Mirror.Identity, %{}},
     setup: {ChainTest.Conformance.Setup.PlantRoot, %{path: "attacker/root.json"}},
     client_env: %{
       "ELIXIR_PRECOMPILED_ROOT" => {:home, "attacker/root.json"},
-      "NERVES_PRECOMPILED_ROOT" => {:home, "attacker/root.json"},
-      "ELIXIR_PRECOMPILED_ROOT_PATH" => {:home, "attacker/root.json"},
-      "NERVES_PRECOMPILED_ROOT_PATH" => {:home, "attacker/root.json"}
+      "NERVES_PRECOMPILED_ROOT" => {:home, "attacker/root.json"}
     },
     after: %{state_sequence: :snapshot, installed: :snapshot}
   }),
@@ -164,9 +163,9 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
   Map.merge(refused.("batch stale", :not_exercised), %{
     id: "R7",
     description:
-      "Freeze: the client's clock runs 25 hours ahead of the current batch; refused as stale.",
+      "Freeze: the client's clock is 25 hours past the current batch's issue; refused as stale.",
     transform: {ChainTest.Mirror.Identity, %{}},
-    client_config: %{clock_offset_seconds: 25 * 3600}
+    client_config: %{clock_offset_seconds: {:age, 25 * 3600}}
   }),
   Map.merge(refused.("clock", :not_exercised), %{
     id: "R12",
@@ -175,12 +174,14 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     transform: {ChainTest.Mirror.Identity, %{}},
     client_config: %{clock_offset_seconds: -30 * 86_400}
   }),
-  Map.merge(refused.("batch expired at", :not_exercised), %{
+  # The spec row, amended: freshness is checked before expiry, so a clock a
+  # year ahead reads as stale, not expired.
+  Map.merge(refused.("batch stale", :not_exercised), %{
     id: "R13",
     description:
-      "The client's clock is a year ahead: the batch is refused as expired, and everything compiles.",
+      "The client's clock is a year past the batch's issue: refused as stale, and everything compiles.",
     transform: {ChainTest.Mirror.Identity, %{}},
-    client_config: %{clock_offset_seconds: 365 * 86_400}
+    client_config: %{clock_offset_seconds: {:age, 365 * 86_400}}
   }),
   Map.merge(accepted_previous, %{
     id: "R19",

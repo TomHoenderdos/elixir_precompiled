@@ -45,7 +45,8 @@ defmodule ChainTest.Conformance.Case do
     * `client_config` - merged into the fixture's `config
       :elixir_precompiled` for this case's build only
       (`ChainTest.Build.client_config?/1`): `clock_offset_seconds`
-      (integer), `root` (an absolute path), `source` (URL).
+      (integer, or `{:age, seconds}`: the client's clock that long after
+      the snapshot batch's `issued`, `ChainTest.Conformance.Clock`), `root` (an absolute path), `source` (URL).
     * `client_env` - environment variables for this case's build only, from
       the few `ChainTest.Build.client_env_names/0` allows (the names a
       client might wrongly take a root path from: T9): each an absolute
@@ -93,7 +94,7 @@ defmodule ChainTest.Conformance.Case do
   """
 
   alias ChainTest.{Build, Mirror, Result, Snapshot}
-  alias ChainTest.Conformance.Setup
+  alias ChainTest.Conformance.{Clock, Setup}
   alias ChainTest.Conformance.Setup.PlantRoot
   alias ChainTest.Mirror.Transform
 
@@ -214,8 +215,8 @@ defmodule ChainTest.Conformance.Case do
         "setup #{inspect(c.setup)} is not {module, args} with a " <>
           "ChainTest.Conformance.Setup and args it accepts"
 
-      Map.has_key?(c, :client_config) and not Build.client_config?(c.client_config) ->
-        "client_config must map clock_offset_seconds to an integer, root to an absolute " <>
+      Map.has_key?(c, :client_config) and not Clock.case_config?(c.client_config) ->
+        "client_config must map clock_offset_seconds to an integer or {:age, integer}, root to an absolute " <>
           "path and source to a non-empty string, got #{inspect(c.client_config)}"
 
       Map.has_key?(c, :client_env) and not client_env?(c.client_env) ->

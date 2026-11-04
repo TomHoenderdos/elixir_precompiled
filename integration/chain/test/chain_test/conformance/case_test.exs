@@ -71,6 +71,17 @@ defmodule ChainTest.Conformance.CaseTest do
       end
     end
 
+    test "the repository's clock cases are ages from the batch's issue; R13 is stale" do
+      {:ok, cases} = Case.load(Path.join(ChainTest.CLI.root(), "conformance/cases.exs"))
+      by_id = Map.new(cases, &{&1.id, &1})
+
+      for {id, age} <- [{"R7", 25 * 3600}, {"R8", 23 * 3600}, {"R13", 365 * 86_400}] do
+        assert by_id[id].client_config == %{clock_offset_seconds: {:age, age}}, id
+      end
+
+      assert by_id["R13"].client.default == {:fail, "batch stale"}
+    end
+
     test "every refusal in the repository's case file leaves state, _build and cache alone (R14)" do
       {:ok, cases} = Case.load(Path.join(ChainTest.CLI.root(), "conformance/cases.exs"))
       refusals = Enum.filter(cases, &match?(%{client: %{default: {:fail, _}}}, &1))
@@ -450,6 +461,12 @@ defmodule ChainTest.Conformance.CaseTest do
 
       assert {:ok, _} = Case.load(write(tmp, [%{@v2 | after: %{installed: :snapshot}}]))
       assert {:ok, _} = Case.load(write(tmp, [%{@v2 | client_config: %{}}]))
+
+      assert {:ok, _} =
+               Case.load(
+                 write(tmp, [%{@v2 | client_config: %{clock_offset_seconds: {:age, 3600}}}])
+               )
+
       assert {:ok, _} = Case.load(write(tmp, [%{@v2 | after: %{state_sequence: :previous}}]))
       assert {:ok, _} = Case.load(write(tmp, [%{@v2 | after: %{other_states: :unchanged}}]))
 
@@ -469,6 +486,8 @@ defmodule ChainTest.Conformance.CaseTest do
           {"an unknown client_config key", :client_config, %{home: "/h"}},
           {"a client_config value of the wrong type", :client_config,
            %{clock_offset_seconds: "1"}},
+          {"a clock age that is not an integer", :client_config,
+           %{clock_offset_seconds: {:age, 1.5}}},
           {"a client_config that is not a map", :client_config, [source: "x"]},
           {"a relative client_config root", :client_config, %{root: "priv/root.json"}},
           {"an unknown after key", :after, %{installed: :none, files: :none}},

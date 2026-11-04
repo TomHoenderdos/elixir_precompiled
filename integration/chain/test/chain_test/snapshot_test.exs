@@ -600,7 +600,7 @@ defmodule ChainTest.SnapshotTest do
     @tag :tmp_dir
     test "batch_threshold_2: the root's batch role needs two signatures", %{tmp_dir: tmp} do
       assert {:missing, why} = Snapshot.available(needs_snap(tmp, []), :batch_threshold_2)
-      assert why =~ "threshold 1"
+      assert why =~ "batch threshold is 1 in production"
 
       two = [Signed.key(), Signed.key()]
 
@@ -608,6 +608,17 @@ defmodule ChainTest.SnapshotTest do
                needs_snap(tmp, batch_keys: two, threshold: 2),
                :batch_threshold_2
              ) == :ok
+    end
+
+    @tag :tmp_dir
+    test "issued/1 is the snapshot batch's issue instant", %{tmp_dir: tmp} do
+      key = Signed.key()
+      issued = ~U[2026-11-04 10:00:00.000000Z]
+      File.write!(Path.join(tmp, "batch.json"), Signed.batch(key, issued: issued))
+      assert Snapshot.issued(%{dir: tmp}) == {:ok, issued}
+
+      File.write!(Path.join(tmp, "batch.json"), "{}")
+      assert {:error, _} = Snapshot.issued(%{dir: tmp})
     end
 
     test "need_names/0 lists every need a transform or setup may name" do

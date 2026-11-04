@@ -269,13 +269,8 @@ defmodule ChainTest.BuildTest do
       end
     end
 
-    test "the allowed names are the root-path ones only" do
-      assert "ELIXIR_PRECOMPILED_ROOT" in Build.client_env_names()
-      assert "NERVES_PRECOMPILED_ROOT" in Build.client_env_names()
-
-      for name <- Build.client_env_names() do
-        assert name =~ ~r/^(ELIXIR|NERVES)_PRECOMPILED_ROOT/
-      end
+    test "the allowed names are the two root-path ones only" do
+      assert Build.client_env_names() == ["ELIXIR_PRECOMPILED_ROOT", "NERVES_PRECOMPILED_ROOT"]
     end
   end
 

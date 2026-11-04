@@ -50,7 +50,7 @@ defmodule ChainTest.Conformance do
     Snapshot
   }
 
-  alias ChainTest.Conformance.{Case, Setup}
+  alias ChainTest.Conformance.{Case, Clock, Setup}
   alias ChainTest.Mirror.Transform
   alias ChainTest.Trust
 
@@ -359,7 +359,7 @@ defmodule ChainTest.Conformance do
             source: mirror.url,
             home: home,
             home_prepared: true,
-            client_config: Map.get(c, :client_config),
+            client_config: client_config(Map.get(c, :client_config), snap),
             client_env: client_env(Map.get(c, :client_env), home),
             trust: snap.info,
             target_config: run.site,
@@ -410,6 +410,19 @@ defmodule ChainTest.Conformance do
     })
   end
 
+  # A clock age resolved against the snapshot batch's issue, now, so the
+  # case means the same however old the snapshot is.
+  defp client_config(config, snap) do
+    if Clock.relative?(config) do
+      case Snapshot.issued(snap) do
+        {:ok, issued} -> Clock.resolve(config, issued, DateTime.utc_now())
+        {:error, why} -> raise ArgumentError, "cannot resolve the case's clock age: #{why}"
+      end
+    else
+      config
+    end
+  end
+
   # The case's variables, a `{:home, rel}` path resolved under the case home.
   defp client_env(nil, _home), do: nil
 
@@ -425,7 +438,15 @@ defmodule ChainTest.Conformance do
     rand = Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
     home = Path.join(Path.expand(System.tmp_dir!()), "chain_conformance_home-" <> rand)
     File.mkdir_p!(home)
-    File.chmod!(home, 0o700)
+
+    try do
+      File.chmod!(home, 0o700)
+    rescue
+      e ->
+        File.rm_rf(home)
+        reraise e, __STACKTRACE__
+    end
+
     home
   end
 

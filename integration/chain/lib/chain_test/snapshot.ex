@@ -147,7 +147,7 @@ defmodule ChainTest.Snapshot do
 
       {:ok, t} ->
         {:missing,
-         "the root's batch role has threshold #{t}: one signature meets it, so a duplicated " <>
+         "batch threshold is #{t} in production: one signature meets it, so a duplicated " <>
            "signature has nothing to count twice towards"}
 
       {:error, why} ->
@@ -184,6 +184,10 @@ defmodule ChainTest.Snapshot do
       _ -> {:error, "the snapshot's root.json names no batch threshold"}
     end
   end
+
+  @doc "The issue instant of the snapshot's batch (`batch.json` under `dir`)."
+  @spec issued(%{dir: Path.t()}) :: {:ok, DateTime.t()} | {:error, String.t()}
+  def issued(%{dir: dir}), do: issued_at(dir, "batch.json")
 
   @doc "A fresh directory name under the system tmp dir."
   @spec default_dir() :: Path.t()

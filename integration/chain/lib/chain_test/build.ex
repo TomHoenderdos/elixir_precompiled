@@ -60,11 +60,12 @@ defmodule ChainTest.Build do
   @unset ~w(ELIXIR_PRECOMPILED NERVES_PRECOMPILED NERVES_PRECOMPILED_HOME MIX_BUILD_PATH
             MIX_BUILD_ROOT MIX_DEPS_PATH MIX_EXS MIX_LOCKFILE)
 
-  # Names a client might take a root path from, were it to read one from the
-  # environment at all (T9). Nothing else: a case cannot turn the client
+  # T9 pins today's behaviour: the client reads no root path from the
+  # environment. These are the names it would use if it did, by its own
+  # pattern (`ELIXIR_PRECOMPILED` or the old `NERVES_PRECOMPILED`, plus
+  # `_ROOT`), and deliberately nothing else: a case cannot turn the client
   # off or move its home through this.
-  @client_env ~w(ELIXIR_PRECOMPILED_ROOT NERVES_PRECOMPILED_ROOT ELIXIR_PRECOMPILED_ROOT_PATH
-                 NERVES_PRECOMPILED_ROOT_PATH)
+  @client_env ~w(ELIXIR_PRECOMPILED_ROOT NERVES_PRECOMPILED_ROOT)
 
   @type client_config :: %{
           optional(:clock_offset_seconds) => integer(),
