@@ -256,14 +256,15 @@ defmodule ChainTest.BuildTest do
   end
 
   describe "trust_ca and http_proxy" do
-    test "trust_ca: the config file loads that CA as the build VM store, from beside it",
+    test "trust_ca: the client CA option names that CA alone, removed after the build",
          ctx do
       %{ca: ca} = ChainTest.TestCert.server(:ip)
       copy = Path.join(ctx.tmp, "copied")
 
       grab =
-        ~s(mkdir -p '#{copy}' && cp "$\(dirname "$CHAIN_CLIENT_CONFIG"\)"/* '#{copy}'/ && ) <>
-          ~s(echo "$CHAIN_CLIENT_CONFIG" > '#{copy}/where'\n)
+        ~s(mkdir -p '#{copy}' && cp "$ELIXIR_PRECOMPILED_CACERTS_PATH" '#{copy}/ca.pem' && ) <>
+          ~s(echo "$ELIXIR_PRECOMPILED_CACERTS_PATH" > '#{copy}/where' && ) <>
+          ~s(echo "${CHAIN_CLIENT_CONFIG-unset}" > '#{copy}/config'\n)
 
       FakeBin.with_stubs(%{"mix" => grab <> fake_mix(ctx, @hits, sequence: 7)}, fn _ ->
         Build.run(%{
@@ -276,35 +277,26 @@ defmodule ChainTest.BuildTest do
         })
       end)
 
-      dir = copy |> Path.join("where") |> File.read!() |> String.trim() |> Path.dirname()
-      refute File.exists?(dir), "the CA outlives the build"
+      pem = copy |> Path.join("where") |> File.read!() |> String.trim()
+      assert Path.type(pem) == :absolute
+      refute String.starts_with?(pem, ctx.home), "the CA must not sit in the judged home"
+      refute File.exists?(Path.dirname(pem)), "the CA outlives the build"
       assert File.read!(Path.join(copy, "ca.pem")) == ChainTest.TestCert.pem(ca)
-      config = File.read!(Path.join(copy, "client.exs"))
-      assert config =~ ":public_key.cacerts_load(#{inspect(Path.join(dir, "ca.pem"))})"
-      refute config =~ "config :elixir_precompiled"
+      # The VM's own store is left alone: no config file is needed for it.
+      config = copy |> Path.join("config") |> File.read!() |> String.trim()
+      assert config in ["", "unset"]
     end
 
-    test "the file it writes replaces the store of the VM that reads the config", ctx do
-      %{ca: ca} = ChainTest.TestCert.server(:ip)
-      path = Build.client_config_file(%{clock_offset_seconds: 1}, ca)
+    test "without trust_ca the client CA option is unset, so it keeps the OS store", ctx do
+      System.put_env("ELIXIR_PRECOMPILED_CACERTS_PATH", "/operator/ca.pem")
 
       try do
-        code =
-          "Config.Reader.read!(#{inspect(path)}); " <>
-            "IO.write(Base.encode16(:erlang.term_to_binary(:public_key.cacerts_get())))"
-
-        {out, 0} = System.cmd("elixir", ["-e", code], cd: ctx.tmp)
-        certs = :erlang.binary_to_term(Base.decode16!(out))
-        assert [{:cert, ^ca, _}] = certs
-        assert Config.Reader.read!(path, env: :dev) |> Keyword.keys() == [:elixir_precompiled]
+        {env, {:ok, file}} = client_run(ctx, %{client_config: %{clock_offset_seconds: 1}})
+        refute env =~ ~r/^ELIXIR_PRECOMPILED_CACERTS_PATH=/m
+        refute file =~ "cacerts_load"
       after
-        File.rm_rf(Path.dirname(path))
+        System.delete_env("ELIXIR_PRECOMPILED_CACERTS_PATH")
       end
-    end
-
-    test "without trust_ca no CA reaches the build", ctx do
-      {_env, {:ok, file}} = client_run(ctx, %{client_config: %{clock_offset_seconds: 1}})
-      refute file =~ "cacerts_load"
     end
 
     test "http_proxy: HTTP_PROXY is that URL and HTTPS_PROXY unset, for this build", ctx do

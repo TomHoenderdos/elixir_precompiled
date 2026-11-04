@@ -26,11 +26,15 @@ defmodule ChainTest.Build do
   not given is unset.
 
   Two more, for the TLS and transport cases only: `:trust_ca` (a CA
-  certificate, DER) makes the build VM trust that CA alone, through
-  `:public_key.cacerts_load/1` in the same config file, from a PEM beside
-  it (removed with it): the client has no CA option and reads only the OS
-  store, so this is how a case shows it a TLS mirror it may trust (TLS-T0,
-  N6). And `:http_proxy` (an `http://` URL) sets `HTTP_PROXY` to it and
+  certificate, DER) makes the client trust that CA alone, through its own
+  CA option: `ELIXIR_PRECOMPILED_CACERTS_PATH` names a PEM in a private
+  temp dir (outside the home, removed after the build), a bundle that
+  replaces the OS store for the client. That is how a user points the
+  client at a private CA, and how a case shows it a TLS mirror it may
+  trust (TLS-T0, N3-hostname, N6). Without `:trust_ca` that variable is
+  unset, so the client keeps the OS store.
+
+  And `:http_proxy` (an `http://` URL) sets `HTTP_PROXY` to it and
   unsets `HTTPS_PROXY` for the build, so every plain-http request the
   client makes, to any host, reaches that URL (N2). Without them, neither
   the store nor the proxy variables are touched.
@@ -263,7 +267,8 @@ defmodule ChainTest.Build do
     # one installed; every other build starts clean.
     unless Map.get(input, :keep_build, false), do: File.rm_rf!(build_dir)
 
-    client = client_config_file(Map.get(input, :client_config), Map.get(input, :trust_ca))
+    client = client_config_file(Map.get(input, :client_config))
+    ca = ca_file(Map.get(input, :trust_ca))
 
     env =
       [
@@ -271,7 +276,8 @@ defmodule ChainTest.Build do
         {"MIX_ENV", "dev"},
         {"ELIXIR_PRECOMPILED_HOME", home},
         {"CHAIN_SOURCE", source},
-        {"CHAIN_CLIENT_CONFIG", client}
+        {"CHAIN_CLIENT_CONFIG", client},
+        {"ELIXIR_PRECOMPILED_CACERTS_PATH", ca}
       ] ++
         target_config(Map.get(input, :target_config)) ++
         Enum.map(@unset, &{&1, nil}) ++
@@ -288,6 +294,7 @@ defmodule ChainTest.Build do
         end)
       after
         if client, do: File.rm_rf(Path.dirname(client))
+        if ca, do: File.rm_rf(Path.dirname(ca))
       end
 
     fw = fw_path(build_dir)
@@ -313,41 +320,42 @@ defmodule ChainTest.Build do
   @doc false
   # The case's client config as a config file in a private temp dir of its
   # own (never the home, whose contents a case judges), values written with
-  # inspect/1 so each is an Elixir literal; with `trust_ca`, the CA as
-  # `ca.pem` beside it, loaded as the VM's whole store. The caller removes
-  # the dir.
-  @spec client_config_file(client_config() | nil, binary() | nil) :: Path.t() | nil
-  def client_config_file(nil, nil), do: nil
+  # inspect/1 so each is an Elixir literal. The caller removes the dir.
+  @spec client_config_file(client_config() | nil) :: Path.t() | nil
+  def client_config_file(nil), do: nil
 
-  def client_config_file(config, trust_ca) do
-    dir = Path.join(System.tmp_dir!(), "chain_client_config-#{random()}")
-    File.mkdir_p!(dir)
-    File.chmod!(dir, 0o700)
-    path = Path.join(dir, "client.exs")
-
-    trust =
-      if trust_ca do
-        pem = Path.join(dir, "ca.pem")
-        File.write!(pem, ChainTest.TestCert.pem(trust_ca))
-
-        "# The case's TLS mirror CA, the only one this build trusts.\n" <>
-          ":ok = :public_key.cacerts_load(#{inspect(pem)})\n"
-      else
-        ""
-      end
+  def client_config_file(config) do
+    path = Path.join(private_dir("chain_client_config"), "client.exs")
 
     opts =
-      (config || %{})
+      config
       |> Enum.sort()
       |> Enum.map_join(", ", fn {k, v} -> "#{k}: #{inspect(v)}" end)
 
     File.write!(
       path,
       "# A conformance case's client config, for one build.\nimport Config\n" <>
-        trust <> if(opts == "", do: "", else: "config :elixir_precompiled, #{opts}\n")
+        if(opts == "", do: "", else: "config :elixir_precompiled, #{opts}\n")
     )
 
     path
+  end
+
+  # The case's TLS mirror CA as `ca.pem` in a private temp dir of its own,
+  # for the client's CA option. The caller removes the dir.
+  defp ca_file(nil), do: nil
+
+  defp ca_file(der) do
+    pem = Path.join(private_dir("chain_ca"), "ca.pem")
+    File.write!(pem, ChainTest.TestCert.pem(der))
+    pem
+  end
+
+  defp private_dir(prefix) do
+    dir = Path.join(System.tmp_dir!(), "#{prefix}-#{random()}")
+    File.mkdir_p!(dir)
+    File.chmod!(dir, 0o700)
+    dir
   end
 
   defp proxy_env(nil), do: []

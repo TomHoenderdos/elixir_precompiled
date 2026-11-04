@@ -25,7 +25,8 @@ defmodule ChainTest.Mirror.Transform do
     * `trust_ca` - `true`, only with a `tls` kind that has a CA (`:ip`,
       `:wrong_host`; a self-signed one has none): the case's build trusts that
       certificate's CA, and only it (`ChainTest.Build`'s `:trust_ca`).
-      Without it, the build keeps the OS store, which knows no test CA.
+      through the client's CA option, `ELIXIR_PRECOMPILED_CACERTS_PATH`.
+      Without it, the client keeps the OS store, which knows no test CA.
     * `:case` - reserved: never in a case file. At run time the runner puts
       the case's context there: `%{mirror: 1 | 2, second_url: url | nil,
       snapshot: snapshot}`, `mirror` saying which mirror is answering and

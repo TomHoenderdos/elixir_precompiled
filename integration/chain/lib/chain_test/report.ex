@@ -44,13 +44,7 @@ defmodule ChainTest.Report do
       "test in the client suite; the conformance case P5-path covers path deps.",
     "P7, a forged entry claiming the project's target and toolchain but carrying another " <>
       "target's .so: the client cannot tell (it trusts the signed claim); it is a layer-3 / " <>
-      "on-device item, caught by step 6's smoke call failing on the device.",
-    "N3's positive control through a client CA option: the client has no CA option (it " <>
-      "trusts the OS store only), so it cannot be told to trust a test CA the way a user " <>
-      "would. TLS-T0 stands in: the run's test CA loaded as the build VM's whole store " <>
-      "(:public_key.cacerts_load/1 from the case's config file), which no N3 trust case " <>
-      "(self-signed, wrong-host) gets; N3-hostname uses the same store to reach the " <>
-      "hostname check alone."
+      "on-device item, caught by step 6's smoke call failing on the device."
   ]
 
   @doc "The \"known, not testable\" items every report names."

@@ -238,10 +238,8 @@ defmodule ChainTest.ReportTest do
     refute File.read!(plain) =~ "## Per layer"
   end
 
-  test "known_gaps/0 names N3's positive control: the client has no CA option" do
-    assert [gap] = Enum.filter(Report.known_gaps(), &(&1 =~ "N3"))
-    assert gap =~ "no CA option"
-    assert gap =~ "no N3 trust case (self-signed, wrong-host)"
+  test "known_gaps/0 no longer lists N3's positive control: the client has a CA option" do
+    refute Enum.any?(Report.known_gaps(), &(&1 =~ "N3"))
   end
 
   test "known_gaps/0 does not list R20: --policy tests it" do
