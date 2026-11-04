@@ -524,12 +524,14 @@ defmodule ElixirPrecompiled.Trust do
     end
   end
 
+  @doc false
   # The body first, then its ETag, each written atomically. An old ETag
   # left next to a new body names the old body's sha and is ignored.
   # A concurrent run that already verified a newer sequence (the state
-  # file is past this batch's) keeps its batch: this one would only be
-  # refused as older by the next run.
-  defp cache_batch(dir, body, etag, seq) do
+  # file, re-read right before the write, is past this batch's) keeps its
+  # batch: this one would only be refused as older by the next run.
+  @spec cache_batch(Path.t(), binary(), String.t() | nil, integer()) :: :ok
+  def cache_batch(dir, body, etag, seq) do
     if read_counter(Path.join(dir, "state"), "sequence") > seq,
       do: :ok,
       else: write_cache(dir, body, etag)
@@ -607,10 +609,16 @@ defmodule ElixirPrecompiled.Trust do
       else: :ok
   end
 
+  @doc false
   # Written like roots.json, so a crash mid-write never leaves a torn
-  # sequence number behind.
-  defp write_state(dir, seq) do
-    case write_atomic(dir, "state", Integer.to_string(seq)) do
+  # sequence number behind. The floor is re-read right before the write and
+  # only ever raised: a run sharing this home that adopted a newer sequence
+  # since monotonic/2 looked keeps its floor.
+  @spec write_state(Path.t(), integer()) :: :ok | {:error, String.t()}
+  def write_state(dir, seq) do
+    stored = read_counter(Path.join(dir, "state"), "sequence")
+
+    case write_atomic(dir, "state", Integer.to_string(max(stored, seq))) do
       :ok -> :ok
       {:error, reason} -> {:error, "state dir unwritable: #{inspect(reason)}"}
     end

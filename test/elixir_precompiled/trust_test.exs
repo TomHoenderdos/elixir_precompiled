@@ -44,6 +44,26 @@ defmodule ElixirPrecompiled.TrustTest do
     end
   end
 
+  test "a run that verified an older batch never moves the floor or the cached batch back",
+       %{tmp_dir: tmp} do
+    dir = Path.join(tmp, "race")
+    File.mkdir_p!(dir)
+    # Another run sharing this home adopted sequence 9 while this one was
+    # between its sequence check and its write for 5.
+    File.write!(Path.join(dir, "state"), "9")
+    File.write!(Path.join(dir, "batch.json"), "nine")
+
+    assert :ok = Trust.write_state(dir, 5)
+    assert File.read!(Path.join(dir, "state")) == "9"
+    assert :ok = Trust.cache_batch(dir, "five", nil, 5)
+    assert File.read!(Path.join(dir, "batch.json")) == "nine"
+
+    assert :ok = Trust.write_state(dir, 10)
+    assert File.read!(Path.join(dir, "state")) == "10"
+    assert :ok = Trust.cache_batch(dir, "ten", nil, 10)
+    assert File.read!(Path.join(dir, "batch.json")) == "ten"
+  end
+
   test "loads and verifies the shipped root", %{config: config, f: f} do
     assert {:ok, root} = Trust.load_root(config)
     assert {keys, 1} = Trust.root_keys(root, "batch")
