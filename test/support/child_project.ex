@@ -31,6 +31,7 @@ defmodule ElixirPrecompiled.ChildProject do
     File.mkdir_p!(proj)
     aliases = Keyword.get(opts, :aliases, ~s(["deps.loadpaths": #{@alias}]))
     prelude = Keyword.get(opts, :prelude, "")
+    deps = Keyword.get(opts, :deps, ~s([{:jason, "1.4.5"}, #{own_dep()}]))
 
     File.write!(Path.join(proj, "mix.exs"), """
     #{prelude}
@@ -42,7 +43,7 @@ defmodule ElixirPrecompiled.ChildProject do
       end
 
       defp deps do
-        [{:jason, "1.4.5"}, {:elixir_precompiled, path: #{inspect(File.cwd!())}, runtime: false}]
+        #{deps}
       end
     end
     """)
@@ -50,6 +51,10 @@ defmodule ElixirPrecompiled.ChildProject do
     write_config!(proj, f)
     proj
   end
+
+  @doc "This checkout as a child's dependency, as a user adds it."
+  @spec own_dep() :: String.t()
+  def own_dep(), do: "{:elixir_precompiled, path: #{inspect(File.cwd!())}, runtime: false}"
 
   @spec umbrella!(Path.t(), map()) :: Path.t()
   def umbrella!(dir, f) do
@@ -118,6 +123,19 @@ defmodule ElixirPrecompiled.ChildProject do
 
   @spec jason_entry(map(), Path.t(), Path.t()) :: map()
   def jason_entry(f, lib, proj) do
+    %{jason: {:hex, :jason, "1.4.5", _, _, _, _, outer}} =
+      Mix.Dep.Lock.read(Path.join(proj, "mix.lock"))
+
+    build_entry(f, lib, outer)
+  end
+
+  @doc """
+  The beams under `lib` (a compiled dep's build dir) published to the
+  fixture as a portal `pure_elixir` build made on this toolchain, with
+  `checksum` as its package checksum.
+  """
+  @spec build_entry(map(), Path.t(), String.t()) :: map()
+  def build_entry(f, lib, checksum) do
     files =
       for path <- Path.wildcard(Path.join(lib, "ebin/*")) do
         bytes = File.read!(path)
@@ -130,10 +148,7 @@ defmodule ElixirPrecompiled.ChildProject do
         }
       end
 
-    assert files != [], "no jason beams under #{lib}"
-
-    %{jason: {:hex, :jason, "1.4.5", _, _, _, _, outer}} =
-      Mix.Dep.Lock.read(Path.join(proj, "mix.lock"))
+    assert files != [], "no beams under #{lib}"
 
     %{
       "target" => "pure_elixir",
@@ -146,7 +161,7 @@ defmodule ElixirPrecompiled.ChildProject do
         "image_digest" => "d",
         "deps" => %{},
         "compile_env" => [],
-        "package_checksum" => outer,
+        "package_checksum" => checksum,
         "dep_env" => "prod"
       }
     }
@@ -173,7 +188,18 @@ defmodule ElixirPrecompiled.ChildProject do
         {"ELIXIR_PRECOMPILED_HOME", Path.join(Path.dirname(proj), "home")}
       ] ++ env
 
-    cmd!(argv, Path.dirname(proj), cd: proj, env: env)
+    cmd!(argv, Path.dirname(proj), [cd: proj, env: env] ++ Keyword.take(opts, [:packages]))
+  end
+
+  @doc """
+  Every Hex package in this checkout's mix.lock as `name-version`, for
+  seeding a child that resolves against a copy of that lock.
+  """
+  @spec lock_packages() :: [String.t()]
+  def lock_packages() do
+    for {_, {:hex, name, vsn, _, _, _, _, _}} <-
+          Mix.Dep.Lock.read(Path.join(File.cwd!(), "mix.lock")),
+        do: "#{name}-#{vsn}"
   end
 
   @spec own_ebin() :: Path.t()
