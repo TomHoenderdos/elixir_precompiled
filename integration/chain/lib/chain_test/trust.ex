@@ -119,6 +119,24 @@ defmodule ChainTest.Trust do
   end
 
   @doc """
+  Whether a `check/1` outcome is a batch the harness accepts: an info map
+  and every check passed, a served root other than the pinned one (only a
+  miss) aside.
+  """
+  @spec accepted?([Result.t()], info() | nil) :: boolean()
+  def accepted?(_results, nil), do: false
+
+  def accepted?(results, _info),
+    do: Enum.all?(results, &(&1.class == :pass or &1.check == "served_root"))
+
+  @doc "`check/1`'s info when `accepted?/2`, else `nil`."
+  @spec verified(config()) :: info() | nil
+  def verified(cfg) do
+    {results, info} = check(cfg)
+    if accepted?(results, info), do: info
+  end
+
+  @doc """
   The sha and directory of `name`'s manifest in a verified batch: the
   format-2 document under `v2/manifests` when the batch names one, else the
   format-1 one under `manifests`, as the client chooses. `nil` when the
@@ -278,7 +296,8 @@ defmodule ChainTest.Trust do
       end
     else
       {:fetch, {:error, why}} ->
-        untrusted("batch unavailable: #{why}", ms)
+        {[sig | rest], nil} = untrusted("batch unavailable: #{why}", ms)
+        {[%{sig | cause: :unavailable} | rest], nil}
 
       {:envelope, {:error, why}} ->
         untrusted("batch envelope malformed: #{why}", ms)

@@ -100,11 +100,16 @@ defmodule ChainTest.Device do
     end
   end
 
-  defp app_name!(app) do
-    name = to_string(app)
+  @doc "Whether `app` is a plain OTP app name (safe to put into the probe's expression)."
+  @spec app_name?(atom() | String.t()) :: boolean()
+  def app_name?(app) when is_atom(app) or is_binary(app),
+    do: to_string(app) =~ ~r/\A[a-z][a-z0-9_]*\z/
 
-    if name =~ ~r/\A[a-z][a-z0-9_]*\z/,
-      do: name,
+  def app_name?(_), do: false
+
+  defp app_name!(app) do
+    if app_name?(app),
+      do: to_string(app),
       else: raise(ArgumentError, "not an app name: #{inspect(app)}")
   end
 

@@ -11,7 +11,8 @@ defmodule ChainTest.Run do
   A failing preflight stops the run before anything is built (`run/aborted`,
   not exercised). Steps 2 to 4 run whatever step 1 found, so a client that
   installs from a batch the harness rejects is caught. Step 6 runs only when
-  step 5 left the device on the uploaded firmware.
+  step 5 left the device on the uploaded firmware; it probes every hit the
+  client reports.
 
   Two checks belong to the run rather than to one step:
 
@@ -21,9 +22,13 @@ defmodule ChainTest.Run do
       `batches/<client sequence>.json` itself and runs the same trust checks
       on it (reported as `trust/client_batch:<check>`). If it verifies and
       names that sequence, the check passes and step 3 runs against that
-      batch. If it does not, the check is `:rerun` (production moved past a
-      batch step 1 verified), or stays as step 2 left it when step 1 could
-      not verify a batch either.
+      batch. Only when it is unavailable (an HTTP error status, a transport
+      error, a timeout) and step 1 verified a batch is the check, with the
+      client batch's rows and step 3's batch-mismatch disagreements,
+      `:rerun`. A client batch the harness fetched and rejects (signature,
+      threshold, format, dates, another sequence) fails the check and its
+      rows, and the client verdict below becomes a `:disagreement` when the
+      client installed anything from it.
     * `trust/client_verdict` - the harness's own verdict on the batch the
       client used against the client's: a batch the harness rejects but the
       client installed from, or one the harness verified but the client
@@ -106,8 +111,6 @@ defmodule ChainTest.Run do
     {trust_results, step1} = s.trust.(%{source: opts.source})
     emit(trust_results)
 
-    expected = Build.expected(opts.fixture_dir)
-
     {build_results, build} =
       s.build.(%{
         fixture_dir: opts.fixture_dir,
@@ -125,7 +128,7 @@ defmodule ChainTest.Run do
     emit(build_results)
     verdict = emit([client_verdict(harness, build.report)])
 
-    {integrity, _files} =
+    integrity =
       s.integrity.(%{
         build_lib: build.build_lib,
         report: build.report,
@@ -157,16 +160,19 @@ defmodule ChainTest.Run do
 
     emit(deploy)
 
+    {apps, unprobeable} = probe_apps(build.report)
+
     device =
       if landed?(deploy) do
-        s.device.(%{
-          device: opts.device,
-          known_hosts: opts.known_hosts,
-          apps: expected.hits,
-          release_dir: Path.join(Path.dirname(build.build_lib), "rel/#{@project_app}"),
-          expected_uuid: uuid,
-          system: lock.system
-        })
+        unprobeable ++
+          s.device.(%{
+            device: opts.device,
+            known_hosts: opts.known_hosts,
+            apps: apps,
+            release_dir: Path.join(Path.dirname(build.build_lib), "rel/#{@project_app}"),
+            expected_uuid: uuid,
+            system: lock.system
+          })
       else
         [
           result(
@@ -214,6 +220,29 @@ defmodule ChainTest.Run do
     results
   end
 
+  # Every hit the client reports is probed, not only the expected ones; a
+  # name that is not an app name cannot be, which is a failure.
+  defp probe_apps(report) do
+    hits =
+      for %{"status" => "hit", "name" => n} <- Map.get(report || %{}, "lines", []),
+          is_binary(n),
+          uniq: true,
+          do: n
+
+    {apps, bad} = Enum.split_with(hits, &Device.app_name?/1)
+
+    {apps,
+     Enum.map(bad, fn n ->
+       result(
+         :device,
+         "app:#{inspect(n)}",
+         :fail,
+         "the client reports a hit #{inspect(n)}, " <>
+           "which is not an app name the probe can load"
+       )
+     end)}
+  end
+
   defp landed?(deploy),
     do: Enum.any?(deploy, &match?(%Result{check: "active_uuid", class: :pass}, &1))
 
@@ -232,6 +261,9 @@ defmodule ChainTest.Run do
         {results, info} = s.trust.(%{source: opts.source, batch_path: path})
         tagged = client_batch_results(results)
         named = info != nil and info.sequence == client
+
+        unavailable? =
+          Enum.any?(results, &match?(%Result{check: "batch_signature", cause: :unavailable}, &1))
 
         case verdict(info, results) do
           {:accepted, _} when named ->
@@ -254,6 +286,24 @@ defmodule ChainTest.Run do
               harness: {:accepted, "batch #{client}"}
             }
 
+          # Only a batch the harness could not fetch means production moved
+          # out from under it; one it fetched and rejects is the client
+          # installing from a bad batch.
+          {:rejected, why} when unavailable? and step1 != nil ->
+            %{
+              sequence:
+                result(
+                  :build,
+                  "sequence",
+                  :rerun,
+                  "step 1 verified batch #{step1.sequence}, the client used #{client}, and " <>
+                    "#{path} is unavailable: #{why}; run again"
+                ),
+              used: step1,
+              results: Enum.map(tagged, &rerun_row/1),
+              harness: :unknown
+            }
+
           other ->
             why =
               case other do
@@ -261,28 +311,24 @@ defmodule ChainTest.Run do
                 {:rejected, why} -> why
               end
 
-            if step1 do
-              %{
-                sequence:
-                  result(
-                    :build,
-                    "sequence",
-                    :rerun,
-                    "step 1 verified batch #{step1.sequence}, the client used #{client}, and " <>
-                      "the harness could not verify #{path}: #{why}; run again"
-                  ),
-                used: step1,
-                results: Enum.map(tagged, &rerun_row/1),
-                harness: :unknown
-              }
-            else
-              %{
-                sequence: nil,
-                used: nil,
-                results: tagged,
-                harness: {:rejected, "neither batch.json nor #{path} verifies: #{why}"}
-              }
-            end
+            step1_text =
+              if step1,
+                do: "step 1 verified batch #{step1.sequence}",
+                else: "step 1 verified none"
+
+            %{
+              sequence:
+                result(
+                  :build,
+                  "sequence",
+                  :fail,
+                  "the client used batch #{client} (#{step1_text}), which the harness " <>
+                    "rejects: #{why}"
+                ),
+              used: step1,
+              results: tagged,
+              harness: {:rejected, "#{path}: #{why}"}
+            }
         end
     end
   end

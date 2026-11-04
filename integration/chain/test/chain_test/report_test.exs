@@ -84,7 +84,8 @@ defmodule ChainTest.ReportTest do
       |> Enum.filter(&(&1 =~ ~r/^\| (preflight|trust|build) \| [^|]+ \| (pass|fail|rerun) \|/))
 
     assert length(rows) == length(@results)
-    assert Enum.any?(rows, &(&1 =~ "batch_signature" and &1 =~ "fail"))
+    # Markdown-escaped: renders as batch_signature.
+    assert Enum.any?(rows, &(&1 =~ "batch\\_signature" and &1 =~ "fail"))
     # A pipe or newline in a detail must not break the table.
     refute Enum.any?(String.split(text, "\n"), &(&1 == "line 2 |"))
 
@@ -109,6 +110,53 @@ defmodule ChainTest.ReportTest do
     assert heading.([pass, miss], "p") == "# Chain test: rpi4 (PASS)"
     assert heading.([pass, rerun, miss], "r") == "# Chain test: rpi4 (RERUN)"
     assert heading.([rerun, fail], "f") == "# Chain test: rpi4 (FAIL)"
+  end
+
+  test "the heading counts expected hits that missed", %{tmp_dir: dir} do
+    heading = fn results, name ->
+      {:ok, %{md: md}} = Report.write(Path.join(dir, name), "rpi4", results, %{})
+      md |> File.read!() |> String.split("\n") |> hd()
+    end
+
+    pass = %Result{step: :trust, check: "a", class: :pass}
+    miss = fn dep -> %Result{step: :build, check: "hit:#{dep}", class: :miss} end
+    root_miss = %Result{step: :trust, check: "served_root", class: :miss}
+    rerun = %Result{step: :build, check: "sequence", class: :rerun}
+
+    assert heading.([pass, miss.("a"), miss.("b"), root_miss], "m") ==
+             "# Chain test: rpi4 (PASS (2 miss))"
+
+    assert heading.([pass, root_miss], "n") == "# Chain test: rpi4 (PASS)"
+    assert heading.([rerun, miss.("a")], "r") == "# Chain test: rpi4 (RERUN (1 miss))"
+  end
+
+  test "invalid UTF-8 in a detail is replaced, never breaks the JSON", %{tmp_dir: dir} do
+    bad = %Result{
+      step: :device,
+      check: "files:x",
+      class: :fail,
+      detail: "name " <> <<255>> <> " end"
+    }
+
+    {:ok, %{json: json, md: md}} = Report.write(dir, "rpi4", [bad], %{})
+
+    doc = JSON.decode!(File.read!(json))
+    assert hd(doc["results"])["detail"] =~ "name "
+    assert String.valid?(hd(doc["results"])["detail"])
+    assert String.valid?(File.read!(md))
+  end
+
+  test "Markdown in untrusted text is escaped", %{tmp_dir: dir} do
+    detail = "`code` *b* _i_ [link](http://x) <script>"
+    r = %Result{step: :device, check: "files:x", class: :fail, detail: detail}
+    {:ok, %{md: md}} = Report.write(dir, "rpi4", [r], %{})
+    text = File.read!(md)
+
+    refute text =~ "<script>"
+    refute text =~ "[link](http://x)"
+    refute text =~ "`code`"
+    assert text =~ "\\`code\\`"
+    assert text =~ "&lt;script&gt;"
   end
 
   test "known_gaps/0 is a non-empty list of strings" do

@@ -29,7 +29,9 @@ Two checks span steps. `build/sequence`: batches come every 15 to 30
 minutes and a build takes minutes, so the client often used a newer batch
 than step 1 saw; the harness then fetches `batches/<sequence>.json` and
 verifies it the same way (`trust/client_batch:*`) and checks step 3 against
-it. `trust/client_verdict`: a batch the harness rejects that the client
+it; a client batch it fetches and rejects fails the run. Step 3 also checks
+every dependency `_build` shows the client installed, and one the client's
+report does not call a hit is a disagreement. `trust/client_verdict`: a batch the harness rejects that the client
 installed from, or one it verified that the client refused, is a
 disagreement.
 
@@ -98,8 +100,8 @@ says `FAIL`.
 | Class | Meaning | Exit |
 | --- | --- | --- |
 | `pass` | Checked and as expected. | 0 |
-| `miss` | A dependency compiled because no precompiled build was found, or the served root differs from the pinned one. Reported, not an error. | 0 |
-| `rerun` | Production moved during the run: the client used a newer batch the harness could not fetch or verify (its `trust/client_batch:*` rows say why), or a manifest moved. Integrity results that only reflect that batch mismatch are reruns too. Run again. | 0 |
+| `miss` | A dependency compiled because no precompiled build was found, or the served root differs from the pinned one. Reported, not an error; the heading counts missed hits, e.g. `PASS (2 miss)`. A miss because the manifest was unavailable or malformed is a `fail`. | 0 |
+| `rerun` | Production moved during the run: the client used a batch the harness could not fetch (`batches/<n>.json` unavailable: an HTTP error, a transport error, a timeout; its `trust/client_batch:*` rows say why), or a manifest moved under a newer verified batch. Integrity results that only reflect that batch mismatch are reruns too. A client batch the harness fetched and rejects is a `fail`, never a rerun. Run again. | 0 |
 | `fail` | Checked and wrong. | 1 |
 | `refused` | The client refused where it should have installed; the detail is the client's reason. | 1 |
 | `disagreement` | The client's account and the harness's own check differ: a hit whose files do not match its manifest, a device file that differs from the release image, a verdict on the batch that differs. | 1 |

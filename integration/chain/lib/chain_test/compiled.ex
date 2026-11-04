@@ -16,7 +16,9 @@ defmodule ChainTest.Compiled do
 
   Checks:
 
-    * `compiled:<dep>` per hit in the report: `:fail` when the dep was
+    * `compiled:<dep>` per hit in the report, and per dep `_build` shows
+      the client installed (its provenance file) though the report does not
+      call it a hit: `:fail` when the dep was
       compiled here after all, `:disagreement` when `_build` has no such
       dep, `:pass` otherwise.
     * `compiled_here` - every dep compiled here, `:pass` when each is on
@@ -24,7 +26,7 @@ defmodule ChainTest.Compiled do
       rest.
   """
 
-  alias ChainTest.Result
+  alias ChainTest.{Integrity, Result}
 
   @tooling ~w(nerves nerves_system_* nerves_toolchain_* elixir_precompiled interactive_cmd
               nerves_discovery tablet)
@@ -48,7 +50,8 @@ defmodule ChainTest.Compiled do
   @spec run(%{build_lib: Path.t(), report: map(), allowlist: [String.t()]}) :: [Result.t()]
   def run(%{build_lib: build_lib, report: report, allowlist: allowlist}) do
     lines = Enum.filter(Map.get(report, "lines", []), &is_map/1)
-    hits = for %{"status" => "hit", "name" => n} <- lines, do: n
+    reported = for %{"status" => "hit", "name" => n} <- lines, do: n
+    hits = Enum.uniq(reported ++ Integrity.installed(build_lib))
     reported_misses = for %{"status" => s, "name" => n} <- lines, s in ["miss", "fail"], do: n
 
     deps = deps(build_lib)

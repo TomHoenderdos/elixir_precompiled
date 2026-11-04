@@ -71,16 +71,22 @@ defmodule ChainTest.Report do
   defp result_map(%Result{} = r) do
     %{
       "step" => Atom.to_string(r.step),
-      "check" => r.check,
+      "check" => text(r.check),
       "class" => Atom.to_string(r.class),
-      "detail" => r.detail,
+      "detail" => text(r.detail),
       "ms" => r.ms
     }
   end
 
   defp json_value(%DateTime{} = at), do: DateTime.to_iso8601(at)
   defp json_value(list) when is_list(list), do: Enum.map(list, &json_value/1)
+  defp json_value(value) when is_binary(value), do: text(value)
   defp json_value(value), do: value
+
+  # Details quote untrusted bytes (file names, client output): never let
+  # invalid UTF-8 break the report.
+  defp text(value) when is_binary(value), do: String.replace_invalid(value)
+  defp text(value), do: value
 
   defp markdown(target, results, meta) do
     verdict = verdict(results)
@@ -116,12 +122,17 @@ defmodule ChainTest.Report do
   end
 
   # A rerun exits 0 but does not count as a pass: run again.
+  # "PASS (2 miss)" when expected hits fell back to compiling.
   defp verdict(results) do
-    cond do
-      Result.exit_code(results) == 1 -> "FAIL"
-      Enum.any?(results, &(&1.class == :rerun)) -> "RERUN"
-      true -> "PASS"
-    end
+    base =
+      cond do
+        Result.exit_code(results) == 1 -> "FAIL"
+        Enum.any?(results, &(&1.class == :rerun)) -> "RERUN"
+        true -> "PASS"
+      end
+
+    misses = Enum.count(results, &(&1.class == :miss and String.starts_with?(&1.check, "hit:")))
+    if base != "FAIL" and misses > 0, do: "#{base} (#{misses} miss)", else: base
   end
 
   defp step_times(results) do
@@ -139,9 +150,16 @@ defmodule ChainTest.Report do
 
   defp cell(nil), do: ""
 
+  # Table cells carry untrusted text: escape HTML first, then Markdown's
+  # inline syntax, then the table's own pipe; newlines become <br>.
   defp cell(value) do
     value
     |> to_string()
+    |> String.replace_invalid()
+    |> String.replace("&", "&amp;")
+    |> String.replace("<", "&lt;")
+    |> String.replace(">", "&gt;")
+    |> String.replace(~r/([\\`*_\[\]#!~])/, "\\\\\\1")
     |> String.replace("|", "\\|")
     |> String.replace(~r/\r?\n/, "<br>")
   end

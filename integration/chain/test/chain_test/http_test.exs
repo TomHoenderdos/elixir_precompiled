@@ -47,6 +47,23 @@ defmodule ChainTest.HTTPTest do
     assert HTTP.get("http://127.0.0.1:#{port}/x", 2_000) == {:ok, "hello"}
   end
 
+  test "a body over the cap is an error" do
+    {port, _} = responder([reply(200, [], String.duplicate("x", 1000))])
+    assert {:error, why} = HTTP.get("http://127.0.0.1:#{port}/x", 2_000, max_bytes: 100)
+    assert why =~ "100 bytes"
+  end
+
+  test "a body at the cap is returned" do
+    {port, _} = responder([reply(200, [], String.duplicate("x", 100))])
+
+    assert HTTP.get("http://127.0.0.1:#{port}/x", 2_000, max_bytes: 100) ==
+             {:ok, String.duplicate("x", 100)}
+  end
+
+  test "the default cap is 64 MiB" do
+    assert HTTP.max_bytes() == 64 * 1024 * 1024
+  end
+
   test "a 302 to another port is an error, never the redirect target's body" do
     {target, target_ref} = responder([reply(200, [], "redirected body")])
 

@@ -18,7 +18,8 @@ defmodule ChainTest.Build do
     * `firmware` - `mix firmware` exited 0 and left a `.fw` image.
     * `hit:<dep>` per expected hit (`expected.exs`): `:pass` on a hit,
       `:refused` when the client's detail starts with a refusal reason,
-      `:miss` with the client's detail on a miss, `:fail` on any other
+      `:miss` with the client's detail on a miss (`:fail` when the miss is
+      `manifest unavailable: ...` or `malformed entry`), `:fail` on any other
       client fail or a dep the report does not name.
     * `never:<dep>` per dep that must never be installed precompiled: `:fail`
       when the report calls it a hit.
@@ -62,9 +63,7 @@ defmodule ChainTest.Build do
           report: map(),
           build_lib: Path.t(),
           fw_path: Path.t() | nil,
-          log: String.t(),
-          sequence: integer() | nil,
-          home: Path.t() | nil
+          sequence: integer() | nil
         }
 
   @doc "The client's refusal reason prefixes."
@@ -80,8 +79,8 @@ defmodule ChainTest.Build do
 
   @doc """
   Runs step 2. `home` is the client's `ELIXIR_PRECOMPILED_HOME`: a fresh
-  temp dir per run when not given, and refused (check `home` fails, nothing
-  runs) when given but not empty. `trust` is step 1's info (`nil` when the batch could not be
+  temp dir per run when not given, removed after the run, and refused
+  (check `home` fails, nothing runs) when given but not empty. `trust` is step 1's info (`nil` when the batch could not be
   trusted, which leaves `sequence` not exercised); `expected` defaults to
   the fixture's `expected.exs`.
   """
@@ -89,9 +88,16 @@ defmodule ChainTest.Build do
   def run(%{fixture_dir: fixture, target: target} = input) do
     build_lib = Path.join([fixture, "_build", "#{target}_dev", "lib"])
 
-    case fresh_home(Map.get(input, :home)) do
+    given = Map.get(input, :home)
+
+    case fresh_home(given) do
       {:ok, home} ->
-        build(input, home)
+        try do
+          build(input, home)
+        after
+          # A home this run made holds only this run's downloads and state.
+          if given == nil, do: File.rm_rf(home)
+        end
 
       {:error, why} ->
         expected = Map.get_lazy(input, :expected, fn -> expected(fixture) end)
@@ -103,8 +109,7 @@ defmodule ChainTest.Build do
             Enum.map(expected.never, &result("never:#{&1}", :not_exercised, skipped)) ++
             [result("sequence", :not_exercised, skipped)]
 
-        {results,
-         %{report: %{}, build_lib: build_lib, fw_path: nil, log: "", sequence: nil, home: nil}}
+        {results, %{report: %{}, build_lib: build_lib, fw_path: nil, sequence: nil}}
     end
   end
 
@@ -166,9 +171,7 @@ defmodule ChainTest.Build do
        report: report || %{},
        build_lib: build_lib,
        fw_path: fw,
-       log: log,
-       sequence: sequence,
-       home: home
+       sequence: sequence
      }}
   end
 
@@ -261,9 +264,17 @@ defmodule ChainTest.Build do
 
         %{"status" => status, "detail" => detail} = l ->
           cond do
-            refusal?(detail) -> result(check, :refused, detail)
-            status == "miss" -> result(check, :miss, detail)
-            true -> result(check, :fail, "#{dep} #{l["version"]} #{status}: #{detail}")
+            refusal?(detail) ->
+              result(check, :refused, detail)
+
+            status == "miss" and broken_miss?(detail) ->
+              result(check, :fail, "#{dep} #{l["version"]} miss: #{detail}")
+
+            status == "miss" ->
+              result(check, :miss, detail)
+
+            true ->
+              result(check, :fail, "#{dep} #{l["version"]} #{status}: #{detail}")
           end
 
         l ->
@@ -271,6 +282,13 @@ defmodule ChainTest.Build do
       end
     end
   end
+
+  # A miss that says the portal served something unusable is an error in
+  # the chain, not a dep without a build.
+  defp broken_miss?(detail) when is_binary(detail),
+    do: String.starts_with?(detail, "manifest unavailable:") or detail == "malformed entry"
+
+  defp broken_miss?(_), do: false
 
   defp never(deps, nil), do: Enum.map(deps, &result("never:#{&1}", :not_exercised, "no report"))
 

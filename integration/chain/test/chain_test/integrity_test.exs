@@ -5,7 +5,7 @@
 defmodule ChainTest.IntegrityTest do
   use ExUnit.Case, async: true
 
-  alias ChainTest.{Integrity, LocalServer, Result, Synthetic}
+  alias ChainTest.{Integrity, LocalServer, Result, Signed, Synthetic}
 
   @moduletag :tmp_dir
 
@@ -52,30 +52,23 @@ defmodule ChainTest.IntegrityTest do
   test "a hit whose installed files match the manifest passes", ctx do
     trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
 
-    assert {[%Result{step: :integrity, check: "integrity:jason", class: :pass}], files} =
+    assert [%Result{step: :integrity, check: "integrity:jason", class: :pass}] =
              run(ctx, trust)
-
-    assert Enum.sort(files["jason"]) ==
-             Enum.sort([
-               %{path: "ebin/Elixir.Jason.beam", sha256: Synthetic.sha(@beam)},
-               %{path: "ebin/jason.app", sha256: Synthetic.sha(@app)}
-             ])
   end
 
   test "one byte changed in an installed beam is a disagreement naming the file", ctx do
     trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
     File.write!(Path.join(ctx.build_lib, "jason/ebin/Elixir.Jason.beam"), "jason beam bytez")
 
-    assert {[%Result{class: :disagreement, detail: detail}], files} = run(ctx, trust)
+    assert [%Result{class: :disagreement, detail: detail}] = run(ctx, trust)
     assert detail =~ "ebin/Elixir.Jason.beam"
-    refute Map.has_key?(files, "jason")
   end
 
   test "a file in ebin the manifest does not list is a disagreement", ctx do
     trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
     File.write!(Path.join(ctx.build_lib, "jason/ebin/Elixir.Planted.beam"), "x")
 
-    assert {[%Result{class: :disagreement, detail: detail}], _} = run(ctx, trust)
+    assert [%Result{class: :disagreement, detail: detail}] = run(ctx, trust)
     assert detail =~ "ebin/Elixir.Planted.beam"
   end
 
@@ -83,24 +76,23 @@ defmodule ChainTest.IntegrityTest do
     trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
     File.rm!(Path.join(ctx.build_lib, "jason/ebin/jason.app"))
 
-    assert {[%Result{class: :disagreement, detail: detail}], _} = run(ctx, trust)
+    assert [%Result{class: :disagreement, detail: detail}] = run(ctx, trust)
     assert detail =~ "ebin/jason.app"
   end
 
   test "an untrusted batch leaves every hit not exercised", ctx do
     _ = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
 
-    assert {[%Result{check: "integrity:jason", class: :not_exercised, detail: detail}], files} =
+    assert [%Result{check: "integrity:jason", class: :not_exercised, detail: detail}] =
              run(ctx, nil)
 
     assert detail =~ "batch"
-    assert files == %{}
   end
 
   test "a hit for a dep the verified batch does not name is a disagreement", ctx do
     _ = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
 
-    assert {[%Result{class: :disagreement, detail: detail}], _} =
+    assert [%Result{class: :disagreement, detail: detail}] =
              run(ctx, Synthetic.info(7, %{}))
 
     assert detail =~ "names no manifest"
@@ -110,7 +102,7 @@ defmodule ChainTest.IntegrityTest do
     bogus = String.duplicate("b", 64)
     trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)], @files, sha: bogus)
 
-    assert {[%Result{class: :disagreement, detail: detail}], _} =
+    assert [%Result{class: :disagreement, detail: detail}] =
              run(ctx, trust, %{recheck: fn -> trust end})
 
     assert detail =~ bogus
@@ -123,7 +115,7 @@ defmodule ChainTest.IntegrityTest do
     trust = arrange(ctx, builds, @files, sha: bogus)
     newer = Synthetic.info(8, %{"jason" => served})
 
-    assert {[%Result{class: :rerun, detail: detail}], _} =
+    assert [%Result{class: :rerun, detail: detail}] =
              run(ctx, trust, %{recheck: fn -> newer end})
 
     assert detail =~ "8"
@@ -134,7 +126,7 @@ defmodule ChainTest.IntegrityTest do
     trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)], @files, sha: bogus)
     newer = Synthetic.info(8, %{"jason" => String.duplicate("c", 64)})
 
-    assert {[%Result{class: :disagreement}], _} =
+    assert [%Result{class: :disagreement}] =
              run(ctx, trust, %{recheck: fn -> newer end})
   end
 
@@ -145,7 +137,7 @@ defmodule ChainTest.IntegrityTest do
     trust = arrange(ctx, builds, @files, sha: bogus)
     same_seq = Synthetic.info(7, %{"jason" => served})
 
-    assert {[%Result{class: :disagreement}], _} =
+    assert [%Result{class: :disagreement}] =
              run(ctx, trust, %{recheck: fn -> same_seq end})
   end
 
@@ -166,7 +158,7 @@ defmodule ChainTest.IntegrityTest do
     other = String.duplicate("d", 64)
     write_provenance(ctx, other, 99)
 
-    assert {[%Result{class: :disagreement, detail: detail}], _} =
+    assert [%Result{class: :disagreement, detail: detail}] =
              run(ctx, trust, %{recheck: fn -> trust end})
 
     assert detail =~ "provenance"
@@ -178,7 +170,7 @@ defmodule ChainTest.IntegrityTest do
     write_provenance(ctx, other, 8)
     newer = Synthetic.info(8, %{"jason" => other})
 
-    assert {[%Result{class: :rerun}], _} = run(ctx, trust, %{recheck: fn -> newer end})
+    assert [%Result{class: :rerun}] = run(ctx, trust, %{recheck: fn -> newer end})
   end
 
   test "a priv symlink to the dep's own sources passes", ctx do
@@ -187,7 +179,7 @@ defmodule ChainTest.IntegrityTest do
     File.mkdir_p!(Path.join(fixture, "deps/jason/priv"))
     File.ln_s!("../../../../deps/jason/priv", Path.join(ctx.build_lib, "jason/priv"))
 
-    assert {[%Result{class: :pass}], _} = run(ctx, trust)
+    assert [%Result{class: :pass}] = run(ctx, trust)
   end
 
   test "a priv symlink anywhere else is a disagreement", ctx do
@@ -197,7 +189,7 @@ defmodule ChainTest.IntegrityTest do
     File.write!(Path.join(elsewhere, "planted.so"), "x")
     File.ln_s!(elsewhere, Path.join(ctx.build_lib, "jason/priv"))
 
-    assert {[%Result{class: :disagreement, detail: detail}], _} = run(ctx, trust)
+    assert [%Result{class: :disagreement, detail: detail}] = run(ctx, trust)
     assert detail =~ "priv"
   end
 
@@ -214,7 +206,7 @@ defmodule ChainTest.IntegrityTest do
     File.ln_s!(Path.join(planted, "a/b/c/d"), Path.join(ctx.build_lib, "jason/x"))
     File.ln_s!("x/../../../../../deps/jason/priv", Path.join(ctx.build_lib, "jason/priv"))
 
-    assert {[%Result{class: :disagreement, detail: detail}], _} = run(ctx, trust)
+    assert [%Result{class: :disagreement, detail: detail}] = run(ctx, trust)
     assert detail =~ "priv"
   end
 
@@ -227,7 +219,7 @@ defmodule ChainTest.IntegrityTest do
     File.ln_s!(elsewhere, Path.join(fixture, "deps/jason/priv"))
     File.ln_s!("../../../../deps/jason/priv", Path.join(ctx.build_lib, "jason/priv"))
 
-    assert {[%Result{class: :disagreement, detail: detail}], _} = run(ctx, trust)
+    assert [%Result{class: :disagreement, detail: detail}] = run(ctx, trust)
     assert detail =~ "priv"
   end
 
@@ -238,7 +230,7 @@ defmodule ChainTest.IntegrityTest do
     File.ln_s!("y", Path.join(ctx.build_lib, "jason/y"))
     File.ln_s!("y/../../../../../deps/jason/priv", Path.join(ctx.build_lib, "jason/priv"))
 
-    assert {[%Result{class: :disagreement, detail: detail}], _} = run(ctx, trust)
+    assert [%Result{class: :disagreement, detail: detail}] = run(ctx, trust)
     assert detail =~ "priv"
   end
 
@@ -255,7 +247,7 @@ defmodule ChainTest.IntegrityTest do
       })
     )
 
-    assert {[%Result{class: :disagreement, detail: detail}], _} = run(ctx, trust)
+    assert [%Result{class: :disagreement, detail: detail}] = run(ctx, trust)
     assert detail =~ "provenance"
   end
 
@@ -263,19 +255,19 @@ defmodule ChainTest.IntegrityTest do
     test "a provenance or manifest-bytes mismatch is one, a file mismatch is not", ctx do
       trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
       write_provenance(ctx, String.duplicate("d", 64), 9)
-      {[provenance], _} = run(ctx, trust, %{recheck: fn -> trust end})
+      [provenance] = run(ctx, trust, %{recheck: fn -> trust end})
       assert provenance.class == :disagreement
       assert Integrity.batch_mismatch?(provenance)
 
       bogus = String.duplicate("b", 64)
       trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)], @files, sha: bogus)
-      {[bytes], _} = run(ctx, trust, %{recheck: fn -> trust end})
+      [bytes] = run(ctx, trust, %{recheck: fn -> trust end})
       assert bytes.class == :disagreement
       assert Integrity.batch_mismatch?(bytes)
 
       changed = Map.put(@files, "ebin/Elixir.Jason.beam", "tampered")
       trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)], changed)
-      {[files], _} = run(ctx, trust)
+      [files] = run(ctx, trust)
       assert files.class == :disagreement
       refute Integrity.batch_mismatch?(files)
     end
@@ -285,7 +277,7 @@ defmodule ChainTest.IntegrityTest do
       installed = Map.put(@files, planted, "x")
       trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)], installed)
 
-      {[r], _} = run(ctx, trust)
+      [r] = run(ctx, trust)
       assert r.class == :disagreement
       refute Integrity.batch_mismatch?(r)
       # The untrusted name is quoted, so it cannot pass as the harness's own words.
@@ -296,9 +288,66 @@ defmodule ChainTest.IntegrityTest do
       installed = Map.put(@files, "ebin/x\n| run | forged | pass |", "x")
       trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)], installed)
 
-      {[r], _} = run(ctx, trust)
+      [r] = run(ctx, trust)
       assert r.class == :disagreement
       refute r.detail =~ "\n"
+    end
+  end
+
+  test "an install the report does not call a hit is a disagreement and still checked", ctx do
+    trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+    ctx = %{ctx | report: Synthetic.report([])}
+
+    results = run(ctx, trust)
+    by = Map.new(results, &{&1.check, &1})
+
+    assert by["unreported:jason"].class == :disagreement
+    assert by["unreported:jason"].detail =~ "elixir_precompiled.json"
+    # Checked like a hit, at the locked version.
+    assert by["integrity:jason"].class == :pass
+    assert by["integrity:jason"].detail =~ "1.4.5"
+  end
+
+  test "installed/1 lists every dep with a provenance file", ctx do
+    _ = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+    Synthetic.dep(ctx.build_lib, :exqlite, %{"ebin/e.beam" => "e"}, :elixir)
+    assert Integrity.installed(ctx.build_lib) == ["jason"]
+  end
+
+  describe "the default recheck" do
+    # Serves a signed root and a batch 8 naming the recorded manifest.
+    defp serve_fresh(ctx, recorded, batch_opts) do
+      key = Signed.key()
+      root = Signed.root(key)
+      pinned = Path.join(ctx.tmp_dir, "pinned_root.json")
+      File.write!(pinned, root)
+      File.write!(Path.join(ctx.served, "root.json"), root)
+
+      File.write!(
+        Path.join(ctx.served, "batch.json"),
+        Signed.batch(key, [sequence: 8, manifests_v2: %{"jason" => recorded}] ++ batch_opts)
+      )
+
+      %{root_path: pinned, library_root_path: pinned}
+    end
+
+    test "a newer fully verified batch naming the recorded manifest makes a rerun", ctx do
+      trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+      other = String.duplicate("d", 64)
+      write_provenance(ctx, other, 8)
+      opts = serve_fresh(ctx, other, [])
+
+      assert [%Result{class: :rerun}] = run(ctx, trust, %{trust_opts: opts})
+    end
+
+    test "an expired newer batch cannot make a rerun", ctx do
+      trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+      other = String.duplicate("d", 64)
+      write_provenance(ctx, other, 8)
+      issued = DateTime.add(DateTime.utc_now(), -2, :hour)
+      opts = serve_fresh(ctx, other, issued: issued, expires: DateTime.add(issued, 1, :hour))
+
+      assert [%Result{class: :disagreement}] = run(ctx, trust, %{trust_opts: opts})
     end
   end
 
@@ -323,8 +372,7 @@ defmodule ChainTest.IntegrityTest do
     ]
 
     trust = arrange(ctx, builds, rpi4)
-    assert {[%Result{class: :pass}], files} = run(ctx, trust)
-    assert %{path: "priv/nif.so", sha256: Synthetic.sha(so)} in files["jason"]
+    assert [%Result{class: :pass}] = run(ctx, trust)
   end
 
   test "installed files of a build the harness does not select are a disagreement", ctx do
@@ -336,7 +384,7 @@ defmodule ChainTest.IntegrityTest do
     ]
 
     trust = arrange(ctx, builds, @files)
-    assert {[%Result{class: :disagreement, detail: detail}], _} = run(ctx, trust)
+    assert [%Result{class: :disagreement, detail: detail}] = run(ctx, trust)
     assert detail =~ "run-1"
     assert detail =~ "run-2"
   end
@@ -348,7 +396,7 @@ defmodule ChainTest.IntegrityTest do
     ]
 
     trust = arrange(ctx, builds)
-    assert {[%Result{class: :pass, detail: detail}], _} = run(ctx, trust)
+    assert [%Result{class: :pass, detail: detail}] = run(ctx, trust)
     assert detail =~ "run-1"
   end
 
@@ -365,19 +413,18 @@ defmodule ChainTest.IntegrityTest do
     })
 
     trust = %{sequence: 7, root_version: 1, manifests: %{"jason" => sha}, manifests_v2: nil}
-    assert {[%Result{class: :pass}], %{"jason" => [_, _]}} = run(ctx, trust)
+    assert [%Result{class: :pass}] = run(ctx, trust)
   end
 
   test "misses are not integrity-checked", ctx do
     trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
     report = Synthetic.report([{"jason", "1.4.5", "miss", "not built"}])
+    input = %{build_lib: ctx.build_lib, report: report, trust: trust, source: ctx.source}
 
-    assert {[%Result{check: "integrity", class: :not_exercised}], %{}} =
-             Integrity.run(%{
-               build_lib: ctx.build_lib,
-               report: report,
-               trust: trust,
-               source: ctx.source
-             })
+    # A miss with the client's provenance file in _build was installed anyway.
+    assert Enum.any?(Integrity.run(input), &(&1.check == "unreported:jason"))
+
+    File.rm!(Path.join(ctx.build_lib, "jason/.mix/elixir_precompiled.json"))
+    assert [%Result{check: "integrity", class: :not_exercised}] = Integrity.run(input)
   end
 end

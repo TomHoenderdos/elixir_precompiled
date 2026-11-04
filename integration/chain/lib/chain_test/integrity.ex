@@ -7,7 +7,10 @@ defmodule ChainTest.Integrity do
   Step 3: every file the client installed in `_build` has the sha256 named in
   a manifest whose bytes hash to what step 1's verified batch names.
 
-  For each hit in the client's report:
+  For each hit in the client's report, and for each dep `_build` shows the
+  client installed (a `.mix/elixir_precompiled.json` provenance file) that
+  the report does not call a hit (which is itself an `unreported:<dep>`
+  `:disagreement`, and is checked at its locked version):
 
     1. The dep's provenance file (`.mix/elixir_precompiled.json`, written by
        the client's install) must name the manifest the verified batch
@@ -47,8 +50,6 @@ defmodule ChainTest.Integrity do
   @timeout_ms 60_000
   @shown_problems 5
 
-  @type files :: %{String.t() => [%{path: String.t(), sha256: String.t()}]}
-
   @doc """
   Whether `result` is a `:disagreement` caused only by the checked batch not
   naming what the client installed from (provenance, manifest bytes, or no
@@ -67,37 +68,68 @@ defmodule ChainTest.Integrity do
   `nerves_system_<target>` at its locked version), `:elixir`, `:otp`
   (default this VM's), `:deps_path` (default `deps` next to the lock),
   `:timeout_ms`, `:recheck` (a zero-arity function returning a fresh
-  verified batch info, default `ChainTest.Trust.check/1` against `source`;
-  called at most once per run).
-
-  Returns the results and, per dep whose files all matched, the manifest's
-  `[%{path, sha256}]`.
+  batch info the harness accepts, or `nil`; default
+  `ChainTest.Trust.verified/1` against `source`, with `:trust_opts` merged
+  into its config; called at most once per run).
   """
-  @spec run(map()) :: {[Result.t()], files()}
+  @spec run(map()) :: [Result.t()]
   def run(%{build_lib: build_lib, report: report, trust: trust, source: source} = input) do
     hits = for %{"status" => "hit", "name" => n} = l <- lines(report), do: {n, l["version"]}
+    reported = Enum.map(hits, &elem(&1, 0))
+    unreported = installed(build_lib) -- reported
 
-    cond do
-      hits == [] ->
-        {[result("integrity", :not_exercised, "the client report has no hits to check")], %{}}
+    flagged =
+      for n <- unreported do
+        result(
+          "unreported:#{n}",
+          :disagreement,
+          "#{Path.join([build_lib, n, ".mix", "elixir_precompiled.json"])} says the client " <>
+            "installed #{n}, but the client report does not call it a hit"
+        )
+      end
 
-      trust == nil ->
-        why = "step 1 could not trust a batch, so no manifest sha to check against"
-        {Enum.map(hits, fn {n, _} -> result("integrity:#{n}", :not_exercised, why) end), %{}}
+    deps = hits ++ Enum.map(unreported, &{&1, :locked})
 
-      true ->
-        case context(input, build_lib, String.trim_trailing(source, "/")) do
-          {:ok, ctx} ->
-            checked = Enum.map(hits, fn {n, v} -> check(n, v, trust, ctx) end)
-            results = Enum.map(checked, &elem(&1, 0))
-            files = for {_, {n, f}} <- checked, into: %{}, do: {n, f}
-            {results, files}
+    checked =
+      cond do
+        deps == [] ->
+          [result("integrity", :not_exercised, "the client report has no hits to check")]
 
-          {:error, why} ->
-            {Enum.map(hits, fn {n, _} -> result("integrity:#{n}", :not_exercised, why) end), %{}}
-        end
+        trust == nil ->
+          why = "step 1 could not trust a batch, so no manifest sha to check against"
+          Enum.map(deps, fn {n, _} -> result("integrity:#{n}", :not_exercised, why) end)
+
+        true ->
+          case context(input, build_lib, String.trim_trailing(source, "/")) do
+            {:ok, ctx} ->
+              Enum.map(deps, fn {n, v} -> check(n, version(v, n, ctx), trust, ctx) end)
+
+            {:error, why} ->
+              Enum.map(deps, fn {n, _} -> result("integrity:#{n}", :not_exercised, why) end)
+          end
+      end
+
+    checked ++ flagged
+  end
+
+  @doc "The deps in `build_lib` with the client's provenance file, sorted."
+  @spec installed(Path.t()) :: [String.t()]
+  def installed(build_lib) do
+    build_lib
+    |> Path.join("*/.mix/elixir_precompiled.json")
+    |> Path.wildcard(match_dot: true)
+    |> Enum.map(&(&1 |> Path.dirname() |> Path.dirname() |> Path.basename()))
+    |> Enum.sort()
+  end
+
+  defp version(:locked, name, ctx) do
+    case ctx.lock[name] do
+      {:hex, _, vsn, _, _, _, _, _} -> vsn
+      _ -> nil
     end
   end
+
+  defp version(vsn, _name, _ctx), do: vsn
 
   defp lines(%{"lines" => lines}) when is_list(lines), do: Enum.filter(lines, &is_map/1)
   defp lines(_), do: []
@@ -120,13 +152,19 @@ defmodule ChainTest.Integrity do
            otp: Map.get(input, :otp, System.otp_release()),
            timeout_ms: Map.get(input, :timeout_ms, @timeout_ms),
            deps_path: Map.get(input, :deps_path, Path.join(Path.dirname(lock_path), "deps")),
-           recheck:
-             once(Map.get(input, :recheck, fn -> elem(Trust.check(%{source: source}), 1) end))
+           recheck: once(Map.get_lazy(input, :recheck, fn -> default_recheck(input, source) end))
          }}
 
       {:error, why} ->
         {:error, "fixture lock #{lock_path} unreadable: #{why}"}
     end
+  end
+
+  # The full Trust verdict: an expired, stale or over-lifetime fresh batch
+  # is no batch at all, so it can never make a rerun.
+  defp default_recheck(input, source) do
+    cfg = Map.merge(Map.get(input, :trust_opts, %{}), %{source: source})
+    fn -> Trust.verified(cfg) end
   end
 
   # A fresh batch is fetched at most once per run, and only when needed.
@@ -187,15 +225,14 @@ defmodule ChainTest.Integrity do
       {:pass, entry, desc} ->
         listed = entry_files(entry)
 
-        {result(check, :pass, "#{name} #{version}: #{length(listed)} files match #{desc}", ms),
-         {name, Enum.map(listed, &%{path: &1["path"], sha256: &1["sha256"]})}}
+        result(check, :pass, "#{name} #{version}: #{length(listed)} files match #{desc}", ms)
 
       {:batch_mismatch, detail} ->
         r = result(check, :disagreement, "#{name} #{version}: #{detail}", ms)
-        {%{r | cause: :batch_mismatch}, nil}
+        %{r | cause: :batch_mismatch}
 
       {class, detail} ->
-        {result(check, class, "#{name} #{version}: #{detail}", ms), nil}
+        result(check, class, "#{name} #{version}: #{detail}", ms)
     end
   end
 

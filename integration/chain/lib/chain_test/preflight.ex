@@ -9,7 +9,9 @@ defmodule ChainTest.Preflight do
     * `ssh` - the device answers `IO.puts(:ok)` with the pinned host key.
     * `portal` - `GET <source>/root.json` answers 200.
     * `toolchain` - `mix archive` lists nerves_bootstrap and fwup is on `PATH`.
-    * `fixture_lock` - the fixture's `mix.lock` names every expected dependency.
+    * `fixture_lock` - the fixture's `mix.lock` names every dependency
+      `expected.exs` lists (hits and nevers, but for literal path deps,
+      which a lock never names) and the target's system.
     * `target_config` - only when the config names one: the operator's
       fixture config file (network, `nerves_ssh` keys) exists, so a target
       build does not stop on it minutes in.
@@ -19,8 +21,6 @@ defmodule ChainTest.Preflight do
 
   @timeout_ms 15_000
 
-  # Path deps (nerves, elixir_precompiled) never appear in a mix.lock.
-  @fixture_deps ~w(exqlite argon2_elixir circuits_gpio jason ash nerves_pack nerves_ssh)
   @systems %{"rpi4" => "nerves_system_rpi4", "rpi0_2" => "nerves_system_rpi0_2"}
 
   @type config :: %{
@@ -41,9 +41,30 @@ defmodule ChainTest.Preflight do
   @spec targets() :: [String.t()]
   def targets, do: Map.keys(@systems) |> Enum.sort(:desc)
 
-  @doc "The dependencies the fixture's `mix.lock` must name for `target`."
-  @spec expected_deps(String.t()) :: [String.t()]
-  def expected_deps(target), do: @fixture_deps ++ [Map.fetch!(@systems, target)]
+  @doc """
+  The dependencies the fixture's `mix.lock` must name for `target`: every
+  hit and never in `<fixture>/expected.exs`, without the deps the fixture's
+  `mix.exs` declares with a literal `path:` (never in a lock), plus the
+  target's system. Raises when `expected.exs` cannot be read.
+  """
+  @spec expected_deps(Path.t(), String.t()) :: [String.t()]
+  def expected_deps(fixture_dir, target) do
+    {%{hits: hits, never: never}, _} = Code.eval_file(Path.join(fixture_dir, "expected.exs"))
+    names = Enum.map(hits ++ never, &to_string/1)
+    Enum.uniq(names -- path_deps(fixture_dir)) ++ [Map.fetch!(@systems, target)]
+  end
+
+  defp path_deps(fixture_dir) do
+    case File.read(Path.join(fixture_dir, "mix.exs")) do
+      {:ok, text} ->
+        ~r/\{:([a-z0-9_]+),\s*path:\s*"/
+        |> Regex.scan(text, capture: :all_but_first)
+        |> List.flatten()
+
+      {:error, _} ->
+        []
+    end
+  end
 
   @doc """
   The ssh options every harness ssh call uses: no prompts, and the pinned
@@ -64,6 +85,8 @@ defmodule ChainTest.Preflight do
       "KnownHostsCommand=none",
       "-o",
       "VerifyHostKeyDNS=no",
+      "-o",
+      "UpdateHostKeys=no",
       "-o",
       "ConnectTimeout=10"
     ]
@@ -171,20 +194,28 @@ defmodule ChainTest.Preflight do
     check("fixture_lock", fn ->
       lock = Path.join(cfg.fixture_dir, "mix.lock")
 
-      case File.read(lock) do
-        {:ok, text} ->
-          names = Regex.scan(~r/^\s*"([a-z0-9_]+)":/m, text, capture: :all_but_first)
-          names = MapSet.new(List.flatten(names))
+      with {:ok, expected} <- expected_or_error(cfg),
+           {:ok, text} <- File.read(lock) do
+        names = Regex.scan(~r/^\s*"([a-z0-9_]+)":/m, text, capture: :all_but_first)
+        names = MapSet.new(List.flatten(names))
 
-          case Enum.reject(expected_deps(cfg.target), &MapSet.member?(names, &1)) do
-            [] -> {:pass, "#{lock} names every expected dependency"}
-            missing -> {:fail, "#{lock} does not name: #{Enum.join(missing, ", ")}"}
-          end
-
-        {:error, reason} ->
-          {:fail, "#{lock}: #{:file.format_error(reason)}"}
+        case Enum.reject(expected, &MapSet.member?(names, &1)) do
+          [] -> {:pass, "#{lock} names every expected dependency"}
+          missing -> {:fail, "#{lock} does not name: #{Enum.join(missing, ", ")}"}
+        end
+      else
+        {:expected, why} -> {:fail, why}
+        {:error, reason} -> {:fail, "#{lock}: #{:file.format_error(reason)}"}
       end
     end)
+  end
+
+  defp expected_or_error(cfg) do
+    {:ok, expected_deps(cfg.fixture_dir, cfg.target)}
+  rescue
+    e ->
+      {:expected,
+       "#{Path.join(cfg.fixture_dir, "expected.exs")} unreadable: #{Exception.message(e)}"}
   end
 
   defp check(name, fun) do

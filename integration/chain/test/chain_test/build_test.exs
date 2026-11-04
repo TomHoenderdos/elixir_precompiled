@@ -101,7 +101,8 @@ defmodule ChainTest.BuildTest do
       assert info.fw_path ==
                Path.join(ctx.fixture, "_build/rpi4_dev/nerves/images/chain_fixture.fw")
 
-      assert info.log =~ "precompiled: building"
+      refute Map.has_key?(info, :log)
+      refute Map.has_key?(info, :home)
       assert length(info.report["lines"]) == 3
 
       env = File.read!(Path.join(ctx.tmp, "mix.env"))
@@ -144,6 +145,29 @@ defmodule ChainTest.BuildTest do
                find(results, "hit:exqlite")
 
       assert %Result{class: :refused} = find(results, "hit:ash")
+    end)
+  end
+
+  test "a miss because the manifest was unavailable or malformed fails", ctx do
+    lines = [
+      {"jason", "1.4.5", "miss", "manifest unavailable: GET .../jason.json answered 500"},
+      {"exqlite", "0.42.0", "miss", "malformed entry"},
+      {"ash", "3.37.2", "miss", "no build for this Elixir"}
+    ]
+
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, lines, sequence: 7)}, fn _ ->
+      {results, _} = run(ctx)
+      assert %Result{class: :fail, detail: d1} = find(results, "hit:jason")
+      assert d1 =~ "manifest unavailable"
+      assert %Result{class: :fail} = find(results, "hit:exqlite")
+      assert %Result{class: :miss} = find(results, "hit:ash")
+    end)
+  end
+
+  test "a caller-given home is kept after the run", ctx do
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, @hits, sequence: 7)}, fn _ ->
+      run(ctx)
+      assert File.dir?(ctx.home)
     end)
   end
 
@@ -224,14 +248,27 @@ defmodule ChainTest.BuildTest do
         trust: Synthetic.info(7, %{})
       }
 
-      {_, a} = Build.run(input)
-      {_, b} = Build.run(input)
-      on_exit(fn -> Enum.each([a.home, b.home], &File.rm_rf/1) end)
+      home_of = fn ->
+        [_, home] =
+          Regex.run(
+            ~r/^ELIXIR_PRECOMPILED_HOME=(.*)$/m,
+            File.read!(Path.join(ctx.tmp, "mix.env"))
+          )
 
-      assert a.home != b.home
-      assert String.starts_with?(a.home, Path.join(System.tmp_dir!(), "chain_test-"))
+        home
+      end
+
+      {_, a} = Build.run(input)
+      a_home = home_of.()
+      {_, _b} = Build.run(input)
+      b_home = home_of.()
+
+      assert a_home != b_home
+      assert String.starts_with?(a_home, Path.join(System.tmp_dir!(), "chain_test-"))
       assert a.sequence == 7
-      assert File.read!(Path.join(ctx.tmp, "mix.env")) =~ "ELIXIR_PRECOMPILED_HOME=#{b.home}\n"
+      # A home the run made is removed after it; the sequence was read first.
+      refute File.exists?(a_home)
+      refute File.exists?(b_home)
     end)
   end
 
@@ -244,7 +281,7 @@ defmodule ChainTest.BuildTest do
       assert detail =~ "exit 1"
       assert %Result{class: :not_exercised} = find(results, "hit:jason")
       assert info.report == %{}
-      assert info.log =~ "compile error"
+      assert detail =~ "compile error"
     end)
   end
 

@@ -33,6 +33,13 @@ defmodule ChainTest.CompiledTest do
     assert %Result{class: :pass} = find(results, "compiled_here")
   end
 
+  test "an install the report does not name is checked like a hit", %{build_lib: lib} do
+    Synthetic.dep(lib, :jason, @beam, :installed)
+    results = run(lib, [])
+
+    assert %Result{class: :pass} = find(results, "compiled:jason")
+  end
+
   test "a hit that carries compile.elixir fails", %{build_lib: lib} do
     Synthetic.dep(lib, :jason, @beam, :elixir)
     results = run(lib, [{"jason", "1.4.5", "hit", ""}])

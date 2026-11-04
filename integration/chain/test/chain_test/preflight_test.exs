@@ -10,6 +10,11 @@ defmodule ChainTest.PreflightTest do
 
   @moduletag :tmp_dir
 
+  setup %{tmp_dir: tmp} do
+    write_fixture(tmp)
+    :ok
+  end
+
   defp cfg(tmp_dir, overrides \\ %{}) do
     known_hosts = Path.join(tmp_dir, "known_hosts")
     File.write!(known_hosts, "")
@@ -37,6 +42,7 @@ defmodule ChainTest.PreflightTest do
         assert "UserKnownHostsFile=#{Path.join(tmp, "known_hosts")}" in argv
         assert "KnownHostsCommand=none" in argv
         assert "VerifyHostKeyDNS=no" in argv
+        assert "UpdateHostKeys=no" in argv
         refute Enum.any?(argv, &(&1 =~ "accept-new"))
         assert List.last(argv) == "IO.puts(:ok)"
         assert "device.invalid" in argv
@@ -158,28 +164,53 @@ defmodule ChainTest.PreflightTest do
 
   describe "fixture_lock" do
     test "a lock naming every expected dep passes", %{tmp_dir: tmp} do
-      write_lock(tmp, Preflight.expected_deps("rpi4"))
+      write_lock(tmp, Preflight.expected_deps(tmp, "rpi4"))
       assert %Result{check: "fixture_lock", class: :pass} = Preflight.fixture_lock(cfg(tmp))
     end
 
-    test "the expected deps include the target's system" do
-      assert "nerves_system_rpi4" in Preflight.expected_deps("rpi4")
-      assert "nerves_system_rpi0_2" in Preflight.expected_deps("rpi0_2")
-      refute "nerves_system_rpi4" in Preflight.expected_deps("rpi0_2")
+    test "the expected deps are expected.exs's hits and nevers plus the system", %{tmp_dir: tmp} do
+      # elixir_precompiled is a path dep in mix.exs: never in a lock.
+      assert Enum.sort(Preflight.expected_deps(tmp, "rpi4")) ==
+               ~w(exqlite jason nerves nerves_system_rpi4)
 
-      for dep <- ~w(exqlite argon2_elixir circuits_gpio jason ash nerves_pack nerves_ssh) do
-        assert dep in Preflight.expected_deps("rpi4")
+      assert "nerves_system_rpi0_2" in Preflight.expected_deps(tmp, "rpi0_2")
+      refute "nerves_system_rpi4" in Preflight.expected_deps(tmp, "rpi0_2")
+    end
+
+    test "the real fixture's expected deps come from its expected.exs" do
+      fixture = Path.expand("../../fixture", __DIR__)
+      deps = Preflight.expected_deps(fixture, "rpi4")
+
+      for dep <- ~w(exqlite argon2_elixir circuits_gpio jason ash spark reactor plug nerves) do
+        assert dep in deps
       end
+
+      refute "elixir_precompiled" in deps
+    end
+
+    test "a lock missing a hit from expected.exs fails and names it", %{tmp_dir: tmp} do
+      write_fixture(tmp, "%{hits: [:jason, :telemetry], never: []}\n")
+      write_lock(tmp, ~w(jason nerves_system_rpi4))
+      assert %Result{class: :fail, detail: detail} = Preflight.fixture_lock(cfg(tmp))
+      assert detail =~ "telemetry"
+    end
+
+    test "no expected.exs fails", %{tmp_dir: tmp} do
+      write_lock(tmp, ~w(jason nerves_system_rpi4))
+      c = cfg(tmp)
+      File.rm!(Path.join(tmp, "expected.exs"))
+      assert %Result{class: :fail, detail: detail} = Preflight.fixture_lock(c)
+      assert detail =~ "expected.exs"
     end
 
     test "a lock missing a dep fails and names it", %{tmp_dir: tmp} do
-      write_lock(tmp, Preflight.expected_deps("rpi4") -- ["exqlite"])
+      write_lock(tmp, Preflight.expected_deps(tmp, "rpi4") -- ["exqlite"])
       assert %Result{class: :fail, detail: detail} = Preflight.fixture_lock(cfg(tmp))
       assert detail =~ "exqlite"
     end
 
     test "a lock for the other target fails", %{tmp_dir: tmp} do
-      write_lock(tmp, Preflight.expected_deps("rpi0_2"))
+      write_lock(tmp, Preflight.expected_deps(tmp, "rpi0_2"))
       assert %Result{class: :fail, detail: detail} = Preflight.fixture_lock(cfg(tmp))
       assert detail =~ "nerves_system_rpi4"
     end
@@ -191,7 +222,7 @@ defmodule ChainTest.PreflightTest do
   end
 
   test "run/1 returns the four checks in order", %{tmp_dir: tmp} do
-    write_lock(tmp, Preflight.expected_deps("rpi4"))
+    write_lock(tmp, Preflight.expected_deps(tmp, "rpi4"))
     {port, _} = http_stub(200)
     source = "http://127.0.0.1:#{port}/api/precompiled"
 
@@ -220,7 +251,7 @@ defmodule ChainTest.PreflightTest do
     end
 
     test "run/1 adds the check when a target config is given", %{tmp_dir: tmp} do
-      write_lock(tmp, Preflight.expected_deps("rpi4"))
+      write_lock(tmp, Preflight.expected_deps(tmp, "rpi4"))
       {port, _} = http_stub(200)
       source = "http://127.0.0.1:#{port}/api/precompiled"
       file = Path.join(tmp, "target.exs")
@@ -233,6 +264,19 @@ defmodule ChainTest.PreflightTest do
                  ~w(ssh portal toolchain fixture_lock target_config)
       end)
     end
+  end
+
+  # An expected.exs and a mix.exs with one path dep, as the fixture has.
+  defp write_fixture(
+         dir,
+         expected \\ "%{hits: [:exqlite, :jason], never: [:nerves, :elixir_precompiled]}\n"
+       ) do
+    File.write!(Path.join(dir, "expected.exs"), expected)
+
+    File.write!(
+      Path.join(dir, "mix.exs"),
+      ~s|defp deps, do: [{:elixir_precompiled, path: "../../..", override: true}, {:jason, "1.4.5"}]\n|
+    )
   end
 
   defp write_lock(dir, deps) do

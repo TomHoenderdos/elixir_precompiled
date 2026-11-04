@@ -37,9 +37,11 @@ defmodule ChainTest.Result do
   Why a result has its class, where a later step needs to know without
   reading the detail (which can carry untrusted text). `:batch_mismatch`:
   a disagreement only because the batch checked against is not the one the
-  client used.
+  client used. `:unavailable`: the batch could not be fetched at all (an
+  HTTP error status, a transport error or a timeout), as opposed to fetched
+  and rejected.
   """
-  @type cause :: nil | :batch_mismatch
+  @type cause :: nil | :batch_mismatch | :unavailable
 
   @classes [:pass, :fail, :refused, :miss, :disagreement, :not_exercised, :rerun]
   @failing [:fail, :refused, :disagreement, :not_exercised]

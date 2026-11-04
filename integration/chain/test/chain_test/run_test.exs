@@ -45,14 +45,12 @@ defmodule ChainTest.RunTest do
              report: @hit_report,
              build_lib: Path.join(input.fixture_dir, "_build/rpi4_dev/lib"),
              fw_path: "/fw/chain_fixture.fw",
-             log: "",
-             sequence: 7,
-             home: "/home"
+             sequence: 7
            }}
         end,
         integrity: fn input ->
           send_in.(:integrity, input)
-          {[r(:integrity, "integrity:jason", :pass)], %{}}
+          [r(:integrity, "integrity:jason", :pass)]
         end,
         compiled: fn input ->
           send_in.(:compiled, input)
@@ -136,9 +134,33 @@ defmodule ChainTest.RunTest do
     assert_received {:deploy, %{fw_path: "/fw/chain_fixture.fw", device: "dev.local"}}
     assert_received {:device, device}
     assert device.expected_uuid == "u-1"
-    assert device.apps == [:jason]
+    assert device.apps == ["jason"]
     assert device.release_dir == Path.join(ctx.fixture, "_build/rpi4_dev/rel/chain_fixture")
     assert device.system == {"nerves_system_rpi4", "2.0.1"}
+  end
+
+  test "the device probes every reported hit, not only the expected ones", ctx do
+    report =
+      Synthetic.report([
+        {"jason", "1.4.5", "hit", "x"},
+        {"spark", "2.7.9", "hit", "x"},
+        {"telemetry", "1.3.0", "miss", "no build"},
+        {"Bad\"name", "1", "hit", "x"}
+      ])
+
+    build = fn input ->
+      {[r(:build, "firmware", :pass), seq_result(input, 7)],
+       %{report: report, build_lib: "/b/lib", fw_path: "/fw", sequence: 7}}
+    end
+
+    {code, _} = main(ctx, steps(self(), %{build: build}))
+
+    assert_received {:device, device}
+    assert device.apps == ["jason", "spark"]
+    # A hit name that is not an app name cannot be probed: a failure, not skipped.
+    {doc, _} = report(ctx)
+    assert class_of(doc, ~s|device/app:"Bad\\"name"|) == "fail"
+    assert code == 1
   end
 
   test "one disagreement anywhere exits 1", ctx do
@@ -192,7 +214,7 @@ defmodule ChainTest.RunTest do
 
     build = fn input ->
       {[r(:build, "hit:jason", :refused), seq_result(input, 7)],
-       %{report: report, build_lib: "/b/lib", fw_path: nil, log: "", sequence: 7, home: "/h"}}
+       %{report: report, build_lib: "/b/lib", fw_path: nil, sequence: 7}}
     end
 
     {code, _} = main(ctx, steps(self(), %{build: build}))
@@ -207,7 +229,7 @@ defmodule ChainTest.RunTest do
 
     build = fn input ->
       {[r(:build, "hit:jason", :refused), seq_result(input, 7)],
-       %{report: report, build_lib: "/b/lib", fw_path: nil, log: "", sequence: 7, home: "/h"}}
+       %{report: report, build_lib: "/b/lib", fw_path: nil, sequence: 7}}
     end
 
     main(ctx, steps(self(), %{build: build}))
@@ -222,7 +244,7 @@ defmodule ChainTest.RunTest do
 
     build = fn input ->
       {[seq_result(input, 7)],
-       %{report: report, build_lib: "/b/lib", fw_path: nil, log: "", sequence: nil, home: "/h"}}
+       %{report: report, build_lib: "/b/lib", fw_path: nil, sequence: nil}}
     end
 
     main(ctx, steps(self(), %{trust: trust, build: build}))
@@ -255,9 +277,7 @@ defmodule ChainTest.RunTest do
            report: @hit_report,
            build_lib: "/b/lib",
            fw_path: "/fw",
-           log: "",
-           sequence: 9,
-           home: "/h"
+           sequence: 9
          }}
       end
 
@@ -324,20 +344,54 @@ defmodule ChainTest.RunTest do
       assert_received {:integrity, %{trust: %{sequence: 7}}}
     end
 
-    test "badly signed: the sequence is a rerun", ctx do
+    # A client batch the harness fetched and rejects: the client installed
+    # from a batch the harness does not accept.
+    defp assert_rejected_run(ctx, code) do
+      {doc, md} = report(ctx)
+      assert code == 1
+      assert doc["exit_code"] == 1
+      assert md =~ "# Chain test: rpi4 (FAIL)"
+      assert class_of(doc, "build/sequence") == "fail"
+      assert class_of(doc, "trust/client_verdict") == "disagreement"
+      doc
+    end
+
+    test "badly signed: the client batch fails and the verdict is a disagreement", ctx do
       other = Signed.key()
       File.write!(Path.join(ctx.served, "batches/9.json"), Signed.batch(other, sequence: 9))
 
       {code, _} = main_at(ctx, steps(self(), %{trust: ctx.trust, build: ctx.build}))
-      doc = assert_rerun_run(ctx, code)
-      assert class_of(doc, "trust/client_batch:batch_signature") == "rerun"
+      doc = assert_rejected_run(ctx, code)
+      assert class_of(doc, "trust/client_batch:batch_signature") == "fail"
+      assert class_of(doc, "trust/client_batch:batch_format") == "not_exercised"
     end
 
-    test "a numbered batch whose payload names another sequence is a rerun", ctx do
+    test "a numbered batch whose payload names another sequence fails", ctx do
       File.write!(Path.join(ctx.served, "batches/9.json"), Signed.batch(ctx.key, sequence: 8))
 
       {code, _} = main_at(ctx, steps(self(), %{trust: ctx.trust, build: ctx.build}))
-      assert_rerun_run(ctx, code)
+      doc = assert_rejected_run(ctx, code)
+      assert Enum.find(doc["results"], &(&1["check"] == "sequence"))["detail"] =~ "sequence 8"
+    end
+
+    test "under a rejected client batch a batch mismatch stays a disagreement", ctx do
+      other = Signed.key()
+      File.write!(Path.join(ctx.served, "batches/9.json"), Signed.batch(other, sequence: 9))
+
+      integrity = fn _ ->
+        [
+          %{
+            r(:integrity, "integrity:jason", :disagreement, "provenance names another manifest")
+            | cause: :batch_mismatch
+          }
+        ]
+      end
+
+      {code, _} =
+        main_at(ctx, steps(self(), %{trust: ctx.trust, build: ctx.build, integrity: integrity}))
+
+      doc = assert_rejected_run(ctx, code)
+      assert class_of(doc, "integrity/integrity:jason") == "disagreement"
     end
 
     test "production moving twice: integrity's batch mismatch is a rerun, not a disagreement",
@@ -347,12 +401,12 @@ defmodule ChainTest.RunTest do
       integrity = fn input ->
         send(self(), {:integrity, input})
 
-        {[
-           %{
-             r(:integrity, "integrity:jason", :disagreement, "provenance names another manifest")
-             | cause: :batch_mismatch
-           }
-         ], %{}}
+        [
+          %{
+            r(:integrity, "integrity:jason", :disagreement, "provenance names another manifest")
+            | cause: :batch_mismatch
+          }
+        ]
       end
 
       {code, _} =
@@ -364,14 +418,14 @@ defmodule ChainTest.RunTest do
 
     test "a disagreement that only reads like a batch mismatch stays one", ctx do
       integrity = fn _ ->
-        {[
-           r(
-             :integrity,
-             "integrity:jason",
-             :disagreement,
-             ~s|"ebin/and no newer verified batch names the recorded one": in _build, not listed|
-           )
-         ], %{}}
+        [
+          r(
+            :integrity,
+            "integrity:jason",
+            :disagreement,
+            ~s|"ebin/and no newer verified batch names the recorded one": in _build, not listed|
+          )
+        ]
       end
 
       {code, _} =
@@ -385,7 +439,7 @@ defmodule ChainTest.RunTest do
 
     test "a file mismatch under a rerun stays a disagreement", ctx do
       integrity = fn _ ->
-        {[r(:integrity, "integrity:jason", :disagreement, "1 files differ from build x")], %{}}
+        [r(:integrity, "integrity:jason", :disagreement, "1 files differ from build x")]
       end
 
       {code, _} =
