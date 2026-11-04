@@ -48,7 +48,17 @@ defmodule ElixirPrecompiled.MixProject do
       {:ex_doc, "~> 0.22", only: :docs, runtime: false},
       {:bandit, "~> 1.0", only: :test},
       {:plug, "~> 1.10", only: :test}
-    ]
+    ] ++ igniter()
+  end
+
+  # The installer task (mix igniter.install elixir_precompiled) needs
+  # Igniter, whose own dependencies need Elixir 1.18; the library does not.
+  # Optional and runtime: false, so a project that does not use Igniter
+  # never fetches it.
+  defp igniter() do
+    if Version.match?(System.version(), ">= 1.18.0"),
+      do: [{:igniter, "~> 0.6", optional: true, runtime: false}],
+      else: []
   end
 
   defp docs do

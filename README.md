@@ -48,6 +48,29 @@ removes those installs (only build dirs the library wrote, never one Mix
 compiled), and `mix precompiled.clean --cache` also empties the download
 cache.
 
+## In any Mix project
+
+With [Igniter](https://hex.pm/packages/igniter) (Elixir 1.18 or later):
+
+    mix igniter.install elixir_precompiled
+
+adds the dependency as `runtime: false`, sets `:source` in
+`config/config.exs` (`--source URL` to name another portal) and puts
+`"deps.compile elixir_precompiled", "precompiled.install"` at the front of
+the `deps.loadpaths` alias, before any steps already there. Running it
+again changes nothing. Igniter is an optional dependency: a project that
+does not use it never fetches it. Without Igniter, or in an umbrella (at
+the umbrella root), add the alias by hand:
+
+```elixir
+aliases: [
+  "deps.loadpaths": ["deps.compile elixir_precompiled", "precompiled.install", "deps.loadpaths"]
+]
+```
+
+Instead of the config, `ELIXIR_PRECOMPILED_SOURCE=https://compatibility.nerves-project.org/api/precompiled`
+opts a single run (CI, a script) in.
+
 ## Configuration
 
 | Key or variable | Meaning |
@@ -58,6 +81,7 @@ cache.
 | `:home` | The file and trust-state cache (default the user cache dir Mix uses for its own, `:filename.basedir(:user_cache, "elixir_precompiled")`; set `ELIXIR_PRECOMPILED_HOME=~/.nerves/precompiled` to keep using the pre-upgrade cache instead). |
 | `:cache_max_mb` | The size the download cache is kept under (default 4096), least recently used entries first; checked at most once a day. Trust state is never evicted. |
 | `ELIXIR_PRECOMPILED=0` | Turns the library off (`false` and `no` work too): builds it installed earlier are removed, and Mix compiles them from source in that same run. |
+| `ELIXIR_PRECOMPILED_SOURCE` | The source, over `:source` in the config; a `source:` option to `ElixirPrecompiled.install/2` still wins. Same `https` rule. |
 | `ELIXIR_PRECOMPILED_HOME` | The cache directory when `:home` is not set. |
 | `ELIXIR_PRECOMPILED_DEBUG=1` | Also prints each dependency that was not a candidate, with the reason (tooling, `except`, not from Hex, ...). |
 
@@ -108,6 +132,8 @@ script after `Mix.start()`:
       source: "https://compatibility.nerves-project.org/api/precompiled")
 
 Matching builds are installed into Mix's install project; Mix compiles the rest.
+With `ELIXIR_PRECOMPILED_SOURCE` set in the runtime's environment the
+`source:` option can be left out.
 
 ## What matches
 

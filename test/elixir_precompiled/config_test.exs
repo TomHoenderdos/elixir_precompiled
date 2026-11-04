@@ -240,4 +240,39 @@ defmodule ElixirPrecompiled.ConfigTest do
     configure(source: "https://x")
     assert %{home: nil} = Config.load()
   end
+
+  test "ELIXIR_PRECOMPILED_SOURCE opts in without editing config, options still win" do
+    configure([])
+    System.put_env("ELIXIR_PRECOMPILED_SOURCE", "https://env.example.test/p")
+    on_exit(fn -> System.delete_env("ELIXIR_PRECOMPILED_SOURCE") end)
+    assert Config.load().source == "https://env.example.test/p"
+    configure(source: "https://cfg.example.test/p")
+    assert Config.load().source == "https://env.example.test/p"
+
+    assert Config.load(source: "https://opt.example.test/p").source ==
+             "https://opt.example.test/p"
+  end
+
+  test "ELIXIR_PRECOMPILED_SOURCE passes the same transport rule as config" do
+    configure(source: "https://cfg.example.test/p")
+    on_exit(fn -> System.delete_env("ELIXIR_PRECOMPILED_SOURCE") end)
+
+    System.put_env("ELIXIR_PRECOMPILED_SOURCE", "http://env.example.test/p")
+    {config, out} = with_shell(&Config.load/0)
+    assert config == nil
+    assert out =~ "precompiled: source must be https"
+
+    System.put_env("ELIXIR_PRECOMPILED_SOURCE", "http://127.0.0.1:4917/p/")
+    assert Config.load().source == "http://127.0.0.1:4917/p"
+
+    System.put_env("ELIXIR_PRECOMPILED_SOURCE", "")
+    assert Config.load().source == "https://cfg.example.test/p"
+  end
+
+  test "ELIXIR_PRECOMPILED=0 wins over ELIXIR_PRECOMPILED_SOURCE" do
+    System.put_env("ELIXIR_PRECOMPILED_SOURCE", "https://env.example.test/p")
+    on_exit(fn -> System.delete_env("ELIXIR_PRECOMPILED_SOURCE") end)
+    System.put_env("ELIXIR_PRECOMPILED", "0")
+    assert Config.load() == nil
+  end
 end

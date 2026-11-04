@@ -6,8 +6,16 @@ defmodule ElixirPrecompiled.Config do
   @moduledoc """
   The client's configuration: `config :elixir_precompiled, source: url` plus
   `except: [dep, ...]` and `root: path`; `ElixirPrecompiled.install/2` passes
-  the same keys as options. `ELIXIR_PRECOMPILED=0` disables a run and
-  `ELIXIR_PRECOMPILED_HOME` moves the cache.
+  the same keys as options.
+
+  Environment variables: `ELIXIR_PRECOMPILED=0` disables a run;
+  `ELIXIR_PRECOMPILED_SOURCE` sets the source when no `source:` option is
+  passed, over the app config (same https-only rule);
+  `ELIXIR_PRECOMPILED_HOME` moves the cache; `ELIXIR_PRECOMPILED_OFFLINE=1`
+  is offline mode (below); `ELIXIR_PRECOMPILED_CACERTS_PATH` (else
+  `HEX_CACERTS_PATH`) names a CA bundle that replaces the OS store;
+  `ELIXIR_PRECOMPILED_DEBUG=1` prints why each dependency was not a
+  candidate.
 
   Also: `deadline_seconds:` (default 300) bounds a whole run, after which
   every dependency still waiting compiles from source; `root_check_seconds:`
@@ -41,7 +49,7 @@ defmodule ElixirPrecompiled.Config do
     opts = Keyword.merge(app_env(), overrides)
 
     with false <- disabled?(),
-         source when is_binary(source) <- opts[:source],
+         source when is_binary(source) <- source(overrides, opts),
          :ok <- transport_ok(source) do
       %{
         source: String.trim_trailing(source, "/"),
@@ -62,6 +70,16 @@ defmodule ElixirPrecompiled.Config do
       _ -> nil
     end
   end
+
+  # An explicit option (install/2) wins; then ELIXIR_PRECOMPILED_SOURCE, so
+  # CI or a script can opt in without editing config; then app config. An
+  # empty variable counts as unset. Whichever wins passes transport_ok/1.
+  defp source(overrides, opts) do
+    overrides[:source] || non_empty(env_var("_SOURCE")) || opts[:source]
+  end
+
+  defp non_empty(""), do: nil
+  defp non_empty(value), do: value
 
   # Test-only clock skew for the freshness checks. Project config only, never
   # an environment variable: whoever can edit the project config can already

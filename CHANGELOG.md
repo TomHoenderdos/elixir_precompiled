@@ -2,6 +2,12 @@
 
 ## v0.1.0 - unreleased
 
+* `mix igniter.install elixir_precompiled` sets a project up: the
+  dependency as `runtime: false`, `:source` in `config/config.exs` and the
+  `deps.loadpaths` alias, prepended to an existing one. Igniter is an
+  optional dependency, declared only on Elixir 1.18+.
+* `ELIXIR_PRECOMPILED_SOURCE` sets the source without editing config; it
+  wins over app config, an explicit `source:` option wins over it.
 * A batch issued more than 24 hours ago, more than 5 minutes in the
   future, valid for more than 30 days, or read against a local clock
   earlier than this library's build time, is refused; the run falls back

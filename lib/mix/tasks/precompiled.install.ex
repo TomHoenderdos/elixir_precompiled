@@ -24,7 +24,9 @@ defmodule Mix.Tasks.Precompiled.Install do
   The first entry compiles this library so the task exists; without it
   Mix would compile every dependency first. In an umbrella the alias goes
   in the root `mix.exs`. Does nothing without
-  `config :elixir_precompiled, source: ...`.
+  `config :elixir_precompiled, source: ...` or `ELIXIR_PRECOMPILED_SOURCE`.
+  `mix igniter.install elixir_precompiled` writes the alias and the config
+  (Elixir 1.18+, not in an umbrella).
 
   `mix do clean --deps + compile` installs twice: `clean` loads paths
   first, which runs the alias once before it deletes `_build`, and the
