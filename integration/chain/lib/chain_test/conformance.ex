@@ -350,7 +350,7 @@ defmodule ChainTest.Conformance do
     %{opts: opts, steps: s, snap: snap} = run
     before = home_view(home, context)
 
-    {rows, report, requests, tooling, observed} =
+    {rows, {report, requests, second}, tooling, observed} =
       try do
         {build_rows, build} =
           s.build.(%{
@@ -387,7 +387,9 @@ defmodule ChainTest.Conformance do
           installed: installed(Path.join([opts.fixture_dir, "_build", "#{opts.target}_dev"]))
         }
 
-        {build_rows ++ integrity ++ compiled, build.report, Mirror.requests(mirror),
+        second = Enum.flat_map(tl(mirrors), &Mirror.requests/1)
+
+        {build_rows ++ integrity ++ compiled, {build.report, Mirror.requests(mirror), second},
          tooling(opts.fixture_dir, build.build_lib), observed}
       after
         Enum.each(mirrors, &Mirror.stop/1)
@@ -399,6 +401,7 @@ defmodule ChainTest.Conformance do
       rows: rows,
       report: report,
       requests: requests,
+      second_requests: second,
       snapshot: snap,
       hits: run.hits,
       tooling: tooling,

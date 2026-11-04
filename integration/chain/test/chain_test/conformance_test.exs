@@ -474,4 +474,65 @@ defmodule ChainTest.ConformanceTest do
       end
     end
   end
+
+  describe "every mirror of a case" do
+    # A fake client that reads batch.json from the case mirror and, when
+    # `follow`, follows its redirect to the second mirror.
+    defp two_steps(test, snapshot, follow) do
+      s = steps(test, snapshot)
+
+      build = fn input ->
+        {:ok, {{_, 302, _}, headers, _}} =
+          :httpc.request(:get, {~c"#{input.source}/batch.json", []}, [autoredirect: false], [])
+
+        location = to_string(:proplists.get_value(~c"location", headers))
+        if follow, do: HTTP.get(location, 5_000)
+
+        line = {"jason", "1.4.5", "miss", "batch unavailable"}
+
+        {[%Result{step: :build, check: "compile", class: :pass}],
+         %{report: Synthetic.report([line]), build_lib: "/nonexistent", fw_path: nil, sequence: 7}}
+      end
+
+      %{s | build: build}
+    end
+
+    @n1 %{
+      id: "N1",
+      description: "Redirect to another origin.",
+      transform: {ChainTest.TestTransform, %{mirrors: 2}},
+      client: %{default: :snapshot, deps: %{jason: {:miss, "batch unavailable"}}},
+      harness: %{},
+      after: %{second_mirror: :untouched}
+    }
+
+    test "second_mirror: :untouched passes when the client did not follow", ctx do
+      cases!(ctx.opts, [@n1])
+
+      assert {[%Result{class: :pass}], _} =
+               Conformance.run(ctx.opts, two_steps(self(), ctx.snapshot, false))
+    end
+
+    test "second_mirror: :untouched fails when the client followed to the second mirror",
+         ctx do
+      cases!(ctx.opts, [@n1])
+
+      assert {[%Result{class: :fail, detail: detail}], _} =
+               Conformance.run(ctx.opts, two_steps(self(), ctx.snapshot, true))
+
+      assert detail =~ "second_mirror"
+      assert detail =~ "batch.json"
+    end
+
+    test "a transform error on the second mirror fails the case", ctx do
+      c = %{@n1 | transform: {ChainTest.TestTransform, %{mirrors: 2, second_bad: true}}}
+      cases!(ctx.opts, [%{c | after: %{second_mirror: :requested}}])
+
+      assert {[%Result{class: :fail, detail: detail}], _} =
+               Conformance.run(ctx.opts, two_steps(self(), ctx.snapshot, true))
+
+      assert detail =~ "second mirror"
+      assert detail =~ "transform error"
+    end
+  end
 end

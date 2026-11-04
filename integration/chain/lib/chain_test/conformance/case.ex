@@ -58,6 +58,9 @@ defmodule ChainTest.Conformance.Case do
         the snapshot holds a build of, the Nerves tooling aside).
       * `cache` - `:untouched`: no entry in the client cache (`files/`
         under the home) beyond what setup wrote.
+      * `second_mirror` - only with a transform that asks for `mirrors: 2`:
+        `:requested` (the client asked the second mirror for something, a
+        redirect it followed, say) or `:untouched` (it asked nothing).
 
   Whatever the case expects, a report line that calls a dep a hit when the
   snapshot holds no build of it the client could select is a difference:
@@ -71,8 +74,8 @@ defmodule ChainTest.Conformance.Case do
 
   Verdict, one `conformance/<id>` result:
 
-    * `:fail` when the mirror logged a `transform_error` (the transform
-      crashed or answered a malformed shape), naming each;
+    * `:fail` when either of the case's mirrors logged a `transform_error`
+      (the transform crashed or answered a malformed shape), naming each;
     * `:not_exercised` when the transform is not `ChainTest.Mirror.Identity`
       and the mirror served nothing it changed, or when the transform is
       `ChainTest.Mirror.Identity` and the mirror shows no use by the client;
@@ -89,7 +92,8 @@ defmodule ChainTest.Conformance.Case do
   @type post :: %{
           optional(:state_sequence) => integer() | :snapshot | :absent | :unchanged,
           optional(:installed) => :none | :snapshot,
-          optional(:cache) => :untouched
+          optional(:cache) => :untouched,
+          optional(:second_mirror) => :requested | :untouched
         }
   @type t :: %{
           required(:id) => String.t(),
@@ -122,7 +126,7 @@ defmodule ChainTest.Conformance.Case do
 
   @keys [:client, :description, :harness, :id, :transform]
   @optional [:after, :client_config, :setup]
-  @post_keys [:cache, :installed, :state_sequence]
+  @post_keys [:cache, :installed, :second_mirror, :state_sequence]
   @statuses [:hit, :miss, :fail]
   @benign [:pass, :miss]
   @identity ChainTest.Mirror.Identity
@@ -202,10 +206,23 @@ defmodule ChainTest.Conformance.Case do
         "client_config must map clock_offset_seconds to an integer, root to an absolute " <>
           "path and source to a non-empty string, got #{inspect(c.client_config)}"
 
-      Map.has_key?(c, :after) and not post?(c.after) ->
+      Map.has_key?(c, :after) ->
+        after_problem(c.after, c.transform)
+
+      true ->
+        nil
+    end
+  end
+
+  defp after_problem(post, transform) do
+    cond do
+      not post?(post) ->
         "after must be a non-empty map of state_sequence (integer, :snapshot, :absent, " <>
-          ":unchanged), installed (:none, :snapshot), cache (:untouched), got " <>
-          inspect(c.after)
+          ":unchanged), installed (:none, :snapshot), cache (:untouched), second_mirror " <>
+          "(:requested, :untouched), got " <> inspect(post)
+
+      Map.has_key?(post, :second_mirror) and Transform.mirrors(transform) != 2 ->
+        "after second_mirror needs a transform with mirrors: 2"
 
       true ->
         nil
@@ -245,6 +262,7 @@ defmodule ChainTest.Conformance.Case do
 
   defp post_value?(:installed, v), do: v in [:none, :snapshot]
   defp post_value?(:cache, v), do: v == :untouched
+  defp post_value?(:second_mirror, v), do: v in [:requested, :untouched]
 
   @doc "The case's verdict on one run (see the moduledoc)."
   @spec judge(t(), %{
@@ -254,6 +272,7 @@ defmodule ChainTest.Conformance.Case do
           required(:snapshot) => map(),
           required(:hits) => [atom()],
           optional(:tooling) => [String.t()],
+          optional(:second_requests) => [Mirror.request()],
           optional(:observed) => observed() | nil
         }) :: Result.t()
   def judge(
@@ -262,7 +281,10 @@ defmodule ChainTest.Conformance.Case do
       ) do
     unused = unused_mirror(report, requests, snap)
     identity? = match?({@identity, _}, c.transform)
-    broken = transform_errors(requests)
+
+    broken =
+      transform_errors(requests, "mirror") ++
+        transform_errors(Map.get(input, :second_requests, []), "second mirror")
 
     cond do
       broken != [] ->
@@ -290,9 +312,9 @@ defmodule ChainTest.Conformance.Case do
 
   # A transform that crashed or answered a malformed shape was never the
   # mutation the case meant: the client saw only the mirror's 500.
-  defp transform_errors(requests) do
+  defp transform_errors(requests, which) do
     for %{transform_error: why, path: path} <- requests,
-        do: "mirror: transform error on #{path}: #{why}"
+        do: "#{which}: transform error on #{path}: #{why}"
   end
 
   # What the mirror's log lacks to show that the client read the batch and
@@ -480,6 +502,24 @@ defmodule ChainTest.Conformance.Case do
       else: [
         "after installed: expected exactly #{inspect(want)} installed, found #{inspect(got)}"
       ]
+  end
+
+  defp post_problem(:second_mirror, want, _seen, _snap, input) do
+    asked = for %{path: path} <- Map.get(input, :second_requests, []), do: path
+
+    case {want, asked} do
+      {:requested, []} ->
+        ["after second_mirror: expected the client to ask the second mirror, it asked nothing"]
+
+      {:untouched, [_ | _]} ->
+        [
+          "after second_mirror: expected the second mirror untouched, the client asked it for " <>
+            Enum.join(asked, ", ")
+        ]
+
+      _ ->
+        []
+    end
   end
 
   defp post_problem(:cache, :untouched, seen, _snap, _input) do

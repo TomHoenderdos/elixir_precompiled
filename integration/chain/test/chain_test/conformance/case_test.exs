@@ -575,4 +575,59 @@ defmodule ChainTest.Conformance.CaseTest do
       end
     end
   end
+
+  describe "judge/2 with a second mirror" do
+    @two %{@status | id: "N1", transform: {ChainTest.TestTransform, %{mirrors: 2}}}
+
+    defp judge_two(c, report, requests, second) do
+      Case.judge(c, %{
+        rows: [row(:build, "hit:jason", :fail)],
+        report: report,
+        requests: requests,
+        second_requests: second,
+        snapshot: snap(%{"jason" => 1}),
+        hits: [:jason],
+        observed: %{before: obs(%{}), after: obs(%{}), installed: []}
+      })
+    end
+
+    @miss Synthetic.report([{"jason", "1.4.5", "miss", "manifest unavailable: Status 500"}])
+
+    test "a transform_error on the second mirror fails the case, naming it" do
+      second = [Map.put(get("batch.json", 500, true), :transform_error, "transform returned :y")]
+      requests = [get("batch.json", 302, true)]
+
+      assert %Result{class: :fail, detail: detail} = judge_two(@two, @miss, requests, second)
+      assert detail =~ "second mirror"
+      assert detail =~ "transform returned :y"
+    end
+
+    test "after second_mirror: :requested or :untouched reads the second mirror's log" do
+      requests = [get("batch.json", 302, true), get("v2/manifests/jason.json", 500, true)]
+      asked = [get("batch.json")]
+
+      requested = Map.put(@two, :after, %{second_mirror: :requested})
+      untouched = Map.put(@two, :after, %{second_mirror: :untouched})
+
+      assert %Result{class: :pass} = judge_two(requested, @miss, requests, asked)
+      assert %Result{class: :fail, detail: d} = judge_two(requested, @miss, requests, [])
+      assert d =~ "second_mirror"
+      assert %Result{class: :pass} = judge_two(untouched, @miss, requests, [])
+      assert %Result{class: :fail, detail: d} = judge_two(untouched, @miss, requests, asked)
+      assert d =~ "batch.json"
+    end
+
+    test "second_mirror is refused at load on a one-mirror case", %{tmp_dir: tmp} do
+      assert {:ok, _} =
+               Case.load(write(tmp, [Map.put(@two, :after, %{second_mirror: :untouched})]))
+
+      for bad <- [
+            Map.put(@status, :after, %{second_mirror: :untouched}),
+            Map.put(@two, :after, %{second_mirror: :maybe})
+          ] do
+        assert {:error, why} = Case.load(write(tmp, [bad]))
+        assert why =~ "second_mirror"
+      end
+    end
+  end
 end

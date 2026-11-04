@@ -50,13 +50,15 @@ defmodule ChainTest.TestTransform do
   @moduledoc """
   A `ChainTest.Mirror.Transform` for tests: `mirrors: 2` asks for a second
   mirror; the case mirror redirects `batch.json` to the second mirror's
-  `batch.json`, the second serves unchanged. `needs` is returned by
+  `batch.json`, the second serves unchanged (or, with `second_bad: true`,
+  answers every request with a malformed shape). `needs` is returned by
   `needs/1`.
   """
   @behaviour ChainTest.Mirror.Transform
 
   @impl true
-  def valid_args?(args), do: Enum.all?(Map.keys(args), &(&1 in [:mirrors, :needs]))
+  def valid_args?(args),
+    do: Enum.all?(Map.keys(args), &(&1 in [:mirrors, :needs, :second_bad]))
 
   @impl true
   def needs(args), do: Map.get(args, :needs, [])
@@ -65,6 +67,9 @@ defmodule ChainTest.TestTransform do
   def transform("batch.json", _bytes, %{case: %{mirror: 1, second_url: url}})
       when is_binary(url),
       do: {:redirect, 302, url <> "/batch.json"}
+
+  def transform(_path, bytes, %{second_bad: true, case: %{mirror: 2}}),
+    do: {:truncate, 200, bytes, byte_size(bytes)}
 
   def transform(_path, bytes, _args), do: {200, bytes}
 end

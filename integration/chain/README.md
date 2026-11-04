@@ -155,7 +155,7 @@ Cases are data, in `conformance/cases.exs`, one map per case:
 | `harness` | `%{"step/check" => class}`: harness results that must have that class. `step` is `build`, `integrity` or `compiled`, `check` as the per-case report prints it (`"build/hit:jason"`, `"integrity/integrity:ash"`, `"compiled/reported_miss:jason"`). Every other result must be `pass` or `miss`; a `rerun` is a difference, since the snapshot never moves. |
 | `setup` (optional) | `{module, args}`: a `ChainTest.Conformance.Setup` run against the case's fresh client home before the build (write a state file, fill the cache, plant a symlink). It gets the home, the snapshot with the case's `source`, `root` and mirror URLs under `:case`, and its args; `ChainTest.Conformance.Setup.state_dir/3` names the client's state dir. A setup that fails fails the case, unbuilt. |
 | `client_config` (optional) | Merged into the fixture's `config :elixir_precompiled` for this case's build only, after the operator's site config: `clock_offset_seconds` (integer), `root` (an absolute path), `source` (URL). |
-| `after` (optional) | Post-conditions after the build: `state_sequence` (the client's state file for the case's source and root holds an integer, or `:snapshot`, the snapshot batch's sequence; `:absent`; or `:unchanged`, every state file in the home as setup left it), `installed` (`:none`: no `.mix/elixir_precompiled.json` in the target's `_build`; `:snapshot`: exactly the deps the snapshot holds a build of), `cache: :untouched` (no cache entry beyond what setup wrote). |
+| `after` (optional) | Post-conditions after the build: `state_sequence` (the client's state file for the case's source and root holds an integer, or `:snapshot`, the snapshot batch's sequence; `:absent`; or `:unchanged`, every state file in the home as setup left it), `installed` (`:none`: no `.mix/elixir_precompiled.json` in the target's `_build`; `:snapshot`: exactly the deps the snapshot holds a build of), `cache: :untouched` (no cache entry beyond what setup wrote), and, with `mirrors: 2`, `second_mirror` (`:requested`: the client asked the second mirror for something; `:untouched`: it asked nothing). |
 
 A transform answers `{status, bytes}` or, to misbehave in other ways,
 `{status, headers, body}`, `{:redirect, 3xx, location}`, `{:stream, status,
@@ -164,7 +164,7 @@ chunks, delay_ms}` (no `content-length`, a delay before each chunk),
 `:close` (no response at all) or `{:endless, status, chunk, delay_ms}` (until
 the client hangs up). A streamed body stops at 64 MiB or 120 s, so a case
 cannot hang the run. Anything but `{200, bytes}` with the snapshot's own
-bytes counts as a change for the "not exercised" check. A transform that crashes or answers a malformed shape gets the client a 500 and fails the case, naming the error, so a typo never stands in for the change it meant. A transform whose
+bytes counts as a change for the "not exercised" check. A transform that crashes or answers a malformed shape gets the client a 500 and fails the case, naming the error, so a typo never stands in for the change it meant. Both mirrors of a two-mirror case are judged this way. A transform whose
 args say `mirrors: 2` gets a second mirror (a cross-origin redirect target,
 say), whose URL it finds under the args' `:case` key; `needs/1` on a
 transform or setup names the older batches it needs.
