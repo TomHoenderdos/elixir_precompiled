@@ -31,8 +31,40 @@ defmodule ElixirPrecompiled.Env.MixProject do
       build_lib: build_lib,
       deps_path: Mix.Project.deps_path(),
       installed: Enum.map(installed, &elem(&1, 0)),
-      installed_envs: Map.new(installed)
+      installed_envs: Map.new(installed),
+      tooling: nerves_children_from(deps)
     }
+  end
+
+  @doc false
+  # The closure of nerves' children as Mix loaded them: each Mix.Dep names
+  # its own children in `deps`, whatever SCM nerves comes from.
+  @spec nerves_children_from([Mix.Dep.t()]) :: [atom()] | nil
+  def nerves_children_from(deps) do
+    by_app = Map.new(deps, &{&1.app, &1})
+
+    case by_app[:nerves] do
+      nil ->
+        nil
+
+      nerves ->
+        nerves.deps
+        |> Enum.map(& &1.app)
+        |> closure(by_app, MapSet.new([:nerves]))
+        |> MapSet.delete(:nerves)
+        |> Enum.sort()
+    end
+  end
+
+  defp closure([], _by_app, seen), do: seen
+
+  defp closure([app | rest], by_app, seen) do
+    if MapSet.member?(seen, app) do
+      closure(rest, by_app, seen)
+    else
+      children = for %Mix.Dep{deps: deps} <- [by_app[app]], d <- deps, do: d.app
+      closure(children ++ rest, by_app, MapSet.put(seen, app))
+    end
   end
 
   @doc false

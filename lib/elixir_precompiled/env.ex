@@ -24,7 +24,8 @@ defmodule ElixirPrecompiled.Env do
           build_lib: Path.t(),
           deps_path: Path.t(),
           installed: [atom()],
-          installed_envs: %{optional(atom()) => String.t()}
+          installed_envs: %{optional(atom()) => String.t()},
+          tooling: [atom()] | nil
         }
 
   # `installed`: Hex deps Mix counts as compiled this run whose build dir
@@ -32,6 +33,9 @@ defmodule ElixirPrecompiled.Env do
   # them against the current batch. `installed_envs` names each one's own
   # compile env, as `hex_candidates/3` takes it, for when one has to be
   # matched again.
+  # `tooling`: deps nerves_bootstrap compiles with nerves (its dependency
+  # closure as Mix loaded it), or nil when that is unknown and the lock's
+  # closure is all there is. A git or path nerves has no list in the lock.
   @enforce_keys [:candidates, :lock, :build_lib, :deps_path]
   defstruct system: nil,
             candidates: [],
@@ -39,7 +43,8 @@ defmodule ElixirPrecompiled.Env do
             build_lib: nil,
             deps_path: nil,
             installed: [],
-            installed_envs: %{}
+            installed_envs: %{},
+            tooling: nil
 
   @doc """
   The locked Hex entries among `apps`, in the order given. `envs` names each

@@ -254,6 +254,14 @@ defmodule ElixirPrecompiled.MatchTest do
       assert Match.tooling?("elixir_precompiled")
       refute Match.candidate?(:elixir_precompiled, self_lock, [])
     end
+
+    test "tooling named by Mix's dep data is never a candidate, even when the lock has no nerves list" do
+      lock = Map.put(@lock, :nerves, {:git, "https://example.test/nerves.git", "abc", []})
+      assert Match.candidate?(:tablet, lock, [], nil)
+      refute Match.candidate?(:tablet, lock, [], [:tablet])
+      # The lock's closure still counts when the lock has one.
+      refute Match.candidate?(:tablet, @lock, [], [])
+    end
   end
 
   describe "select/2" do

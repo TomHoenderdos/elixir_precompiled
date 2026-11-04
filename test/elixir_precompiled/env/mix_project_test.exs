@@ -73,4 +73,22 @@ defmodule ElixirPrecompiled.Env.MixProjectTest do
     assert MixProject.candidates_from([dep.(:jason, [])], lock) ==
              [%{name: :jason, version: "1.4.5", lock_entry: @jason, dep_env: "prod"}]
   end
+
+  test "nerves_children_from reads a git nerves' children from Mix's deps" do
+    child = fn app, deps -> %Mix.Dep{app: app, scm: Hex.SCM, deps: deps} end
+    castore = child.(:castore, [])
+    jason = child.(:jason, [])
+    tablet = child.(:tablet, [jason])
+
+    nerves = %Mix.Dep{
+      app: :nerves,
+      scm: Mix.SCM.Git,
+      deps: [%Mix.Dep{app: :tablet}, %Mix.Dep{app: :castore}]
+    }
+
+    assert MixProject.nerves_children_from([nerves, tablet, castore, jason, child.(:ash, [])]) ==
+             [:castore, :jason, :tablet]
+
+    assert MixProject.nerves_children_from([child.(:ash, [])]) == nil
+  end
 end

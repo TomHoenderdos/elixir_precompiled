@@ -27,7 +27,7 @@ defmodule ElixirPrecompiled.Check do
   @spec check(map(), Env.t(), keyword()) :: :nothing_to_do | {:ok, report()}
   def check(config, %Env{} = env, opts \\ []) do
     started = System.monotonic_time(:millisecond)
-    {candidates, skipped} = candidates(env.candidates, env.lock, config.except)
+    {candidates, skipped} = candidates(env.candidates, env.lock, config.except, env.tooling)
 
     {excepted, installed} = installed(env, config.except)
 
@@ -100,7 +100,7 @@ defmodule ElixirPrecompiled.Check do
   # recheck.
   defp installed(env, except) do
     Env.hex_candidates(env.lock, env.installed, env.installed_envs)
-    |> Enum.filter(&Match.candidate?(&1.name, env.lock, []))
+    |> Enum.filter(&Match.candidate?(&1.name, env.lock, [], env.tooling))
     |> Enum.split_with(&(&1.name in except))
   end
 
@@ -406,20 +406,21 @@ defmodule ElixirPrecompiled.Check do
   defp as_fail(:ok), do: :ok
   defp as_fail({:miss, why}), do: {:fail, "downloaded .app: " <> why}
 
-  defp candidates(deps, lock, except) do
-    {c, s} = Enum.reduce(deps, {[], []}, &sort_candidate(&1, &2, lock, except))
+  defp candidates(deps, lock, except, tooling) do
+    {c, s} = Enum.reduce(deps, {[], []}, &sort_candidate(&1, &2, lock, except, tooling))
     {Enum.reverse(c), Enum.reverse(s)}
   end
 
-  defp sort_candidate(dep, {c, s}, lock, except) do
+  defp sort_candidate(dep, {c, s}, lock, except, tooling) do
     cond do
-      Match.candidate?(dep.name, lock, except) ->
+      Match.candidate?(dep.name, lock, except, tooling) ->
         {[dep | c], s}
 
       dep.name in except ->
         {c, [{dep.name, "excepted"} | s]}
 
-      Match.tooling?(Atom.to_string(dep.name)) or dep.name in Match.nerves_children(lock) ->
+      Match.tooling?(Atom.to_string(dep.name)) or dep.name in (tooling || []) or
+          dep.name in Match.nerves_children(lock) ->
         {c, [{dep.name, "tooling"} | s]}
 
       true ->

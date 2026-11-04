@@ -26,14 +26,15 @@ defmodule ElixirPrecompiled.Match do
           config: (String.t(), [String.t()] -> {:ok, term()} | :error)
         }
 
-  @spec candidate?(atom(), map(), [atom()]) :: boolean()
-  def candidate?(dep, lock, except) do
+  @spec candidate?(atom(), map(), [atom()], [atom()] | nil) :: boolean()
+  def candidate?(dep, lock, except, tooling \\ nil) do
     name = Atom.to_string(dep)
 
     with true <- Map.has_key?(lock, dep),
          true <- hex?(lock[dep]),
          false <- dep in except,
          false <- tooling?(name),
+         false <- dep in (tooling || []),
          false <- dep in nerves_children(lock) do
       true
     else

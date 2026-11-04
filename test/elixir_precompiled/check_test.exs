@@ -324,6 +324,16 @@ defmodule ElixirPrecompiled.CheckTest do
     assert out =~ "precompiled: no dependencies to check"
   end
 
+  test "a dep Mix names as nerves' child is tooling, not fetched", %{config: config, env: env} do
+    System.put_env("ELIXIR_PRECOMPILED_DEBUG", "1")
+    on_exit(fn -> System.delete_env("ELIXIR_PRECOMPILED_DEBUG") end)
+    env = %{env | candidates: [List.last(env.candidates)], tooling: [:jason]}
+
+    out = run_capturing(config, env)
+    assert_received {:report, :nothing_to_do}
+    assert out =~ "precompiled: no dependencies to check"
+  end
+
   test "an unwritable build_lib degrades report.json to one warning, run still completes", %{
     f: f,
     config: config,
