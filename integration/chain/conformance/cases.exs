@@ -145,11 +145,10 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     }
   }),
   refused.("batch stale", :not_exercised)
-  |> put_in([:after, :log], "is unreadable; treating it as 0")
   |> Map.merge(%{
     id: "R4-old",
     description:
-      "A corrupt state file counts as 0, yet a batch issued over 25 hours ago is still refused as stale.",
+      "A corrupt state file counts as 0, yet a batch issued over 25 hours ago is still refused as stale. Freshness is checked before the state is read, so the corrupt file is never read and nothing is logged; R4-previous checks the log.",
     transform: {ChainTest.Mirror.OlderBatch, %{batch: :old}},
     setup: {ChainTest.Conformance.Setup.State, %{sequence: :corrupt}}
   }),

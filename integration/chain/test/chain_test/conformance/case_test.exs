@@ -83,8 +83,9 @@ defmodule ChainTest.Conformance.CaseTest do
       assert by_id["R12"].client.default == {:fail, "clock is before"}
       assert by_id["R2.R6.T10"].client.default == {:fail, "batch stale"}
 
-      for id <- ["R4-previous", "R4-old"],
-          do: assert(by_id[id].after.log == "is unreadable; treating it as 0", id)
+      assert by_id["R4-previous"].after.log == "is unreadable; treating it as 0"
+      # A stale batch is refused before the state is read: nothing to log.
+      refute Map.has_key?(by_id["R4-old"].after, :log)
 
       refute Map.has_key?(by_id, "T3-duplicated")
     end
