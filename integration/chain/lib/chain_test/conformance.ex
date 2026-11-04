@@ -53,9 +53,10 @@ defmodule ChainTest.Conformance do
 
   A case whose transform asks for `tls` gets an HTTPS case mirror with a
   new certificate of that kind (`ChainTest.TestCert`, in memory, made for
-  that case alone), and its build trusts that certificate's CA, and only
-  it, when the transform also says `trust_ca: true` (`ChainTest.Build`'s
-  `:trust_ca`); otherwise the build keeps the OS store. A case with `proxy:
+  that case alone), and its client trusts that certificate's CA, and only
+  it, through the client's own CA option, when the transform also says
+  `trust_ca: true` (`ChainTest.Build`'s `:trust_ca`); otherwise the client
+  keeps the OS store. A case with `proxy:
   :mirror` gets the case mirror as its build's `HTTP_PROXY`.
 
   Reports go to `report_dir`: per case `<target>-<id>-<stamp>.{md,json}`
@@ -380,7 +381,8 @@ defmodule ChainTest.Conformance do
 
   # The mirrors are not linked to this process: they are always stopped here.
   defp run_case(c, run) do
-    with :ok <- testable(c, run.snap),
+    with :ok <- trap_ready(c, run.snap),
+         :ok <- testable(c, run.snap),
          {:ok, mirrors} <- start_mirrors(c, run) do
       try do
         judge_case(c, run, mirrors)
@@ -398,6 +400,18 @@ defmodule ChainTest.Conformance do
         verdict
     end
   end
+
+  # A trap the snapshot cannot spring (C0's dep holds no file) would pass
+  # without ever showing the client read its cache: a failure, not "not
+  # testable", since the snapshot always holds that dep's build.
+  defp trap_ready(%{transform: {ChainTest.Mirror.Status, args}}, snap) do
+    case ChainTest.Mirror.Status.trap_problem(args, snap) do
+      nil -> :ok
+      why -> {:fail, why}
+    end
+  end
+
+  defp trap_ready(_c, _snap), do: :ok
 
   # The snapshot has everything the case's transform or setup needs.
   defp testable(c, snap) do

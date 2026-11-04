@@ -535,6 +535,23 @@ defmodule ChainTest.ConformanceTest do
       end
     end
 
+    test "a trap whose dep holds no file in the snapshot fails, unbuilt", ctx do
+      t =
+        Map.merge(@t0, %{
+          id: "C0",
+          transform: {ChainTest.Mirror.Status, %{files_of: "jason", status: 404}},
+          setup: {ChainTest.Conformance.Setup.Cache, %{plant: :all_files, deps: ["jason"]}}
+        })
+
+      cases!(ctx.opts, [t])
+
+      assert {[%Result{check: "C0", class: :fail, detail: detail}], _} =
+               Conformance.run(ctx.opts, v2_steps(self(), ctx.snapshot))
+
+      assert detail =~ "no file of jason"
+      refute_received {:build, _}
+    end
+
     test "not testable here does not fail the run's exit code", ctx do
       t = %{@t0 | id: "T2", transform: {ChainTest.TestTransform, %{needs: [:old]}}}
       cases!(ctx.opts, [@t0, t])

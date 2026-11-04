@@ -76,6 +76,29 @@ defmodule ChainTest.Conformance.CaseLayer1Test do
       end
     end
 
+    test "a files_of trap needs a Cache setup planting that dep", %{tmp_dir: tmp} do
+      trap = {ChainTest.Mirror.Status, %{files_of: "jason", status: 404}}
+      c = Map.merge(@t0, %{id: "C0", transform: trap})
+      cache = &{ChainTest.Conformance.Setup.Cache, &1}
+
+      assert {:ok, _} =
+               Case.load(
+                 write(tmp, [Map.put(c, :setup, cache.(%{plant: :all_files, deps: ["jason"]}))])
+               )
+
+      for setup <- [
+            nil,
+            cache.(%{plant: :all_files}),
+            cache.(%{plant: :all_files, deps: ["ash"]}),
+            cache.(%{plant: :corrupt_files}),
+            {ChainTest.Conformance.Setup.State, %{sequence: :snapshot}}
+          ] do
+        bad = if setup, do: Map.put(c, :setup, setup), else: c
+        assert {:error, why} = Case.load(write(tmp, [bad])), inspect(setup)
+        assert why =~ "files_of", inspect(setup)
+      end
+    end
+
     test "refuses malformed layer-1 values", %{tmp_dir: tmp} do
       for post <- [
             %{cache: :fresh},
@@ -347,9 +370,24 @@ defmodule ChainTest.Conformance.CaseLayer1Test do
     test "N5-batch: batch.json a 503 is no batch, R14's after-conditions", %{by: by} do
       c = by["N5-batch"]
       assert c.transform == {ChainTest.Mirror.Status, %{paths: ["batch.json"], status: 503}}
-      assert c.client == %{default: {:fail, "batch unavailable"}, deps: %{}}
+      assert c.client == %{default: {:fail, "batch unavailable: "}, deps: %{}}
       assert c.after == %{state_sequence: :unchanged, installed: :none, cache: :untouched}
       assert c.harness["build/sequence"] == :not_exercised
+    end
+
+    test "each refusal pins the client's own reason", %{by: by} do
+      for id <- ~w(C2-entry C2-dir),
+          do: assert(by[id].client.default == {:fail, "cache refused"}, id)
+
+      assert by["F2-truncated"].client.default == {:fail, "size mismatch"}
+
+      # An undelivered batch says why after the colon; N1-batch says it was
+      # the redirect.
+      assert by["N1-batch"].client.default ==
+               {:fail, "batch unavailable: redirect to another host refused"}
+
+      for id <- ~w(N4 N5-batch N2-proxy N3-self-signed N3-wrong-host N3-hostname),
+          do: assert({:fail, "batch unavailable: " <> _} = by[id].client.default, id)
     end
 
     test "R5 and R19 are gated on the rollback refusal; T6 adopts no root", %{by: by} do

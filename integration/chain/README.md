@@ -277,18 +277,19 @@ The TLS cases (N3, N6) run the case mirror over HTTPS: a transform's args
 `tls: :ip | :self_signed | :wrong_host` give it a certificate of that kind,
 made for that case alone with `:public_key` (`ChainTest.TestCert`: P-256
 keys, a CA of its own for `:ip` and `:wrong_host`; nothing written to
-disk, no `openssl`). The client has no CA option: it trusts the OS store,
-which knows no test CA. So the N3 cases that test trust (`N3-self-signed`,
-`N3-wrong-host`) build with the OS store, and must refuse every handshake;
+disk, no `openssl`). Without a CA of its own, the client trusts the OS
+store, which knows no test CA. So the N3 cases that test trust
+(`N3-self-signed`, `N3-wrong-host`) build with the OS store, and must refuse every handshake;
 the mirror logs each one with the alert the client sent, and `after: %{tls:
 {:rejected, alert}}` judges the case by that log alone, every handshake
 aborted with exactly that alert (`:unknown_ca` for a CA the client does not
 know, `:bad_certificate` for a self-signed or wrong-host certificate), so
 N3-hostname cannot pass on an unknown CA. `trust_ca: true` needs a kind with
 a CA (`:ip`, `:wrong_host`). A case whose args also say
-`trust_ca: true` builds with that CA as the VM's whole store
-(`:public_key.cacerts_load/1` from the case's config file, a PEM beside it,
-both removed after the build): `TLS-T0`, the control, must then install as
+`trust_ca: true` gives the client that CA through its own CA option,
+`ELIXIR_PRECOMPILED_CACERTS_PATH` (a bundle that replaces the OS store),
+the way a user names a private CA: a PEM in a private temp dir, removed
+after the build, and the variable unset for every other build: `TLS-T0`, the control, must then install as
 T0 does, and `N3-hostname` (a wrong-host certificate from that trusted
 CA, the hostname check alone), `N6` and `N6-manifest` (a redirect from
 https to plain http on the same host and port, `ChainTest.Mirror.Downgrade`)
@@ -304,11 +305,17 @@ client's warning, and everything compiles. Its control `N2-proxy` (a
 loopback source, `http://localhost:1`, which the client allows) shows that
 the route works: its requests reach the mirror as proxied requests.
 
-The client's reasons these cases pin are today's: `batch unavailable` (a
-refused handshake: the client keeps no more of the reason), `redirect to
-another host refused` and `source must be https (http only on loopback),
-disabled`. They are prefixes or substrings, so a client that adds the
-transport reason after `batch unavailable` still matches.
+The client's reasons these cases pin: `batch unavailable: ` followed by
+why, for a batch never delivered (a refused handshake, a transport error,
+an HTTP error, the deadline; N1-batch pins `batch unavailable: redirect to
+another host refused`), while a batch delivered and refused prints its own
+reason without that prefix; `redirect to another host refused` and
+`source must be https (http only on loopback), disabled`. The cache and
+file cases pin `cache refused` (C2), `size mismatch` (F2-truncated),
+`file larger than declared size` and `sha256 mismatch`; the forged
+manifests `unsafe path or mode (...)`, `foreign path` and `path
+collision`. Each is a prefix of the client's reason (a substring for a
+log line).
 
 ### The production policy check (R20)
 
@@ -393,8 +400,7 @@ What the cases test, one row per vector; case ids name these rows. Layer
 
 Every case in `conformance/cases.exs`, with the attack-vector rows it
 stands for (below) and its layer (1: real root; 2: test keys). "after X"
-is its gate. P7, P5 for a git dep, N3's positive control through a client
-CA option and the other "known, not testable" items are in every report's
+is its gate. P7, P5 for a git dep and the other "known, not testable" items are in every report's
 "Known, not testable" section instead.
 
 - R14 (a refused batch leaves the state, `_build` and the cache alone) is

@@ -402,7 +402,26 @@ defmodule ChainTest.Conformance.Case do
     end
   end
 
-  defp optional_problem(c), do: runs_problem(c) || setup_problem(c) || test_root_problem(c)
+  defp optional_problem(c),
+    do: runs_problem(c) || setup_problem(c) || test_root_problem(c) || trap_setup_problem(c)
+
+  # A files_of trap (C0) answers its dep's files with an error, so only a
+  # cache that holds them can make that dep a hit: the case's setup must
+  # plant exactly those files.
+  defp trap_setup_problem(%{transform: {ChainTest.Mirror.Status, %{files_of: dep}}} = c) do
+    case Map.get(c, :setup) do
+      {ChainTest.Conformance.Setup.Cache, %{plant: :all_files, deps: deps}} when is_list(deps) ->
+        unless dep in deps,
+          do:
+            "files_of #{inspect(dep)} needs a Cache setup whose deps name it, got #{inspect(deps)}"
+
+      other ->
+        "files_of #{inspect(dep)} needs setup {ChainTest.Conformance.Setup.Cache, " <>
+          "%{plant: :all_files, deps: [#{inspect(dep)}, ...]}}, got #{inspect(other)}"
+    end
+  end
+
+  defp trap_setup_problem(_c), do: nil
 
   # A transform or setup that signs with the test keys runs only where the
   # client is pinned to the test root.

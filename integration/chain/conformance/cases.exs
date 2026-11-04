@@ -55,11 +55,13 @@ none_installed = fn expect ->
   }
 end
 
-# No batch at all (`batch unavailable`, a transport failure): like a
-# refusal, with R14's post-conditions, but not one of the client's refusal
-# reasons, so the hit rows are plain failures.
+# No batch at all (`batch unavailable: <why>`, a batch never delivered:
+# a transport failure, an HTTP error): like a refusal, with R14's
+# post-conditions, but not one of the client's refusal reasons, so the hit
+# rows are plain failures. A batch delivered and refused prints its own
+# reason, without that prefix.
 no_batch = %{
-  client: %{default: {:fail, "batch unavailable"}, deps: %{}},
+  client: %{default: {:fail, "batch unavailable: "}, deps: %{}},
   harness:
     Map.merge(Map.new(hits, &{"build/hit:#{&1}", :fail}), %{
       "integrity/integrity" => :not_exercised,
@@ -269,7 +271,7 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
       "One byte of every file changed, its size kept: refused on the sha256, nothing installed or cached.",
     transform: {ChainTest.Mirror.FileBytes, %{change: :flip_byte}}
   }),
-  Map.merge(none_installed.(:fail), %{
+  Map.merge(none_installed.({:fail, "size mismatch"}), %{
     id: "F2-truncated",
     description:
       "Every file cut one byte short of the length it declares: refused, nothing installed or cached.",
@@ -308,6 +310,7 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
   |> Map.update!(:after, &Map.put(&1, :second_mirror, :untouched)),
   Map.merge(no_batch, %{
     id: "N1-batch",
+    client: %{default: {:fail, "batch unavailable: redirect to another host refused"}, deps: %{}},
     description:
       "batch.json redirected to another origin: refused as cross-origin, never followed, and the reason says so.",
     transform: {ChainTest.Mirror.Redirect, %{paths: :batch, mirrors: 2}},
@@ -358,7 +361,7 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     harness: %{},
     after: %{state_sequence: :snapshot, installed: :snapshot, cache: :verified}
   },
-  Map.merge(none_installed.(:fail), %{
+  Map.merge(none_installed.({:fail, "cache refused"}), %{
     id: "C2-entry",
     description:
       "Each cache entry is a symlink out of the cache, to the right bytes: refused, the links and their targets left alone.",
@@ -366,7 +369,7 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     setup: {ChainTest.Conformance.Setup.Cache, %{plant: :link_entries}},
     after: %{state_sequence: :snapshot, installed: :none, cache: :untouched, outside: :untouched}
   }),
-  Map.merge(none_installed.(:fail), %{
+  Map.merge(none_installed.({:fail, "cache refused"}), %{
     id: "C2-dir",
     description:
       "The cache dir itself is a symlink out of the home: refused, nothing written through it.",
@@ -457,9 +460,9 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     }
   },
   # N3 and N6 over the TLS mirror, a new certificate per case
-  # (ChainTest.TestCert). The client has no CA option: it trusts the OS
-  # store. TLS-T0, the control, loads the case's test CA as the build VM's
-  # whole store (`trust_ca: true`) and must install as T0 does; the cases
+  # (ChainTest.TestCert). TLS-T0, the control, gives the client the case's
+  # test CA through its own CA option, ELIXIR_PRECOMPILED_CACERTS_PATH, as
+  # its only trusted one (`trust_ca: true`), and must install as T0 does; the cases
   # that need a trusted mirror are gated on it. The N3 cases that test
   # trust itself never get the CA.
   Map.merge(accepted, %{
@@ -569,8 +572,8 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     # The client's reason names the entry's path: no other refusal (a 404,
     # a hash, a staging crash) can stand in for it.
     unsafe = &{:fail, "unsafe path or mode (#{inspect(&1)})"}
-    # The reasons the client hardening gives: a file outside the dep's app
-    # dir or another app's .app, and colliding paths. Red until it lands.
+    # The client's reasons for a file in ebin that is neither the dep's own
+    # .app nor a beam (another app's .app), and for colliding paths.
     foreign = {:fail, "foreign path"}
     collision = {:fail, "path collision"}
 

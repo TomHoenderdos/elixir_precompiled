@@ -113,7 +113,8 @@ defmodule ChainTest.Conformance.CaseTest do
 
         {:fail, reason} = c.client.default
 
-        assert reason == "batch unavailable" or ChainTest.Build.refusal?(reason),
+        assert String.starts_with?(reason, "batch unavailable: ") or
+                 ChainTest.Build.refusal?(reason),
                "#{c.id}: #{reason} is no client refusal"
       end
     end

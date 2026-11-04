@@ -39,10 +39,27 @@ defmodule ChainTest.Mirror.Status do
   end
 
   def transform(path, bytes, %{files_of: dep, status: status, case: %{snapshot: snap}}) do
-    shas = get_in(snap, [:deps, dep, :file_shas]) || []
+    shas = files_of(snap, dep)
 
     if Transform.file_path?(path) and String.replace_prefix(path, "files/", "") in shas,
       do: {status, ""},
       else: {200, bytes}
   end
+
+  @doc """
+  The sha256 of every file the snapshot holds for `dep`: what a `files_of`
+  trap answers with its status. Empty, the trap cannot spring, and the
+  runner fails the case before building (`trap_problem/2`).
+  """
+  @spec files_of(map(), String.t()) :: [String.t()]
+  def files_of(snap, dep), do: get_in(snap, [:deps, dep, :file_shas]) || []
+
+  @doc "Why the snapshot cannot back this trap's args, or `nil`."
+  @spec trap_problem(map(), map()) :: String.t() | nil
+  def trap_problem(%{files_of: dep}, snap) do
+    if files_of(snap, dep) == [],
+      do: "the trap names files_of #{inspect(dep)}, and the snapshot holds no file of #{dep}"
+  end
+
+  def trap_problem(_args, _snap), do: nil
 end
