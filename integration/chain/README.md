@@ -156,9 +156,9 @@ Cases are data, in `conformance/cases.exs`, one map per case:
 | `harness` | `%{"step/check" => class}`: harness results that must have that class. `step` is `build`, `integrity` or `compiled`, `check` as the per-case report prints it (`"build/hit:jason"`, `"integrity/integrity:ash"`, `"compiled/reported_miss:jason"`). Every other result must be `pass` or `miss`; a `rerun` is a difference, since the snapshot never moves. |
 | `runs` (optional) | `2`: build twice. The first build is cold, served unchanged by the reference mirror, in a home of its own removed afterwards, and must pass every check; the case's own build then starts from its `_build` (warm), with the case's home, setup and mirror (R16). The cold build's leftovers are not judged again there: the integrity `unreported:` row of each dep a `:recheck` expectation keeps, and step 4's `compiled_here`. |
 | `setup` (optional) | `{module, args}`: a `ChainTest.Conformance.Setup` run against the case's fresh client home before the build (write a state file, fill the cache, plant a symlink). It gets the home, the snapshot with the case's `source`, `root` and mirror URLs under `:case`, and its args; `ChainTest.Conformance.Setup.state_dir/3` names the client's state dir. A setup that fails fails the case, unbuilt. `ChainTest.Conformance.Setup.State` writes the batch sequence state (`sequence: :snapshot`, `{:below, n}` or `:corrupt`; `source: :second` for the second mirror's); `ChainTest.Conformance.Setup.PlantRoot` writes an attacker's self-signed root at `path` under the home; `ChainTest.Conformance.Setup.Cache` fills the client's file cache from the snapshot's files (`plant: :all_files`, `:corrupt_files` (one byte changed, size kept), `:link_entries` (each entry a symlink to the right bytes under `outside/` in the home) or `:link_dir` (`files` itself a symlink to an empty dir there)). |
-| `client_config` (optional) | Merged into the fixture's `config :elixir_precompiled` for this case's build only, after the operator's site config: `clock_offset_seconds` (integer, or `{:age, seconds}`: the client's clock that long after the snapshot batch's `issued`, resolved just before the build, so the case does not depend on the snapshot's age or the run's order), `root` (an absolute path), `source` (URL). |
+| `client_config` (optional) | Merged into the fixture's `config :elixir_precompiled` for this case's build only, after the operator's site config: `clock_offset_seconds` (integer, or `{:age, seconds}`: the client's clock that long after the snapshot batch's `issued`, resolved just before the build, so the case does not depend on the snapshot's age or the run's order), `root` (an absolute path, or `{:test_root, :v1 | :threshold_2}` for a layer-2 case, below), `source` (URL). |
 | `client_env` (optional) | Environment variables for this case's build only, from the names a client might wrongly read a root path from (`ChainTest.Build.client_env_names/0`: `ELIXIR_PRECOMPILED_ROOT` and `NERVES_PRECOMPILED_ROOT` only, the names the client's own pattern would give; it reads neither today, and T9 pins that): an absolute path, or `{:home, rel}` for a path under the case home. Every allowed name a case does not give is unset. |
-| `after` (optional) | Post-conditions after the build: `state_sequence` (the client's state file for the case's source and root holds an integer, or `:snapshot`, the snapshot batch's sequence, or `:previous`, the previous batch's; `:absent`; or `:unchanged`, every state file in the home as setup left it), `other_states` (`:unchanged`: every state file but that one as setup left it), `installed` (`:none`: no `.mix/elixir_precompiled.json` in the target's `_build`; `:snapshot`: exactly the deps the snapshot holds a build of; `{:without, [dep]}`, `:older_manifest`, `:recheck`: those but the named deps, or the ones the matching `client` expectation fails), `cache` (`:untouched`: every cache entry as setup left it, compared by kind, the sha256 of a file's bytes and a symlink's target, never following one, with nothing gained or removed; `:verified`: every entry a regular file directly in `files/` whose bytes hash to its name, so no changed byte and no symlink stayed; a file setup planted may stay as it left it only when no installed file has its sha256, since the snapshot holds builds the client never selects), `outside: :untouched` (what setup planted under `outside/` in the home, the targets of its symlinks, compared the same way; a setup that planted nothing there fails it), `log` (a non-empty string, or a list of them, the build's output must contain: a client warning, say), and, with `mirrors: 2`, `second_mirror` (`:requested`: the client asked the second mirror for something; `:untouched`: it asked nothing). |
+| `after` (optional) | Post-conditions after the build: `state_sequence` (the client's state file for the case's source and root holds an integer, or `:snapshot`, the snapshot batch's sequence, or `:previous`, the previous batch's; `:absent`; or `:unchanged`, every state file in the home as setup left it), `other_states` (`:unchanged`: every state file but that one as setup left it), `installed` (`:none`: no `.mix/elixir_precompiled.json` in the target's `_build`; `:snapshot`: exactly the deps the snapshot holds a build of; `{:without, [dep]}`, `:older_manifest`, `:recheck`: those but the named deps, or the ones the matching `client` expectation fails), `cache` (`:untouched`: every cache entry as setup left it, compared by kind, the sha256 of a file's bytes and a symlink's target, never following one, with nothing gained or removed; `:verified`: every entry a regular file directly in `files/` whose bytes hash to its name, so no changed byte and no symlink stayed; a file setup planted may stay as it left it only when no installed file has its sha256, since the snapshot holds builds the client never selects), `outside: :untouched` (what setup planted under `outside/` in the home, the targets of its symlinks, compared the same way; a setup that planted nothing there fails it), `log` (a non-empty string, or a list of them, the build's output must contain: a client warning, say), and, with `mirrors: 2`, `second_mirror` (`:requested`: the client asked the second mirror for something; `:untouched`: it asked nothing), and `root_version` (the `root_version` file in that state dir: `:absent`, no root adopted, or the integer it holds). |
 
 A transform answers `{status, bytes}` or, to misbehave in other ways,
 `{status, headers, body}`, `{:redirect, 3xx, location}`, `{:stream, status,
@@ -202,6 +202,47 @@ entry selection is T0's, whose integrity step checks each hit installed the
 build the harness selects; N6 needs TLS. A case standing for several spec rows joins
 their ids with `.` (`T4.R3`): every case home is a fresh
 `ELIXIR_PRECOMPILED_HOME`, so T10 and R6 run as R1 and R2.
+
+### Layer 2: test keys
+
+Layer 2 asks what a compromised portal could do: inputs only a key holder
+can make. A case with `client_config: %{root: {:test_root, name}}` runs
+against a copy of the snapshot signed with throwaway Ed25519 keys made for
+this run (`ChainTest.TestKey`), never the portal's key. The keys stay in
+memory; the test roots and the copy go into a private directory under the
+system tmp dir, removed after the run. Test roots: `:v1` (one batch key,
+threshold 1) and `:threshold_2` (two batch keys, both needed). The copy is
+the real batch's payload byte for byte, signed by the test batch key, with
+the real manifests and files, and the harness's own trust checks accept it
+under the test root before any case runs.
+
+The control `L2-T0` (identity under `:v1`) must show the same hits as T0
+before any other layer-2 case is judged: if it does not pass, the client is
+not shown to take the test root, and every other layer-2 case is
+`not_exercised`. `--only` a layer-2 case runs `L2-T0` too. A real-root case
+fails when its home shows a test root (a state dir named for one, a file
+naming a test key) or its config names one; a layer-2 case fails when its
+home holds the real root's state dir.
+
+The layer-2 transforms and setup sign with the test keys, so a case file
+using them without a test root is refused:
+`ChainTest.Mirror.TestBatch` (the batch re-signed at request time:
+`signers`, the keys that sign it, repeats kept (`:batch`, `:outside`,
+`:rotated`, `:unchained`, `:pair_a`, `:pair_b`); `issued_ahead: s`, issued
+`s` seconds after the request; `lifetime: s`; `root: :unchained` (a v2 root
+v1 did not sign) or `:withheld` (`root.json` a 404)),
+`ChainTest.Mirror.Forge` (`forge: kind`, a forged manifest for jason signed
+into the test batch: paths with `..`, absolute or outside `ebin/`/`priv/`, a
+setuid or 0777 mode, a file in the project's app dir or the project's
+`.app` name, another package checksum or deps lock, builds for a git and a
+path dep, an `.app` naming another app or version, duplicate, case-variant
+and Unicode-variant paths, a build for a package the project does not
+lock) and `ChainTest.Conformance.Setup.AdoptedRoot` (the state of a client
+that already adopted the rotated root v2, R17). R18 pins a known gap: a
+fresh home cannot learn of a rotation the mirror withholds. P7, a forged
+entry for this target carrying another target's `.so`, is known, not
+testable: the client trusts the signed claim, and only the device smoke
+call catches it.
 
 A case passes when the client used its mirror and the client and the
 harness say what it expects. Using the mirror means the mirror's log has a

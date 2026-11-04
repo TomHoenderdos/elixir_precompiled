@@ -12,8 +12,16 @@ defmodule ChainTest.Conformance.Clock do
   `seconds - (now - issued)`, just before the build.
   """
 
-  @doc "Whether `config` is a case's `client_config`: a build's, with a clock age allowed."
+  @doc """
+  Whether `config` is a case's `client_config`: a build's, with a clock age
+  allowed, and a root that may be `{:test_root, name}`, one of
+  `ChainTest.TestKey.root_names/0` (layer 2: resolved at run time to that
+  test root's path).
+  """
   @spec case_config?(term()) :: boolean()
+  def case_config?(%{root: {:test_root, name}} = config),
+    do: name in ChainTest.TestKey.root_names() and case_config?(%{config | root: "/test-root"})
+
   def case_config?(%{clock_offset_seconds: {:age, age}} = config) when is_integer(age),
     do: ChainTest.Build.client_config?(%{config | clock_offset_seconds: 0})
 

@@ -89,7 +89,8 @@ defmodule ChainTest.Conformance.CaseTest do
       # A stale batch is refused before the state is read: nothing to log.
       refute Map.has_key?(by_id["R4-old"].after, :log)
 
-      refute Map.has_key?(by_id, "T3-duplicated")
+      # T3's duplicated signature needs a threshold-2 root: a test-key case.
+      assert by_id["T3-duplicated"].client_config.root == {:test_root, :threshold_2}
     end
 
     test "every refusal in the repository's case file leaves state, _build and cache alone (R14)" do

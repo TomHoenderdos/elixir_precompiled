@@ -32,7 +32,10 @@ defmodule ChainTest.Report do
     "The client's own known gaps: the max_bytes cap applies to streamed 2xx bodies only; Mix's " <>
       ":lockfile, :config and :config_path are not applied before the check.",
     "Two targets, one ABI: rpi4 and rpi0_2 are both aarch64. They exercise two targets' builds " <>
-      "but not cross-architecture protection."
+      "but not cross-architecture protection.",
+    "P7, a forged entry claiming the project's target and toolchain but carrying another " <>
+      "target's .so: the client cannot tell (it trusts the signed claim); it is a layer-3 / " <>
+      "on-device item, caught by step 6's smoke call failing on the device."
   ]
 
   @doc "The \"known, not testable\" items every report names."

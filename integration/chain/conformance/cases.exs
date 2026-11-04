@@ -6,7 +6,8 @@
 # ChainTest.Conformance.Case and in README.md, "Conformance". Ids are the
 # spec's (docs: "Attack vectors"); one case may stand for several rows when
 # this harness runs them the same way, its id joining theirs with ".".
-# T3's duplicated signature needs a batch threshold of 2: a test-key case.
+# T3's duplicated signature needs a batch threshold of 2: a test-key case
+# (layer 2, at the end).
 #
 # M4 (entry selection) has no case of its own: with real signed bytes it is
 # T0's, whose integrity step checks that every hit installed exactly the
@@ -380,4 +381,242 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     harness: %{"build/sequence" => :rerun},
     after: %{state_sequence: :previous, installed: :recheck}
   }
-]
+] ++
+  (
+    # Layer 2: a compromised portal. Each case runs against a copy of the
+    # snapshot signed with throwaway keys made for this run
+    # (ChainTest.TestKey), the client pinned to a test root through
+    # `client_config: %{root: {:test_root, name}}`, never the real one. The
+    # control L2-T0 must pass first: without it no refusal below says
+    # anything about the client.
+    #
+    # P7 (a forged entry claiming this target and toolchain but carrying
+    # another target's .so) is known, not testable: the client cannot tell,
+    # it trusts the signed claim; only the device smoke call catches it
+    # (ChainTest.Report.known_gaps/0).
+    test_root = %{root: {:test_root, :v1}}
+    l2 = fn c -> Map.update(c, :client_config, test_root, &Map.merge(test_root, &1)) end
+    l2_refused = fn reason -> l2.(refused.(reason, :not_exercised)) end
+    l2_accepted = fn post -> l2.(Map.put(accepted, :after, post)) end
+    fresh = %{state_sequence: :snapshot, installed: :snapshot}
+
+    # A forged manifest for jason signed into the test batch: jason is
+    # refused (`expect`), nothing of it installed, every other dep a hit.
+    forged = fn id, kind, expect, description ->
+      class = if match?({:miss, _}, expect), do: :miss, else: :fail
+
+      l2.(%{
+        id: id,
+        description: description,
+        transform: {ChainTest.Mirror.Forge, %{forge: kind}},
+        client: %{default: :snapshot, deps: %{jason: expect}},
+        harness: %{"build/hit:jason" => class},
+        after: %{state_sequence: :snapshot, installed: {:without, ["jason"]}, cache: :verified}
+      })
+    end
+
+    # A forged manifest the client must never even consider: everything
+    # installs as in L2-T0, nothing more.
+    ignored = fn id, kind, description ->
+      l2.(
+        Map.merge(accepted, %{
+          id: id,
+          description: description,
+          transform: {ChainTest.Mirror.Forge, %{forge: kind}},
+          after: fresh
+        })
+      )
+    end
+
+    unsafe = {:fail, "unsafe path or mode"}
+
+    [
+      l2_accepted.(fresh)
+      |> Map.merge(%{
+        id: "L2-T0",
+        description:
+          "The control: the snapshot's batch signed by the test key, served unchanged to a client pinned to the test root; the same hits as T0.",
+        transform: {ChainTest.Mirror.Identity, %{}}
+      }),
+      Map.merge(l2_refused.("batch signature invalid"), %{
+        id: "T2",
+        description: "The batch signed by a key the root's batch role does not name: refused.",
+        transform: {ChainTest.Mirror.TestBatch, %{signers: [:outside]}}
+      }),
+      # Threshold counted per key id: one key's signature twice is one.
+      Map.merge(l2_refused.("batch signature invalid"), %{
+        id: "T3-duplicated",
+        description:
+          "Under a root whose batch role needs two signatures, the batch carries one key's signature twice: refused.",
+        transform: {ChainTest.Mirror.TestBatch, %{signers: [:pair_a, :pair_a]}},
+        client_config: %{root: {:test_root, :threshold_2}}
+      }),
+      # T3-duplicated's own control: the same root accepts two keys.
+      l2_accepted.(fresh)
+      |> Map.merge(%{
+        id: "T3-pair",
+        description:
+          "Under the threshold-2 root, the batch signed by both of its batch keys: accepted, so T3-duplicated's refusal is the duplicate's.",
+        transform: {ChainTest.Mirror.TestBatch, %{signers: [:pair_a, :pair_b]}},
+        client_config: %{root: {:test_root, :threshold_2}}
+      }),
+      l2_refused.("batch signature invalid")
+      |> Map.merge(%{
+        id: "T7",
+        description:
+          "The mirror serves a root v2 that v1 did not sign, and a batch only v2's key signed: v2 is not adopted, the batch refused.",
+        transform: {ChainTest.Mirror.TestBatch, %{root: :unchained, signers: [:unchained]}}
+      })
+      |> Map.update!(:after, &Map.put(&1, :root_version, :absent)),
+      Map.merge(l2_refused.("batch lifetime"), %{
+        id: "T8",
+        description: "A batch expiring ten years after its issue: refused for its lifetime.",
+        transform: {ChainTest.Mirror.TestBatch, %{lifetime: 3650 * 86_400}}
+      }),
+      Map.merge(l2_refused.("clock: batch issued at"), %{
+        id: "R9",
+        description: "A batch issued an hour ahead of the client's clock: refused.",
+        transform: {ChainTest.Mirror.TestBatch, %{issued_ahead: 3600}}
+      }),
+      l2_accepted.(fresh)
+      |> Map.merge(%{
+        id: "R10",
+        description:
+          "A batch issued five minutes ahead of the client's clock, the tolerance: accepted.",
+        transform: {ChainTest.Mirror.TestBatch, %{issued_ahead: 300}}
+      }),
+      # The lifetime is the client's cap, so only freshness can refuse it.
+      Map.merge(l2_refused.("batch stale"), %{
+        id: "R11",
+        description:
+          "A batch that lives 30 days, the client's clock 25 hours past its issue: refused as stale, its expiry does not keep it alive.",
+        transform: {ChainTest.Mirror.TestBatch, %{lifetime: 30 * 86_400}},
+        client_config: %{clock_offset_seconds: {:age, 25 * 3600}}
+      }),
+      # The reason R13 cannot give with real 24-hour batches: within the
+      # freshness bound, past the expiry.
+      Map.merge(l2_refused.("batch expired at"), %{
+        id: "T5-expired",
+        description:
+          "A batch that lives one hour, the client's clock two hours past its issue: fresh, but refused as expired.",
+        transform: {ChainTest.Mirror.TestBatch, %{lifetime: 3600}},
+        client_config: %{clock_offset_seconds: {:age, 2 * 3600}}
+      }),
+      l2_accepted.(Map.put(fresh, :root_version, 2))
+      |> Map.merge(%{
+        id: "R17",
+        description:
+          "The client adopted root v2 earlier; the mirror serves only v1 and a batch v2's key signed: v2 is kept, the batch accepted.",
+        transform: {ChainTest.Mirror.TestBatch, %{signers: [:rotated]}},
+        setup: {ChainTest.Conformance.Setup.AdoptedRoot, %{}}
+      }),
+      # Known gap, pinned: the client cannot learn of a rotation it is not
+      # shown, so a fresh home keeps trusting the shipped root's batch key.
+      l2_accepted.(Map.put(fresh, :root_version, :absent))
+      |> Map.merge(%{
+        id: "R18",
+        description:
+          "Known gap, pinned: a fresh home, the mirror withholds every newer root (root.json a 404) and serves a batch the shipped root's key signed: the shipped root is used and the batch accepted.",
+        transform: {ChainTest.Mirror.TestBatch, %{root: :withheld}}
+      }),
+      forged.(
+        "P1-dotdot",
+        :dotdot,
+        unsafe,
+        "jason's build names a file at ebin/../..: refused, nothing of jason installed."
+      ),
+      forged.(
+        "P1-absolute",
+        :absolute,
+        unsafe,
+        "jason's build names a file at an absolute path: refused, nothing of jason installed."
+      ),
+      forged.(
+        "P1-outside",
+        :outside_dirs,
+        unsafe,
+        "jason's build names a file outside ebin/ and priv/: refused, nothing of jason installed."
+      ),
+      forged.(
+        "P2-setuid",
+        :setuid,
+        unsafe,
+        "jason's .app with a setuid mode: refused, only 644 and 755 are allowed."
+      ),
+      forged.(
+        "P2-0777",
+        :mode_777,
+        unsafe,
+        "jason's .app with mode 0777: refused, only 644 and 755 are allowed."
+      ),
+      forged.(
+        "P3-escape",
+        :escape_app_dir,
+        unsafe,
+        "jason's build names a file in the project's own app dir: refused."
+      ),
+      forged.(
+        "P3-app",
+        :project_app,
+        :fail,
+        "jason's build carries the project's .app name in its ebin, ahead of the project's own on the code path: refused."
+      ),
+      forged.(
+        "P4-checksum",
+        :package_checksum,
+        {:miss, "package checksum differs from mix.lock"},
+        "jason's build claims another package checksum than the lock's: a miss, jason compiled."
+      ),
+      forged.(
+        "P4-deps",
+        :deps_lock,
+        {:miss, "built against"},
+        "jason's build was made against another checksum of a locked dep: a miss, jason compiled."
+      ),
+      ignored.(
+        "P5",
+        :path_dep,
+        "The batch names a build for nerves (a git dep) and elixir_precompiled (a path dep): never precompiled."
+      ),
+      forged.(
+        "P6-name",
+        :app_name,
+        {:fail, "downloaded .app names"},
+        "jason's served .app names another application: refused."
+      ),
+      forged.(
+        "P6-version",
+        :app_version,
+        {:fail, "downloaded .app names"},
+        "jason's served .app names another version: refused."
+      ),
+      # The laptop's file system folds case and Unicode normalisation: the
+      # second entry would overwrite the first.
+      forged.(
+        "P8-duplicate",
+        :duplicate,
+        :fail,
+        "jason's build names one beam path twice, with other bytes: refused."
+      ),
+      forged.(
+        "P8-case",
+        :case_variant,
+        :fail,
+        "jason's build names a beam path and its lower-case variant: refused."
+      ),
+      forged.(
+        "P8-unicode",
+        :unicode_variant,
+        :fail,
+        "jason's build names one priv path precomposed and decomposed: refused."
+      ),
+      ignored.(
+        "P9",
+        :unlocked_package,
+        "The batch names a build for a package the project does not lock: nothing installed for it."
+      )
+    ]
+    # Last, so a case's own client_config (a clock, the threshold-2 root)
+    # keeps the test root.
+    |> Enum.map(l2)
+  )

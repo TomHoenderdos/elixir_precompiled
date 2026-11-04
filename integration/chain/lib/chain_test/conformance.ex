@@ -35,6 +35,21 @@ defmodule ChainTest.Conformance do
   removed after the run unless it was taken into `--snapshot-dir`. A run
   that selects no case is refused (`setup`, `:not_exercised`).
 
+  Layer 2 (`ChainTest.Conformance.Case.layer2?/1`, a case pinned to a test
+  root): when the run selects one, `ChainTest.TestKey.prepare/1` makes
+  throwaway keys and a test-signed copy of the snapshot (in a private tmp
+  dir, removed after the run), and every layer-2 case runs against that
+  copy instead: its mirror serves it, its build and step 3 trust its batch,
+  and its `{:test_root, name}` root is that test root's path. The control
+  `L2-T0` (selected whenever a layer-2 case is) runs first; unless it
+  passes, the client is not shown to take the test root, and every other
+  layer-2 case is `:not_exercised`, as they all are when the copy cannot be
+  made. The verdicts keep the case file's order. A real-root case fails
+  when its home or client config shows a test root (a state dir named for
+  one, a file naming a test key id, a root path among the test material);
+  a layer-2 case fails when its home holds a state dir named for the real
+  root.
+
   Reports go to `report_dir`: per case `<target>-<id>-<stamp>.{md,json}`
   with every result as it came (their classes are what the case expects,
   not the run's verdict), and `<target>-conformance-<stamp>.{md,json}` with
@@ -57,7 +72,7 @@ defmodule ChainTest.Conformance do
 
   alias ChainTest.Conformance.{Case, Clock, Setup}
   alias ChainTest.Mirror.Transform
-  alias ChainTest.Trust
+  alias ChainTest.{TestKey, Trust}
 
   @project_app "chain_fixture"
   @switches [
@@ -139,7 +154,8 @@ defmodule ChainTest.Conformance do
           build: &Build.run/1,
           integrity: &Integrity.run/1,
           compiled: &Compiled.run/1,
-          mirror: &Mirror.start/2
+          mirror: &Mirror.start/2,
+          layer2: &TestKey.prepare/1
         },
         steps
       )
@@ -185,10 +201,13 @@ defmodule ChainTest.Conformance do
   defp only(cases, nil), do: {:ok, cases}
   defp only(_cases, []), do: {:error, "--only names no case"}
 
+  # A selected layer-2 case brings its control along.
   defp only(cases, ids) do
     case ids -- Enum.map(cases, & &1.id) do
       [] ->
-        {:ok, Enum.filter(cases, &(&1.id in ids))}
+        selected = Enum.filter(cases, &(&1.id in ids))
+        control? = Enum.any?(selected, &Case.layer2?/1)
+        {:ok, Enum.filter(cases, &(&1.id in ids or (control? and Case.control?(&1))))}
 
       unknown ->
         {:error, "--only names cases the file does not have: #{Enum.join(unknown, ", ")}"}
@@ -206,10 +225,17 @@ defmodule ChainTest.Conformance do
 
     case s.mirror.(snap.dir, []) do
       {:ok, ref} ->
+        layer2 = if Enum.any?(cases, &Case.layer2?/1), do: s.layer2.(snap), else: nil
+
         try do
           run = run_state(snap, ref, site, opts, s, meta)
-          Enum.map(cases, &run_case(&1, run))
+          run = Map.put(run, :layer2, material(layer2))
+          {real, test} = Enum.split_with(cases, &(not Case.layer2?(&1)))
+          verdicts = Enum.map(real, &run_case(&1, run)) ++ layer2_cases(test, layer2, run)
+          by_id = Map.new(verdicts, &{&1.check, &1})
+          Enum.map(cases, &Map.fetch!(by_id, &1.id))
         after
+          with {:ok, l2} <- layer2, do: TestKey.cleanup(l2)
           Mirror.stop(ref)
         end
 
@@ -228,6 +254,41 @@ defmodule ChainTest.Conformance do
       steps: s,
       meta: meta
     }
+  end
+
+  defp material({:ok, l2}), do: l2
+  defp material(_layer2), do: nil
+
+  # The control first, against the test-signed copy; the rest only once it
+  # passed.
+  defp layer2_cases([], _layer2, _run), do: []
+
+  defp layer2_cases(cases, {:error, why}, _run) do
+    for c <- cases,
+        do: not_exercised(c, "the test-key snapshot could not be prepared: #{why}")
+  end
+
+  defp layer2_cases(cases, {:ok, l2}, run) do
+    run = %{run | snap: l2.snapshot}
+    {[control], rest} = Enum.split_with(cases, &Case.control?/1)
+
+    case run_case(control, run) do
+      %Result{class: :pass} = verdict ->
+        [verdict | Enum.map(rest, &run_case(&1, run))]
+
+      verdict ->
+        why =
+          "the layer-2 control #{control.id} did not pass (#{verdict.class}): the client is " <>
+            "not shown to take the test root, so no test-key case can say anything"
+
+        [verdict | Enum.map(rest, &not_exercised(&1, why))]
+    end
+  end
+
+  defp not_exercised(c, why) do
+    verdict = %Result{step: :conformance, check: c.id, class: :not_exercised, detail: why}
+    CLI.print(verdict)
+    verdict
   end
 
   # The mirrors are not linked to this process: they are always stopped here.
@@ -340,7 +401,7 @@ defmodule ChainTest.Conformance do
     home = case_home()
 
     try do
-      client = Map.get(c, :client_config) || %{}
+      client = test_root(Map.get(c, :client_config), run) || %{}
 
       context = %{
         source: Map.get(client, :source, mirror.url),
@@ -437,7 +498,7 @@ defmodule ChainTest.Conformance do
             home: home,
             home_prepared: true,
             keep_build: Case.runs(c) == 2,
-            client_config: client_config(Map.get(c, :client_config), snap),
+            client_config: client_config(test_root(Map.get(c, :client_config), run), snap),
             client_env: client_env(Map.get(c, :client_env), home),
             trust: snap.info,
             target_config: run.site,
@@ -472,6 +533,7 @@ defmodule ChainTest.Conformance do
         }
 
         second = Enum.flat_map(tl(mirrors), &Mirror.requests/1)
+        observed = Map.put(observed, :isolation, isolation(c, run, home, context))
 
         {build_rows ++ integrity ++ compiled, {build.report, Mirror.requests(mirror), second},
          tooling(opts.fixture_dir, build.build_lib), observed}
@@ -481,6 +543,8 @@ defmodule ChainTest.Conformance do
 
     {:ok, _} = Report.write(opts.report_dir, "#{opts.target}-#{c.id}", rows, run.meta)
 
+    {isolation, observed} = Map.pop(observed, :isolation)
+
     Case.judge(c, %{
       rows: rows,
       report: report,
@@ -489,8 +553,73 @@ defmodule ChainTest.Conformance do
       snapshot: snap,
       hits: run.hits,
       tooling: tooling,
-      observed: observed
+      observed: observed,
+      isolation: isolation
     })
+  end
+
+  # A `{:test_root, name}` root as that test root's path.
+  defp test_root(%{root: {:test_root, name}} = config, %{layer2: %{roots: roots}}),
+    do: %{config | root: Map.fetch!(roots, name)}
+
+  defp test_root(%{root: {:test_root, _}}, _run),
+    do: raise(ArgumentError, "a test-root case outside a layer-2 run")
+
+  defp test_root(config, _run), do: config
+
+  # What the case's home and config show of a root it must not use: for a
+  # real-root case any test root (a state dir named for one, a file outside
+  # the cache naming a test key, a root path in the test material), for a
+  # layer-2 case the real root's state dir.
+  defp isolation(c, %{layer2: nil}, _home, _context) do
+    if Case.layer2?(c), do: ["isolation: a layer-2 case ran without test-key material"], else: []
+  end
+
+  defp isolation(c, %{layer2: l2}, home, context) do
+    if Case.layer2?(c) do
+      case Setup.state_dir(home, context.source, Trust.library_root_path()) do
+        {:ok, dir} ->
+          if File.exists?(dir),
+            do: [
+              "isolation: the home holds #{Path.relative_to(dir, home)}, the state dir of the " <>
+                "real root: the client did not use the test root"
+            ],
+            else: []
+
+        {:error, why} ->
+          ["isolation: cannot name the real root's state dir: #{why}"]
+      end
+    else
+      real_root_isolation(l2, home, context)
+    end
+  end
+
+  defp real_root_isolation(l2, home, context) do
+    config =
+      if String.starts_with?(context.root, l2.dir <> "/"),
+        do: ["isolation: the client config names test root #{context.root}"],
+        else: []
+
+    dirs =
+      for {name, path} <- Enum.sort(l2.roots),
+          {:ok, dir} <- [Setup.state_dir(home, context.source, path)],
+          File.exists?(dir),
+          do:
+            "isolation: the home holds #{Path.relative_to(dir, home)}, the state dir of " <>
+              "test root #{name}"
+
+    named =
+      for entry <- entries(home, "."),
+          path = Path.expand(entry, home),
+          rel = Path.relative_to(path, home),
+          rel != "." and hd(Path.split(rel)) not in ["files", Setup.outside_dir()],
+          {:ok, %File.Stat{type: :regular}} <- [File.lstat(path)],
+          {:ok, bytes} <- [File.read(path)],
+          kid = Enum.find(l2.keyids, &String.contains?(bytes, &1)),
+          do:
+            "isolation: #{Path.relative_to(path, home)} names test key #{String.slice(kid, 0, 12)}"
+
+    config ++ dirs ++ named
   end
 
   # A clock age resolved against the snapshot batch's issue, now, so the
@@ -548,8 +677,15 @@ defmodule ChainTest.Conformance do
         {:error, why} -> {:error, why}
       end
 
+    root_versions =
+      for path <- Path.wildcard(Path.join(home, "*/root_version"), match_dot: true),
+          {:ok, %File.Stat{type: :regular}} <- [File.lstat(path)],
+          into: %{},
+          do: {Path.relative_to(path, home), read_or_error(path)}
+
     %{
       states: states,
+      root_versions: root_versions,
       cache: fingerprints(home, "files"),
       outside: fingerprints(home, Setup.outside_dir()),
       own: own

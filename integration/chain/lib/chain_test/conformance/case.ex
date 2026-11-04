@@ -59,7 +59,8 @@ defmodule ChainTest.Conformance.Case do
       (`ChainTest.Build.client_config?/1`): `clock_offset_seconds`
       (integer, or `{:age, seconds}`: the client's clock that long after
       the snapshot batch's `issued`, `ChainTest.Conformance.Clock`),
-      `root` (an absolute path), `source` (URL).
+      `root` (an absolute path, or `{:test_root, name}`, below), `source`
+      (URL).
     * `client_env` - environment variables for this case's build only, from
       the few `ChainTest.Build.client_env_names/0` allows (the names a
       client might wrongly take a root path from: T9): each an absolute
@@ -96,6 +97,19 @@ defmodule ChainTest.Conformance.Case do
       * `second_mirror` - only with a transform that asks for `mirrors: 2`:
         `:requested` (the client asked the second mirror for something, a
         redirect it followed, say) or `:untouched` (it asked nothing).
+      * `root_version` - the `root_version` file in the client's state dir
+        for the case's source and root: `:absent` (no root adopted), or the
+        integer it must hold (an adopted root's version, R17).
+
+  Layer 2, test-key cases: a case whose `client_config` gives `root:
+  {:test_root, name}` (`ChainTest.TestKey.root_names/0`) is pinned to that
+  throwaway test root, and runs against the test-signed copy of the
+  snapshot (`ChainTest.TestKey`): `layer2?/1`. A transform or setup module
+  that exports `test_root_only?/0` (it signs with the test keys) is only
+  accepted in such a case. A file with a layer-2 case must hold the
+  control `L2-T0`: `ChainTest.Mirror.Identity` under `{:test_root, :v1}`,
+  the test-signed copy unchanged; the runner judges every other layer-2
+  case only after it passed.
 
   Whatever the case expects, a report line that calls a dep a hit when the
   snapshot holds no build of it the client could select is a difference:
@@ -115,7 +129,10 @@ defmodule ChainTest.Conformance.Case do
       and the mirror served nothing it changed, or when the transform is
       `ChainTest.Mirror.Identity` and the mirror shows no use by the client;
     * else `:pass` when the client used the mirror and the client and every
-      harness result match, `:fail` naming each difference.
+      harness result match, `:fail` naming each difference. The runner's
+      `isolation` problems (a real-root case whose home or config shows a
+      test root, or a layer-2 case's showing the real one) are differences
+      too.
   """
 
   alias ChainTest.{Build, Mirror, Result, Snapshot}
@@ -132,7 +149,8 @@ defmodule ChainTest.Conformance.Case do
           optional(:installed) => :none | :snapshot | :recheck | {:without, [String.t()]},
           optional(:cache) => :untouched | :verified,
           optional(:outside) => :untouched,
-          optional(:second_mirror) => :requested | :untouched
+          optional(:second_mirror) => :requested | :untouched,
+          optional(:root_version) => :absent | non_neg_integer()
         }
   @type t :: %{
           required(:id) => String.t(),
@@ -165,7 +183,8 @@ defmodule ChainTest.Conformance.Case do
           required(:states) => %{String.t() => binary()},
           required(:cache) => %{String.t() => fingerprint()},
           optional(:outside) => %{String.t() => fingerprint()},
-          required(:own) => {:ok, String.t()} | {:error, String.t()}
+          required(:own) => {:ok, String.t()} | {:error, String.t()},
+          optional(:root_versions) => %{String.t() => binary()}
         }
   @typedoc """
   One entry under the home, never following a symlink: a directory, a
@@ -177,7 +196,17 @@ defmodule ChainTest.Conformance.Case do
 
   @keys [:client, :description, :harness, :id, :transform]
   @optional [:after, :client_config, :client_env, :runs, :setup]
-  @post_keys [:cache, :installed, :log, :other_states, :outside, :second_mirror, :state_sequence]
+  @post_keys [
+    :cache,
+    :installed,
+    :log,
+    :other_states,
+    :outside,
+    :root_version,
+    :second_mirror,
+    :state_sequence
+  ]
+  @control "L2-T0"
   @statuses [:hit, :miss, :fail]
   @benign [:pass, :miss]
   @identity ChainTest.Mirror.Identity
@@ -189,7 +218,8 @@ defmodule ChainTest.Conformance.Case do
 
     with :ok <- list(cases),
          :ok <- Enum.find_value(cases, :ok, &problem/1),
-         :ok <- unique(cases) do
+         :ok <- unique(cases),
+         :ok <- control(cases) do
       {:ok, cases}
     end
   rescue
@@ -207,6 +237,43 @@ defmodule ChainTest.Conformance.Case do
       dups -> {:error, "duplicate case ids: #{Enum.map_join(dups, ", ", &elem(&1, 0))}"}
     end
   end
+
+  # A file with a layer-2 case holds its control: the test-signed copy,
+  # unchanged, under the test root v1.
+  defp control(cases) do
+    cond do
+      not Enum.any?(cases, &layer2?/1) ->
+        :ok
+
+      Enum.any?(cases, &control?/1) ->
+        :ok
+
+      true ->
+        {:error,
+         "a layer-2 case (client_config root {:test_root, name}) needs the #{@control} " <>
+           "control: ChainTest.Mirror.Identity under root {:test_root, :v1}"}
+    end
+  end
+
+  @doc "Whether `c` is the layer-2 control, `L2-T0` (see the moduledoc)."
+  @spec control?(map()) :: boolean()
+  def control?(%{
+        id: @control,
+        transform: {@identity, _},
+        client_config: %{root: {:test_root, :v1}}
+      }),
+      do: true
+
+  def control?(_c), do: false
+
+  @doc "The layer-2 control's id."
+  @spec control_id() :: String.t()
+  def control_id(), do: @control
+
+  @doc "Whether `c` is pinned to a test root: a layer-2 case."
+  @spec layer2?(map()) :: boolean()
+  def layer2?(%{client_config: %{root: {:test_root, _}}}), do: true
+  def layer2?(_c), do: false
 
   # nil when the case is valid, else {:error, why}.
   defp problem(%{} = c) do
@@ -247,7 +314,23 @@ defmodule ChainTest.Conformance.Case do
     end
   end
 
-  defp optional_problem(c), do: runs_problem(c) || setup_problem(c)
+  defp optional_problem(c), do: runs_problem(c) || setup_problem(c) || test_root_problem(c)
+
+  # A transform or setup that signs with the test keys runs only where the
+  # client is pinned to the test root.
+  defp test_root_problem(c) do
+    only =
+      for {module, _} <- [c.transform, Map.get(c, :setup)],
+          is_atom(module),
+          Code.ensure_loaded?(module),
+          function_exported?(module, :test_root_only?, 0),
+          do: inspect(module)
+
+    if only != [] and not layer2?(c),
+      do:
+        "#{Enum.join(only, ", ")} signs with the test keys: it needs a test root " <>
+          "(client_config root {:test_root, name})"
+  end
 
   defp runs_problem(c) do
     cond do
@@ -256,6 +339,9 @@ defmodule ChainTest.Conformance.Case do
 
       recheck?(c.client) and runs(c) != 2 ->
         "the :recheck client expectation needs runs: 2"
+
+      runs(c) == 2 and layer2?(c) ->
+        "runs: 2 is not for a layer-2 case: its warm build is served the real snapshot"
 
       true ->
         nil
@@ -292,7 +378,8 @@ defmodule ChainTest.Conformance.Case do
           ":previous, :absent, :unchanged), other_states (:unchanged), installed " <>
           "(:none, :snapshot, :recheck, {:without, [dep name]}), cache (:untouched, " <>
           ":verified), outside (:untouched), log (non-empty strings), " <>
-          "second_mirror (:requested, :untouched), got " <> inspect(post)
+          "second_mirror (:requested, :untouched), root_version (:absent, integer), got " <>
+          inspect(post)
 
       Map.has_key?(post, :second_mirror) and Transform.mirrors(transform) != 2 ->
         "after second_mirror needs a transform with mirrors: 2"
@@ -357,6 +444,7 @@ defmodule ChainTest.Conformance.Case do
   defp post_value?(:cache, v), do: v in [:untouched, :verified]
   defp post_value?(:outside, v), do: v == :untouched
   defp post_value?(:second_mirror, v), do: v in [:requested, :untouched]
+  defp post_value?(:root_version, v), do: v == :absent or (is_integer(v) and v >= 0)
 
   @doc "How many builds the case runs: 2 with `runs: 2` (a warm build first), else 1."
   @spec runs(t()) :: 1 | 2
@@ -376,7 +464,8 @@ defmodule ChainTest.Conformance.Case do
           required(:hits) => [atom()],
           optional(:tooling) => [String.t()],
           optional(:second_requests) => [Mirror.request()],
-          optional(:observed) => observed() | nil
+          optional(:observed) => observed() | nil,
+          optional(:isolation) => [String.t()]
         }) :: Result.t()
   def judge(
         c,
@@ -404,7 +493,8 @@ defmodule ChainTest.Conformance.Case do
           unused ++
             client_problems(c, report, snap, hits, input) ++
             unheld_hits(report, snap) ++
-            harness_problems(c, rows, snap) ++ post_problems(c, input, snap)
+            harness_problems(c, rows, snap) ++
+            post_problems(c, input, snap) ++ Map.get(input, :isolation, [])
 
         case problems do
           [] -> result(c, :pass, "as expected: #{c.description}")
@@ -725,6 +815,30 @@ defmodule ChainTest.Conformance.Case do
 
       _ ->
         []
+    end
+  end
+
+  defp post_problem(:root_version, want, seen, _snap, _input) do
+    case seen.after.own do
+      {:error, why} ->
+        ["after root_version: cannot name the client's state dir: #{why}"]
+
+      {:ok, own} ->
+        rel = Path.join(Path.dirname(own), "root_version")
+        got = Map.get(Map.get(seen.after, :root_versions, %{}), rel)
+
+        case {want, got} do
+          {:absent, nil} ->
+            []
+
+          {:absent, got} ->
+            ["after root_version: expected no adopted root, #{rel} holds #{state(got)}"]
+
+          {n, got} ->
+            if is_binary(got) and Integer.parse(String.trim(got)) == {n, ""},
+              do: [],
+              else: ["after root_version: expected #{rel} to hold #{n}, it holds #{state(got)}"]
+        end
     end
   end
 
