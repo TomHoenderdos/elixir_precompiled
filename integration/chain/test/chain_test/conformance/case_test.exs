@@ -83,7 +83,9 @@ defmodule ChainTest.Conformance.CaseTest do
       assert by_id["R12"].client.default == {:fail, "clock is before"}
       assert by_id["R2.R6.T10"].client.default == {:fail, "batch stale"}
 
-      assert by_id["R4-previous"].after.log == "is unreadable; treating it as 0"
+      assert by_id["R4-previous"].after.log ==
+               ["precompiled: sequence state ", "is unreadable; treating it as 0"]
+
       # A stale batch is refused before the state is read: nothing to log.
       refute Map.has_key?(by_id["R4-old"].after, :log)
 
@@ -507,6 +509,8 @@ defmodule ChainTest.Conformance.CaseTest do
           {"a bad other_states", :after, %{other_states: :gone}},
           {"an empty log", :after, %{log: ""}},
           {"a log that is not a string", :after, %{log: :warned}},
+          {"an empty log list", :after, %{log: []}},
+          {"a log list with an empty string", :after, %{log: ["a", ""]}},
           {"a client_env name the harness does not allow", :client_env,
            %{"ELIXIR_PRECOMPILED_HOME" => "/h"}},
           {"a client_env value outside the home", :client_env,
@@ -617,6 +621,14 @@ defmodule ChainTest.Conformance.CaseTest do
       assert detail =~ "never said"
 
       assert %Result{class: :fail} = judged(%{log: "treating it as 0"}, Map.delete(seen, :log))
+
+      # A list: every string must be in the output.
+      assert %Result{class: :pass} = judged(%{log: ["x is", "as 0"]}, seen)
+
+      assert %Result{class: :fail, detail: detail} =
+               judged(%{log: ["precompiled: sequence state ", "as 0"]}, seen)
+
+      assert detail =~ "precompiled: sequence state"
     end
 
     test "state_sequence: :absent means no own state file" do

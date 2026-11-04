@@ -36,9 +36,12 @@ defmodule ChainTest.Snapshot do
   cases using it test. Each records, as `manifests`, the fixture deps it
   names a manifest for that differs from `N`'s (`%{dep => %{dir, sha256}}`);
   their bytes are not stored, since the portal serves only the current
-  batch's manifests. An older batch the portal does not have, or that does
-  not verify, is `{:missing, why}` (and not stored): the cases that need it
-  are not testable here, and the snapshot is still taken. `older/2` reads
+  batch's manifests. An older batch the portal does not have is
+  `{:missing, why}` (the cases that need it are not testable here), one it
+  could not be fetched is `{:unavailable, why}` (not exercised), one that
+  does not verify is `{:invalid, why}` (a failure); none of them is stored,
+  each is recorded under its own key in `snapshot.json`, and the snapshot
+  is still taken. `older/2` reads
   them.
 
   A snapshot is good for 24 hours: after that its batch is stale for the
@@ -82,7 +85,21 @@ defmodule ChainTest.Snapshot do
           info: Trust.info(),
           manifests: %{String.t() => %{dir: String.t(), sha256: String.t()}}
         }
-  @type older :: {:ok, older_batch()} | {:missing, String.t()}
+  @typedoc """
+  An older batch, or why the snapshot has none: `:missing`, the portal does
+  not have it (a 404, or no batch issued over 25 h before `N` within the
+  probes); `:unavailable`, it could not be fetched (a transport error, a
+  timeout, another status); `:invalid`, it was served but does not verify
+  (signature, sequence, issue instant, not a batch), a finding about the
+  source.
+  """
+  @type older ::
+          {:ok, older_batch()}
+          | {:missing, String.t()}
+          | {:unavailable, String.t()}
+          | {:invalid, String.t()}
+
+  @absent [:missing, :unavailable, :invalid]
 
   @type t :: %{
           dir: Path.t(),
@@ -122,21 +139,22 @@ defmodule ChainTest.Snapshot do
   def need_names(), do: @needs
 
   @doc """
-  `:ok` when the snapshot has what `need` names, else `{:missing, why}`:
-  the case that needs it is not testable here.
+  `:ok` when the snapshot has what `need` names, else `{kind, why}`: the
+  case that needs it is not testable here (`:missing`), not exercised
+  (`:unavailable`) or a failure (`:invalid`); see `t:older/0`.
   """
-  @spec available(map(), need()) :: :ok | {:missing, String.t()}
+  @spec available(map(), need()) :: :ok | {:missing | :unavailable | :invalid, String.t()}
   def available(snap, name) when name in [:previous, :old] do
     case older(snap, name) do
       {:ok, _} -> :ok
-      {:missing, why} -> {:missing, "the #{name} batch: #{why}"}
+      {kind, why} when kind in @absent -> {kind, "the #{name} batch: #{why}"}
     end
   end
 
   def available(snap, :previous_manifests) do
     case older(snap, :previous) do
       {:ok, previous} -> same_manifests(snap, previous)
-      {:missing, why} -> {:missing, "the previous batch: #{why}"}
+      {kind, why} when kind in @absent -> {kind, "the previous batch: #{why}"}
     end
   end
 
@@ -679,16 +697,20 @@ defmodule ChainTest.Snapshot do
         keep_older(dir, n, bytes, info, trust_opts, names, previous_check(issued, n))
 
       {:error, why} ->
-        {:missing, "#{rel}: #{why}"}
+        if not_found?(why),
+          do: {:missing, "#{rel}: #{why}"},
+          else: {:unavailable, "#{rel}: #{why}"}
     end
   end
+
+  defp not_found?(why), do: String.ends_with?(why, "answered 404")
 
   defp take_old(source, dir, {info, issued}, trust_opts, timeout, names) do
     probe = &probe(source, &1, issued, timeout)
 
     case search_old(probe, info.sequence) do
       {:ok, n, bytes} -> keep_older(dir, n, bytes, info, trust_opts, names, old_check(issued, n))
-      {:missing, why} -> {:missing, why}
+      {kind, why} when kind in @absent -> {kind, why}
     end
   end
 
@@ -725,17 +747,23 @@ defmodule ChainTest.Snapshot do
   end
 
   # Stores an older batch's bytes, verified; one that does not verify is
-  # removed again and missing.
+  # removed again and invalid (one that cannot even be stored, unavailable).
   defp keep_older(dir, n, bytes, info, trust_opts, names, check) do
     rel = "batches/#{n}.json"
 
-    with :ok <- write(dir, rel, bytes),
-         {:ok, older} <- older_batch(dir, n, info, trust_opts, names, check) do
-      {:ok, older}
-    else
+    case write(dir, rel, bytes) do
+      :ok ->
+        case older_batch(dir, n, info, trust_opts, names, check) do
+          {:ok, older} ->
+            {:ok, older}
+
+          {:error, why} ->
+            File.rm(Path.join(dir, rel))
+            {:invalid, why}
+        end
+
       {:error, why} ->
-        File.rm(Path.join(dir, rel))
-        {:missing, why}
+        {:unavailable, why}
     end
   end
 
@@ -801,8 +829,8 @@ defmodule ChainTest.Snapshot do
 
   # What batches/<n>.json says about its age, before any verification:
   # `{:ok, :new}` (issued 25 h or less before the current batch), `{:ok,
-  # {:old, bytes}}`, `{:ok, :missing}` (404), or `{:missing, why}`, which
-  # ends the search. The candidate the search settles on is verified.
+  # {:old, bytes}}`, `{:ok, :missing}` (404), or `{:invalid, why}` /
+  # `{:unavailable, why}`, which end the search. The candidate the search settles on is verified.
   defp probe(source, n, n_issued, timeout) do
     rel = "batches/#{n}.json"
 
@@ -815,16 +843,16 @@ defmodule ChainTest.Snapshot do
               else: {:ok, :new}
 
           {:ok, seq, _} ->
-            {:missing, "#{rel} carries sequence #{seq}"}
+            {:invalid, "#{rel} carries sequence #{seq}"}
 
           :error ->
-            {:missing, "#{rel} is not a batch"}
+            {:invalid, "#{rel} is not a batch"}
         end
 
       {:error, why} ->
-        if String.ends_with?(why, "answered 404"),
+        if not_found?(why),
           do: {:ok, :missing},
-          else: {:missing, "#{rel}: #{why}"}
+          else: {:unavailable, "#{rel}: #{why}"}
     end
   end
 
@@ -885,7 +913,7 @@ defmodule ChainTest.Snapshot do
   defp class(m, st) do
     case st.probe.(m) do
       {:ok, v} -> {:ok, kind(v), %{st | memo: Map.put(st.memo, m, v), left: st.left - 1}}
-      {:missing, why} -> {:missing, why}
+      {kind, why} when kind in [:invalid, :unavailable] -> {kind, why}
     end
   end
 
@@ -920,6 +948,12 @@ defmodule ChainTest.Snapshot do
       %{"missing" => why} when is_binary(why) ->
         {:ok, {:missing, why}}
 
+      %{"unavailable" => why} when is_binary(why) ->
+        {:ok, {:unavailable, why}}
+
+      %{"invalid" => why} when is_binary(why) ->
+        {:ok, {:invalid, why}}
+
       %{"sequence" => n} when is_integer(n) ->
         if allowed?.(n) do
           with {:ok, older} <-
@@ -935,7 +969,7 @@ defmodule ChainTest.Snapshot do
   end
 
   defp older_meta({:ok, older}), do: %{"sequence" => older.sequence}
-  defp older_meta({:missing, why}), do: %{"missing" => why}
+  defp older_meta({kind, why}) when kind in @absent, do: %{Atom.to_string(kind) => why}
 
   defp meta(snap) do
     %{

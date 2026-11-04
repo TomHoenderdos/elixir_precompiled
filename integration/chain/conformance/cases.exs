@@ -141,7 +141,8 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     after: %{
       state_sequence: :previous,
       installed: :snapshot,
-      log: "is unreadable; treating it as 0"
+      # The sequence state's warning, not the root version's.
+      log: ["precompiled: sequence state ", "is unreadable; treating it as 0"]
     }
   }),
   refused.("batch stale", :not_exercised)

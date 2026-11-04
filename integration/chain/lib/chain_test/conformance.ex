@@ -16,7 +16,9 @@ defmodule ChainTest.Conformance do
   case: a case that needs something the snapshot lacks
   (`ChainTest.Snapshot.available/2`: an older batch, say) is
   `:not_testable`, "not testable here", decided from snapshot facts alone,
-  and nothing runs; it does not fail the run. Otherwise a mirror over the
+  and nothing runs; it does not fail the run. An older batch the snapshot
+  could not fetch makes the case `:not_exercised`, and one the source
+  served but that does not verify a `:fail`. Otherwise a mirror over the
   snapshot with the case's transform (two when its args say `mirrors: 2`:
   the second is started first, so the case mirror knows its URL); a fresh,
   empty client home (a private temp dir, removed after the case) and the
@@ -242,7 +244,7 @@ defmodule ChainTest.Conformance do
         Enum.each(mirrors, &Mirror.stop/1)
       end
     else
-      {class, why} when class in [:not_testable, :not_exercised] ->
+      {class, why} when class in [:not_testable, :not_exercised, :fail] ->
         verdict = %Result{step: :conformance, check: c.id, class: class, detail: why}
         CLI.print(verdict)
         verdict
@@ -253,14 +255,32 @@ defmodule ChainTest.Conformance do
   defp testable(c, snap) do
     setup = if Map.has_key?(c, :setup), do: Setup.needs(c.setup), else: []
 
-    missing =
+    lacking =
       for name <- Enum.uniq(Transform.needs(c.transform) ++ setup),
-          {:missing, why} <- [Snapshot.available(snap, name)],
-          do: why
+          {kind, why} <- [Snapshot.available(snap, name)],
+          do: {kind, why}
 
-    case missing do
-      [] -> :ok
-      _ -> {:not_testable, "not testable here: " <> Enum.join(missing, "; ")}
+    # The worst wins: a source that served a bad batch is a finding, one
+    # that could not be asked proves nothing, and only an absent batch is
+    # merely not testable here.
+    by = fn kind -> for {^kind, why} <- lacking, do: why end
+
+    cond do
+      by.(:invalid) != [] ->
+        {:fail,
+         "the snapshot's source served an older batch that does not verify: " <>
+           Enum.join(by.(:invalid), "; ")}
+
+      by.(:unavailable) != [] ->
+        {:not_exercised,
+         "could not fetch what the case needs: " <>
+           Enum.join(by.(:unavailable), "; ")}
+
+      lacking != [] ->
+        {:not_testable, "not testable here: " <> Enum.join(by.(:missing), "; ")}
+
+      true ->
+        :ok
     end
   end
 

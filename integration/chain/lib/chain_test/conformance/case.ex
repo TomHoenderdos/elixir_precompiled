@@ -64,8 +64,8 @@ defmodule ChainTest.Conformance.Case do
         home, this one included, as setup left it).
       * `other_states` - `:unchanged`: every state file in the home other
         than that one as setup left it (a second source's, R19).
-      * `log` - a non-empty string the build's output must contain (a
-        warning the client must print, R4).
+      * `log` - a non-empty string, or a non-empty list of them, the
+        build's output must contain (a warning the client must print, R4).
       * `installed` - `:none` (no `.mix/elixir_precompiled.json` anywhere
         in the target's `_build`) or `:snapshot` (one for exactly the deps
         the snapshot holds a build of, the Nerves tooling aside).
@@ -106,7 +106,7 @@ defmodule ChainTest.Conformance.Case do
   @type post :: %{
           optional(:state_sequence) => integer() | :snapshot | :previous | :absent | :unchanged,
           optional(:other_states) => :unchanged,
-          optional(:log) => String.t(),
+          optional(:log) => String.t() | [String.t()],
           optional(:installed) => :none | :snapshot,
           optional(:cache) => :untouched,
           optional(:second_mirror) => :requested | :untouched
@@ -242,7 +242,7 @@ defmodule ChainTest.Conformance.Case do
       not post?(post) ->
         "after must be a non-empty map of state_sequence (integer, :snapshot, " <>
           ":previous, :absent, :unchanged), other_states (:unchanged), installed " <>
-          "(:none, :snapshot), cache (:untouched), log (a non-empty string), " <>
+          "(:none, :snapshot), cache (:untouched), log (non-empty strings), " <>
           "second_mirror (:requested, :untouched), got " <> inspect(post)
 
       Map.has_key?(post, :second_mirror) and Transform.mirrors(transform) != 2 ->
@@ -296,6 +296,7 @@ defmodule ChainTest.Conformance.Case do
     do: is_integer(v) or v in [:snapshot, :previous, :absent, :unchanged]
 
   defp post_value?(:other_states, v), do: v == :unchanged
+  defp post_value?(:log, v) when is_list(v), do: v != [] and Enum.all?(v, &post_value?(:log, &1))
   defp post_value?(:log, v), do: is_binary(v) and v != ""
 
   defp post_value?(:installed, v), do: v in [:none, :snapshot]
@@ -509,10 +510,12 @@ defmodule ChainTest.Conformance.Case do
   defp post_problem(:log, want, seen, _snap, _input) do
     log = Map.get(seen, :log)
 
-    cond do
-      not is_binary(log) -> ["after log: the runner kept no build output to check"]
-      String.contains?(log, want) -> []
-      true -> ["after log: the build's output never says #{inspect(want)}"]
+    if is_binary(log) do
+      for s <- List.wrap(want),
+          not String.contains?(log, s),
+          do: "after log: the build's output never says #{inspect(s)}"
+    else
+      ["after log: the runner kept no build output to check"]
     end
   end
 
@@ -599,7 +602,7 @@ defmodule ChainTest.Conformance.Case do
   defp sequence(:previous, snap) do
     case Snapshot.older(snap, :previous) do
       {:ok, %{sequence: n}} -> {:ok, n}
-      {:missing, why} -> {:error, "the snapshot has no previous batch: #{why}"}
+      {_kind, why} -> {:error, "the snapshot has no previous batch: #{why}"}
     end
   end
 

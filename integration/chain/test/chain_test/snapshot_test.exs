@@ -437,26 +437,34 @@ defmodule ChainTest.SnapshotTest do
       assert why =~ "25 h"
     end
 
-    test "an older batch that does not verify is missing and not stored", ctx do
+    test "an older batch that does not verify is invalid, recorded so, and not stored", ctx do
       serve_older(ctx, @history)
       serve_older(ctx, [{6, 0.25}, {3, 25.5}], key: Signed.key())
 
       assert {:ok, snap} = Snapshot.take(ctx.input)
-      assert {:missing, why} = snap.previous
+      assert {:invalid, why} = snap.previous
       assert why =~ "batch_signature"
-      assert {:missing, _} = snap.old
+      assert {:invalid, _} = snap.old
+
+      meta = JSON.decode!(File.read!(Path.join(ctx.input.dir, "snapshot.json")))
+      assert %{"invalid" => _} = meta["previous"]
+      assert %{"invalid" => _} = meta["old"]
+
+      assert {:ok, loaded} = Snapshot.load(ctx.input.dir, %{trust_opts: ctx.input.trust_opts})
+      assert {:invalid, _} = loaded.previous
+      assert {:invalid, _} = Snapshot.available(loaded, :previous)
       refute File.exists?(Path.join(ctx.input.dir, "batches/6.json"))
       refute File.exists?(Path.join(ctx.input.dir, "batches/3.json"))
     end
 
-    test "a previous batch issued after N, or ahead of the clock, is missing", ctx do
+    test "a previous batch issued after N, or ahead of the clock, is invalid", ctx do
       for hours <- [-60 / 3600, -1] do
         dir = Path.join(ctx.tmp, "snap-#{System.unique_integer([:positive])}")
         serve_older(ctx, @history)
         serve_older(ctx, [{6, hours}])
 
         assert {:ok, snap} = Snapshot.take(%{ctx.input | dir: dir})
-        assert {:missing, why} = snap.previous
+        assert {:invalid, why} = snap.previous
         assert why =~ "batches/6.json"
         refute File.exists?(Path.join(dir, "batches/6.json"))
       end
@@ -467,8 +475,42 @@ defmodule ChainTest.SnapshotTest do
       File.cp!(Path.join(ctx.served, "batches/5.json"), Path.join(ctx.served, "batches/6.json"))
 
       assert {:ok, snap} = Snapshot.take(ctx.input)
-      assert {:missing, why} = snap.previous
+      assert {:invalid, why} = snap.previous
       assert why =~ "sequence"
+    end
+
+    test "an old batch probe that is not a batch is invalid", ctx do
+      serve_older(ctx, @history)
+      File.write!(Path.join(ctx.served, "batches/3.json"), "not a batch")
+
+      assert {:ok, snap} = Snapshot.take(ctx.input)
+      assert {:invalid, why} = snap.old
+      assert why =~ "not a batch"
+    end
+
+    test "a 5xx on an older batch is unavailable, recorded so; a 404 stays missing", ctx do
+      serve_older(ctx, @history)
+
+      paths = for n <- 0..6, do: "batches/#{n}.json"
+
+      transform =
+        ChainTest.Mirror.Transform.fun({ChainTest.Mirror.Status, %{paths: paths, status: 503}})
+
+      {:ok, mirror} = ChainTest.Mirror.start(ctx.served, transform: transform)
+
+      try do
+        assert {:ok, snap} = Snapshot.take(%{ctx.input | source: mirror.url})
+        assert {:unavailable, why} = snap.previous
+        assert why =~ "503"
+        assert {:unavailable, why} = snap.old
+        assert why =~ "503"
+
+        meta = JSON.decode!(File.read!(Path.join(ctx.input.dir, "snapshot.json")))
+        assert %{"unavailable" => _} = meta["previous"]
+        assert {:unavailable, _} = Snapshot.available(snap, :previous)
+      after
+        ChainTest.Mirror.stop(mirror)
+      end
     end
 
     test "load/2 re-verifies the older batches", ctx do

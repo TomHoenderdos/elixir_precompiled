@@ -41,7 +41,7 @@ defmodule ChainTest.Mirror.OlderBatch do
   def transform("batch.json", _bytes, %{batch: batch, case: %{snapshot: snap}}) do
     case Snapshot.older(snap, batch) do
       {:ok, %{path: rel}} -> {200, File.read!(Path.join(snap.dir, rel))}
-      {:missing, why} -> raise ArgumentError, "the snapshot has no #{batch} batch: #{why}"
+      {_kind, why} -> raise ArgumentError, "the snapshot has no #{batch} batch: #{why}"
     end
   end
 

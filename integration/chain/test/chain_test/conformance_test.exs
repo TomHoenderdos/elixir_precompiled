@@ -516,6 +516,25 @@ defmodule ChainTest.ConformanceTest do
       assert l2.detail =~ "something the client never said"
     end
 
+    test "an older batch absent is not testable, unfetchable not exercised, invalid a fail",
+         ctx do
+      t = %{@t0 | id: "P", transform: {ChainTest.TestTransform, %{needs: [:previous]}}}
+      cases!(ctx.opts, [t])
+
+      for {kind, class, code} <- [
+            {:missing, :not_testable, 0},
+            {:unavailable, :not_exercised, 1},
+            {:invalid, :fail, 1}
+          ] do
+        snapshot = Map.put(ctx.snapshot, :previous, {kind, "batches/6.json: #{kind}"})
+        {verdicts, _} = Conformance.run(ctx.opts, v2_steps(self(), snapshot))
+        assert [%Result{check: "P", class: ^class, detail: detail}] = verdicts
+        assert detail =~ "batches/6.json: #{kind}"
+        assert Result.exit_code(verdicts) == code, inspect(kind)
+        refute_received {:build, _}
+      end
+    end
+
     test "not testable here does not fail the run's exit code", ctx do
       t = %{@t0 | id: "T2", transform: {ChainTest.TestTransform, %{needs: [:old]}}}
       cases!(ctx.opts, [@t0, t])
