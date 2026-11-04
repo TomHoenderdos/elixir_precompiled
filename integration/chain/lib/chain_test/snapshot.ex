@@ -30,6 +30,11 @@ defmodule ChainTest.Snapshot do
   A snapshot is good for 24 hours: after that its batch is stale for the
   client and for `ChainTest.Trust`, and `load/2` refuses it. A directory
   without `snapshot.json` is not a snapshot, and `load/2` refuses it too.
+
+  `load/2` is for reusing a kept snapshot: `obtain/1` (what `mix
+  chain_conformance` calls) loads the one a `--snapshot-dir` already holds
+  instead of downloading again, and later work that reproduces a run from
+  its stored bytes starts from it.
   """
 
   alias ChainTest.{HTTP, Integrity, Lock, Mirror, Trust}
@@ -96,6 +101,69 @@ defmodule ChainTest.Snapshot do
         end
       after
         File.rm_rf(staging)
+      end
+    end
+  end
+
+  @doc """
+  The snapshot a run uses: when `input.dir` already holds one (it has a
+  `snapshot.json`), that one through `load/2`, refused unless it was taken
+  from the same `source`, for the same `target` and of the same fixture
+  lock; otherwise a fresh one through `take/1`. Input as for `take/1`.
+  """
+  @spec obtain(map()) :: {:ok, t()} | {:error, String.t()}
+  def obtain(%{source: _, fixture_dir: _, target: _} = input) do
+    dir = Map.get(input, :dir)
+
+    if dir != nil and File.exists?(Path.join(Path.expand(dir), "snapshot.json")) do
+      with {:ok, snap} <- load(dir, Map.take(input, [:trust_opts])),
+           :ok <- same_input(snap, input) do
+        {:ok, snap}
+      end
+    else
+      take(input)
+    end
+  end
+
+  defp same_input(snap, input) do
+    source = String.trim_trailing(input.source, "/")
+
+    cond do
+      snap.target != input.target ->
+        {:error,
+         "the snapshot in #{snap.dir} is for #{snap.target}, not #{input.target}; " <>
+           "take a new one"}
+
+      snap.source != source ->
+        {:error,
+         "the snapshot in #{snap.dir} was taken from source #{snap.source}, not #{source}; " <>
+           "take a new one"}
+
+      true ->
+        same_lock(snap, input.fixture_dir)
+    end
+  end
+
+  # The snapshot holds the deps of the lock it was taken for; any other
+  # lock would be judged against builds it never looked for.
+  defp same_lock(snap, fixture) do
+    with {:ok, lock} <- lock(fixture) do
+      want =
+        for name <- Map.keys(lock), v = Lock.hex_version(lock, name), into: %{}, do: {name, v}
+
+      have = Map.new(snap.deps, fn {name, d} -> {name, d.version} end)
+
+      case Enum.sort(Map.to_list(want) -- Map.to_list(have)) ++
+             Enum.sort(Map.to_list(have) -- Map.to_list(want)) do
+        [] ->
+          :ok
+
+        diff ->
+          names = diff |> Enum.map(&elem(&1, 0)) |> Enum.uniq() |> Enum.join(", ")
+
+          {:error,
+           "the snapshot in #{snap.dir} was taken for another fixture lock (#{names}); " <>
+             "take a new one"}
       end
     end
   end

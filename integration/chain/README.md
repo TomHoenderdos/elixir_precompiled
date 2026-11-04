@@ -122,9 +122,13 @@ either, the client batch's failed checks stay failures.
 It takes a fresh snapshot of the portal first (`mix chain_snapshot` does
 only that): the root, the current batch, the fixture's manifests and the
 files of the builds the client could select, verified by the harness and
-kept in a directory under the system tmp dir and removed after the run
-(`--snapshot-dir DIR` keeps it there). A snapshot is good for 24 hours, the
-client's batch freshness bound, so every run takes a new one.
+kept in a directory under the system tmp dir and removed after the run.
+`--snapshot-dir DIR` keeps it there, and a later run given the same
+`--snapshot-dir` loads it instead of downloading again: re-verified (batch
+signature, every manifest and file hash) and refused when it is older than
+24 hours, the client's batch freshness bound, or was taken from another
+source, for another target or of another fixture lock. Without
+`--snapshot-dir`, every run takes a new one.
 That download is the only time a run contacts the portal.
 
 Each case gets a mirror over the snapshot that changes its responses as the

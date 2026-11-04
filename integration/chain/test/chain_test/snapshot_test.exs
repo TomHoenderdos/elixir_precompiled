@@ -189,6 +189,44 @@ defmodule ChainTest.SnapshotTest do
     assert loaded.taken_at == taken.taken_at
   end
 
+  describe "obtain/1" do
+    test "takes a snapshot when the directory holds none", %{input: input} do
+      assert {:ok, snap} = Snapshot.obtain(input)
+      assert File.exists?(Path.join(snap.dir, "snapshot.json"))
+    end
+
+    test "loads the snapshot the directory already holds, without the portal", ctx do
+      {:ok, taken} = Snapshot.take(ctx.input)
+      File.rm_rf!(ctx.served)
+
+      assert {:ok, loaded} = Snapshot.obtain(ctx.input)
+      assert loaded.taken_at == taken.taken_at and loaded.deps == taken.deps
+    end
+
+    test "refuses a kept snapshot older than 24 hours", %{input: input} do
+      {:ok, _} = Snapshot.take(input)
+      old = DateTime.utc_now() |> DateTime.add(-25, :hour) |> DateTime.to_iso8601()
+      rewrite_meta(input.dir, &Map.put(&1, "taken_at", old))
+
+      assert {:error, why} = Snapshot.obtain(input)
+      assert why =~ "24 hours"
+    end
+
+    test "refuses a kept snapshot of another target, source or fixture lock", ctx do
+      {:ok, _} = Snapshot.take(ctx.input)
+
+      assert {:error, why} = Snapshot.obtain(%{ctx.input | target: "rpi0_2"})
+      assert why =~ "rpi4"
+
+      assert {:error, why} = Snapshot.obtain(%{ctx.input | source: "http://127.0.0.1:1"})
+      assert why =~ "source"
+
+      Synthetic.tree(ctx.input.fixture_dir, "rpi4", %{jason: {"1.4.6", @outer}})
+      assert {:error, why} = Snapshot.obtain(ctx.input)
+      assert why =~ "jason"
+    end
+  end
+
   test "load/1 refuses a snapshot whose stored bytes changed", %{input: input} do
     {:ok, _} = Snapshot.take(input)
     [file | _] = Path.wildcard(Path.join(input.dir, "files/*"))

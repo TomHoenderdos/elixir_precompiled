@@ -9,7 +9,10 @@ defmodule ChainTest.Conformance do
 
   A run loads the case file (`ChainTest.Conformance.Case`; a bad file stops
   the run before any download), takes a fresh snapshot
-  (`ChainTest.Snapshot`; good for 24 hours) and starts a reference mirror
+  (`ChainTest.Snapshot`; good for 24 hours), or loads the one a
+  `--snapshot-dir` already holds (`ChainTest.Snapshot.obtain/1`: re-verified,
+  under 24 hours old, same source, target and fixture lock, else the run is
+  refused), and starts a reference mirror
   that serves it unchanged. Per case: a mirror over the snapshot with the
   case's transform; the fixture build (`ChainTest.Build`, `mix compile` for
   the target, a fresh client home, the client's source at the case's
@@ -119,7 +122,7 @@ defmodule ChainTest.Conformance do
     s =
       Map.merge(
         %{
-          snapshot: &Snapshot.take/1,
+          snapshot: &Snapshot.obtain/1,
           build: &Build.run/1,
           integrity: &Integrity.run/1,
           compiled: &Compiled.run/1,

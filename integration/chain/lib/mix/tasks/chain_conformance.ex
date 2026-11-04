@@ -12,7 +12,9 @@ defmodule Mix.Tasks.ChainConformance do
 
   Defaults: `rpi4`, `conformance/cases.exs`, every case, the production
   portal (contacted once, for the snapshot), fresh dirs under the system tmp
-  dir. Needs no device. Exits non-zero when a case fails or is not exercised.
+  dir. A `--snapshot-dir` that already holds a snapshot is loaded instead of
+  downloaded (under 24 hours old, same source, target and fixture lock).
+  Needs no device. Exits non-zero when a case fails or is not exercised.
   """
   use Mix.Task
 
