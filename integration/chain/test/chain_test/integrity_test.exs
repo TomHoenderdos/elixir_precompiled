@@ -197,6 +197,39 @@ defmodule ChainTest.IntegrityTest do
     assert detail =~ "ebin/Elixir.Jason.beam"
   end
 
+  test "a rerun hit whose fresh manifest cannot be fetched is not exercised, and says why",
+       ctx do
+    trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+    newer = moved(ctx)
+    File.rm!(Path.join(ctx.served, "v2/manifests/jason.json"))
+
+    assert [%Result{class: :not_exercised, detail: detail}] =
+             run(ctx, trust, %{recheck: fn -> newer end})
+
+    assert detail =~ "manifest unavailable"
+    assert detail =~ "batch 8"
+    assert detail =~ "run again"
+  end
+
+  test "a rerun hit whose fresh manifest has no eligible build is a disagreement", ctx do
+    trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+    other_outer = String.duplicate("b", 64)
+
+    bytes =
+      Synthetic.manifest("1.4.5", [Synthetic.build(@files, outer: other_outer, run_id: "run-2")])
+
+    Synthetic.serve_manifest(ctx.served, "v2/manifests", "jason", bytes)
+    sha = Synthetic.sha(bytes)
+    write_provenance(ctx, sha, 8)
+    newer = Synthetic.info(8, %{"jason" => sha})
+
+    assert [%Result{class: :disagreement, cause: nil, detail: detail}] =
+             run(ctx, trust, %{recheck: fn -> newer end})
+
+    assert detail =~ "no build of 1.4.5 the harness finds eligible"
+    assert detail =~ "batch 8"
+  end
+
   test "a rerun hit whose served manifest is not the one the fresh batch names is a batch mismatch",
        ctx do
     trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])

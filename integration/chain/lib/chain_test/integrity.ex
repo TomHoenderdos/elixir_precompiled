@@ -227,12 +227,8 @@ defmodule ChainTest.Integrity do
     {outcome, ms} =
       Result.timed(fn ->
         with {:ok, sha, dir} <- batch_ref(trust, name),
-             {:ok, ref} <- provenance(name, sha, dir, trust, ctx),
-             {:ok, bytes} <- fetch(ctx, name, ref.dir),
-             :ok <- manifest_hash(bytes, ref.sha, name, ref.batch, ctx),
-             {:ok, manifest} <- normalize(bytes),
-             {:ok, entry, desc} <- select(manifest, name, version, ctx) do
-          {:pass, entry, desc, ref.rerun}
+             {:ok, ref} <- provenance(name, sha, dir, trust, ctx) do
+          name |> against(version, ref, ctx) |> under_rerun(ref.rerun)
         end
       end)
 
@@ -259,6 +255,24 @@ defmodule ChainTest.Integrity do
         result(check, class, "#{name} #{version}: #{detail}", ms)
     end
   end
+
+  # Steps 2 to 4 against the manifest `ref` names.
+  defp against(name, version, ref, ctx) do
+    with {:ok, bytes} <- fetch(ctx, name, ref.dir),
+         :ok <- manifest_hash(bytes, ref.sha, name, ref.batch, ctx),
+         {:ok, manifest} <- normalize(bytes),
+         {:ok, entry, desc} <- select(manifest, name, version, ctx) do
+      {:pass, entry, desc, ref.rerun}
+    end
+  end
+
+  # A hit checked against a fresh batch's manifest that does not come out
+  # as a rerun keeps its class, but says it was checked under one.
+  defp under_rerun({class, detail}, rerun)
+       when is_binary(rerun) and class in [:not_exercised, :disagreement, :batch_mismatch],
+       do: {class, "#{detail}; checked under a rerun: #{rerun}"}
+
+  defp under_rerun(outcome, _rerun), do: outcome
 
   defp batch_ref(trust, name) do
     case Trust.manifest_sha(trust, name) do
