@@ -193,6 +193,10 @@ defmodule ChainTest.ReportTest do
     assert Enum.all?(gaps, &is_binary/1)
   end
 
+  test "known_gaps/0 names P5 for a git dep: covered by the client's own tests" do
+    assert Enum.any?(Report.known_gaps(), &(&1 =~ "P5 for a git dep" and &1 =~ "client"))
+  end
+
   test "known_gaps/0 names P7: the client trusts the signed target claim" do
     assert Enum.any?(Report.known_gaps(), &(&1 =~ "P7" and &1 =~ "trusts the signed claim"))
   end

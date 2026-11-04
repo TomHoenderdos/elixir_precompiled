@@ -57,14 +57,17 @@ defmodule ChainTest.Preflight do
   @doc """
   The deps the fixture's `mix.exs` declares with a literal `path:`, by
   name, to that path (relative to the fixture). A lock never names them;
-  Mix compiles them here, as part of the project.
+  Mix compiles them here, as part of the project. Comments (`#` to the end
+  of a line) are dropped first, so a commented-out dep is none.
   """
   @spec path_deps(Path.t()) :: %{String.t() => String.t()}
   def path_deps(fixture_dir) do
     case File.read(Path.join(fixture_dir, "mix.exs")) do
       {:ok, text} ->
+        code = Regex.replace(~r/#[^\n]*/, text, "")
+
         ~r/\{:([a-z0-9_]+),\s*path:\s*"([^"]+)"/
-        |> Regex.scan(text, capture: :all_but_first)
+        |> Regex.scan(code, capture: :all_but_first)
         |> Map.new(fn [name, path] -> {name, path} end)
 
       {:error, _} ->

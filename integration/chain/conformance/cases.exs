@@ -594,10 +594,10 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
         "jason's build was made against another checksum of a locked dep: a miss, jason compiled."
       ),
       ignored.(
-        "P5",
+        "P5-path",
         :path_dep,
         ["chain_path_dep"],
-        "The batch names a build for the fixture's path dep chain_path_dep, at its own version and identity: never precompiled, its manifest never even asked for."
+        "The batch names a build for the fixture's path dep chain_path_dep, at its own version and identity: never precompiled, its manifest never even asked for. A path dep is never in mix.lock, so the client's lock check stops it before its git/path rule (as for P9); never precompiled holds for every path dep."
       ),
       forged.(
         "P6-name",

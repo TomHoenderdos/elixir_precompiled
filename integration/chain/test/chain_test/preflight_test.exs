@@ -189,6 +189,21 @@ defmodule ChainTest.PreflightTest do
       refute "chain_path_dep" in deps
     end
 
+    test "path_deps/1 ignores a commented-out path dep", %{tmp_dir: tmp} do
+      File.write!(Path.join(tmp, "mix.exs"), ~S"""
+      defp deps do
+        [
+          {:kept, path: "deps_local/kept"},
+          # {:dropped, path: "deps_local/dropped"},
+            #{:dropped_too, path: "x"},
+          {:after, path: "y"} # {:trailing, path: "z"}
+        ]
+      end
+      """)
+
+      assert Preflight.path_deps(tmp) == %{"kept" => "deps_local/kept", "after" => "y"}
+    end
+
     test "path_deps/1 names the fixture's literal path deps and where they live" do
       fixture = Path.expand("../../fixture", __DIR__)
 

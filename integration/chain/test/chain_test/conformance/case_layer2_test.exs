@@ -239,13 +239,16 @@ defmodule ChainTest.Conformance.CaseLayer2Test do
     test "every brief row has its case, under a test root", %{by: by} do
       ids =
         ~w(L2-T0 T2 T3-duplicated T3-pair T7 T7-chained T8 R9 R10 R11 R17 R18 T5-expired P1-dotdot P1-absolute
-           P1-outside P2-setuid P2-0777 P3-escape P3-app P4-checksum P4-deps P5 P6-name
+           P1-outside P2-setuid P2-0777 P3-escape P3-app P4-checksum P4-deps P5-path P6-name
            P6-version P8-duplicate P8-case P8-unicode P9)
 
       for id <- ids do
         assert Map.has_key?(by, id), id
         assert Case.layer2?(by[id]), id
       end
+
+      refute Map.has_key?(by, "P5"), "P5 for a git dep is the client suite's"
+      assert by["P5-path"].description =~ "never in mix.lock"
 
       # P7 is known, not testable: the client trusts the signed target claim.
       refute Enum.any?(Map.keys(by), &String.starts_with?(&1, "P7"))
@@ -299,7 +302,7 @@ defmodule ChainTest.Conformance.CaseLayer2Test do
       for id <- ~w(P8-duplicate P8-case P8-unicode),
           do: assert(by[id].client.deps.jason == {:fail, "path collision"}, id)
 
-      for {id, names} <- [{"P5", ~w(chain_path_dep)}, {"P9", ~w(chain_absent)}] do
+      for {id, names} <- [{"P5-path", ~w(chain_path_dep)}, {"P9", ~w(chain_absent)}] do
         want = for n <- names, dir <- ["v2/manifests", "manifests"], do: "#{dir}/#{n}.json"
         assert Enum.sort(by[id].after.unrequested) == Enum.sort(want), id
       end

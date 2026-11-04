@@ -28,13 +28,17 @@ defmodule ChainTest.Mirror.Forge do
       own on the code path;
     * `:package_checksum`, `:deps_lock` (P4) - the build's package checksum,
       or one locked dep's checksum in its deps lock, zeroed;
-    * `:path_dep` (P5) - the batch also names a manifest for the fixture's
-      own path dep `chain_path_dep` (not Nerves tooling, which the client
-      skips before its git/path rule), with one build at that dep's own
-      identity: the version from its `mix.exs`, the sha256 of that
-      `mix.exs` as its package checksum (a path dep has none), a
-      `pure_elixir` build for this Elixir and OTP, an `.app` naming the dep
-      at that version. Only the client's git/path rule can keep it out;
+    * `:path_dep` (P5-path) - the batch also names a manifest for the
+      fixture's own path dep `chain_path_dep` (not Nerves tooling, which the
+      client skips first), with one build at that dep's own identity: the
+      version from its `mix.exs`, the sha256 of that `mix.exs` as its
+      package checksum (a path dep has none), a `pure_elixir` build for
+      this Elixir and OTP, an `.app` naming the dep at that version. Mix
+      never locks a path dep, so the client's lock check (the one P9
+      exercises) keeps it out before its git/path rule is reached; the
+      outcome, never precompiled, holds for every path dep. P5 for a git
+      dep, which the lock does name, is the client suite's (its end-to-end
+      git-dep test; `ChainTest.Report.known_gaps/0`);
     * `:app_name`, `:app_version` (P6) - `ebin/jason.app` replaced by a served
       `.app` naming `chain_forged`, or version `9.9.9`;
     * `:duplicate`, `:case_variant`, `:unicode_variant` (P8) - one more
@@ -118,7 +122,7 @@ defmodule ChainTest.Mirror.Forge do
 
   @doc """
   The manifests `kind` makes the batch name, `%{dep => path under the
-  snapshot}`: jason's forged manifest, or for P5 and P9 the new names'.
+  snapshot}`: jason's forged manifest, or for P5-path and P9 the new names'.
   """
   @spec forged(map(), atom()) :: %{String.t() => String.t()}
   def forged(snap, kind) when kind in @kinds do
@@ -146,7 +150,7 @@ defmodule ChainTest.Mirror.Forge do
   @doc """
   Writes every forgery into the layer-2 snapshot `snap` (see the
   moduledoc); `fixture_dir` is the fixture project, whose lock and deps
-  give P5's identities. Raises when one cannot be found.
+  give P5-path's identity. Raises when one cannot be found.
   """
   @spec prepare(map(), Path.t()) :: :ok
   def prepare(%{dir: dir} = snap, fixture_dir) do
@@ -191,7 +195,7 @@ defmodule ChainTest.Mirror.Forge do
     end
   end
 
-  # P5: a format-2 manifest with one build at the dep's own identity, and
+  # P5-path: a format-2 manifest with one build at the dep's own identity, and
   # its `.app` bytes.
   defp identity_manifest(name, fixture_dir) do
     {:ok, lock} = Lock.read(Path.join(fixture_dir, "mix.lock"))

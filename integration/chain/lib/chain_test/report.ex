@@ -33,6 +33,9 @@ defmodule ChainTest.Report do
       ":lockfile, :config and :config_path are not applied before the check.",
     "Two targets, one ABI: rpi4 and rpi0_2 are both aarch64. They exercise two targets' builds " <>
       "but not cross-architecture protection.",
+    "P5 for a git dep (the lock names it, so only the client's git/path rule stops a " <>
+      "precompiled build of it): covered by the client's own tests, its end-to-end git-dep " <>
+      "test in the client suite; the conformance case P5-path covers path deps.",
     "P7, a forged entry claiming the project's target and toolchain but carrying another " <>
       "target's .so: the client cannot tell (it trusts the signed claim); it is a layer-3 / " <>
       "on-device item, caught by step 6's smoke call failing on the device."

@@ -13,7 +13,7 @@ precompiled build:
   repository, by path), which are never installed precompiled;
 - `chain_path_dep` (`deps_local/chain_path_dep`, one module), a path dep that
   is not Nerves tooling: never installed precompiled, whatever a batch names
-  (the conformance case P5).
+  (the conformance case P5-path).
 
 `expected.exs` lists the dependencies that must be precompiled hits
 (`hits`) and the ones that never may be (`never`). The versions are pinned

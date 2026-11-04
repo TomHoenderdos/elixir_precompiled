@@ -102,7 +102,7 @@ defmodule ChainTest.Conformance.Case do
         integer it must hold (an adopted root's version, R17).
       * `unrequested` - a non-empty list of snapshot paths
         (`"v2/manifests/chain_path_dep.json"`) the client must never have
-        asked either mirror for (P5, P9: a manifest it must not even
+        asked either mirror for (P5-path, P9: a manifest it must not even
         consider): no logged target, decoded, its query dropped, in any
         case, may end in a listed path's base name.
 

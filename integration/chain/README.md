@@ -246,7 +246,11 @@ that already adopted the rotated root v2, R17). R18 pins a known gap: a
 fresh home cannot learn of a rotation the mirror withholds. P7, a forged
 entry for this target carrying another target's `.so`, is known, not
 testable: the client trusts the signed claim, and only the device smoke
-call catches it.
+call catches it. P5-path's path dep is never in `mix.lock`, so the client's
+lock check stops it before its git/path rule (the rule P9 exercises); never
+precompiled holds for every path dep. P5 for a git dep is known, not
+testable here: the client's own suite covers it with its end-to-end git-dep
+test.
 
 A case passes when the client used its mirror and the client and the
 harness say what it expects. Using the mirror means the mirror's log has a

@@ -75,7 +75,7 @@ defmodule ChainTest.TestKey do
 
   @doc """
   Builds the layer-2 material for `snap` (a `ChainTest.Snapshot`; the
-  fixture at `fixture_dir` names P5's deps, `ChainTest.Mirror.Forge`) and checks
+  fixture at `fixture_dir` names P5-path's dep, `ChainTest.Mirror.Forge`) and checks
   its batch with the harness's own trust checks against the test root; on
   any error nothing is left behind.
   """
