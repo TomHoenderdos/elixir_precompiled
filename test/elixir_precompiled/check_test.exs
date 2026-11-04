@@ -5,7 +5,7 @@
 defmodule ElixirPrecompiled.CheckTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureIO
-  alias ElixirPrecompiled.{Check, Env}
+  alias ElixirPrecompiled.{Check, Env, Match}
   alias ElixirPrecompiled.Env.MixProject
   alias ElixirPrecompiled.Fixture, as: F
   @moduletag :tmp_dir
@@ -512,25 +512,198 @@ defmodule ElixirPrecompiled.CheckTest do
       refute File.exists?(Path.join(lib, "ash"))
     end
 
-    test "a build whose manifest changed and still matches is re-installed", %{
+    test "a build whose manifest changed but still lists the same files is kept in place", %{
       f: f,
       config: config,
       env: env,
       lib: lib
     } do
       env = install_ash(f, config, env)
+      beam = Path.join(lib, "ash/ebin/Elixir.X.beam")
+      before = File.stat!(beam, time: :posix)
       packages = put_in(ash_packages(f, "1.31.0"), ["ash", "extra"], "changes the sha")
       F.publish(f, packages, sequence: 2)
       new_sha = F.get(:batch)["payload"] |> Base.url_decode64!(padding: false) |> :json.decode()
 
-      run_capturing(config, env)
-      assert_received {:report, {:ok, %{hits: 1, lines: [%{name: "ash", status: :hit}]}}}
+      assert run_capturing(config, env) == ""
+      assert_received {:report, {:ok, %{lines: []}}}
+      assert File.stat!(beam, time: :posix) == before
 
-      assert Path.join(lib, "ash/.mix/elixir_precompiled.json")
-             |> File.read!()
-             |> :json.decode()
-             |> Map.take(["manifest_sha256", "batch_sequence"]) ==
-               %{"manifest_sha256" => new_sha["manifests_v2"]["ash"], "batch_sequence" => 2}
+      assert %{"manifest_sha256" => sha, "batch_sequence" => 2, "files_sha256" => _} =
+               Path.join(lib, "ash/.mix/elixir_precompiled.json")
+               |> File.read!()
+               |> :json.decode()
+
+      assert sha == new_sha["manifests_v2"]["ash"]
+    end
+
+    test "a new portal run of the same inputs does not churn the installed bytes", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      publish_rerun(f)
+
+      assert run_capturing(config, env) == ""
+      assert File.read!(Path.join(lib, "ash/ebin/Elixir.X.beam")) == "beam ash"
+    end
+
+    test "an install from before files_sha256 is re-placed like before", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      prov = Path.join(lib, "ash/.mix/elixir_precompiled.json")
+
+      File.write!(
+        prov,
+        prov |> File.read!() |> :json.decode() |> Map.delete("files_sha256") |> :json.encode()
+      )
+
+      F.publish(f, put_in(ash_packages(f, "1.31.0"), ["ash", "extra"], "x"), sequence: 2)
+
+      run_capturing(config, env)
+      assert_received {:report, {:ok, %{lines: [%{name: "ash", status: :hit}]}}}
+    end
+
+    # The provenance file only says which build to prefer; whether the
+    # bytes on disk are that build is read from the disk itself.
+    test "installed bytes changed on disk are never kept, whatever the provenance says", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      beam = Path.join(lib, "ash/ebin/Elixir.X.beam")
+      publish_rerun(f)
+
+      # Same size, other bytes.
+      File.write!(beam, "beam asX")
+      run_capturing(config, env)
+      assert_received {:report, {:ok, %{lines: [%{name: "ash", status: :hit}]}}}
+      assert File.read!(beam) == "beam ash"
+    end
+
+    test "an installed file swapped for a symlink to the same bytes is not kept", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      beam = Path.join(lib, "ash/ebin/Elixir.X.beam")
+      publish_rerun(f)
+
+      elsewhere = Path.join(lib, "elsewhere.beam")
+      File.write!(elsewhere, "beam ash")
+      File.rm!(beam)
+      File.ln_s!(elsewhere, beam)
+
+      run_capturing(config, env)
+      assert_received {:report, {:ok, %{lines: [%{name: "ash", status: :hit}]}}}
+      assert {:ok, %File.Stat{type: :regular}} = File.lstat(beam)
+    end
+
+    test "an installed build with an extra file is not kept", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      extra = Path.join(lib, "ash/ebin/Elixir.Y.beam")
+      publish_rerun(f)
+
+      File.write!(extra, "planted")
+      run_capturing(config, env)
+      assert_received {:report, {:ok, %{lines: [%{name: "ash", status: :hit}]}}}
+      refute File.exists?(extra)
+    end
+
+    test "an installed file with another mode is not kept", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      beam = Path.join(lib, "ash/ebin/Elixir.X.beam")
+      publish_rerun(f)
+
+      File.chmod!(beam, 0o755)
+      run_capturing(config, env)
+      assert_received {:report, {:ok, %{lines: [%{name: "ash", status: :hit}]}}}
+      assert Bitwise.band(File.stat!(beam).mode, 0o777) == 0o644
+    end
+
+    test "a provenance file naming another build's files does not make it kept", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      rerun = publish_rerun(f)
+      prov = Path.join(lib, "ash/.mix/elixir_precompiled.json")
+      doc = prov |> File.read!() |> :json.decode()
+      File.write!(prov, :json.encode(%{doc | "files_sha256" => Match.files_hash(rerun)}))
+
+      run_capturing(config, env)
+      assert_received {:report, {:ok, %{lines: [%{name: "ash", status: :hit}]}}}
+      assert File.read!(Path.join(lib, "ash/ebin/Elixir.X.beam")) == "other bytes"
+    end
+
+    test "a kept build the next batch drops is removed as revoked", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      publish_rerun(f)
+      assert run_capturing(config, env) == ""
+
+      F.publish(f, %{"other" => %{"versions" => %{}}}, sequence: 3)
+      run_capturing(config, env)
+
+      assert_received {:report,
+                       {:ok,
+                        %{
+                          lines: [
+                            %{
+                              name: "ash",
+                              status: :miss,
+                              detail: "revoked: no longer in the current batch"
+                            }
+                          ]
+                        }}}
+
+      refute File.exists?(Path.join(lib, "ash"))
+    end
+
+    # A second build of the same inputs from a newer portal run: its run id
+    # "s" sorts newer than the installed "r", and its beam differs.
+    defp publish_rerun(f) do
+      installed = good_entry(f, "ash", "1.31.0")
+      rerun = put_in(installed, ["build", "run_id"], "s")
+
+      rerun =
+        update_in(rerun["ebin"], fn [beam | rest] ->
+          [%{beam | "sha256" => F.file(f, "other bytes"), "size" => 11} | rest]
+        end)
+
+      F.publish(
+        f,
+        %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [installed, rerun]}}}},
+        sequence: 2
+      )
+
+      rerun
     end
 
     test "an unreadable provenance file counts as revoked", %{

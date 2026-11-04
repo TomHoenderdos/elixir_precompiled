@@ -11,7 +11,7 @@ defmodule ElixirPrecompiled.Fetch do
   into place with Mix's "already compiled" marker.
   """
 
-  alias ElixirPrecompiled.Manifest
+  alias ElixirPrecompiled.{FileUtil, Manifest}
 
   # 8 MiB: root, batch and any other document
   @max_body_bytes 8_388_608
@@ -694,14 +694,113 @@ defmodule ElixirPrecompiled.Fetch do
   # still vouches for.
   defp write_provenance(_staging, nil), do: :ok
 
-  defp write_provenance(staging, %{sha: sha, path: path, sequence: seq}) do
+  defp write_provenance(staging, provenance) do
     File.mkdir_p!(Path.join(staging, ".mix"))
-
-    File.write!(
-      Path.join([staging, ".mix", @provenance_file]),
-      :json.encode(%{"manifest_sha256" => sha, "manifest_path" => path, "batch_sequence" => seq})
-    )
+    File.write!(Path.join([staging, ".mix", @provenance_file]), provenance_doc(provenance))
   end
+
+  @doc """
+  Rewrites an installed dep's provenance: a kept build that a newer
+  manifest still lists. Only into a `.mix` that is a plain directory.
+  """
+  @spec write_provenance_file(Path.t(), atom() | String.t(), map()) :: :ok | {:error, term()}
+  def write_provenance_file(build_lib, dep, provenance) do
+    path = provenance_path(build_lib, dep)
+
+    if real_dir?(Path.dirname(path)),
+      do: FileUtil.write_atomic(path, provenance_doc(provenance)),
+      else: {:error, "#{Path.dirname(path)} is not a plain directory"}
+  end
+
+  defp provenance_doc(%{sha: sha, path: path, sequence: seq} = p) do
+    %{"manifest_sha256" => sha, "manifest_path" => path, "batch_sequence" => seq}
+    |> put_present("files_sha256", p[:files_sha256])
+    |> put_present("source", p[:source])
+    |> :json.encode()
+  end
+
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
+
+  @doc """
+  Whether `dep`'s build dir holds exactly `entry`'s files, judged from the
+  disk alone, never from the provenance file: the entry passes the same
+  checks as an install; ebin (and priv, when the entry ships one) are
+  plain directories holding only regular files, exactly the entry's paths;
+  each has the entry's mode and size, and its bytes hash to the entry's
+  sha256; and the .app owns exactly the beams. A priv the entry does not
+  ship is Mix's link to deps/<dep>/priv and is not looked at.
+  """
+  @spec installed_as?(Path.t(), atom(), map()) :: boolean()
+  def installed_as?(build_lib, dep, entry) do
+    files = (entry["ebin"] || []) ++ (entry["priv"] || [])
+    dir = Path.join(build_lib, Atom.to_string(dep))
+    tops = if (entry["priv"] || []) == [], do: ["ebin"], else: ["ebin", "priv"]
+
+    validate(files, dep) == :ok and real_dir?(dir) and
+      on_disk(dir, tops) == {:ok, MapSet.new(files, & &1["path"])} and
+      Enum.all?(files, &same_file?(dir, &1)) and modules_ok(dir, dep) == :ok
+  rescue
+    _ -> false
+  end
+
+  # Relative paths of every regular file under `tops`, walked by lstat: a
+  # symlink or any other non-regular entry anywhere is :error.
+  defp on_disk(dir, tops) do
+    Enum.reduce_while(tops, {:ok, MapSet.new()}, fn top, {:ok, acc} ->
+      case walk(dir, top, acc) do
+        {:ok, acc} -> {:cont, {:ok, acc}}
+        :error -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp walk(dir, rel, acc) do
+    case File.lstat(Path.join(dir, rel)) do
+      {:ok, %File.Stat{type: :regular}} ->
+        {:ok, MapSet.put(acc, rel)}
+
+      {:ok, %File.Stat{type: :directory}} ->
+        walk_dir(dir, rel, acc)
+
+      _ ->
+        :error
+    end
+  end
+
+  defp walk_dir(dir, rel, acc) do
+    case File.ls(Path.join(dir, rel)) do
+      {:ok, names} ->
+        Enum.reduce_while(names, {:ok, acc}, fn name, {:ok, acc} ->
+          case walk(dir, rel <> "/" <> name, acc) do
+            {:ok, acc} -> {:cont, {:ok, acc}}
+            :error -> {:halt, :error}
+          end
+        end)
+
+      {:error, _} ->
+        :error
+    end
+  end
+
+  defp same_file?(dir, %{"path" => path, "sha256" => sha, "size" => size, "mode" => mode}) do
+    full = Path.join(dir, path)
+
+    with {:ok, %File.Stat{type: :regular, size: ^size, mode: on_disk}} <- File.lstat(full),
+         true <- same_mode?(on_disk, mode),
+         {:ok, bytes} <- read_cached(full, size) do
+      byte_size(bytes) == size and sha256(bytes) == sha
+    else
+      _ -> false
+    end
+  end
+
+  # Windows has no exec bit to compare.
+  defp same_mode?(on_disk, mode) do
+    match?({:win32, _}, :os.type()) or Bitwise.band(on_disk, 0o777) == Bitwise.band(mode, 0o777)
+  end
+
+  defp real_dir?(path), do: match?({:ok, %File.Stat{type: :directory}}, File.lstat(path))
 
   @doc """
   The provenance file under a dependency's build dir, written by `install/6`

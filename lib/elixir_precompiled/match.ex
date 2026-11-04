@@ -23,7 +23,8 @@ defmodule ElixirPrecompiled.Match do
           elixir: String.t(),
           otp: String.t(),
           dep_env: String.t(),
-          config: (String.t(), [String.t()] -> {:ok, term()} | :error)
+          config: (String.t(), [String.t()] -> {:ok, term()} | :error),
+          prefer: String.t() | nil
         }
 
   @spec candidate?(atom(), map(), [atom()], [atom()] | nil) :: boolean()
@@ -92,14 +93,44 @@ defmodule ElixirPrecompiled.Match do
     end
   end
 
-  # Smaller is better: exact Elixir patch, then the smallest patch gap below
-  # the running one, then pure_elixir before a system build, then the
-  # newest run (run ids sort newest-first by inverting the string).
+  @doc """
+  The identity of a build's bytes: sha256 over its files' path, sha256 and
+  mode, in path order. Two manifest entries with the same hash install the
+  same files. nil for an entry with a malformed file list, or a path with a
+  NUL or newline, which could pass one file off as another's line.
+  """
+  @spec files_hash(map()) :: String.t() | nil
+  def files_hash(entry) do
+    lines =
+      ((entry["ebin"] || []) ++ (entry["priv"] || []))
+      |> Enum.map(&file_line/1)
+      |> Enum.sort()
+
+    Base.encode16(:crypto.hash(:sha256, lines), case: :lower)
+  rescue
+    _ -> nil
+  end
+
+  defp file_line(%{"path" => p, "sha256" => s, "mode" => m})
+       when is_binary(p) and is_binary(s) and is_integer(m) do
+    if String.contains?(p, [<<0>>, "\n"]) or String.contains?(s, [<<0>>, "\n"]),
+      do: raise(ArgumentError, "unsafe file entry")
+
+    IO.iodata_to_binary([p, 0, s, 0, Integer.to_string(m), ?\n])
+  end
+
+  # Smaller is better: the build already installed (when it still passes),
+  # then exact Elixir patch, the closest older patch, pure_elixir before a
+  # system build, and the newest run (run ids sort newest-first by
+  # inverting the string). The installed build is only preferred among
+  # builds that pass every rule; it is never a reason to pass.
   defp rank(build, ctx) do
     {_, _, built_patch} = parse3(build["build"]["elixir"])
     {_, _, run_patch} = parse3(ctx.elixir)
     pure = if build["target"] == "pure_elixir", do: 0, else: 1
-    {run_patch - built_patch, pure, inverted(build["build"]["run_id"])}
+    prefer = Map.get(ctx, :prefer)
+    installed = if is_binary(prefer) and files_hash(build) == prefer, do: 0, else: 1
+    {installed, run_patch - built_patch, pure, inverted(build["build"]["run_id"])}
   end
 
   # Negated bytes plus a trailing 1 make a larger id compare smaller,

@@ -510,4 +510,49 @@ defmodule ElixirPrecompiled.MatchTest do
       assert {:miss, "compile_env differs: ash [:mode]"} = Match.select(m, ctx())
     end
   end
+
+  describe "sticky selection" do
+    test "files_hash ignores order and changes with any byte, path or mode" do
+      a = %{"path" => "ebin/a.beam", "sha256" => String.duplicate("a", 64), "mode" => 33188}
+      b = %{"path" => "ebin/b.beam", "sha256" => String.duplicate("b", 64), "mode" => 33188}
+      h = Match.files_hash(%{"ebin" => [a, b], "priv" => []})
+      assert h =~ ~r/\A[0-9a-f]{64}\z/
+      assert h == Match.files_hash(%{"ebin" => [b, a]})
+      refute h == Match.files_hash(%{"ebin" => [a, %{b | "mode" => 33261}]})
+      refute h == Match.files_hash(%{"ebin" => [a, %{b | "sha256" => String.duplicate("c", 64)}]})
+      refute h == Match.files_hash(%{"ebin" => [a, %{b | "path" => "ebin/c.beam"}]})
+      refute h == Match.files_hash(%{"ebin" => [a], "priv" => [%{b | "path" => "priv/b.beam"}]})
+      assert Match.files_hash(%{"ebin" => [%{"path" => 1}]}) == nil
+    end
+
+    test "a path that could fake a line boundary has no files_hash" do
+      a = %{"path" => "ebin/a.beam", "sha256" => String.duplicate("a", 64), "mode" => 33188}
+      assert Match.files_hash(%{"ebin" => [%{a | "path" => "ebin/a\nb"}]}) == nil
+      assert Match.files_hash(%{"ebin" => [%{a | "path" => "ebin/a\0b"}]}) == nil
+    end
+
+    test "an installed build that still passes outranks a newer run" do
+      old = entry(%{"build" => Map.put(entry()["build"], "run_id", "a")})
+
+      new =
+        entry(%{
+          "build" => Map.put(entry()["build"], "run_id", "b"),
+          "ebin" => [%{hd(entry()["ebin"]) | "sha256" => String.duplicate("c", 64)}]
+        })
+
+      assert {:ok, ^new, _} = Match.select(doc([old, new]), ctx())
+      assert {:ok, ^old, _} = Match.select(doc([old, new]), ctx(prefer: Match.files_hash(old)))
+    end
+
+    test "a preferred build that no longer passes is never selected" do
+      old =
+        entry(%{
+          "build" => entry()["build"] |> Map.put("run_id", "a") |> Map.put("otp", "28")
+        })
+
+      new = entry(%{"build" => Map.put(entry()["build"], "run_id", "b"), "ebin" => []})
+      assert {:ok, ^new, _} = Match.select(doc([old, new]), ctx(prefer: Match.files_hash(old)))
+      assert {:miss, _} = Match.select(doc([old]), ctx(prefer: Match.files_hash(old)))
+    end
+  end
 end

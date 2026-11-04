@@ -331,6 +331,77 @@ defmodule ElixirPrecompiled.FetchTest do
              Path.join(lib, "ash/.mix/elixir_precompiled.json") |> File.read!() |> :json.decode()
   end
 
+  test "provenance carries the files hash and source; a rewrite needs a plain .mix", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+    sha = String.duplicate("ab", 32)
+    prov = %{sha: sha, path: "v2/manifests", sequence: 7, files_sha256: "h", source: "s"}
+
+    assert {:ok, _} =
+             Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps, provenance: prov)
+
+    path = Path.join(lib, "ash/.mix/elixir_precompiled.json")
+
+    assert %{"files_sha256" => "h", "source" => "s", "batch_sequence" => 7} =
+             path |> File.read!() |> :json.decode()
+
+    assert :ok = Fetch.write_provenance_file(lib, :ash, %{prov | sequence: 8, files_sha256: nil})
+    doc = path |> File.read!() |> :json.decode()
+    assert %{"batch_sequence" => 8} = doc
+    refute Map.has_key?(doc, "files_sha256")
+
+    elsewhere = Path.join(lib, "elsewhere")
+    File.rename!(Path.join(lib, "ash/.mix"), elsewhere)
+    File.ln_s!(elsewhere, Path.join(lib, "ash/.mix"))
+    assert {:error, _} = Fetch.write_provenance_file(lib, :ash, %{prov | sequence: 9})
+
+    assert %{"batch_sequence" => 8} =
+             Path.join(elsewhere, "elixir_precompiled.json") |> File.read!() |> :json.decode()
+  end
+
+  test "installed_as? reads the disk: bytes, mode, extra files and symlinks", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+    assert {:ok, _} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+    assert Fetch.installed_as?(lib, :ash, e)
+    [file | _] = e["ebin"]
+    on_disk = Path.join([lib, "ash", file["path"]])
+
+    File.write!(on_disk, "c")
+    refute Fetch.installed_as?(lib, :ash, e)
+    File.write!(on_disk, "b")
+    assert Fetch.installed_as?(lib, :ash, e)
+
+    File.chmod!(on_disk, 0o755)
+    refute Fetch.installed_as?(lib, :ash, e)
+    File.chmod!(on_disk, Bitwise.band(file["mode"], 0o777))
+
+    extra = Path.join([lib, "ash", "ebin", "notes.txt"])
+    File.write!(extra, "x")
+    refute Fetch.installed_as?(lib, :ash, e)
+    File.rm!(extra)
+
+    File.rename!(on_disk, on_disk <> ".real")
+    File.ln_s!(on_disk <> ".real", on_disk)
+    refute Fetch.installed_as?(lib, :ash, e)
+    File.rm!(on_disk)
+    File.rename!(on_disk <> ".real", on_disk)
+    assert Fetch.installed_as?(lib, :ash, e)
+
+    refute Fetch.installed_as?(lib, :ash, %{
+             e
+             | "ebin" => [%{file | "path" => "ebin/../x"} | tl(e["ebin"])]
+           })
+  end
+
   test "install without provenance writes no provenance file", %{
     f: f,
     config: config,

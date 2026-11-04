@@ -135,16 +135,22 @@ defmodule ElixirPrecompiled.Check do
 
   # R16: an installed build is only as good as the batch that still names
   # it. Same manifest sha: nothing to do. Another sha: matched again like
-  # any candidate, its old bytes removed first so a miss leaves Mix to
-  # compile it. Not named, or no readable provenance: removed, so Mix
-  # compiles it from source in this same run.
+  # any candidate, preferring the installed files, kept only when the
+  # selected build is exactly what is on disk and removed when nothing
+  # matches. Not named, or no readable provenance: removed, so Mix compiles
+  # it from source in this same run.
   defp recheck(installed, batch, env) do
     Enum.reduce(installed, {[], []}, fn dep, {revoked, replaced} ->
       {sha, _path} = manifest_ref(batch, Atom.to_string(dep.name))
 
-      case recheck_one(dep, sha, provenance_sha(env.build_lib, dep.name), env) do
+      case recheck_one(
+             dep,
+             sha,
+             provenance_field(env.build_lib, dep.name, "manifest_sha256"),
+             env
+           ) do
         :keep -> {revoked, replaced}
-        :replace -> {revoked, replaced ++ [dep]}
+        {:replace, dep} -> {revoked, replaced ++ [dep]}
         line -> {revoked ++ [line], replaced}
       end
     end)
@@ -152,8 +158,12 @@ defmodule ElixirPrecompiled.Check do
 
   defp recheck_one(_dep, sha, sha, _env) when is_binary(sha), do: :keep
 
+  # The recorded files hash only says which build to prefer; whether the
+  # disk holds it is read from the disk (`Fetch.installed_as?/3`).
   defp recheck_one(dep, sha, recorded, env) when is_binary(sha) and is_binary(recorded),
-    do: revoke(dep, env, :replace)
+    do:
+      {:replace,
+       Map.put(dep, :installed_hash, provenance_field(env.build_lib, dep.name, "files_sha256"))}
 
   defp recheck_one(dep, sha, nil, env) when is_binary(sha),
     do: revoke(dep, env, revoke_line(dep, :miss, "revoked: provenance unreadable"))
@@ -194,10 +204,10 @@ defmodule ElixirPrecompiled.Check do
       bytes: 0
     }
 
-  defp provenance_sha(build_lib, dep) do
+  defp provenance_field(build_lib, dep, key) do
     with {:ok, bytes} <- File.read(Fetch.provenance_path(build_lib, dep)),
-         %{"manifest_sha256" => sha} when is_binary(sha) <- decode_json(bytes) do
-      sha
+         %{^key => value} when is_binary(value) <- decode_json(bytes) do
+      value
     else
       _ -> nil
     end
@@ -236,6 +246,7 @@ defmodule ElixirPrecompiled.Check do
         {{:ok, line}, _dep} -> line
         {{:exit, reason}, dep} -> worker_died(dep, reason, env)
       end)
+      |> Enum.reject(&is_nil/1)
     after
       Supervisor.stop(sup)
     end
@@ -322,66 +333,108 @@ defmodule ElixirPrecompiled.Check do
     root
   end
 
-  defp one(
-         %{name: name, version: version, lock_entry: lock_entry} = candidate,
-         config,
-         batch,
-         env,
-         config_fun
-       ) do
+  defp one(candidate, config, batch, env, config_fun) do
+    %{name: name, version: version} = candidate
     sname = Atom.to_string(name)
+    base = %{name: sname, version: version, bytes: 0}
+    replacing? = Map.has_key?(candidate, :installed_hash)
 
     try do
-      base = %{name: sname, version: version, bytes: 0}
       {sha, path} = manifest_ref(batch, sname)
 
-      # Mix compiles this dep unless it is installed now: a provenance file
-      # left by an earlier install would vouch for Mix's own build.
-      _ = File.rm(Fetch.provenance_path(env.build_lib, name))
+      # A fresh candidate: Mix compiles it unless it is installed now, so a
+      # provenance file left by an earlier install must not vouch for
+      # Mix's own build.
+      if not replacing?, do: _ = File.rm(Fetch.provenance_path(env.build_lib, name))
 
       result =
         with sha when is_binary(sha) <- sha || {:miss, "not in batch"},
              {:ok, manifest} <- Fetch.manifest(config, sname, sha, path),
              {:ok, entry, _system_key} <-
-               Match.select(manifest, %{
-                 name: sname,
-                 version: version,
-                 lock_entry: lock_entry,
-                 lock: env.lock,
-                 system: env.system || {"host", ""},
-                 elixir: System.version(),
-                 otp: to_string(:erlang.system_info(:otp_release)),
-                 dep_env: Map.get(candidate, :dep_env, "prod"),
-                 config: config_fun
-               }),
-             {:ok, stats} <-
-               Fetch.install(config, name, entry, lock_entry, env.build_lib,
-                 deps_path: env.deps_path,
-                 provenance: %{sha: sha, path: path, sequence: batch.sequence},
-                 verify_app: &verify_app(&1, sname, version, config_fun)
-               ) do
-          {:hit, Map.put(stats, :stripped, stripped?(Path.join(env.build_lib, sname), sname))}
+               Match.select(manifest, ctx(candidate, env, config_fun)) do
+          provenance = %{
+            sha: sha,
+            path: path,
+            sequence: batch.sequence,
+            files_sha256: Match.files_hash(entry),
+            source: Map.get(config, :source)
+          }
+
+          place(candidate, entry, provenance, config, env, config_fun)
         end
+
+      # A replaced install that neither stayed nor hit is removed: Mix
+      # compiles it.
+      if replacing? and result != :kept and not match?({:hit, _}, result),
+        do: _ = remove(env.build_lib, sname)
 
       line_for(base, result)
     rescue
       e ->
-        %{
-          name: sname,
-          version: version,
-          bytes: 0,
-          status: :fail,
-          detail: "candidate crashed: #{Exception.message(e)}"
-        }
+        if replacing?, do: _ = remove(env.build_lib, sname)
+        crashed(base, Exception.message(e))
     catch
       kind, reason when kind in [:exit, :throw] ->
-        %{
-          name: sname,
-          version: version,
-          bytes: 0,
-          status: :fail,
-          detail: "candidate crashed: #{inspect(reason)}"
-        }
+        if replacing?, do: _ = remove(env.build_lib, sname)
+        crashed(base, inspect(reason))
+    end
+  end
+
+  defp crashed(base, why),
+    do: Map.merge(base, %{status: :fail, detail: "candidate crashed: #{why}"})
+
+  defp ctx(candidate, env, config_fun) do
+    %{
+      name: Atom.to_string(candidate.name),
+      version: candidate.version,
+      lock_entry: candidate.lock_entry,
+      lock: env.lock,
+      system: env.system || {"host", ""},
+      elixir: System.version(),
+      otp: to_string(:erlang.system_info(:otp_release)),
+      dep_env: Map.get(candidate, :dep_env, "prod"),
+      config: config_fun,
+      prefer: Map.get(candidate, :installed_hash)
+    }
+  end
+
+  # The selected build may be the one installed: then only its provenance
+  # moves, once the disk is checked to hold exactly its files and its .app
+  # is checked against today's config. Anything else installs as usual.
+  defp place(%{installed_hash: hash} = candidate, entry, provenance, config, env, config_fun)
+       when is_binary(hash) do
+    if Match.files_hash(entry) == hash and
+         Fetch.installed_as?(env.build_lib, candidate.name, entry),
+       do: keep(candidate, provenance, env, config_fun),
+       else: install(candidate, entry, provenance, config, env, config_fun)
+  end
+
+  defp place(candidate, entry, provenance, config, env, config_fun),
+    do: install(candidate, entry, provenance, config, env, config_fun)
+
+  defp keep(candidate, provenance, env, config_fun) do
+    sname = Atom.to_string(candidate.name)
+    app = Path.join([env.build_lib, sname, "ebin", sname <> ".app"])
+
+    with :ok <- verify_app(app, sname, candidate.version, config_fun),
+         :ok <- Fetch.write_provenance_file(env.build_lib, candidate.name, provenance) do
+      :kept
+    else
+      {:error, reason} -> {:fail, "provenance write failed: #{inspect(reason)}"}
+      fail -> fail
+    end
+  end
+
+  defp install(candidate, entry, provenance, config, env, config_fun) do
+    sname = Atom.to_string(candidate.name)
+
+    with {:ok, stats} <-
+           Fetch.install(config, candidate.name, entry, candidate.lock_entry, env.build_lib,
+             deps_path: env.deps_path,
+             provenance: provenance,
+             verify_app: &verify_app(&1, sname, candidate.version, config_fun)
+           ) do
+      {:hit, Map.put(stats, :stripped, stripped?(Path.join(env.build_lib, sname), sname))}
     end
   end
 
@@ -417,6 +470,8 @@ defmodule ElixirPrecompiled.Check do
   catch
     _, _ -> false
   end
+
+  defp line_for(_base, :kept), do: nil
 
   defp line_for(base, {:hit, %{bytes: bytes, files: files, cached: cached} = stats}) do
     %{base | bytes: bytes}
