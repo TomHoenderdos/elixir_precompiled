@@ -379,11 +379,14 @@ defmodule ElixirPrecompiled.Trust do
   def now(config),
     do: DateTime.add(DateTime.utc_now(), Map.get(config, :clock_offset_seconds, 0), :second)
 
+  # :source_unreachable is set when the source could not be reached and
+  # this is the cached batch.
   @type batch :: %{
-          sequence: integer(),
-          manifests: %{String.t() => String.t()},
-          manifests_v2: %{String.t() => String.t()} | nil,
-          content: [String.t()] | nil
+          optional(:source_unreachable) => true,
+          required(:sequence) => integer(),
+          required(:manifests) => %{String.t() => String.t()},
+          required(:manifests_v2) => %{String.t() => String.t()} | nil,
+          required(:content) => [String.t()] | nil
         }
 
   @type conditional_fetch ::
@@ -462,7 +465,7 @@ defmodule ElixirPrecompiled.Trust do
             "(sequence #{batch.sequence})"
         )
 
-        {:ok, batch}
+        {:ok, Map.put(batch, :source_unreachable, true)}
 
       {:error, cached_why} ->
         {:error, "batch unavailable: #{why} (cached batch: #{cached_why})"}

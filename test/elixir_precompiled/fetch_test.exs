@@ -1028,27 +1028,38 @@ defmodule ElixirPrecompiled.FetchTest do
     port
   end
 
-  test "an origin that failed to connect is not asked again in the same run", %{
-    f: f,
-    config: config,
-    build_lib: lib,
-    deps: deps
-  } do
+  # A config whose source is a free port, its run's dead-origin table, and
+  # a short deadline: a request that does connect to the listener below
+  # waits for an answer until then.
+  defp dead_source(config) do
     port = free_port()
     dead = "http://127.0.0.1:#{port}/precompiled"
 
     config =
-      config
-      |> Map.merge(%{source: dead, dead_origins: Fetch.new_dead_origins()})
-      |> Map.put(:deadline_at, System.monotonic_time(:millisecond) + 3_000)
+      Map.merge(config, %{
+        source: dead,
+        dead_origins: Fetch.new_dead_origins(),
+        deadline_at: System.monotonic_time(:millisecond) + 1_000
+      })
 
-    # The batch: the source refuses the connection (a cached batch stands in).
+    # The batch request: the source refuses the connection.
     assert {:error, {:unreachable, _}} =
              Fetch.get_conditional(config, dead <> "/batch.json", nil)
 
     # The source comes up, but takes no request: any connection is seen.
     {:ok, ls} = :gen_tcp.listen(port, ip: {127, 0, 0, 1}, active: false)
     on_exit(fn -> :gen_tcp.close(ls) end)
+    {config, ls}
+  end
+
+  test "once the batch came from the cache, the unreachable source is not asked again", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    {config, ls} = dead_source(config)
+    :ok = Fetch.source_unreachable(config)
 
     assert {:unreachable, "manifest unavailable: cannot connect" <> _} =
              Fetch.manifest(config, "ash", String.duplicate("a", 64), "v2/manifests")
@@ -1059,16 +1070,38 @@ defmodule ElixirPrecompiled.FetchTest do
              Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
 
     assert {:error, :timeout} = :gen_tcp.accept(ls, 0)
+  end
 
-    # Another run (its own table) asks again.
-    other = %{
-      config
-      | dead_origins: Fetch.new_dead_origins(),
-        deadline_at: System.monotonic_time(:millisecond) + 500
-    }
-
-    _ = Fetch.manifest(other, "ash", String.duplicate("a", 64), "v2/manifests")
+  test "a connect failure to the source alone (live batch) fails only that fetch", %{
+    config: config
+  } do
+    {config, ls} = dead_source(config)
+    _ = Fetch.manifest(config, "ash", String.duplicate("a", 64), "v2/manifests")
     assert {:ok, _} = :gen_tcp.accept(ls, 0)
+  end
+
+  test "a content origin that failed to connect is skipped for the run; the source still serves",
+       %{f: f, config: config, build_lib: lib, deps: deps} do
+    port = free_port()
+    cdn = "http://127.0.0.1:#{port}/precompiled"
+
+    config =
+      Map.merge(config, %{
+        content: [cdn],
+        by_sha: true,
+        dead_origins: Fetch.new_dead_origins()
+      })
+
+    F.publish(f, %{"ash" => %{"versions" => %{}}, "jason" => %{"versions" => %{}}})
+    assert {:ok, _} = Fetch.manifest(config, "ash", batch_sha("ash"), "v2/manifests")
+
+    {:ok, ls} = :gen_tcp.listen(port, ip: {127, 0, 0, 1}, active: false)
+    on_exit(fn -> :gen_tcp.close(ls) end)
+
+    assert {:ok, _} = Fetch.manifest(config, "jason", batch_sha("jason"), "v2/manifests")
+    e = entry(with_app(f, [file_entry(F.file(f, "good"), 4)]))
+    assert {:ok, _} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+    assert {:error, :timeout} = :gen_tcp.accept(ls, 0)
   end
 
   describe "content origins" do

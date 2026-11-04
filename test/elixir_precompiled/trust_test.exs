@@ -910,12 +910,16 @@ defmodule ElixirPrecompiled.TrustTest do
       for why <- ["Status 503 Service Unavailable", "run deadline passed", "econnrefused"] do
         out =
           ExUnit.CaptureIO.capture_io(fn ->
-            assert {:ok, %{sequence: 5}} =
+            assert {:ok, %{sequence: 5, source_unreachable: true}} =
                      Trust.fetch_batch_cached(config, root, answer({:error, {:unreachable, why}}))
           end)
 
         assert out =~ "source unreachable (#{why}); using the cached batch (sequence 5)"
       end
+
+      # A live batch, fresh or revalidated, carries no such flag.
+      assert {:ok, live} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+      refute Map.has_key?(live, :source_unreachable)
     end
 
     test "only while the cached batch passes every check", %{config: config, root: root} do

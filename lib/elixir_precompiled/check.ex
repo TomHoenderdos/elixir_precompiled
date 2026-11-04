@@ -411,15 +411,27 @@ defmodule ElixirPrecompiled.Check do
       checked? = not offline? and Trust.root_check_due?(meta)
       root = if checked?, do: refresh_root(meta, root), else: root
 
-      case Trust.fetch_batch_cached(meta, root, fetch) do
+      meta
+      |> Trust.fetch_batch_cached(root, fetch)
+      |> case do
         {:error, "batch signature invalid"} when not checked? and not offline? ->
           Trust.fetch_batch_cached(meta, refresh_root(meta, root), fetch)
 
         other ->
           other
       end
+      |> source_down(config)
     end
   end
+
+  # A cached batch stood in for an unreachable source: its manifests and
+  # files are not asked of the source again this run.
+  defp source_down({:ok, %{source_unreachable: true}} = result, config) do
+    Fetch.source_unreachable(config)
+    result
+  end
+
+  defp source_down(result, _config), do: result
 
   defp refresh_root(config, root) do
     {:ok, root} =

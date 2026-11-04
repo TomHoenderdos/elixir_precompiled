@@ -60,19 +60,42 @@ defmodule ElixirPrecompiled.Fetch do
 
   @doc false
   # The origins that failed to connect so far in one run (Check makes one
-  # per run and passes it as :dead_origins). A later request to one of them
-  # fails at once as unreachable instead of waiting out another connect
-  # timeout: once the source is down and a cached batch stands in, every
-  # manifest and file it would serve misses fast. Only connection failures
-  # count; an origin that answered (a 5xx, a 404, wrong bytes) is asked
-  # again.
+  # table per run and passes it as :dead_origins). A content origin (a CDN)
+  # that failed to connect is not asked again that run: the source is
+  # still tried after it, so nothing is lost. The source is skipped only
+  # once the batch itself came from the cache because the source was
+  # unreachable (source_unreachable/1); until then a connect failure to it
+  # fails only that one fetch. A skipped request fails at once with the
+  # error the origin first failed with, so the line a user reads is the
+  # same either way. Only connection failures count; an origin that
+  # answered (a 5xx, a 404, wrong bytes) is asked again.
   @spec new_dead_origins() :: :ets.tid()
   def new_dead_origins(), do: :ets.new(__MODULE__, [:set, :public])
 
-  # A dead origin answers with the error it failed with first, so the line
-  # a user reads is the same either way.
+  @doc false
+  # The batch came from the cache because the source could not be reached:
+  # the source, if it failed to connect this run, is skipped from now on.
+  @spec source_unreachable(map()) :: :ok
+  def source_unreachable(config) do
+    case dead_origins(config) do
+      {table, source} when source != nil -> _ = :ets.update_element(table, source, {3, :dead})
+      _ -> :ok
+    end
+
+    :ok
+  rescue
+    ArgumentError -> :ok
+  end
+
+  defp dead_origins(config) do
+    case Map.get(config, :dead_origins) do
+      nil -> nil
+      table -> {table, origin_key(Map.get(config, :source, ""))}
+    end
+  end
+
   defp guarded(opts, url, request) do
-    table = Keyword.get(opts, :dead_origins)
+    {table, source} = Keyword.get(opts, :dead_origins) || {nil, nil}
     key = origin_key(url)
 
     case dead(table, key) do
@@ -81,7 +104,10 @@ defmodule ElixirPrecompiled.Fetch do
 
       nil ->
         result = request.()
-        if connect_failure?(result), do: mark_dead(table, key, result)
+
+        if connect_failure?(result),
+          do: record(table, key, result, if(key == source, do: :seen, else: :dead))
+
         result
     end
   end
@@ -99,18 +125,18 @@ defmodule ElixirPrecompiled.Fetch do
 
   defp dead(table, key) do
     case :ets.lookup(table, key) do
-      [{^key, error}] -> error
-      [] -> nil
+      [{^key, error, :dead}] -> error
+      _ -> nil
     end
   rescue
     ArgumentError -> nil
   end
 
-  defp mark_dead(nil, _, _), do: :ok
-  defp mark_dead(_, nil, _), do: :ok
+  defp record(nil, _, _, _), do: :ok
+  defp record(_, nil, _, _), do: :ok
 
-  defp mark_dead(table, key, error) do
-    :ets.insert_new(table, {key, error})
+  defp record(table, key, error, state) do
+    :ets.insert_new(table, {key, error, state})
     :ok
   rescue
     ArgumentError -> :ok
@@ -190,7 +216,7 @@ defmodule ElixirPrecompiled.Fetch do
     do: [
       connect_timeout_ms: Map.get(config, :connect_timeout_ms, 5_000),
       offline: Map.get(config, :offline, false),
-      dead_origins: Map.get(config, :dead_origins)
+      dead_origins: dead_origins(config)
     ]
 
   defp deadline_opt(config) do

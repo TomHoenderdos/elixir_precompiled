@@ -22,8 +22,10 @@
   `ELIXIR_PRECOMPILED_OFFLINE=1` works from the cache; a run has a network
   deadline (`:deadline_seconds`, 300; root and batch 15 s). When the source
   cannot be reached, a cached batch that still passes every check is used;
-  a refused response never falls back. An origin that fails to connect is
-  not asked again in the same run, so its manifests and files miss at once.
+  a refused response never falls back. A source that failed to connect is
+  then not asked again in that run, so uncached manifests and files miss at once; a content
+  origin that fails to connect is skipped for the run (the source still
+  serves).
 * Content origins: the signed batch (or `:content`) may name CDNs for files
   and manifests, with fallback to the source; every byte is still checked.
 * An installed build is kept while the batch still offers its exact files,
