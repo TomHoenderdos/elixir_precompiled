@@ -31,7 +31,19 @@ defmodule ChainTest.Layer2Fixture do
     File.write!(root_path, root)
 
     served = Path.join(tmp, "served")
-    manifest = Synthetic.manifest("1.4.5", [Synthetic.build(files(), outer: @outer)])
+    # First, a build for another system whose files the snapshot never
+    # fetches: forgeries must take their bytes from a build it holds.
+    foreign =
+      Synthetic.build(
+        %{"ebin/Elixir.Jason.beam" => "foreign beam", "ebin/jason.app" => "foreign app"},
+        outer: @outer,
+        target: "nerves_system_other",
+        system_version: "1.0.0"
+      )
+
+    manifest =
+      Synthetic.manifest("1.4.5", [foreign, Synthetic.build(files(), outer: @outer)])
+
     Synthetic.serve_manifest(served, "v2/manifests", "jason", manifest)
 
     for {_path, bytes} <- files() do

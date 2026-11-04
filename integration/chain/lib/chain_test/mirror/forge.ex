@@ -141,9 +141,17 @@ defmodule ChainTest.Mirror.Forge do
   defp context(snap) do
     dep = Map.get(snap.deps, @target) || raise ArgumentError, "the snapshot holds no #{@target}"
     doc = snap.dir |> Path.join(dep.manifest) |> File.read!() |> JSON.decode!()
-    entries = Enum.flat_map(builds(doc, dep.version), &List.wrap(&1["ebin"]))
-    app = Enum.find(entries, &(&1["path"] == "ebin/#{@target}.app")) || raise "no .app entry"
-    beam = Enum.find(entries, &String.ends_with?(&1["path"], ".beam")) || raise "no beam entry"
+    # The .app and a beam of one build whose files the snapshot holds (a
+    # build the client could select): the bytes an extra entry names must
+    # be servable, or the client refuses on a 404 instead of the forgery.
+    {app, beam} =
+      Enum.find_value(builds(doc, dep.version), fn b ->
+        ebin = List.wrap(b["ebin"])
+        app = Enum.find(ebin, &(&1["path"] == "ebin/#{@target}.app"))
+        beam = Enum.find(ebin, &String.ends_with?(to_string(&1["path"]), ".beam"))
+
+        if app && beam && Enum.all?([app, beam], &held?(snap, &1)), do: {app, beam}
+      end) || raise ArgumentError, "the snapshot holds no #{@target} build with a .app and a beam"
 
     other =
       snap.deps |> Map.delete(@target) |> Enum.sort() |> List.first() ||
@@ -158,6 +166,11 @@ defmodule ChainTest.Mirror.Forge do
       other: other
     }
   end
+
+  defp held?(snap, %{"sha256" => sha}) when is_binary(sha),
+    do: File.regular?(Path.join([snap.dir, "files", sha]))
+
+  defp held?(_snap, _entry), do: false
 
   defp forge(kind, ctx) when kind in [:path_dep, :unlocked_package], do: {ctx.doc, []}
 
@@ -192,8 +205,8 @@ defmodule ChainTest.Mirror.Forge do
   defp change(:outside_dirs, b, ctx),
     do: add(b, "ebin", %{ctx.app | "path" => "lib/chain_forged.beam"})
 
-  defp change(:setuid, b, ctx), do: replace_app(b, %{ctx.app | "mode" => 0o104755})
-  defp change(:mode_777, b, ctx), do: replace_app(b, %{ctx.app | "mode" => 0o100777})
+  defp change(:setuid, b, _ctx), do: app_mode(b, 0o104755)
+  defp change(:mode_777, b, _ctx), do: app_mode(b, 0o100777)
 
   defp change(:escape_app_dir, b, ctx),
     do:
@@ -235,6 +248,16 @@ defmodule ChainTest.Mirror.Forge do
     do: %{entry | "sha256" => other["sha256"], "size" => other["size"]}
 
   defp add(build, list, entry), do: Map.update(build, list, [entry], &(List.wrap(&1) ++ [entry]))
+
+  # Each build's own .app entry, its mode changed.
+  defp app_mode(build, mode) do
+    Map.update(build, "ebin", [], fn ebin ->
+      Enum.map(
+        ebin,
+        &if(&1["path"] == "ebin/#{@target}.app", do: %{&1 | "mode" => mode}, else: &1)
+      )
+    end)
+  end
 
   defp replace_app(build, entry) do
     Map.update(build, "ebin", [], fn ebin ->

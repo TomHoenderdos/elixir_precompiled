@@ -183,9 +183,13 @@ defmodule ChainTest.Mirror.Layer2Test do
         assert Enum.any?(entries(build), &(&1["path"] == path)), "#{kind}"
       end
 
+      app = fn build -> Enum.find(build["ebin"], &(&1["path"] == "ebin/jason.app")) end
+
       for {kind, mode} <- [setuid: 0o104755, mode_777: 0o100777],
-          build <- forged_builds(s, kind) do
-        assert %{"mode" => ^mode} = Enum.find(build["ebin"], &(&1["path"] == "ebin/jason.app"))
+          {real, build} <- Enum.zip(forged_builds(s, :package_checksum), forged_builds(s, kind)) do
+        assert %{"mode" => ^mode} = app.(build)
+        # Each build keeps its own .app bytes.
+        assert app.(build)["sha256"] == app.(real)["sha256"]
       end
     end
 
@@ -229,9 +233,14 @@ defmodule ChainTest.Mirror.Layer2Test do
       end
     end
 
-    test "every file a forged manifest names is served", %{s: s} do
+    test "every file a selectable forged build names is served, not a foreign build's", %{s: s} do
+      [foreign, _own] = forged_builds(s, :dotdot)
+      assert foreign["target"] == "nerves_system_other"
+      refute File.regular?(Path.join(s.dir, "files/#{hd(foreign["ebin"])["sha256"]}"))
+
       for kind <- Forge.kinds(),
           build <- forged_builds(s, kind),
+          build["target"] == "pure_elixir",
           %{"sha256" => sha} <- entries(build),
           do: assert(File.regular?(Path.join(s.dir, "files/#{sha}")), "#{kind}: #{sha}")
     end
