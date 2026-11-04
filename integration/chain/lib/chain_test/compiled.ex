@@ -24,6 +24,11 @@ defmodule ChainTest.Compiled do
     * `compiled_here` - every dep compiled here, `:pass` when each is on
       the allowlist or a miss or fail in the report, `:fail` naming the
       rest.
+    * `reported_miss:<dep>` per dep the report calls a miss or fail (not a
+      hit): `:pass` when `.mix/compile.elixir` exists, or, for a dep without
+      Elixir sources in `deps/<dep>/lib`, when the marker exists without the
+      client's provenance file; `:disagreement` otherwise; `:not_exercised`
+      when `_build` has no such dep.
   """
 
   alias ChainTest.{Integrity, Result}
@@ -47,18 +52,27 @@ defmodule ChainTest.Compiled do
   end
 
   @doc "Runs step 4."
-  @spec run(%{build_lib: Path.t(), report: map(), allowlist: [String.t()]}) :: [Result.t()]
-  def run(%{build_lib: build_lib, report: report, allowlist: allowlist}) do
+  @spec run(%{
+          required(:build_lib) => Path.t(),
+          required(:report) => map(),
+          required(:allowlist) => [String.t()],
+          optional(:deps_path) => Path.t()
+        }) :: [Result.t()]
+  def run(%{build_lib: build_lib, report: report, allowlist: allowlist} = input) do
+    deps_path = Map.get(input, :deps_path, Path.expand("../../../deps", build_lib))
     lines = Enum.filter(Map.get(report, "lines", []), &is_map/1)
     reported = for %{"status" => "hit", "name" => n} <- lines, do: n
     hits = Enum.uniq(reported ++ Integrity.installed(build_lib))
-    reported_misses = for %{"status" => s, "name" => n} <- lines, s in ["miss", "fail"], do: n
+
+    reported_misses =
+      for %{"status" => s, "name" => n} <- lines, s in ["miss", "fail"], is_binary(n), do: n
 
     deps = deps(build_lib)
     compiled = deps |> Enum.filter(&compiled?(build_lib, &1)) |> Enum.sort()
 
     # A compiled hit already fails its own check; the summary covers the rest.
     Enum.map(hits, &hit_result(build_lib, &1, deps)) ++
+      Enum.map(Enum.uniq(reported_misses) -- hits, &miss_result(build_lib, deps_path, &1, deps)) ++
       [summary(compiled -- hits, reported_misses, allowlist)]
   end
 
@@ -111,6 +125,47 @@ defmodule ChainTest.Compiled do
 
       true ->
         result(check, :pass, "#{dep} installed precompiled, not compiled here")
+    end
+  end
+
+  # Mix writes .mix/compile.elixir whenever it compiles a dep with Elixir
+  # sources; a reported miss without one was put in _build by something else.
+  defp miss_result(build_lib, deps_path, dep, deps) do
+    check = "reported_miss:#{dep}"
+    mix = Path.join([build_lib, dep, ".mix"])
+    manifest = Path.join(mix, "compile.elixir")
+    lib = Path.join([deps_path, dep, "lib"])
+
+    cond do
+      dep not in deps ->
+        result(
+          check,
+          :not_exercised,
+          "the report calls #{dep} a miss, but _build has no #{dep}; " <>
+            "the build may have stopped before it"
+        )
+
+      File.exists?(manifest) ->
+        result(check, :pass, "#{dep} compiled here by Mix, as the client reports")
+
+      Path.wildcard(Path.join([lib, "**", "*.ex"])) != [] ->
+        result(
+          check,
+          :disagreement,
+          "the report calls #{dep} a miss and #{lib} has Elixir sources, but #{manifest} " <>
+            "is missing: Mix did not compile it, so its files came from somewhere else"
+        )
+
+      compiled?(build_lib, dep) ->
+        result(check, :pass, "#{dep} has no Elixir sources; compiled here by its own tool")
+
+      true ->
+        result(
+          check,
+          :disagreement,
+          "the report calls #{dep} a miss, but _build/#{dep} has neither Mix's compile " <>
+            "manifest nor its marker: nothing compiled it here"
+        )
     end
   end
 

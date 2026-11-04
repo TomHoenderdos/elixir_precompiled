@@ -95,4 +95,64 @@ defmodule ChainTest.CompiledTest do
     refute Compiled.allowed?("nerves_ssh", list)
     refute Compiled.allowed?("nerves_systemx", list)
   end
+
+  # The fixture's deps/<dep>/lib/<file>, next to the synthetic _build.
+  defp source(build_lib, dep, file) do
+    path = Path.expand("../../../deps/#{dep}/#{file}", build_lib)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, "defmodule X do end\n")
+  end
+
+  test "a reported miss with Elixir sources and Mix's compile manifest passes", %{build_lib: lib} do
+    source(lib, :jason, "lib/jason.ex")
+    Synthetic.dep(lib, :jason, @beam, :elixir)
+    results = run(lib, [{"jason", "1.4.5", "miss", "no manifest"}])
+
+    assert %Result{class: :pass} = find(results, "reported_miss:jason")
+    assert %Result{class: :pass} = find(results, "compiled_here")
+  end
+
+  test "a reported miss with Elixir sources but only the marker is a disagreement",
+       %{build_lib: lib} do
+    source(lib, :jason, "lib/jason.ex")
+    Synthetic.dep(lib, :jason, @beam, :scm)
+    results = run(lib, [{"jason", "1.4.5", "miss", "no manifest"}])
+
+    assert %Result{class: :disagreement, detail: detail} = find(results, "reported_miss:jason")
+    assert detail =~ "compile.elixir"
+  end
+
+  test "a reported miss without Elixir sources compiled by its own tool passes",
+       %{build_lib: lib} do
+    source(lib, :yamerl, "src/yamerl.erl")
+    Synthetic.dep(lib, :yamerl, @beam, :scm)
+    results = run(lib, [{"yamerl", "0.10.0", "fail", "file not available"}])
+
+    assert %Result{class: :pass} = find(results, "reported_miss:yamerl")
+  end
+
+  test "a reported miss without Elixir sources and without any Mix file is a disagreement",
+       %{build_lib: lib} do
+    source(lib, :yamerl, "src/yamerl.erl")
+    beam = Path.join(lib, "yamerl/ebin/yamerl.beam")
+    File.mkdir_p!(Path.dirname(beam))
+    File.write!(beam, "x")
+    results = run(lib, [{"yamerl", "0.10.0", "miss", "no manifest"}])
+
+    assert %Result{class: :disagreement, detail: detail} = find(results, "reported_miss:yamerl")
+    assert detail =~ "marker"
+  end
+
+  test "a reported miss _build does not have is not exercised", %{build_lib: lib} do
+    results = run(lib, [{"jason", "1.4.5", "miss", "no manifest"}])
+
+    assert %Result{class: :not_exercised} = find(results, "reported_miss:jason")
+  end
+
+  test "a hit is not also checked as a miss", %{build_lib: lib} do
+    Synthetic.dep(lib, :jason, @beam, :installed)
+    results = run(lib, [{"jason", "1.4.5", "hit", ""}])
+
+    assert find(results, "reported_miss:jason") == nil
+  end
 end
