@@ -261,7 +261,7 @@ defmodule ChainTest.Conformance do
   defp judge_case(c, run, mirror) do
     %{opts: opts, steps: s, snap: snap} = run
 
-    {rows, report, requests} =
+    {rows, report, requests, tooling} =
       try do
         {build_rows, build} =
           s.build.(%{
@@ -289,7 +289,8 @@ defmodule ChainTest.Conformance do
             allowlist: Compiled.allowlist(@project_app)
           })
 
-        {build_rows ++ integrity ++ compiled, build.report, Mirror.requests(mirror)}
+        {build_rows ++ integrity ++ compiled, build.report, Mirror.requests(mirror),
+         tooling(opts.fixture_dir, build.build_lib)}
       after
         Mirror.stop(mirror)
       end
@@ -302,11 +303,20 @@ defmodule ChainTest.Conformance do
         report: report,
         requests: requests,
         snapshot: snap,
-        hits: run.hits
+        hits: run.hits,
+        tooling: tooling
       })
 
     CLI.print(verdict)
     verdict
+  end
+
+  # The deps nerves pulls in, which the client leaves to nerves_bootstrap.
+  defp tooling(fixture_dir, build_lib) do
+    case Lock.read(Path.join(fixture_dir, "mix.lock")) do
+      {:ok, lock} -> Lock.nerves_children(lock, build_lib)
+      {:error, _} -> []
+    end
   end
 
   @doc false

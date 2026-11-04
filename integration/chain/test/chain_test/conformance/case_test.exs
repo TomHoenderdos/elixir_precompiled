@@ -155,6 +155,27 @@ defmodule ChainTest.Conformance.CaseTest do
                })
     end
 
+    test "a held dep the client treats as Nerves tooling is not judged" do
+      report = Synthetic.report([{"jason", "1.4.5", "hit", ""}])
+
+      input = %{
+        rows: [row(:build, "hit:jason", :pass)],
+        report: report,
+        requests: served(["jason"]),
+        snapshot: snap(%{"jason" => 1, "tablet" => 1}),
+        hits: [:jason],
+        tooling: ["tablet"]
+      }
+
+      assert %Result{class: :pass} = Case.judge(@t0, input)
+
+      # Without it, a held dep with no report line is one the client skipped.
+      assert %Result{class: :fail, detail: detail} =
+               Case.judge(@t0, %{input | tooling: []})
+
+      assert detail =~ "client tablet: expected hit, got no report line"
+    end
+
     test "a client verdict other than expected fails and names the dep" do
       report = Synthetic.report([{"jason", "1.4.5", "miss", "no manifest"}])
 

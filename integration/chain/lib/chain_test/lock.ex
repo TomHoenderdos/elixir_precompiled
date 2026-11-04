@@ -55,4 +55,62 @@ defmodule ChainTest.Lock do
       _ -> nil
     end
   end
+
+  @doc """
+  The locked deps `nerves` pulls in, sorted: the client's Nerves tooling,
+  which `nerves_bootstrap` compiles together with `nerves` before the
+  client runs, so the client never considers them
+  (`ElixirPrecompiled.Match.nerves_children/1`).
+
+  The closure follows each Hex entry's dependency list in the lock, as the
+  client does. A git or path `nerves` has no list in the lock, so its own
+  children come from the `applications` and `optional_applications` of the
+  `nerves.app` Mix compiled into `build_lib`; without that file it has none.
+  """
+  @spec nerves_children(t(), Path.t()) :: [String.t()]
+  def nerves_children(lock, build_lib) do
+    case lock["nerves"] do
+      nil ->
+        []
+
+      entry ->
+        entry
+        |> children(lock, build_lib)
+        |> closure(lock, MapSet.new())
+        |> MapSet.delete("nerves")
+        |> Enum.sort()
+    end
+  end
+
+  defp closure([], _lock, seen), do: seen
+
+  defp closure([name | rest], lock, seen) do
+    if MapSet.member?(seen, name),
+      do: closure(rest, lock, seen),
+      else: closure(lock_children(lock[name], lock) ++ rest, lock, MapSet.put(seen, name))
+  end
+
+  defp children({:hex, _, _, _, _, _, _, _} = entry, lock, _build_lib),
+    do: lock_children(entry, lock)
+
+  defp children(_entry, lock, build_lib) do
+    path = Path.join([build_lib, "nerves", "ebin", "nerves.app"])
+
+    case :file.consult(String.to_charlist(path)) do
+      {:ok, [{:application, :nerves, props}]} ->
+        apps =
+          Keyword.get(props, :applications, []) ++ Keyword.get(props, :optional_applications, [])
+
+        for app <- apps, name = Atom.to_string(app), Map.has_key?(lock, name), do: name
+
+      _ ->
+        []
+    end
+  end
+
+  defp lock_children({:hex, _, _, _, _, deps, _, _}, lock) when is_list(deps) do
+    for {dep, _req, _opts} <- deps, name = Atom.to_string(dep), Map.has_key?(lock, name), do: name
+  end
+
+  defp lock_children(_entry, _lock), do: []
 end

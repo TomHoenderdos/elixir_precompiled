@@ -24,8 +24,9 @@ defmodule ChainTest.Conformance.Case do
       applied to every response of the case's mirror.
     * `client` - what the client's `report.json` must say for each of the
       fixture's expected hits (`expected.exs`), each dep named in `deps`
-      and each dep the snapshot holds a build of: `deps[dep]`, else
-      `default`.
+      and each dep the snapshot holds a build of, except the deps `nerves`
+      pulls in (`ChainTest.Lock.nerves_children/2`), which the client
+      never considers: `deps[dep]`, else `default`.
       An expectation is a report status (`:hit`, `:miss`, `:fail`), a status
       with a detail prefix (`{:miss, "batch stale"}`), or `:snapshot`: a hit
       when the snapshot holds a build the client could select, else a miss.
@@ -155,13 +156,17 @@ defmodule ChainTest.Conformance.Case do
 
   @doc "The case's verdict on one run (see the moduledoc)."
   @spec judge(t(), %{
-          rows: [Result.t()],
-          report: map(),
-          requests: [Mirror.request()],
-          snapshot: map(),
-          hits: [atom()]
+          required(:rows) => [Result.t()],
+          required(:report) => map(),
+          required(:requests) => [Mirror.request()],
+          required(:snapshot) => map(),
+          required(:hits) => [atom()],
+          optional(:tooling) => [String.t()]
         }) :: Result.t()
-  def judge(c, %{rows: rows, report: report, requests: requests, snapshot: snap, hits: hits}) do
+  def judge(
+        c,
+        %{rows: rows, report: report, requests: requests, snapshot: snap, hits: hits} = input
+      ) do
     unused = unused_mirror(report, requests, snap)
     identity? = match?({@identity, _}, c.transform)
 
@@ -175,7 +180,7 @@ defmodule ChainTest.Conformance.Case do
       true ->
         problems =
           unused ++
-            client_problems(c, report, snap, hits) ++
+            client_problems(c, report, snap, hits, input) ++
             unheld_hits(report, snap) ++ harness_problems(c, rows)
 
         case problems do
@@ -231,11 +236,13 @@ defmodule ChainTest.Conformance.Case do
   end
 
   # Every expected hit, every dep the case names and every dep the snapshot
-  # holds a build of.
-  defp client_problems(c, report, snap, hits) do
+  # holds a build of, except the Nerves tooling the client never considers
+  # (`ChainTest.Lock.nerves_children/2`, given as `:tooling`).
+  defp client_problems(c, report, snap, hits, input) do
     lines = lines(report)
     named = Map.new(c.client.deps, fn {dep, want} -> {to_string(dep), want} end)
-    held = for {name, _} <- snap.deps, held?(snap, name), do: name
+    tooling = Map.get(input, :tooling, [])
+    held = for {name, _} <- snap.deps, held?(snap, name), name not in tooling, do: name
 
     (Enum.map(hits, &to_string/1) ++ Map.keys(named) ++ Enum.sort(held))
     |> Enum.uniq()
