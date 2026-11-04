@@ -523,12 +523,32 @@ defmodule ElixirPrecompiled.FetchTest do
 
     e = entry(with_app(f, [file_entry(beam_sha, 1)]))
 
-    assert {:fail, "cache refused" <> _} =
+    assert {:fail, "cache refused (" <> why} =
              Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
 
+    assert why =~ link
+    assert why =~ "remove it"
     refute File.exists?(Path.join(lib, "ash"))
     assert {:ok, %File.Stat{type: :symlink}} = File.lstat(link)
     assert File.read!(Path.join(elsewhere, "b")) == "b"
+  end
+
+  test "a home that is itself a symlink works (a cache moved to another disk)", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps,
+    tmp_dir: dir
+  } do
+    real = Path.join(dir, "other_disk")
+    File.mkdir_p!(real)
+    File.ln_s!(real, config.home)
+    F.publish(f, %{"ash" => %{"versions" => %{}}})
+    assert {:ok, _} = Fetch.manifest(config, "ash", batch_sha("ash"), "v2/manifests")
+    e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+    assert {:ok, _} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+    assert File.read!(Path.join([real, "files", F.file(f, "b")])) == "b"
+    assert {:ok, %{cached: 2}} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
   end
 
   test "a cache dir that is a symlink is never read or written through", %{
@@ -682,17 +702,24 @@ defmodule ElixirPrecompiled.FetchTest do
     refute File.exists?(Path.join(lib, ".precompiled/ash"))
   end
 
-  for {label, paths} <- [
-        {"a duplicate path", ["ebin/Elixir.A.beam", "ebin/Elixir.A.beam"]},
-        {"a case variant", ["ebin/Elixir.A.beam", "ebin/elixir.a.beam"]},
-        {"a Unicode normalisation variant", ["priv/caf\u00e9.txt", "priv/cafe\u0301.txt"]}
+  # A non-canonical spelling of a path is refused as unsafe on its own, so
+  # it never reaches the collision check as a second name for one file.
+  for {label, paths, why} <- [
+        {"a duplicate path", ["ebin/Elixir.A.beam", "ebin/Elixir.A.beam"], "path collision: "},
+        {"a case variant", ["ebin/Elixir.A.beam", "ebin/elixir.a.beam"], "path collision: "},
+        {"a Unicode normalisation variant", ["priv/caf\u00e9.txt", "priv/cafe\u0301.txt"],
+         "path collision: "},
+        {"a . component", ["ebin/./Elixir.A.beam", "ebin/Elixir.A.beam"], "unsafe path or mode"},
+        {"an empty component", ["ebin//Elixir.A.beam", "ebin/Elixir.A.beam"],
+         "unsafe path or mode"},
+        {"a trailing slash", ["ebin/Elixir.A.beam/", "ebin/Elixir.A.beam"], "unsafe path or mode"}
       ] do
     test "#{label} refuses the dependency", %{f: f, config: config, build_lib: lib, deps: deps} do
       files =
         for {p, i} <- Enum.with_index(unquote(paths)),
             do: file_entry(F.file(f, "#{i}"), byte_size("#{i}"), p)
 
-      assert {:fail, "path collision: " <> _} =
+      assert {:fail, unquote(why) <> _} =
                Fetch.install(config, :ash, entry(with_app(f, files)), @lock_entry, lib,
                  deps_path: deps
                )
@@ -712,7 +739,10 @@ defmodule ElixirPrecompiled.FetchTest do
   for {label, path} <- [
         {"the project's own .app", "ebin/chain_fixture.app"},
         {"another app's .app in a case variant", "ebin/Other.APP"},
-        {"an .app nested under ebin", "ebin/sub/ash.app"}
+        {"an .app nested under ebin", "ebin/sub/ash.app"},
+        {"a beam with an upper-case suffix", "ebin/Elixir.Jason.BEAM"},
+        {"a beam in a subdirectory of ebin", "ebin/sub/Elixir.Jason.beam"},
+        {"any other file in ebin", "ebin/ash.appup"}
       ] do
     test "#{label} in a build is a foreign path", %{
       f: f,

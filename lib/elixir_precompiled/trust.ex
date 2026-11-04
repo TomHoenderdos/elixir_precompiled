@@ -474,8 +474,8 @@ defmodule ElixirPrecompiled.Trust do
 
         {:ok, batch}
 
-      {:error, _} ->
-        {:error, "batch unavailable: #{why}"}
+      {:error, cached_why} ->
+        {:error, "batch unavailable: #{why} (cached batch: #{cached_why})"}
     end
   end
 

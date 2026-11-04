@@ -235,11 +235,16 @@ defmodule ElixirPrecompiled.Fetch do
     case File.lstat(path) do
       {:ok, %File.Stat{type: :regular, size: size}} when size > max -> :absent
       {:ok, %File.Stat{type: :regular} = stat} -> read_regular(path, stat, max)
-      {:ok, %File.Stat{}} -> {:fail, "cache refused (#{path} is not a regular file)"}
+      {:ok, %File.Stat{}} -> {:fail, "cache refused (#{path} is not a regular file; remove it)"}
       {:error, _} -> :absent
     end
   end
 
+  # Not closed: a regular file swapped for a FIFO between the lstat and this
+  # open blocks the open until a writer comes (Erlang has neither
+  # O_NONBLOCK nor O_NOFOLLOW for files). It needs someone who can already
+  # write the user's own cache; a swap to a symlink or another file is
+  # caught by the inode check after the open.
   defp read_regular(path, lstat, max) do
     case :file.open(String.to_charlist(path), [:read, :raw, :binary]) do
       {:ok, fd} ->
@@ -300,12 +305,15 @@ defmodule ElixirPrecompiled.Fetch do
       {:ok, %File.Stat{}} ->
         refused(dir)
 
+      # eacces and the like: nothing is there that could be followed, and
+      # reads and writes under it then fail on their own, costing only a
+      # download, as a home that takes no writes does.
       {:error, _} ->
         {:ok, dir}
     end
   end
 
-  defp refused(dir), do: {:fail, "cache refused (#{dir} is not a plain directory)"}
+  defp refused(dir), do: {:fail, "cache refused (#{dir} is not a plain directory; remove it)"}
 
   @doc """
   Removes the temp files (`*.tmp-*`) that runs killed mid-write left in
@@ -447,19 +455,21 @@ defmodule ElixirPrecompiled.Fetch do
     |> :unicode.characters_to_nfc_binary()
   end
 
-  # The only .app a build may carry is the dep's own, at ebin/<dep>.app:
-  # another one in ebin (the project's own, or another dep's) would sit on
-  # the code path ahead of the real one (spec P3). Case-folded, as the
-  # filesystem may fold it.
+  # ebin holds the dep's own .app, at ebin/<dep>.app, and beams directly
+  # in it with an exact lower-case ".beam", nothing else: another .app (the
+  # project's own, or another dep's) would sit on the code path ahead of
+  # the real one (spec P3), and "X.BEAM" loads as X on a case-insensitive
+  # filesystem without counting as a beam for modules_ok/2.
   defp foreign(files, app) do
-    own = fold(app)
-
     Enum.find_value(files, fn %{"path" => path} ->
-      folded = fold(path)
+      case path do
+        "ebin/" <> name ->
+          unless path == app or (String.ends_with?(name, ".beam") and not (name =~ "/")),
+            do: "foreign path: #{inspect(path)} does not belong in ebin"
 
-      if String.starts_with?(folded, "ebin/") and String.ends_with?(folded, ".app") and
-           folded != own,
-         do: "foreign path: #{inspect(path)} is not #{Path.basename(app)}"
+        _ ->
+          nil
+      end
     end)
   end
 
@@ -480,8 +490,8 @@ defmodule ElixirPrecompiled.Fetch do
       beams =
         ebin
         |> File.ls!()
-        |> Enum.filter(&String.ends_with?(&1, ".beam"))
-        |> MapSet.new(&Path.rootname/1)
+        |> Enum.filter(&String.ends_with?(String.downcase(&1), ".beam"))
+        |> MapSet.new(&binary_part(&1, 0, byte_size(&1) - 5))
 
       cond do
         beams == listed ->
@@ -525,11 +535,17 @@ defmodule ElixirPrecompiled.Fetch do
     String.valid?(path) and not String.contains?(path, <<0>>) and
       not String.contains?(path, "\\") and
       (String.starts_with?(path, "ebin/") or String.starts_with?(path, "priv/")) and
-      Path.type(path) == :relative and not Enum.member?(Path.split(path), "..") and
+      Path.type(path) == :relative and canonical?(path) and
       Path.expand(path, "/x") |> String.starts_with?("/x/")
   end
 
   def safe_path?(_), do: false
+
+  # One spelling per file: no "..", "." or empty component and no trailing
+  # slash, so "ebin/./a.beam" or "ebin//a.beam" can never be a second name
+  # for "ebin/a.beam" that the collision check would not see.
+  defp canonical?(path),
+    do: path |> String.split("/") |> Enum.all?(&(&1 not in ["", ".", ".."]))
 
   @spec safe_mode?(term()) :: boolean()
   def safe_mode?(mode), do: mode in @ok_modes

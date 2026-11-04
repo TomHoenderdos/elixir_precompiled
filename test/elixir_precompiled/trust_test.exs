@@ -883,8 +883,10 @@ defmodule ElixirPrecompiled.TrustTest do
       later = Map.put(config, :clock_offset_seconds, 25 * 3600)
       unreachable = answer({:error, {:unreachable, "Status 502 Bad Gateway"}})
 
-      assert {:error, "batch unavailable: Status 502 Bad Gateway"} =
+      assert {:error, "batch unavailable: Status 502 Bad Gateway (cached batch: " <> why} =
                Trust.fetch_batch_cached(later, root, unreachable)
+
+      assert why =~ "batch stale"
     end
 
     test "never on a response the source gave and that is refused", %{
