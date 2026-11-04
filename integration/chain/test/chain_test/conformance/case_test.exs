@@ -127,6 +127,34 @@ defmodule ChainTest.Conformance.CaseTest do
       assert %Result{step: :conformance, check: "T0", class: :pass} = verdict
     end
 
+    test "a dep the snapshot holds a build of is judged even outside the expected hits" do
+      report =
+        Synthetic.report([{"jason", "1.4.5", "hit", ""}, {"decimal", "2.3.0", "miss", "x"}])
+
+      input = %{
+        rows: [row(:build, "hit:jason", :pass)],
+        report: report,
+        requests: served(["jason"]),
+        snapshot: snap(%{"jason" => 1, "decimal" => 1, "telemetry" => 0}),
+        hits: [:jason]
+      }
+
+      assert %Result{class: :fail, detail: detail} = Case.judge(@t0, input)
+      assert detail =~ "client decimal: expected hit, got miss"
+      refute detail =~ "telemetry"
+
+      # Reported a hit, and served, it passes.
+      report =
+        Synthetic.report([{"jason", "1.4.5", "hit", ""}, {"decimal", "2.3.0", "hit", ""}])
+
+      assert %Result{class: :pass} =
+               Case.judge(@t0, %{
+                 input
+                 | report: report,
+                   requests: served(["jason", "decimal"])
+               })
+    end
+
     test "a client verdict other than expected fails and names the dep" do
       report = Synthetic.report([{"jason", "1.4.5", "miss", "no manifest"}])
 

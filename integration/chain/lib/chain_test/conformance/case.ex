@@ -23,8 +23,9 @@ defmodule ChainTest.Conformance.Case do
       args map (checked with the module's `valid_args?/1` when it has one),
       applied to every response of the case's mirror.
     * `client` - what the client's `report.json` must say for each of the
-      fixture's expected hits (`expected.exs`) and each dep named in
-      `deps`: `deps[dep]`, else `default`.
+      fixture's expected hits (`expected.exs`), each dep named in `deps`
+      and each dep the snapshot holds a build of: `deps[dep]`, else
+      `default`.
       An expectation is a report status (`:hit`, `:miss`, `:fail`), a status
       with a detail prefix (`{:miss, "batch stale"}`), or `:snapshot`: a hit
       when the snapshot holds a build the client could select, else a miss.
@@ -229,14 +230,17 @@ defmodule ChainTest.Conformance.Case do
         do: {n, l}
   end
 
+  # Every expected hit, every dep the case names and every dep the snapshot
+  # holds a build of.
   defp client_problems(c, report, snap, hits) do
     lines = lines(report)
+    named = Map.new(c.client.deps, fn {dep, want} -> {to_string(dep), want} end)
+    held = for {name, _} <- snap.deps, held?(snap, name), do: name
 
-    (hits ++ Map.keys(c.client.deps))
+    (Enum.map(hits, &to_string/1) ++ Map.keys(named) ++ Enum.sort(held))
     |> Enum.uniq()
-    |> Enum.flat_map(fn dep ->
-      name = to_string(dep)
-      want = resolve(Map.get(c.client.deps, dep, c.client.default), snap, name)
+    |> Enum.flat_map(fn name ->
+      want = resolve(Map.get(named, name, c.client.default), snap, name)
       got = lines[name]
 
       if matches?(want, got),
