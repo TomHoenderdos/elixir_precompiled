@@ -7,19 +7,52 @@ permissions:
   contents: read
 jobs:
   test:
+    name: test (Elixir ${{ matrix.elixir }}, OTP ${{ matrix.otp }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Below 1.18 the build has no Igniter: proves the library and its
+          # tests need none.
+          - elixir: "1.17.3"
+            otp: "27.3"
+            no_igniter: true
+          - elixir: "1.18.4"
+            otp: "27.3"
+          - elixir: "1.19.5"
+            otp: "28.3"
+          - elixir: "1.20.3"
+            otp: "29.0.5"
+            lint: true
     steps:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
-          version-file: .tool-versions
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
           version-type: strict
       - run: mix deps.get
-      - run: mix format --check-formatted
+      # Formatting and Credo follow the newest Elixir; older formatters and
+      # Credo's checks for them would disagree with it.
+      - if: matrix.lint
+        run: mix format --check-formatted
+      - if: matrix.lint
+        run: mix credo --strict
       - run: mix compile --warnings-as-errors
-      - run: mix credo --strict
+      - if: matrix.no_igniter
+        name: no Igniter in the build; the installer task says what to do instead
+        run: |
+          if mix deps | grep -q igniter; then echo "igniter is a dependency below 1.18"; exit 1; fi
+          mix elixir_precompiled.install 2>&1 | grep -q "runs through Igniter"
       - run: mix test
-      - run: MIX_ENV=prod mix archive.build -o /tmp/elixir_precompiled.ez
+      # Child Mix projects against the local fixture (plain, umbrella, alias
+      # order, a git dependency, Mix.install/2, and from 1.18 the Igniter
+      # installer): the deps.loadpaths alias on each Mix in the range.
+      # Children fetch from hex.pm into a private HEX_HOME.
+      - run: mix test --only integration
+      - if: matrix.lint
+        run: MIX_ENV=prod mix archive.build -o /tmp/elixir_precompiled.ez
   chain:
     runs-on: ubuntu-24.04
     steps:

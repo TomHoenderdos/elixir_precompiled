@@ -4,7 +4,7 @@
 #
 defmodule ElixirPrecompiled.Trust do
   @moduledoc """
-  The trust chain's top: a root document shipped with `nerves` names the
+  The trust chain's top: a root document shipped with this library names the
   keys allowed to sign batches; a batch names every manifest by hash. Both
   travel in an envelope signed over raw bytes. Sequence numbers only go up.
 
