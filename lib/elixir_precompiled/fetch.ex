@@ -455,7 +455,8 @@ defmodule ElixirPrecompiled.Fetch do
     |> :unicode.characters_to_nfc_binary()
   end
 
-  # ebin holds the dep's own .app, at ebin/<dep>.app, and beams directly
+  # ebin holds the dep's own .app, at ebin/<dep>.app, its own .appup
+  # (release-upgrade data, never loaded as code), and beams directly
   # in it with an exact lower-case ".beam", nothing else: another .app (the
   # project's own, or another dep's) would sit on the code path ahead of
   # the real one (spec P3), and "X.BEAM" loads as X on a case-insensitive
@@ -464,8 +465,9 @@ defmodule ElixirPrecompiled.Fetch do
     Enum.find_value(files, fn %{"path" => path} ->
       case path do
         "ebin/" <> name ->
-          unless path == app or (String.ends_with?(name, ".beam") and not (name =~ "/")),
-            do: "foreign path: #{inspect(path)} does not belong in ebin"
+          unless path in [app, Path.rootname(app) <> ".appup"] or
+                   (String.ends_with?(name, ".beam") and not (name =~ "/")),
+                 do: "foreign path: #{inspect(path)} does not belong in ebin"
 
         _ ->
           nil

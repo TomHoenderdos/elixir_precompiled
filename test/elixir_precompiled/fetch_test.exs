@@ -742,7 +742,8 @@ defmodule ElixirPrecompiled.FetchTest do
         {"an .app nested under ebin", "ebin/sub/ash.app"},
         {"a beam with an upper-case suffix", "ebin/Elixir.Jason.BEAM"},
         {"a beam in a subdirectory of ebin", "ebin/sub/Elixir.Jason.beam"},
-        {"any other file in ebin", "ebin/ash.appup"}
+        {"another app's .appup", "ebin/jason.appup"},
+        {"any other file in ebin", "ebin/ash.txt"}
       ] do
     test "#{label} in a build is a foreign path", %{
       f: f,
@@ -759,6 +760,23 @@ defmodule ElixirPrecompiled.FetchTest do
 
       refute File.exists?(Path.join(lib, "ash"))
     end
+  end
+
+  test "the dep's own .appup is allowed in ebin", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    appup = "{\"1\",[],[]}."
+    files = [file_entry(F.file(f, appup), byte_size(appup), "ebin/ash.appup")]
+
+    assert {:ok, _} =
+             Fetch.install(config, :ash, entry(with_app(f, files)), @lock_entry, lib,
+               deps_path: deps
+             )
+
+    assert File.exists?(Path.join(lib, "ash/ebin/ash.appup"))
   end
 
   test "a beam the .app does not list is refused (no shadowing another app's module)", %{
