@@ -65,6 +65,28 @@ defmodule ElixirPrecompiledTest do
     assert ElixirPrecompiled.run(env: env, allow_host: true) == :nothing_to_do
   end
 
+  @tag :tmp_dir
+  test "the memo proof changes when an installed dep's ebin or provenance goes", %{
+    tmp_dir: lib
+  } do
+    result = {:ok, %{lines: [%{status: :hit, name: "jason"}, %{status: :miss, name: "x"}]}}
+    File.mkdir_p!(Path.join(lib, "jason/ebin"))
+    File.mkdir_p!(Path.join(lib, "jason/.mix"))
+    File.write!(Path.join(lib, "jason/ebin/jason.app"), "")
+    File.write!(ElixirPrecompiled.Fetch.provenance_path(lib, "jason"), "{}")
+    proof = ElixirPrecompiled.memo_proof(result, lib)
+    assert proof == {["jason"], [true]}
+
+    File.rm_rf!(Path.join(lib, "jason/ebin"))
+    refute ElixirPrecompiled.memo_proof(result, lib) == proof
+
+    File.mkdir_p!(Path.join(lib, "jason/ebin"))
+    File.write!(Path.join(lib, "jason/ebin/jason.app"), "")
+    assert ElixirPrecompiled.memo_proof(result, lib) == proof
+    File.rm!(ElixirPrecompiled.Fetch.provenance_path(lib, "jason"))
+    refute ElixirPrecompiled.memo_proof(result, lib) == proof
+  end
+
   test "with a source and a target, an empty env is nothing to do", %{env: env} do
     Application.put_env(:elixir_precompiled, :source, "https://example.test/x")
     assert ElixirPrecompiled.run(env: env, host?: false) == :nothing_to_do

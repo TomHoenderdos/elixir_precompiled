@@ -194,7 +194,7 @@ defmodule ElixirPrecompiled.ChildProject do
       &run_cmd(
         exe,
         args,
-        Keyword.put(opts, :env, hex_env(hex_home, &1) ++ Keyword.get(opts, :env, []))
+        Keyword.put(opts, :env, Keyword.get(opts, :env, []) ++ hex_env(hex_home, &1))
       )
 
     {out, status} = run.(offline?)
@@ -202,7 +202,7 @@ defmodule ElixirPrecompiled.ChildProject do
     # A seeded cache another Hex version wrote reads as empty to this one.
     {out, status} =
       if offline? and status != 0 and out =~ "is not cached locally" do
-        File.write!(Path.join(hex_home, ".seeded"), "online")
+        File.write!(Path.join(hex_home, ".seeded"), seed_marker(false, packages))
         run.(false)
       else
         {out, status}
@@ -229,25 +229,39 @@ defmodule ElixirPrecompiled.ChildProject do
   end
 
   # Copies the user's Hex registry cache and the packages' tarballs into
-  # `home` once; true when all were there to copy. Later calls read the
-  # answer back from .seeded.
+  # `home`; true when all were there to copy. .seeded records the answer for
+  # this package list; a call with another list seeds again.
   defp seed_hex_home!(home, packages) do
     marker = Path.join(home, ".seeded")
 
-    if File.exists?(marker) do
-      File.read!(marker) == "offline"
-    else
-      src = System.get_env("HEX_HOME") || Path.join(System.user_home!(), ".hex")
-      File.mkdir_p!(Path.join(home, "packages/hexpm"))
-      files = ["cache.ets" | Enum.map(packages, &"packages/hexpm/#{&1}.tar")]
+    case File.read(marker) do
+      {:ok, content} ->
+        cond do
+          content == seed_marker(true, packages) -> true
+          content == seed_marker(false, packages) -> false
+          true -> seed!(home, packages, marker)
+        end
 
-      offline? =
-        Enum.all?(files, fn rel ->
-          match?({:ok, _}, File.copy(Path.join(src, rel), Path.join(home, rel)))
-        end)
-
-      File.write!(marker, if(offline?, do: "offline", else: "online"))
-      offline?
+      {:error, _} ->
+        seed!(home, packages, marker)
     end
   end
+
+  defp seed!(home, packages, marker) do
+    src = System.get_env("HEX_HOME") || Path.join(System.user_home!(), ".hex")
+    File.mkdir_p!(Path.join(home, "packages/hexpm"))
+    files = ["cache.ets" | Enum.map(packages, &"packages/hexpm/#{&1}.tar")]
+
+    offline? =
+      Enum.all?(files, fn rel ->
+        match?({:ok, _}, File.copy(Path.join(src, rel), Path.join(home, rel)))
+      end)
+
+    File.write!(marker, seed_marker(offline?, packages))
+    offline?
+  end
+
+  defp seed_marker(offline?, packages),
+    do:
+      "#{if offline?, do: "offline", else: "online"} #{packages |> Enum.sort() |> Enum.join(",")}"
 end

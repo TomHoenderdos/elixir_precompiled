@@ -25,6 +25,11 @@ defmodule Mix.Tasks.Precompiled.Install do
   Mix would compile every dependency first. In an umbrella the alias goes
   in the root `mix.exs`. Does nothing without
   `config :elixir_precompiled, source: ...`.
+
+  `mix do clean --deps + compile` installs twice: `clean` loads paths
+  first, which runs the alias once before it deletes `_build`, and the
+  compile after it installs again. The result is correct, just one install
+  slower.
   """
   use Mix.Task
 
@@ -40,56 +45,79 @@ defmodule Mix.Tasks.Precompiled.Install do
     Mix.Task.reenable("precompiled.install")
 
     if not skip?(top_level_task()) do
-      ensure_compiled()
-      install()
+      install(&ensure_compiled/0)
     end
 
     :ok
   end
 
-  # `mix do clean + compile`: clean's own loadpaths ran this alias, which
-  # compiled this library, then clean deleted _build. Mix compiles a
-  # project at most once per VM, so the alias's "deps.compile
-  # elixir_precompiled" is now a no-op, the modules not loaded yet are gone
-  # and deps.loadpaths would stop on the missing app file. Reenable the
-  # library's compile tasks and compile it again.
-  defp ensure_compiled() do
-    with dir when is_list(dir) <- :code.lib_dir(:elixir_precompiled),
-         false <- File.regular?(Path.join(dir, "ebin/elixir_precompiled.app")) do
-      Mix.Dep.clear_cached()
-
-      for %Mix.Dep{app: :elixir_precompiled} = dep <- Mix.Dep.load_and_cache() do
-        Mix.Dep.in_dependency(dep, fn _ ->
-          tasks = ["compile", "compile.all" | Enum.map(compilers(), &"compile.#{&1}")]
-          Enum.each(tasks, &Mix.Task.reenable/1)
-        end)
-      end
-
-      # Unload the old copies, so the compile does not warn about each one
-      # it redefines; this module keeps running, so it stays.
-      for mod <- Application.spec(:elixir_precompiled, :modules) || [], mod != __MODULE__ do
-        :code.purge(mod)
-        :code.delete(mod)
-      end
-
-      Mix.Task.reenable("deps.compile")
-      Mix.Task.run("deps.compile", ["elixir_precompiled"])
-      Mix.Task.reenable("deps.compile")
-    end
-  end
-
-  defp compilers(), do: Mix.Project.config()[:compilers] || Mix.compilers()
-
-  # run/1 never raises, but if this library's own modules cannot load,
-  # its error path cannot either: the build must still go on.
-  defp install() do
+  @doc false
+  # run/1 never raises, but if this library's own modules cannot load, its
+  # error path cannot either, and recompiling them can raise too: whatever
+  # goes wrong here, the build goes on and Mix compiles the deps.
+  @spec install((-> term())) :: :ok
+  def install(ensure_compiled) do
+    _ = ensure_compiled.()
     _ = ElixirPrecompiled.run(allow_host: true)
+    :ok
   rescue
     e ->
       Mix.shell().error(
         "precompiled: internal error, compiling from source (#{Exception.message(e)})"
       )
+
+      :ok
   end
+
+  @doc false
+  # `mix do clean + compile`: clean's own loadpaths ran this alias, which
+  # compiled this library, then clean deleted _build. Mix compiles a
+  # project at most once per VM, so the alias's "deps.compile
+  # elixir_precompiled" is now a no-op, the modules not loaded yet are gone
+  # and deps.loadpaths would stop on the missing app file. Reenable the
+  # library's compile tasks and compile it again; only when it is a dep of
+  # this project (on the code path by -pa, it is not Mix's to compile).
+  @spec ensure_compiled(term(), (-> [Mix.Dep.t()])) :: :ok | :not_a_dep | :recompiled
+  def ensure_compiled(
+        lib_dir \\ :code.lib_dir(:elixir_precompiled),
+        load_deps \\ &reload_deps/0
+      ) do
+    with dir when is_list(dir) or is_binary(dir) <- lib_dir,
+         false <- File.regular?(Path.join(dir, "ebin/elixir_precompiled.app")) do
+      case Enum.filter(load_deps.(), &(&1.app == :elixir_precompiled)) do
+        [dep] -> recompile(dep)
+        _ -> :not_a_dep
+      end
+    else
+      _ -> :ok
+    end
+  end
+
+  defp reload_deps() do
+    Mix.Dep.clear_cached()
+    Mix.Dep.load_and_cache()
+  end
+
+  defp recompile(dep) do
+    Mix.Dep.in_dependency(dep, fn _ ->
+      tasks = ["compile", "compile.all" | Enum.map(compilers(), &"compile.#{&1}")]
+      Enum.each(tasks, &Mix.Task.reenable/1)
+    end)
+
+    # Unload the old copies, so the compile does not warn about each one
+    # it redefines; this module keeps running, so it stays.
+    for mod <- Application.spec(:elixir_precompiled, :modules) || [], mod != __MODULE__ do
+      :code.purge(mod)
+      :code.delete(mod)
+    end
+
+    Mix.Task.reenable("deps.compile")
+    Mix.Task.run("deps.compile", ["elixir_precompiled"])
+    Mix.Task.reenable("deps.compile")
+    :recompiled
+  end
+
+  defp compilers(), do: Mix.Project.config()[:compilers] || Mix.compilers()
 
   @doc false
   # Tasks that load paths without compiling deps (help), that delete the

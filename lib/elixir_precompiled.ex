@@ -90,22 +90,26 @@ defmodule ElixirPrecompiled do
     end
   end
 
+  defp proof(result), do: memo_proof(result, Path.join(Mix.Project.build_path(), "lib"))
+
   defp remember(key, fun) do
     result = fun.()
     :persistent_term.put(key, {result, proof(result)})
     result
   end
 
-  # What a memoised result depends on: the deps' build dirs (by name) and
-  # the provenance file of every dep the run installed.
-  defp proof(result) do
-    build_lib = Path.join(Mix.Project.build_path(), "lib")
-
+  @doc false
+  # What a memoised result depends on: the deps' build dirs (by name) and,
+  # for every dep the run installed, its provenance file and its app file.
+  @spec memo_proof(term(), Path.t()) :: {[String.t()] | :none, [boolean()]}
+  def memo_proof(result, build_lib) do
     hits =
       case result do
         {:ok, %{lines: lines}} ->
-          for %{status: :hit, name: name} <- lines,
-              do: File.regular?(Fetch.provenance_path(build_lib, name))
+          for %{status: :hit, name: name} <- lines do
+            File.regular?(Fetch.provenance_path(build_lib, name)) and
+              File.regular?(Path.join([build_lib, to_string(name), "ebin", "#{name}.app"]))
+          end
 
         _ ->
           []
