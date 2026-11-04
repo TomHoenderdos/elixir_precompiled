@@ -63,7 +63,7 @@ defmodule ElixirPrecompiled.SourceScanTest do
     assert SourceScan.scan(dir) == %{target: false, env: ["(computed name)"]}
   end
 
-  test "a clean dep reads nothing; an unparsable one is treated as reading everything", %{
+  test "a clean dep reads nothing; an unparsable one is not scannable", %{
     tmp_dir: dir
   } do
     clean =
@@ -71,7 +71,7 @@ defmodule ElixirPrecompiled.SourceScanTest do
 
     assert SourceScan.scan(clean) == %{target: false, env: []}
     broken = dep(Path.join(dir, "broken"), %{"lib/e.ex" => "defmodule E do\n  def f( do\n"})
-    assert SourceScan.scan(broken) == %{target: true, env: ["(unparsable source)"]}
+    assert SourceScan.scan(broken) == {:unscannable, "lib/e.ex does not parse"}
   end
 
   test "results are cached by package checksum", %{tmp_dir: dir} do
@@ -91,9 +91,90 @@ defmodule ElixirPrecompiled.SourceScanTest do
     key = String.duplicate("cd", 32)
     planted = Path.join(dir, "planted.term")
     File.write!(planted, :erlang.term_to_binary(%{target: false, env: []}))
-    File.mkdir_p!(Path.join(home, "scan"))
-    File.ln_s!(planted, Path.join([home, "scan", key <> ".term"]))
+    File.mkdir_p!(Path.join([home, "scan", "v1"]))
+    File.ln_s!(planted, Path.join([home, "scan", "v1", key <> ".term"]))
 
     assert %{target: true} = SourceScan.cached(home, d, key)
+  end
+
+  test "a macro body outside its quote runs at the caller's compile time", %{tmp_dir: dir} do
+    dep(dir, %{
+      "lib/u.ex" => """
+      defmodule U do
+        defmacro __using__(_opts) do
+          target = Mix.target()
+          quote do: @target unquote(target)
+        end
+      end
+      """
+    })
+
+    assert SourceScan.scan(dir) == %{target: true, env: []}
+  end
+
+  test "other spellings of an env or target read", %{tmp_dir: dir} do
+    cases = [
+      {~s|@all System.get_env()|, %{target: false, env: ["(all variables)"]}},
+      {~s|@a :os.getenv('A_VAR')|, %{target: false, env: ["A_VAR"]}},
+      {~s|@b :os.getenv(~c"B_VAR")|, %{target: false, env: ["B_VAR"]}},
+      {~s|@c :os.getenv()|, %{target: false, env: ["(all variables)"]}},
+      {~s|@t :os.getenv('MIX_TARGET')|, %{target: true, env: []}},
+      {~s|@t Elixir.Mix.target()|, %{target: true, env: []}},
+      {~s|@e Elixir.System.fetch_env("E_VAR")|, %{target: false, env: ["E_VAR"]}}
+    ]
+
+    for {{line, expected}, i} <- Enum.with_index(cases) do
+      d = dep(Path.join(dir, "c#{i}"), %{"lib/x.ex" => "defmodule X do\n  #{line}\nend\n"})
+      assert SourceScan.scan(d) == expected, line
+    end
+  end
+
+  test "a file over 2 MB or sources over 20 MB are not scannable", %{tmp_dir: dir} do
+    pad = fn n -> "defmodule P do\n  #" <> String.duplicate("x", n) <> "\nend\n" end
+    big = dep(Path.join(dir, "big"), %{"lib/big.ex" => pad.(2 * 1024 * 1024)})
+    assert SourceScan.scan(big) == {:unscannable, "lib/big.ex is over 2 MB"}
+
+    many = for i <- 1..11, into: %{}, do: {"lib/f#{i}.ex", pad.(2_000_000)}
+
+    assert SourceScan.scan(dep(Path.join(dir, "many"), many)) ==
+             {:unscannable, "sources over 20 MB"}
+  end
+
+  test "a passed deadline makes the dep unscannable, and that is not cached", %{tmp_dir: dir} do
+    d = dep(Path.join(dir, "dep"), %{"lib/a.ex" => "defmodule A do\n  def f(), do: 1\nend\n"})
+    home = Path.join(dir, "home")
+    key = String.duplicate("ef", 32)
+    past = System.monotonic_time(:millisecond) - 1
+    assert {:unscannable, "run deadline passed"} = SourceScan.cached(home, d, key, past)
+    assert %{target: false, env: []} = SourceScan.cached(home, d, key)
+  end
+end
+
+defmodule ElixirPrecompiled.SourceScanAtomsTest do
+  # Not async: the atom table is global, and other tests create atoms.
+  use ExUnit.Case, async: false
+  alias ElixirPrecompiled.SourceScan
+  @moduletag :tmp_dir
+
+  test "scanning creates no atom for the identifiers a source names", %{tmp_dir: dir} do
+    tag = "ep#{System.unique_integer([:positive])}"
+    n = 2000
+    mod = String.capitalize(tag)
+
+    body =
+      for i <- 1..n, into: "" do
+        "  def #{tag}_f#{i}(#{tag}_v#{i}), do: {:#{tag}_a#{i}, #{tag}_k#{i}: #{mod}M#{i}.x()}\n"
+      end
+
+    File.mkdir_p!(Path.join(dir, "lib"))
+
+    File.write!(
+      Path.join(dir, "lib/n.ex"),
+      "defmodule #{mod} do\n  @x #{mod}.Y.z()\n" <> body <> "end\n"
+    )
+
+    before = :erlang.system_info(:atom_count)
+    assert %{target: false, env: []} = SourceScan.scan(dir)
+    assert :erlang.system_info(:atom_count) - before < 100
   end
 end

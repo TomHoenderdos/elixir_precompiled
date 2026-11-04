@@ -510,7 +510,7 @@ defmodule ElixirPrecompiled.FetchTest do
     assert {:error, "offline"} =
              Fetch.get_body(config.source <> "/batch.json", Fetch.content_opts(offline))
 
-    assert {:miss, "offline: manifest not cached"} =
+    assert {:unreachable, "offline: manifest not cached"} =
              Fetch.manifest(offline, "ash", String.duplicate("0", 64))
 
     System.put_env("ELIXIR_PRECOMPILED_OFFLINE", "1")
@@ -722,7 +722,7 @@ defmodule ElixirPrecompiled.FetchTest do
     F.clear_requests()
     offline = Map.put(config, :offline, true)
 
-    assert {:miss, "offline: manifest not cached"} =
+    assert {:unreachable, "offline: manifest not cached"} =
              Fetch.manifest(offline, "ash", String.duplicate("a", 64), "v2/manifests")
 
     e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))

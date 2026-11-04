@@ -592,5 +592,13 @@ defmodule ElixirPrecompiled.MatchTest do
       assert {:ok, _, _} = Match.select(doc([pe(@build)]), ctx(reads: nil))
       assert {:ok, _, _} = Match.select(doc([pe(@build)]), ctx(reads: %{target: false, env: []}))
     end
+
+    test "sources that could not be scanned are a miss for every build" do
+      assert {:miss, "source not scannable: lib/a.ex does not parse"} =
+               Match.select(
+                 doc([pe(@build)]),
+                 ctx(reads: {:unscannable, "lib/a.ex does not parse"})
+               )
+    end
   end
 end

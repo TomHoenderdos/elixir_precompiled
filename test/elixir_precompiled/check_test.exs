@@ -577,6 +577,66 @@ defmodule ElixirPrecompiled.CheckTest do
       end
     end
 
+    test "same batch, a dep reading Mix.target and another project target: removed", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib,
+      tmp_dir: dir
+    } do
+      File.mkdir_p!(Path.join(dir, "deps/ash/lib"))
+
+      File.write!(
+        Path.join(dir, "deps/ash/lib/ash.ex"),
+        "defmodule Ash do\n  @t Mix.target()\nend\n"
+      )
+
+      e = good_entry(f, "ash", nil, "pure_elixir")
+      F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [e]}}}})
+      run_capturing(config, %{env | candidates: [hd(env.candidates)]})
+      assert_received {:report, {:ok, %{hits: 1}}}
+      installed = %{env | candidates: [], installed: [:ash]}
+      assert run_capturing(config, installed) == ""
+
+      out = run_capturing(config, %{installed | mix_target: "rpi4"})
+      assert out =~ ~r/ash 3\.5\.2\s+MISS\s+reads Mix\.target\(\) at compile time/
+      refute File.exists?(Path.join(lib, "ash"))
+    end
+
+    test "same batch: the provenance file is not rewritten", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      prov = Path.join(lib, "ash/.mix/elixir_precompiled.json")
+      inode = File.stat!(prov).inode
+      assert run_capturing(config, env) == ""
+      assert File.stat!(prov).inode == inode
+    end
+
+    test "same batch, offline, manifest no longer cached: kept, with a note", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      File.rm_rf!(Path.join(config.home, "manifests"))
+      File.mkdir_p!(Path.join(config.home, "manifests"))
+      F.clear_requests()
+
+      out = run_capturing(Map.put(config, :offline, true), env)
+      assert_received {:report, {:ok, %{lines: [%{name: "ash", status: :fail}]}}}
+
+      assert out =~
+               ~r/ash 3\.5\.2\s+KEPT\s+offline: manifest not cached; installed build kept, not rechecked/
+
+      assert F.requests() == []
+      assert File.exists?(Path.join(lib, "ash/ebin/Elixir.X.beam"))
+    end
+
     # ash with a .app recording compile_env mode = fast; the manifest says
     # so too when honest, and records none otherwise.
     defp ash_with_compile_env(f, dir, honest?) do

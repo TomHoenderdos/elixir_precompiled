@@ -24,6 +24,11 @@ defmodule ElixirPrecompiled.Check do
           lines: [line()]
         }
 
+  # opts:
+  # - `:config_fun`: how a compile_env key is looked up (default
+  #   `CompileEnv.lookup/2`);
+  # - `:toolchain`: `{elixir, otp}` in place of the running ones. Test only:
+  #   it lets a test change the toolchain under an unchanged batch.
   @spec check(map(), Env.t(), keyword()) :: :nothing_to_do | {:ok, report()}
   def check(config, %Env{} = env, opts \\ []) do
     started = System.monotonic_time(:millisecond)
@@ -49,8 +54,10 @@ defmodule ElixirPrecompiled.Check do
       # FAIL line each: an offline warm build is a correct build. The
       # report still lists them.
       {kept, shown} = Enum.split_with(lines, &Map.get(&1, :kept, false))
+      {noted, kept} = Enum.split_with(kept, &Map.get(&1, :note, false))
       Enum.each(shown, &print/1)
       print_kept(kept)
+      Enum.each(noted, &print_note/1)
       ms = System.monotonic_time(:millisecond) - started
       report = summarize(lines, ms)
       # A warm build whose installs the batch still names has nothing to say.
@@ -174,7 +181,10 @@ defmodule ElixirPrecompiled.Check do
   defp recheck_one(dep, sha, recorded, env) when is_binary(sha) and is_binary(recorded),
     do:
       {:replace,
-       Map.put(dep, :installed_hash, provenance_field(env.build_lib, dep.name, "files_sha256"))}
+       Map.merge(dep, %{
+         installed_hash: provenance_field(env.build_lib, dep.name, "files_sha256"),
+         installed_sha: recorded
+       })}
 
   defp recheck_one(dep, sha, nil, env) when is_binary(sha),
     do: revoke(dep, env, revoke_line(dep, :miss, "revoked: provenance unreadable"))
@@ -205,6 +215,12 @@ defmodule ElixirPrecompiled.Check do
         "kept, not rechecked"
     )
   end
+
+  # An installed build whose manifest is unchanged but could not be read
+  # (not cached, and the network could not deliver it): one line of its
+  # own, kept as it is, like an install kept on a missing batch.
+  defp print_note(%{why: why} = l),
+    do: Output.warning(line(%{l | detail: "#{why}; installed build kept, not rechecked"}, "KEPT"))
 
   defp revoke_line(dep, status, detail),
     do: %{
@@ -349,6 +365,7 @@ defmodule ElixirPrecompiled.Check do
     sname = Atom.to_string(name)
     base = %{name: sname, version: version, bytes: 0}
     replacing? = Map.has_key?(candidate, :installed_hash)
+    installed_sha = Map.get(candidate, :installed_sha)
 
     try do
       {sha, path} = manifest_ref(batch, sname)
@@ -375,11 +392,8 @@ defmodule ElixirPrecompiled.Check do
           place(candidate, entry, provenance, config, env, config_fun)
         end
 
-      # A replaced install that neither stayed nor hit is removed: Mix
-      # compiles it.
-      if replacing? and result != :kept and not match?({:hit, _}, result),
-        do: _ = remove(env.build_lib, sname)
-
+      result = unreachable(result, replacing? and sha == installed_sha)
+      if replacing? and not stays?(result), do: _ = remove(env.build_lib, sname)
       line_for(base, result)
     rescue
       e ->
@@ -391,6 +405,20 @@ defmodule ElixirPrecompiled.Check do
         crashed(base, inspect(reason))
     end
   end
+
+  # An unchanged manifest the network could not deliver says nothing
+  # against the installed build: kept, with a note. For anything else it is
+  # a miss.
+  defp unreachable({:unreachable, why}, true), do: {:kept_unchecked, why}
+  defp unreachable({:unreachable, why}, false), do: {:miss, why}
+  defp unreachable(result, _), do: result
+
+  # A replaced install that neither stayed nor hit is removed: Mix compiles
+  # it.
+  defp stays?(:kept), do: true
+  defp stays?({:hit, _}), do: true
+  defp stays?({:kept_unchecked, _}), do: true
+  defp stays?(_), do: false
 
   defp crashed(base, why),
     do: Map.merge(base, %{status: :fail, detail: "candidate crashed: #{why}"})
@@ -416,10 +444,22 @@ defmodule ElixirPrecompiled.Check do
 
   # What the dep's own sources read at compile time (SourceScan), from the
   # sources deps.get fetched; scanned only when a manifest is in hand, once
-  # per package checksum. No sources on disk: nil, no rule.
+  # per package checksum, within the run deadline. No sources on disk: nil,
+  # no rule. That fails open safely: Mix compiles a dep only from
+  # deps/<dep>, so a project without it has not fetched its deps and its
+  # build stops at Mix's own "dependency is not available" before
+  # anything installed here is compiled into it.
   defp scan_reads(config, env, sname, {:hex, _, _, _, _, _, _, outer}) do
     dir = Path.join(env.deps_path, sname)
-    if File.dir?(dir), do: ElixirPrecompiled.SourceScan.cached(config.home, dir, outer)
+
+    if File.dir?(dir),
+      do:
+        ElixirPrecompiled.SourceScan.cached(
+          config.home,
+          dir,
+          outer,
+          Map.get(config, :deadline_at)
+        )
   end
 
   defp scan_reads(_config, _env, _sname, _lock_entry), do: nil
@@ -427,10 +467,14 @@ defmodule ElixirPrecompiled.Check do
   # The selected build may be the one installed: then only its provenance
   # moves, once the disk is checked to hold exactly its files and its .app
   # is checked against today's config. Anything else installs as usual.
+  # Under an unchanged manifest the disk is not re-hashed (the build was
+  # checked when it was placed); the rules and the .app still are.
   defp place(%{installed_hash: hash} = candidate, entry, provenance, config, env, config_fun)
        when is_binary(hash) do
+    same_manifest? = provenance.sha == Map.get(candidate, :installed_sha)
+
     if Match.files_hash(entry) == hash and
-         Fetch.installed_as?(env.build_lib, candidate.name, entry),
+         (same_manifest? or Fetch.installed_as?(env.build_lib, candidate.name, entry)),
        do: keep(candidate, provenance, env, config_fun),
        else: install(candidate, entry, provenance, config, env, config_fun)
   end
@@ -498,6 +542,16 @@ defmodule ElixirPrecompiled.Check do
   end
 
   defp line_for(_base, :kept), do: nil
+
+  defp line_for(base, {:kept_unchecked, why}),
+    do:
+      Map.merge(base, %{
+        status: :fail,
+        detail: why <> " (installed build kept)",
+        kept: true,
+        note: true,
+        why: why
+      })
 
   defp line_for(base, {:hit, %{bytes: bytes, files: files, cached: cached} = stats}) do
     %{base | bytes: bytes}
@@ -582,7 +636,7 @@ defmodule ElixirPrecompiled.Check do
       fails: count.(:fail),
       bytes: Enum.sum(Enum.map(lines, & &1.bytes)),
       seconds: ms / 1000,
-      lines: Enum.map(lines, &Map.drop(&1, [:bytes, :stripped, :kept, :why]))
+      lines: Enum.map(lines, &Map.drop(&1, [:bytes, :stripped, :kept, :why, :note]))
     }
   end
 

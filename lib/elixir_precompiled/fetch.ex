@@ -23,6 +23,13 @@ defmodule ElixirPrecompiled.Fetch do
 
   @spec get_body(String.t(), keyword()) :: {:ok, binary()} | {:error, String.t()}
   def get_body(url, opts \\ []) do
+    case raw_get(url, opts) do
+      {:ok, body} -> {:ok, body}
+      {:error, reason} -> {:error, describe_error(reason)}
+    end
+  end
+
+  defp raw_get(url, opts) do
     http_opts =
       [max_bytes: Keyword.get(opts, :max_bytes, @max_body_bytes), same_origin: true] ++
         Keyword.take(opts, [
@@ -33,10 +40,7 @@ defmodule ElixirPrecompiled.Fetch do
           :offline
         ])
 
-    case ElixirPrecompiled.HTTP.get(url, http_opts) do
-      {:ok, body} -> {:ok, body}
-      {:error, reason} -> {:error, describe_error(reason)}
-    end
+    ElixirPrecompiled.HTTP.get(url, http_opts)
   end
 
   @doc """
@@ -134,9 +138,13 @@ defmodule ElixirPrecompiled.Fetch do
   for each content origin and then the source; and last the source's
   `<path>/<name>.json`, whose answer decides the result. Whatever bytes come
   back are used only if they hash to `expected_sha`.
+
+  `{:unreachable, why}`: the manifest is not cached and the network could
+  not deliver it (offline, a transport error, a 5xx, the run deadline), as
+  opposed to a source that answered and refused.
   """
   @spec manifest(map(), String.t(), String.t(), String.t()) ::
-          {:ok, map()} | {:miss, String.t()} | {:fail, String.t()}
+          {:ok, map()} | {:miss, String.t()} | {:fail, String.t()} | {:unreachable, String.t()}
   def manifest(config, name, expected_sha, path \\ "manifests") do
     with true <- sha256?(expected_sha) || {:fail, "manifest hash malformed"},
          {:ok, _dir} <- cache_dir(config, "manifests") do
@@ -150,7 +158,7 @@ defmodule ElixirPrecompiled.Fetch do
 
   defp uncached_manifest(config, name, sha, path) do
     if Map.get(config, :offline, false),
-      do: {:miss, "offline: manifest not cached"},
+      do: {:unreachable, "offline: manifest not cached"},
       else: fetch_manifest(config, name, sha, path)
   end
 
@@ -185,7 +193,7 @@ defmodule ElixirPrecompiled.Fetch do
   end
 
   defp named_manifest(config, name, sha, path) do
-    case get_body(
+    case raw_get(
            "#{config.source}/#{path}/#{name}.json",
            [max_bytes: @max_manifest_bytes] ++ content_opts(config)
          ) do
@@ -197,11 +205,12 @@ defmodule ElixirPrecompiled.Fetch do
           {:fail, "manifest hash differs from batch"}
         end
 
-      {:error, "Status 404 Not Found"} ->
-        {:miss, "no manifest"}
-
       {:error, reason} ->
-        {:miss, "manifest unavailable: #{reason}"}
+        case classify(reason) do
+          "Status 404 Not Found" -> {:miss, "no manifest"}
+          {:unreachable, why} -> {:unreachable, "manifest unavailable: #{why}"}
+          why -> {:miss, "manifest unavailable: #{why}"}
+        end
     end
   end
 
@@ -707,9 +716,19 @@ defmodule ElixirPrecompiled.Fetch do
   def write_provenance_file(build_lib, dep, provenance) do
     path = provenance_path(build_lib, dep)
 
-    if real_dir?(Path.dirname(path)),
-      do: FileUtil.write_atomic(path, provenance_doc(provenance)),
-      else: {:error, "#{Path.dirname(path)} is not a plain directory"}
+    doc = provenance_doc(provenance)
+
+    cond do
+      not real_dir?(Path.dirname(path)) ->
+        {:error, "#{Path.dirname(path)} is not a plain directory"}
+
+      # A kept build under an unchanged batch: nothing to write.
+      File.read(path) == {:ok, doc} ->
+        :ok
+
+      true ->
+        FileUtil.write_atomic(path, doc)
+    end
   end
 
   defp provenance_doc(%{sha: sha, path: path, sequence: seq} = p) do
@@ -717,6 +736,7 @@ defmodule ElixirPrecompiled.Fetch do
     |> put_present("files_sha256", p[:files_sha256])
     |> put_present("source", p[:source])
     |> :json.encode()
+    |> IO.iodata_to_binary()
   end
 
   defp put_present(map, _key, nil), do: map

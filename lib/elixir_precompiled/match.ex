@@ -212,8 +212,10 @@ defmodule ElixirPrecompiled.Match do
   # it; one that reads Mix.target() must have been built for this project's
   # target name: the one the build records, else its system's conventional
   # name (nerves_system_rpi4 -> rpi4; pure_elixir builds are made on host).
+  # Sources that could not be scanned could read anything.
   defp compile_inputs_ok(target, build, ctx) do
     case Map.get(ctx, :reads) do
+      {:unscannable, why} -> {:miss, "source not scannable: #{why}"}
       %{env: [var | _]} -> {:miss, "reads #{var} at compile time, which no build records"}
       %{target: true} -> target_name_ok(target, build, Map.get(ctx, :mix_target, "host"))
       _ -> :ok
