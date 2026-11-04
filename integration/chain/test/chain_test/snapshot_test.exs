@@ -449,6 +449,19 @@ defmodule ChainTest.SnapshotTest do
       refute File.exists?(Path.join(ctx.input.dir, "batches/3.json"))
     end
 
+    test "a previous batch issued after N, or ahead of the clock, is missing", ctx do
+      for hours <- [-60 / 3600, -1] do
+        dir = Path.join(ctx.tmp, "snap-#{System.unique_integer([:positive])}")
+        serve_older(ctx, @history)
+        serve_older(ctx, [{6, hours}])
+
+        assert {:ok, snap} = Snapshot.take(%{ctx.input | dir: dir})
+        assert {:missing, why} = snap.previous
+        assert why =~ "batches/6.json"
+        refute File.exists?(Path.join(dir, "batches/6.json"))
+      end
+    end
+
     test "a batch served under another sequence's name is not that batch", ctx do
       serve_older(ctx, @history)
       File.cp!(Path.join(ctx.served, "batches/5.json"), Path.join(ctx.served, "batches/6.json"))

@@ -45,7 +45,7 @@ defmodule ChainTest.Conformance.Case do
     * `client_config` - merged into the fixture's `config
       :elixir_precompiled` for this case's build only
       (`ChainTest.Build.client_config?/1`): `clock_offset_seconds`
-      (integer), `root` (path), `source` (URL).
+      (integer), `root` (an absolute path), `source` (URL).
     * `after` - post-conditions on the client home and `_build` after the
       build, a non-empty map of:
       * `state_sequence` - the client's state file for the case's source
@@ -71,6 +71,8 @@ defmodule ChainTest.Conformance.Case do
 
   Verdict, one `conformance/<id>` result:
 
+    * `:fail` when the mirror logged a `transform_error` (the transform
+      crashed or answered a malformed shape), naming each;
     * `:not_exercised` when the transform is not `ChainTest.Mirror.Identity`
       and the mirror served nothing it changed, or when the transform is
       `ChainTest.Mirror.Identity` and the mirror shows no use by the client;
@@ -197,8 +199,8 @@ defmodule ChainTest.Conformance.Case do
           "ChainTest.Conformance.Setup and args it accepts"
 
       Map.has_key?(c, :client_config) and not Build.client_config?(c.client_config) ->
-        "client_config must map clock_offset_seconds to an integer, root and source to " <>
-          "non-empty strings, got #{inspect(c.client_config)}"
+        "client_config must map clock_offset_seconds to an integer, root to an absolute " <>
+          "path and source to a non-empty string, got #{inspect(c.client_config)}"
 
       Map.has_key?(c, :after) and not post?(c.after) ->
         "after must be a non-empty map of state_sequence (integer, :snapshot, :absent, " <>
@@ -260,8 +262,12 @@ defmodule ChainTest.Conformance.Case do
       ) do
     unused = unused_mirror(report, requests, snap)
     identity? = match?({@identity, _}, c.transform)
+    broken = transform_errors(requests)
 
     cond do
+      broken != [] ->
+        result(c, :fail, Enum.join(broken, "; "))
+
       identity? and unused != [] ->
         result(c, :not_exercised, Enum.join(unused, "; "))
 
@@ -280,6 +286,13 @@ defmodule ChainTest.Conformance.Case do
           problems -> result(c, :fail, Enum.join(problems, "; "))
         end
     end
+  end
+
+  # A transform that crashed or answered a malformed shape was never the
+  # mutation the case meant: the client saw only the mirror's 500.
+  defp transform_errors(requests) do
+    for %{transform_error: why, path: path} <- requests,
+        do: "mirror: transform error on #{path}: #{why}"
   end
 
   # What the mirror's log lacks to show that the client read the batch and

@@ -46,6 +46,10 @@ defmodule ChainTest.Mirror do
   Every request is logged in arrival order as `%{method, path, status,
   mutated}`, `mutated` true when the transform answered anything but
   `{200, bytes}` with the bytes it was given; `status` is 0 for `:close`.
+  A transform that raised, threw, exited or answered a malformed shape adds
+  `transform_error` (what went wrong) to its entry: the client still gets
+  the 500, and a conformance case reading the log fails on it, so a typo
+  in a transform is never taken for the mutation it meant.
   One request per connection (`connection: close`). Built on `:gen_tcp`
   rather than `:httpd` so a transform has the whole response in hand.
 
@@ -71,10 +75,11 @@ defmodule ChainTest.Mirror do
           | {:endless, status(), binary(), non_neg_integer()}
   @type transform :: (String.t(), binary() -> response())
   @type request :: %{
-          method: String.t(),
-          path: String.t(),
-          status: non_neg_integer(),
-          mutated: boolean()
+          required(:method) => String.t(),
+          required(:path) => String.t(),
+          required(:status) => non_neg_integer(),
+          required(:mutated) => boolean(),
+          optional(:transform_error) => String.t()
         }
   @type t :: %{pid: pid(), port: :inet.port_number(), url: String.t()}
 
@@ -294,14 +299,16 @@ defmodule ChainTest.Mirror do
         :ok
 
       result ->
-        {reply, path, mutated} = answer(result, config)
+        {reply, path, mutated, error} = answer(result, config)
 
-        log(server, %{
+        entry = %{
           method: method_of(result),
           path: path,
           status: reply_status(reply),
           mutated: mutated
-        })
+        }
+
+        log(server, if(error, do: Map.put(entry, :transform_error, error), else: entry))
 
         respond(sock, reply, path, config)
     end
@@ -366,11 +373,11 @@ defmodule ChainTest.Mirror do
     end
   end
 
-  defp answer(:bad, _config), do: {plain(400), "?", false}
-  defp answer(:timeout, _config), do: {plain(408), "?", false}
+  defp answer(:bad, _config), do: {plain(400), "?", false, nil}
+  defp answer(:timeout, _config), do: {plain(408), "?", false, nil}
 
   defp answer({:ok, _method, target}, _config) when byte_size(target) > @max_target,
-    do: {plain(414), binary_part(target, 0, @max_target), false}
+    do: {plain(414), binary_part(target, 0, @max_target), false, nil}
 
   defp answer({:ok, "GET", target}, config) do
     with false <- String.contains?(target, "?"),
@@ -378,11 +385,11 @@ defmodule ChainTest.Mirror do
          {:ok, bytes} <- read_inside(config.dir, rel) do
       transformed(rel, bytes, config.transform)
     else
-      _ -> {plain(404), target, false}
+      _ -> {plain(404), target, false, nil}
     end
   end
 
-  defp answer({:ok, _method, target}, _config), do: {plain(405), target, false}
+  defp answer({:ok, _method, target}, _config), do: {plain(405), target, false, nil}
 
   defp plain(status, body \\ ""), do: {:full, status, [], body}
 
@@ -414,14 +421,16 @@ defmodule ChainTest.Mirror do
     out = transform.(rel, bytes)
 
     case reply(out) do
-      {:ok, reply} -> {reply, rel, out != {200, bytes}}
-      :error -> {plain(500, "transform returned #{inspect(out, limit: 20)}"), rel, true}
+      {:ok, reply} -> {reply, rel, out != {200, bytes}, nil}
+      :error -> transform_error("transform returned #{inspect(out, limit: 20)}", rel)
     end
   rescue
-    e -> {plain(500, Exception.message(e)), rel, true}
+    e -> transform_error("transform raised: " <> Exception.message(e), rel)
   catch
-    kind, reason -> {plain(500, Exception.format_banner(kind, reason)), rel, true}
+    kind, reason -> transform_error(Exception.format_banner(kind, reason), rel)
   end
+
+  defp transform_error(why, rel), do: {plain(500, why), rel, true, why}
 
   defguardp status?(s) when is_integer(s) and s in 100..599
   defguardp delay?(d) when is_integer(d) and d in 0..@max_delay_ms

@@ -100,7 +100,7 @@ defmodule ChainTest.Build do
   def client_config?(_), do: false
 
   defp client_value?(:clock_offset_seconds, v), do: is_integer(v)
-  defp client_value?(:root, v), do: is_binary(v) and v != ""
+  defp client_value?(:root, v), do: is_binary(v) and Path.type(v) == :absolute
   defp client_value?(:source, v), do: is_binary(v) and v != ""
   defp client_value?(_, _), do: false
 
@@ -118,15 +118,13 @@ defmodule ChainTest.Build do
   `home_prepared` says the caller prepared it. `trust` is step 1's info
   (`nil` when the batch could not be trusted, which leaves `sequence` not
   exercised); `expected` defaults to the fixture's `expected.exs`.
-  `client_config` must satisfy `client_config?/1`, else this raises
+  `client_config` must satisfy `client_config?/1` (`root` an absolute
+  path), and `home_prepared` needs a `home`, else this raises
   `ArgumentError` before anything runs.
   """
   @spec run(input()) :: {[Result.t()], info()}
   def run(%{fixture_dir: fixture, target: target} = input) do
-    client = Map.get(input, :client_config)
-
-    unless client == nil or client_config?(client),
-      do: raise(ArgumentError, "not a client config: #{inspect(client)}")
+    validate!(input)
 
     build_lib = Path.join([fixture, "_build", "#{target}_dev", "lib"])
 
@@ -157,6 +155,16 @@ defmodule ChainTest.Build do
 
         {results, %{report: %{}, build_lib: build_lib, fw_path: nil, sequence: nil}}
     end
+  end
+
+  defp validate!(input) do
+    client = Map.get(input, :client_config)
+
+    unless client == nil or client_config?(client),
+      do: raise(ArgumentError, "not a client config: #{inspect(client)}")
+
+    if Map.get(input, :home_prepared, false) and not is_binary(Map.get(input, :home)),
+      do: raise(ArgumentError, "home_prepared: true needs the prepared :home")
   end
 
   # A fresh home per run, so the client's cache, adopted roots and batch

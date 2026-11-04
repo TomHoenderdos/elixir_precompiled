@@ -18,12 +18,13 @@ config :elixir_precompiled,
   source:
     System.get_env("CHAIN_SOURCE", "https://compatibility.nerves-project.org/api/precompiled")
 
-# A conformance case's client config (clock offset, root, source), written by
-# the harness for one build and merged over the line above.
-if client = System.get_env("CHAIN_CLIENT_CONFIG"), do: import_config(client)
-
 if Mix.target() == :host do
   import_config "host.exs"
 else
   import_config "target.exs"
 end
+
+# A conformance case's client config (clock offset, root, source), written by
+# the harness for one build. Imported last, after the host or target config
+# and the operator's site file they import, so nothing overrides the case.
+if client = System.get_env("CHAIN_CLIENT_CONFIG"), do: import_config(client)

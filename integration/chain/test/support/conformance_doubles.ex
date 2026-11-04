@@ -68,3 +68,32 @@ defmodule ChainTest.TestTransform do
 
   def transform(_path, bytes, _args), do: {200, bytes}
 end
+
+defmodule ChainTest.BadTransform do
+  @moduledoc """
+  A `ChainTest.Mirror.Transform` for tests that answers jason's v2 manifest
+  with a typo'd v2 shape (`bad:` names which) and serves the rest unchanged.
+  """
+  @behaviour ChainTest.Mirror.Transform
+
+  @bad [:truncate_whole, :owned_header, :redirect_200, :stream_binary, :endless_empty, :raise]
+
+  @doc "The typo'd shapes this double knows."
+  @spec shapes() :: [atom()]
+  def shapes(), do: @bad
+
+  @impl true
+  def valid_args?(%{bad: bad} = args) when map_size(args) == 1, do: bad in @bad
+  def valid_args?(_), do: false
+
+  @impl true
+  def transform("v2/manifests/jason.json", bytes, %{bad: bad}), do: bad(bad, bytes)
+  def transform(_path, bytes, _args), do: {200, bytes}
+
+  defp bad(:truncate_whole, bytes), do: {:truncate, 200, bytes, byte_size(bytes)}
+  defp bad(:owned_header, bytes), do: {200, [{"content-length", "1"}], bytes}
+  defp bad(:redirect_200, _bytes), do: {:redirect, 200, "http://127.0.0.1:1/x"}
+  defp bad(:stream_binary, _bytes), do: {:stream, 200, "abc", 0}
+  defp bad(:endless_empty, _bytes), do: {:endless, 200, "", 0}
+  defp bad(:raise, _bytes), do: raise("typo in the transform")
+end

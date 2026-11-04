@@ -188,8 +188,40 @@ defmodule ChainTest.BuildTest do
       end
     end
 
+    test "the case's file is imported after the site config, so a site file cannot override it",
+         ctx do
+      site = Path.join(ctx.tmp, "site.exs")
+
+      File.write!(
+        site,
+        "import Config\nconfig :elixir_precompiled, source: \"http://127.0.0.1:4\", clock_offset_seconds: 1\n"
+      )
+
+      client = Path.join(ctx.tmp, "client.exs")
+      File.write!(client, "import Config\nconfig :elixir_precompiled, clock_offset_seconds: 5\n")
+      System.put_env("CHAIN_TARGET_CONFIG", site)
+      System.put_env("CHAIN_CLIENT_CONFIG", client)
+      Mix.target(:rpi4)
+
+      try do
+        config = Config.Reader.read!(Path.join(ChainTest.CLI.root(), "fixture/config/config.exs"))
+        assert config[:elixir_precompiled][:clock_offset_seconds] == 5
+        assert config[:elixir_precompiled][:source] == "http://127.0.0.1:4"
+      after
+        Mix.target(:host)
+        System.delete_env("CHAIN_TARGET_CONFIG")
+        System.delete_env("CHAIN_CLIENT_CONFIG")
+      end
+    end
+
     test "an unknown key or a bad value raises" do
-      for bad <- [%{other: 1}, %{clock_offset_seconds: "1"}, %{root: :x}, %{source: ""}] do
+      for bad <- [
+            %{other: 1},
+            %{clock_offset_seconds: "1"},
+            %{root: :x},
+            %{root: "relative/root.json"},
+            %{source: ""}
+          ] do
         assert_raise ArgumentError, fn ->
           Build.run(%{
             fixture_dir: "/nonexistent",
@@ -199,6 +231,12 @@ defmodule ChainTest.BuildTest do
           })
         end
       end
+    end
+  end
+
+  test "home_prepared without a home is refused before anything runs" do
+    assert_raise ArgumentError, ~r/home_prepared/, fn ->
+      Build.run(%{fixture_dir: "/nonexistent", target: "rpi4", source: "x", home_prepared: true})
     end
   end
 

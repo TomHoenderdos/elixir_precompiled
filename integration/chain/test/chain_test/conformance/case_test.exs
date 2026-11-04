@@ -436,6 +436,7 @@ defmodule ChainTest.Conformance.CaseTest do
           {"a client_config value of the wrong type", :client_config,
            %{clock_offset_seconds: "1"}},
           {"a client_config that is not a map", :client_config, [source: "x"]},
+          {"a relative client_config root", :client_config, %{root: "priv/root.json"}},
           {"an unknown after key", :after, %{installed: :none, files: :none}},
           {"a bad state_sequence", :after, %{state_sequence: "7"}},
           {"a bad installed", :after, %{installed: :all}},
@@ -543,6 +544,35 @@ defmodule ChainTest.Conformance.CaseTest do
     test "post-conditions nobody observed fail" do
       assert %Result{class: :fail, detail: detail} = judged(%{cache: :untouched}, nil)
       assert detail =~ "after"
+    end
+  end
+
+  describe "judge/2 transform errors" do
+    test "a mirror log with a transform_error fails the case, naming it" do
+      report = Synthetic.report([{"jason", "1.4.5", "miss", "manifest unavailable: Status 500"}])
+
+      requests = [
+        get("batch.json"),
+        Map.put(
+          get("v2/manifests/jason.json", 500, true),
+          :transform_error,
+          "transform returned :x"
+        )
+      ]
+
+      for c <- [@status, @t0] do
+        assert %Result{class: :fail, detail: detail} =
+                 Case.judge(c, %{
+                   rows: [row(:build, "hit:jason", :fail)],
+                   report: report,
+                   requests: requests,
+                   snapshot: snap(%{"jason" => 1}),
+                   hits: [:jason]
+                 })
+
+        assert detail =~ "transform returned :x"
+        assert detail =~ "v2/manifests/jason.json"
+      end
     end
   end
 end

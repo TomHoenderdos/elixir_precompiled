@@ -459,4 +459,19 @@ defmodule ChainTest.ConformanceTest do
       refute Process.alive?(case_mirror.pid)
     end
   end
+
+  describe "typo'd transforms" do
+    for bad <- ChainTest.BadTransform.shapes() do
+      test "#{bad} fails a miss-expecting case and names the transform error", ctx do
+        c = %{@status | transform: {ChainTest.BadTransform, %{bad: unquote(bad)}}}
+        cases!(ctx.opts, [c])
+
+        assert {[%Result{check: "N5-manifest-500", class: :fail, detail: detail}], _} =
+                 Conformance.run(ctx.opts, steps(self(), ctx.snapshot))
+
+        assert detail =~ "transform error"
+        assert detail =~ "v2/manifests/jason.json"
+      end
+    end
+  end
 end

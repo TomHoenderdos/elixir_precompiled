@@ -537,6 +537,32 @@ defmodule ChainTest.MirrorTest do
       end
     end
 
+    test "a malformed shape or a crashing transform is logged as a transform_error",
+         %{dir: dir} do
+      mirror =
+        start!(dir,
+          transform: fn
+            "root.json", b -> {:truncate, 200, b, byte_size(b)}
+            "batch.json", _ -> raise "typo"
+            _, b -> {200, b}
+          end
+        )
+
+      assert {%{status: 500}, _} = exchange(mirror, "/root.json")
+      assert {%{status: 500}, _} = exchange(mirror, "/batch.json")
+      assert {%{status: 200}, _} = exchange(mirror, "/batches/7.json")
+
+      assert [
+               %{path: "root.json", status: 500, transform_error: e1},
+               %{path: "batch.json", status: 500, transform_error: e2},
+               served
+             ] = Mirror.requests(mirror)
+
+      assert e1 =~ ":truncate"
+      assert e2 =~ "typo"
+      refute Map.has_key?(served, :transform_error)
+    end
+
     test "the caps default to 64 MiB and 120 s" do
       assert Mirror.stream_limits() == %{max_bytes: 64 * 1024 * 1024, max_ms: 120_000}
     end

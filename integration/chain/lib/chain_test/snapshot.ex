@@ -577,19 +577,22 @@ defmodule ChainTest.Snapshot do
 
   defp take_older(source, dir, info, trust_opts, timeout, names) do
     with {:ok, issued} <- issued_at(dir, "batch.json") do
-      previous = take_previous(source, dir, info, trust_opts, timeout, names)
+      previous = take_previous(source, dir, {info, issued}, trust_opts, timeout, names)
       old = take_old(source, dir, {info, issued}, trust_opts, timeout, names)
       {:ok, %{previous: previous, old: old}}
     end
   end
 
-  defp take_previous(source, dir, info, trust_opts, timeout, names) do
+  defp take_previous(source, dir, {info, issued}, trust_opts, timeout, names) do
     n = info.sequence - 1
     rel = "batches/#{n}.json"
 
     case HTTP.get("#{source}/#{rel}", timeout, max_bytes: HTTP.max_bytes()) do
-      {:ok, bytes} -> keep_older(dir, n, bytes, info, trust_opts, names, &any_age/1)
-      {:error, why} -> {:missing, "#{rel}: #{why}"}
+      {:ok, bytes} ->
+        keep_older(dir, n, bytes, info, trust_opts, names, previous_check(issued, n))
+
+      {:error, why} ->
+        {:missing, "#{rel}: #{why}"}
     end
   end
 
@@ -602,7 +605,26 @@ defmodule ChainTest.Snapshot do
     end
   end
 
-  defp any_age(_issued), do: :ok
+  # N-1 is excused freshness and expiry only: it was issued no later than
+  # N and not more than 300 s ahead of this clock.
+  defp previous_check(n_issued, n) do
+    fn issued ->
+      cond do
+        DateTime.compare(issued, n_issued) == :gt ->
+          {:error,
+           "batches/#{n}.json was issued #{DateTime.to_iso8601(issued)}, after the current " <>
+             "batch (#{DateTime.to_iso8601(n_issued)})"}
+
+        DateTime.diff(issued, DateTime.utc_now(), :second) > @max_future_s ->
+          {:error,
+           "batches/#{n}.json was issued #{DateTime.to_iso8601(issued)}, more than 300 s " <>
+             "ahead of this clock"}
+
+        true ->
+          :ok
+      end
+    end
+  end
 
   defp old_check(n_issued, n) do
     fn issued ->
@@ -793,7 +815,7 @@ defmodule ChainTest.Snapshot do
       old = fn n -> n < info.sequence end
 
       with {:ok, p} <-
-             older_entry(ctx, meta["previous"], "previous", previous, fn _ -> &any_age/1 end),
+             older_entry(ctx, meta["previous"], "previous", previous, &previous_check(issued, &1)),
            {:ok, o} <- older_entry(ctx, meta["old"], "old", old, &old_check(issued, &1)) do
         {:ok, %{previous: p, old: o}}
       end
