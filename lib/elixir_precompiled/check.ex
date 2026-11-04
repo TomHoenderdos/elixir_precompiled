@@ -418,6 +418,7 @@ defmodule ElixirPrecompiled.Check do
         with sha when is_binary(sha) <- sha || {:miss, "not in batch"},
              {:ok, manifest} <- Fetch.manifest(config, sname, sha, path),
              reads = scan_reads(config, env, sname, candidate.lock_entry),
+             :ok <- scan_in_time(reads),
              {:ok, entry, _system_key} <-
                Match.select(manifest, ctx(candidate, env, config, config_fun, reads)) do
           provenance = %{
@@ -431,7 +432,11 @@ defmodule ElixirPrecompiled.Check do
           place(candidate, entry, provenance, config, env, config_fun)
         end
 
-      result = unreachable(result, replacing? and sha == installed_sha)
+      result =
+        result
+        |> unreachable(replacing? and sha == installed_sha)
+        |> verify_kept(candidate, env, config_fun)
+
       if replacing? and not stays?(result), do: _ = remove(env.build_lib, sname)
       line_for(base, result)
     rescue
@@ -451,6 +456,27 @@ defmodule ElixirPrecompiled.Check do
   defp unreachable({:unreachable, why}, true), do: {:kept_unchecked, why}
   defp unreachable({:unreachable, why}, false), do: {:miss, why}
   defp unreachable(result, _), do: result
+
+  # A scan the run deadline cut short is like a manifest the network could
+  # not deliver: it says nothing about the build either way.
+  defp scan_in_time({:unscannable, "run deadline passed" = why}),
+    do: {:unreachable, "source not scannable: " <> why}
+
+  defp scan_in_time(_reads), do: :ok
+
+  # Kept without a recheck, the installed .app is still read against
+  # today's config, as keep/4 reads it for a rechecked build.
+  defp verify_kept({:kept_unchecked, _} = kept, candidate, env, config_fun) do
+    sname = Atom.to_string(candidate.name)
+    app = Path.join([env.build_lib, sname, "ebin", sname <> ".app"])
+
+    case verify_app(app, sname, candidate.version, config_fun) do
+      :ok -> kept
+      fail -> fail
+    end
+  end
+
+  defp verify_kept(result, _candidate, _env, _config_fun), do: result
 
   # A replaced install that neither stayed nor hit is removed: Mix compiles
   # it.
@@ -512,7 +538,11 @@ defmodule ElixirPrecompiled.Check do
        when is_binary(hash) do
     same_manifest? = provenance.sha == Map.get(candidate, :installed_sha)
 
-    if Match.files_hash(entry) == hash and
+    # The hash equality only picks the build to compare against: whether
+    # the disk holds it is installed_as?'s call, or, under an unchanged
+    # manifest, the check made when it was placed. verify_app (in keep/4)
+    # runs either way.
+    if provenance.files_sha256 == hash and
          (same_manifest? or Fetch.installed_as?(env.build_lib, candidate.name, entry)),
        do: keep(candidate, provenance, env, config_fun),
        else: install(candidate, entry, provenance, config, env, config_fun)

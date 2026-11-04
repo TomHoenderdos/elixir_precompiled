@@ -571,6 +571,25 @@ defmodule ElixirPrecompiled.FetchTest do
              Fetch.get_conditional(late, config.source <> "/batch.json", nil)
   end
 
+  # Only httpc's named transport errors count as unreachable (and so may
+  # fall back to a cached batch); a shape nobody named is a refusal.
+  test "httpc transport errors are unreachable by name, nothing else" do
+    for reason <- [
+          {:failed_connect, [{:to_address, {~c"h", 443}}, {:inet, [:inet], :econnrefused}]},
+          :socket_closed_remotely,
+          :session_remotely_closed,
+          :timeout,
+          :connect_timeout,
+          {:send_failed, :closed},
+          "Status 502 Bad Gateway",
+          "no data for 30.0 s"
+        ],
+        do: assert(Fetch.unreachable?(reason), inspect(reason))
+
+    for reason <- [:something_new, {:other, 1}, :too_many_redirects, "Status 404 Not Found"],
+        do: refute(Fetch.unreachable?(reason), inspect(reason))
+  end
+
   test "content and metadata requests carry the connect timeout", %{config: config} do
     c = Map.put(config, :connect_timeout_ms, 1234)
     assert Fetch.content_opts(c)[:connect_timeout_ms] == 1234

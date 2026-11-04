@@ -14,6 +14,16 @@ defmodule ElixirPrecompiled.Fetch do
   alias ElixirPrecompiled.{FileUtil, Manifest}
 
   # 8 MiB: root, batch and any other document
+  # httpc's request errors that mean the connection failed or broke.
+  @transport_errors [
+    :socket_closed_remotely,
+    :session_remotely_closed,
+    :timeout,
+    :connect_timeout,
+    :econnrefused,
+    :nxdomain,
+    :closed
+  ]
   @max_body_bytes 8_388_608
   # 64 MiB: manifests of packages with many versions and systems run past 8 MiB
   @max_manifest_bytes 67_108_864
@@ -73,17 +83,22 @@ defmodule ElixirPrecompiled.Fetch do
     if unreachable?(reason), do: {:unreachable, why}, else: why
   end
 
-  defp unreachable?("Status 5" <> _), do: true
-  defp unreachable?("offline"), do: true
-  defp unreachable?("run deadline passed"), do: true
-  defp unreachable?("no response within " <> _), do: true
-  defp unreachable?("no data for " <> _), do: true
-  defp unreachable?(reason) when is_binary(reason), do: false
-  defp unreachable?(:too_many_redirects), do: false
-  defp unreachable?(:cross_origin_redirect), do: false
-  defp unreachable?({:too_large, _}), do: false
-  # httpc's own transport errors: {:failed_connect, _}, :socket_closed_remotely, ...
-  defp unreachable?(_), do: true
+  @doc false
+  # Unreachable: the source could not be asked (a transport error, a 5xx,
+  # the deadline, offline), so a still-valid cached batch may stand in.
+  # httpc's transport errors are named one by one; a shape not listed here
+  # is treated as a refusal, which never falls back.
+  @spec unreachable?(term()) :: boolean()
+  def unreachable?("Status 5" <> _), do: true
+  def unreachable?("offline"), do: true
+  def unreachable?("run deadline passed"), do: true
+  def unreachable?("no response within " <> _), do: true
+  def unreachable?("no data for " <> _), do: true
+  def unreachable?(reason) when is_binary(reason), do: false
+  def unreachable?({:failed_connect, _}), do: true
+  def unreachable?({:send_failed, _}), do: true
+  def unreachable?(reason) when reason in @transport_errors, do: true
+  def unreachable?(_), do: false
 
   @doc false
   # Root and batch: a short connect timeout, and both together inside
@@ -764,7 +779,11 @@ defmodule ElixirPrecompiled.Fetch do
   plain directories holding only regular files, exactly the entry's paths;
   each has the entry's mode and size, and its bytes hash to the entry's
   sha256; and the .app owns exactly the beams. A priv the entry does not
-  ship is Mix's link to deps/<dep>/priv and is not looked at.
+  ship is Mix's link to deps/<dep>/priv and is not looked at: Mix makes and
+  remakes that link itself from the sources deps.get verified, so it holds
+  nothing an install placed. Other top-level entries (`.mix`, a
+  `consolidated` dir, Mix's `include` link) are not looked at either: Mix
+  writes them, and none of them is code the build's .app loads.
   """
   @spec installed_as?(Path.t(), atom(), map()) :: boolean()
   def installed_as?(build_lib, dep, entry) do

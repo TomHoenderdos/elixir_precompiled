@@ -153,6 +153,33 @@ defmodule ElixirPrecompiled.SourceScanTest do
     assert {:unscannable, "run deadline passed"} = SourceScan.cached(home, d, key, past)
     assert %{target: false, env: []} = SourceScan.cached(home, d, key)
   end
+
+  # Only what the package's bytes decide is cached under its checksum: an
+  # I/O error says something about this disk today, not about the package.
+  test "a source that cannot be read is unscannable, and that is not cached", %{tmp_dir: dir} do
+    d = dep(Path.join(dir, "dep"), %{"lib/a.ex" => "defmodule A do\n  @t Mix.target()\nend\n"})
+    home = Path.join(dir, "home")
+    key = String.duplicate("cd", 32)
+    src = Path.join(d, "lib/a.ex")
+    File.chmod!(src, 0o000)
+
+    try do
+      assert {:unscannable, "lib/a.ex: " <> _} = SourceScan.cached(home, d, key)
+    after
+      File.chmod!(src, 0o644)
+    end
+
+    assert %{target: true} = SourceScan.cached(home, d, key)
+  end
+
+  test "a source that does not parse is unscannable, and that is cached", %{tmp_dir: dir} do
+    d = dep(Path.join(dir, "dep"), %{"lib/a.ex" => "defmodule A do\n"})
+    home = Path.join(dir, "home")
+    key = String.duplicate("ab", 32)
+    assert {:unscannable, "lib/a.ex does not parse"} = SourceScan.cached(home, d, key)
+    File.write!(Path.join(d, "lib/a.ex"), "defmodule A do\nend\n")
+    assert {:unscannable, "lib/a.ex does not parse"} = SourceScan.cached(home, d, key)
+  end
 end
 
 defmodule ElixirPrecompiled.SourceScanAtomsTest do

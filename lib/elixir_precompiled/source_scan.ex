@@ -41,7 +41,8 @@ defmodule ElixirPrecompiled.SourceScan do
   # Cached under `<home>/scan/v1/<checksum>.term`. A checksum that is not
   # plain hex never becomes a file name: that dep is scanned every time.
   # Only a regular file is read back; anything else there is ignored and
-  # the dep scanned. A scan the run deadline cut short is not cached.
+  # the dep scanned. Only a result the package's bytes decide is cached: a
+  # scan the run deadline cut short, or one an I/O error stopped, is not.
   @spec cached(Path.t() | nil, Path.t(), String.t(), integer() | nil) :: t()
   def cached(home, dep_dir, checksum, deadline_at \\ nil) do
     path =
@@ -50,9 +51,9 @@ defmodule ElixirPrecompiled.SourceScan do
 
     case path && read(path) do
       nil ->
-        result = scan(dep_dir, deadline_at)
+        {result, cache?} = scan_tagged(dep_dir, deadline_at)
 
-        if path && result != {:unscannable, @deadline},
+        if path && cache?,
           do: _ = ElixirPrecompiled.FileUtil.write_atomic(path, :erlang.term_to_binary(result))
 
         result
@@ -84,7 +85,12 @@ defmodule ElixirPrecompiled.SourceScan do
 
   @doc false
   @spec scan(Path.t(), integer() | nil) :: t()
-  def scan(dep_dir, deadline_at \\ nil) do
+  def scan(dep_dir, deadline_at \\ nil), do: dep_dir |> scan_tagged(deadline_at) |> elem(0)
+
+  # The result, and whether it is fixed by the package's bytes alone (and
+  # so may be cached under its checksum): {:transient, why} marks the
+  # deadline and I/O errors, which say something about this run instead.
+  defp scan_tagged(dep_dir, deadline_at) do
     files =
       [{Path.join(dep_dir, "mix.exs"), :anywhere}] ++
         for f <- Path.wildcard(Path.join([dep_dir, "lib", "**", "*.ex"])), do: {f, :module}
@@ -100,25 +106,27 @@ defmodule ElixirPrecompiled.SourceScan do
       else
         :absent -> {:cont, {lib, mix, total}}
         {:unscannable, _} = no -> {:halt, no}
+        {:transient, _} = no -> {:halt, no}
       end
     end)
     |> summarize()
   end
 
-  defp summarize({:unscannable, _} = no), do: no
+  defp summarize({:transient, why}), do: {{:unscannable, why}, false}
+  defp summarize({:unscannable, _} = no), do: {no, true}
 
   defp summarize({lib, mix, _total}) do
-    %{
-      target: :target in lib or :target in mix,
-      env: lib |> Enum.flat_map(&env_name/1) |> Enum.uniq() |> Enum.sort()
-    }
+    {%{
+       target: :target in lib or :target in mix,
+       env: lib |> Enum.flat_map(&env_name/1) |> Enum.uniq() |> Enum.sort()
+     }, true}
   end
 
   defp env_name({:env, name}), do: [name]
   defp env_name(_), do: []
 
   defp in_time(at) when is_integer(at) do
-    if System.monotonic_time(:millisecond) < at, do: :ok, else: {:unscannable, @deadline}
+    if System.monotonic_time(:millisecond) < at, do: :ok, else: {:transient, @deadline}
   end
 
   defp in_time(_), do: :ok
@@ -143,7 +151,7 @@ defmodule ElixirPrecompiled.SourceScan do
         :absent
 
       {:error, why} ->
-        {:unscannable, "#{rel}: #{:file.format_error(why)}"}
+        {:transient, "#{rel}: #{:file.format_error(why)}"}
     end
   end
 
@@ -152,7 +160,7 @@ defmodule ElixirPrecompiled.SourceScan do
     case File.read(path) do
       {:ok, src} when byte_size(src) <= @max_file_bytes -> {:ok, src, byte_size(src)}
       {:ok, _} -> {:unscannable, "#{rel} is over 2 MB"}
-      {:error, why} -> {:unscannable, "#{rel}: #{:file.format_error(why)}"}
+      {:error, why} -> {:transient, "#{rel}: #{:file.format_error(why)}"}
     end
   end
 

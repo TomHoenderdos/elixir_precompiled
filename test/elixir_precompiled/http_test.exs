@@ -220,6 +220,21 @@ defmodule ElixirPrecompiled.HTTPTest do
     refute proxied?(proxy_port)
   end
 
+  # NO_PROXY entries are lower-cased, and httpc compares hosts as given:
+  # the request's host is lower-cased too, so case cannot route a NO_PROXY
+  # host through the proxy with its credentials.
+  test "a NO_PROXY host in another case still gets no proxy" do
+    proxy_port =
+      with_proxy_env([
+        {"http_proxy", "http://user:secret@127.0.0.1:PROXY_PORT"},
+        {"no_proxy", "localhost"}
+      ])
+
+    upper = String.replace(url("/proxy-auth"), "127.0.0.1", "LocalHost")
+    assert {:ok, ""} = HTTP.get(upper)
+    refute proxied?(proxy_port)
+  end
+
   test "NO_PROXY=* sends nothing through a configured proxy" do
     proxy_port =
       with_proxy_env([

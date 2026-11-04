@@ -188,6 +188,8 @@ defmodule ElixirPrecompiled.HTTP do
   end
 
   defp start_request(url, opts, cacerts, redirects, deadline, origins) do
+    url = lower_case_host(url)
+
     headers =
       [{~c"User-Agent", @user_agent}] ++
         for {k, v} <- Keyword.get(opts, :headers, []),
@@ -296,6 +298,20 @@ defmodule ElixirPrecompiled.HTTP do
         if left < state.inactivity_ms,
           do: {:error, "no response within #{format_seconds(deadline_ms)} s"},
           else: {:error, "no data for #{format_seconds(state.inactivity_ms)} s"}
+    end
+  end
+
+  # NO_PROXY entries are lower-cased and httpc matches hosts as given, so
+  # the request's host is lower-cased too: case never routes a NO_PROXY
+  # host through the proxy. (httpc's own uri_string:normalize/1 does this
+  # on OTP 27+ as well; this does not depend on it.)
+  defp lower_case_host(url) do
+    case URI.parse(url) do
+      %URI{host: host} = uri when is_binary(host) ->
+        URI.to_string(%{uri | host: String.downcase(host)})
+
+      _ ->
+        url
     end
   end
 

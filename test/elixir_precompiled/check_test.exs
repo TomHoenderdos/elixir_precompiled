@@ -627,6 +627,62 @@ defmodule ElixirPrecompiled.CheckTest do
       refute File.exists?(Path.join(lib, "ash"))
     end
 
+    # Under an unchanged manifest the disk is not re-hashed, but the kept
+    # build's .app is still read: one that no longer names the locked
+    # package fails the dep, which is removed for Mix to compile.
+    test "same batch, an installed .app naming another version: FAIL, removed", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      app = Path.join(lib, "ash/ebin/ash.app")
+      File.write!(app, String.replace(File.read!(app), "3.5.2", "9.9.9"))
+
+      out = run_capturing(config, env)
+      assert out =~ ~r/ash 3\.5\.2\s+FAIL\s+downloaded \.app names ash 9\.9\.9/, out
+      refute File.exists?(Path.join(lib, "ash"))
+    end
+
+    # A scan the deadline cut short says nothing against the installed
+    # build, as a manifest the network could not deliver says nothing.
+    test "same batch, the deadline cuts the source scan short: kept, with a note", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib,
+      tmp_dir: dir
+    } do
+      File.mkdir_p!(Path.join(dir, "deps/ash/lib"))
+      File.write!(Path.join(dir, "deps/ash/lib/ash.ex"), "defmodule Ash do\nend\n")
+      env = install_ash(f, config, env)
+      File.rm_rf!(Path.join(config.home, "scan"))
+
+      out = run_capturing(Map.put(config, :deadline_ms, 0), env)
+      assert out =~ ~r/ash 3\.5\.2\s+KEPT\s+source not scannable: run deadline passed/, out
+      assert File.exists?(Path.join(lib, "ash/ebin/ash.app"))
+    end
+
+    # Kept without a recheck still reads the installed .app against today's
+    # config: a kept build that no longer names the package is removed.
+    test "same batch, offline, manifest not cached, the .app tampered: FAIL, removed", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      File.rm_rf!(Path.join(config.home, "manifests"))
+      File.mkdir_p!(Path.join(config.home, "manifests"))
+      app = Path.join(lib, "ash/ebin/ash.app")
+      File.write!(app, String.replace(File.read!(app), "3.5.2", "9.9.9"))
+
+      out = run_capturing(Map.put(config, :offline, true), env)
+      assert out =~ ~r/ash 3\.5\.2\s+FAIL\s+downloaded \.app names ash 9\.9\.9/, out
+      refute File.exists?(Path.join(lib, "ash"))
+    end
+
     test "same batch: the provenance file is not rewritten", %{
       f: f,
       config: config,
