@@ -156,6 +156,8 @@ defmodule ElixirPrecompiled.SourceScanTest do
 
   # Only what the package's bytes decide is cached under its checksum: an
   # I/O error says something about this disk today, not about the package.
+  # root reads a mode-000 file anyway: nothing to test there.
+  @tag skip: if(System.cmd("id", ["-u"]) == {"0\n", 0}, do: "runs as root")
   test "a source that cannot be read is unscannable, and that is not cached", %{tmp_dir: dir} do
     d = dep(Path.join(dir, "dep"), %{"lib/a.ex" => "defmodule A do\n  @t Mix.target()\nend\n"})
     home = Path.join(dir, "home")

@@ -580,6 +580,10 @@ defmodule ElixirPrecompiled.FetchTest do
           :session_remotely_closed,
           :timeout,
           :connect_timeout,
+          :econnreset,
+          :etimedout,
+          :ehostunreach,
+          :enetunreach,
           {:send_failed, :closed},
           "Status 502 Bad Gateway",
           "no data for 30.0 s"

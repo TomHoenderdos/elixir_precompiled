@@ -44,7 +44,7 @@ defmodule ElixirPrecompiled.InstallTest do
     {elixir, erts} = {System.version(), :erlang.system_info(:version)}
 
     expected =
-      if Version.match?(elixir, ">= 1.19.0"),
+      if Version.match?(elixir, ">= 1.19.0-0"),
         do: Path.join([dir, "ex-#{elixir}-erl-#{erts}", Base.url_encode64(md5, padding: false)]),
         else: Path.join([dir, "elixir-#{elixir}-erts-#{erts}", Base.encode16(md5, case: :lower)])
 

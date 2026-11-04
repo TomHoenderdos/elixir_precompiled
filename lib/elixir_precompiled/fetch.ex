@@ -21,6 +21,10 @@ defmodule ElixirPrecompiled.Fetch do
     :timeout,
     :connect_timeout,
     :econnrefused,
+    :econnreset,
+    :etimedout,
+    :ehostunreach,
+    :enetunreach,
     :nxdomain,
     :closed
   ]

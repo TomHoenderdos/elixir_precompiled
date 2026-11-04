@@ -141,9 +141,11 @@ defmodule ElixirPrecompiled.Install do
       |> :erlang.md5()
 
     {elixir, erts} = {System.version(), :erlang.system_info(:version)}
+    %Version{major: major, minor: minor} = Version.parse!(elixir)
 
+    # By minor, so a 1.19 release candidate counts as 1.19.
     {version_dir, id} =
-      if Version.match?(elixir, ">= 1.19.0"),
+      if {major, minor} >= {1, 19},
         do: {"ex-#{elixir}-erl-#{erts}", Base.url_encode64(md5, padding: false)},
         else: {"elixir-#{elixir}-erts-#{erts}", Base.encode16(md5, case: :lower)}
 
