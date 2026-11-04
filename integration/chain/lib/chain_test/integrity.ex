@@ -14,10 +14,12 @@ defmodule ChainTest.Integrity do
 
     1. The dep's provenance file (`.mix/elixir_precompiled.json`, written by
        the client's install) must name the manifest the verified batch
-       names. A different one is `:rerun` only when a fresh batch the
-       harness verifies itself, newer than step 1's, names exactly the
-       recorded manifest; the file's own batch number counts for nothing.
-       Anything else is a `:disagreement`.
+       names. A different one is checked against a fresh batch the harness
+       verifies itself, newer than step 1's, that names exactly the
+       recorded manifest: steps 2 to 4 run against that manifest and the
+       result is `:rerun` when the files match, a `:disagreement` when they
+       do not; the file's own batch number counts for nothing. Anything
+       else is a `:disagreement`.
     2. The manifest is downloaded from `<source>/<dir>/<name>.json` and its
        bytes must hash to the verified sha. When they do not, it is
        `:rerun` only when a fresh verified batch newer than step 1's names
@@ -183,20 +185,29 @@ defmodule ChainTest.Integrity do
     {outcome, ms} =
       Result.timed(fn ->
         with {:ok, sha, dir} <- batch_ref(trust, name),
-             :ok <- provenance(name, sha, dir, trust, ctx),
-             {:ok, bytes} <- fetch(ctx, name, dir),
-             :ok <- manifest_hash(bytes, sha, name, trust, ctx),
+             {:ok, ref} <- provenance(name, sha, dir, trust, ctx),
+             {:ok, bytes} <- fetch(ctx, name, ref.dir),
+             :ok <- manifest_hash(bytes, ref.sha, name, ref.batch, ctx),
              {:ok, manifest} <- normalize(bytes),
              {:ok, entry, desc} <- select(manifest, name, version, ctx) do
-          {:pass, entry, desc}
+          {:pass, entry, desc, ref.rerun}
         end
       end)
 
     case outcome do
-      {:pass, entry, desc} ->
+      {:pass, entry, desc, nil} ->
+        listed = entry_files(entry)
+        result(check, :pass, "#{name} #{version}: #{length(listed)} files match #{desc}", ms)
+
+      {:pass, entry, desc, rerun} ->
         listed = entry_files(entry)
 
-        result(check, :pass, "#{name} #{version}: #{length(listed)} files match #{desc}", ms)
+        result(
+          check,
+          :rerun,
+          "#{name} #{version}: #{rerun}; #{length(listed)} files match #{desc}",
+          ms
+        )
 
       {:batch_mismatch, detail} ->
         r = result(check, :disagreement, "#{name} #{version}: #{detail}", ms)
@@ -219,6 +230,9 @@ defmodule ChainTest.Integrity do
     end
   end
 
+  # {:ok, ref}: the manifest to check the installed files against: step 1's,
+  # or, when a fresh newer verified batch names the one the client recorded,
+  # that one, with the rerun reason.
   defp provenance(name, sha, dir, trust, ctx) do
     path = Path.join([ctx.build_lib, name, ".mix", "elixir_precompiled.json"])
 
@@ -228,16 +242,23 @@ defmodule ChainTest.Integrity do
       recorded_dir = p["manifest_path"]
 
       if recorded == sha and recorded_dir == dir do
-        :ok
+        {:ok, %{sha: sha, dir: dir, batch: trust, rerun: nil}}
       else
         # The provenance file is the client's word; only a fresh batch the
         # harness verified itself can make a different manifest a rerun.
         fresh = ctx.recheck.()
 
         if newer?(fresh, trust) and Trust.manifest_sha(fresh, name) == {recorded, recorded_dir} do
-          {:rerun,
-           "the client installed from manifest #{recorded}, which batch #{fresh.sequence} " <>
-             "names; step 1 verified batch #{trust.sequence}: production moved; run again"}
+          {:ok,
+           %{
+             sha: recorded,
+             dir: recorded_dir,
+             batch: fresh,
+             rerun:
+               "the client installed from manifest #{recorded}, which batch " <>
+                 "#{fresh.sequence} names; step 1 verified batch #{trust.sequence}: " <>
+                 "production moved; run again"
+           }}
         else
           {:batch_mismatch,
            "provenance names manifest #{inspect(recorded)} under #{inspect(recorded_dir)}, " <>

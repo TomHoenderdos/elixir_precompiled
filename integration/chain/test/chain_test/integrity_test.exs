@@ -164,13 +164,48 @@ defmodule ChainTest.IntegrityTest do
     assert detail =~ "provenance"
   end
 
-  test "provenance a newer verified batch names is a rerun", ctx do
+  # The source now serves another run of the same files, which a newer
+  # verified batch names and the client's provenance records.
+  defp moved(ctx) do
+    bytes = Synthetic.manifest("1.4.5", [Synthetic.build(@files, outer: @outer, run_id: "run-2")])
+    Synthetic.serve_manifest(ctx.served, "v2/manifests", "jason", bytes)
+    sha = Synthetic.sha(bytes)
+    write_provenance(ctx, sha, 8)
+    Synthetic.info(8, %{"jason" => sha})
+  end
+
+  test "provenance a newer verified batch names is a rerun whose files are checked", ctx do
+    trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+    newer = moved(ctx)
+
+    assert [%Result{class: :rerun, detail: detail}] =
+             run(ctx, trust, %{recheck: fn -> newer end})
+
+    assert detail =~ "batch 8"
+    assert detail =~ "2 files match build pure_elixir run run-2"
+  end
+
+  test "a rerun hit whose files differ from the fresh batch's manifest is a disagreement",
+       ctx do
+    trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
+    newer = moved(ctx)
+    File.write!(Path.join(ctx.build_lib, "jason/ebin/Elixir.Jason.beam"), "jason beam bytez")
+
+    assert [%Result{class: :disagreement, cause: nil, detail: detail}] =
+             run(ctx, trust, %{recheck: fn -> newer end})
+
+    assert detail =~ "ebin/Elixir.Jason.beam"
+  end
+
+  test "a rerun hit whose served manifest is not the one the fresh batch names is a batch mismatch",
+       ctx do
     trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
     other = String.duplicate("d", 64)
     write_provenance(ctx, other, 8)
     newer = Synthetic.info(8, %{"jason" => other})
 
-    assert [%Result{class: :rerun}] = run(ctx, trust, %{recheck: fn -> newer end})
+    assert [%Result{class: :disagreement, cause: :batch_mismatch}] =
+             run(ctx, trust, %{recheck: fn -> newer end})
   end
 
   test "a priv symlink to the dep's own sources passes", ctx do
@@ -333,9 +368,14 @@ defmodule ChainTest.IntegrityTest do
 
     test "a newer fully verified batch naming the recorded manifest makes a rerun", ctx do
       trust = arrange(ctx, [Synthetic.build(@files, outer: @outer)])
-      other = String.duplicate("d", 64)
-      write_provenance(ctx, other, 8)
-      opts = serve_fresh(ctx, other, [])
+
+      bytes =
+        Synthetic.manifest("1.4.5", [Synthetic.build(@files, outer: @outer, run_id: "run-2")])
+
+      Synthetic.serve_manifest(ctx.served, "v2/manifests", "jason", bytes)
+      sha = Synthetic.sha(bytes)
+      write_provenance(ctx, sha, 8)
+      opts = serve_fresh(ctx, sha, [])
 
       assert [%Result{class: :rerun}] = run(ctx, trust, %{trust_opts: opts})
     end
