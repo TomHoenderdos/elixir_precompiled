@@ -16,6 +16,12 @@ defmodule ElixirPrecompiled.Install do
 
   @mix_install_app :mix_install
 
+  # A process told to stop (supervisor shutdown, a linked :normal or
+  # {:shutdown, _} exit) must stop, not turn into a source compile.
+  defguardp stop?(reason)
+            when reason in [:normal, :shutdown] or
+                   (is_tuple(reason) and tuple_size(reason) == 2 and elem(reason, 0) == :shutdown)
+
   @spec run([term()], keyword(), map() | nil, keyword()) :: :ok
   def run(deps, mix_opts, config, test_opts \\ []) do
     installer = Keyword.get(test_opts, :installer, &Mix.install/2)
@@ -68,6 +74,7 @@ defmodule ElixirPrecompiled.Install do
     rescue
       e -> internal_error(Exception.message(e))
     catch
+      :exit, reason when stop?(reason) -> exit(reason)
       kind, reason -> internal_error(Exception.format_banner(kind, reason))
     end
 

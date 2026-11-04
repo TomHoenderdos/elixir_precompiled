@@ -6,6 +6,8 @@ defmodule ElixirPrecompiled.FileUtil do
   @moduledoc false
   # Writes that two runs sharing one home can make at the same time: every
   # writer has its own temp name, and the rename is the only shared step.
+  # Neither function sets a mode: files and dirs get what the process
+  # umask allows, as Mix's own writes do.
 
   @spec write_atomic(Path.t(), iodata()) :: :ok | {:error, term()}
   def write_atomic(path, data) do

@@ -16,6 +16,12 @@ defmodule ElixirPrecompiled do
 
   alias ElixirPrecompiled.{Check, Config, Env, Install}
 
+  # A process told to stop (supervisor shutdown, a linked :normal or
+  # {:shutdown, _} exit) must stop, not turn into a source compile.
+  defguardp stop?(reason)
+            when reason in [:normal, :shutdown] or
+                   (is_tuple(reason) and tuple_size(reason) == 2 and elem(reason, 0) == :shutdown)
+
   @doc """
   The build-time step: check every dependency Mix is about to compile and
   install the matching builds. `:disabled` without a source or on the host
@@ -27,6 +33,7 @@ defmodule ElixirPrecompiled do
   rescue
     e -> internal_error(Exception.message(e))
   catch
+    :exit, reason when stop?(reason) -> exit(reason)
     kind, reason -> internal_error(Exception.format_banner(kind, reason))
   end
 

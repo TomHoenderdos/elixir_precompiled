@@ -75,4 +75,28 @@ defmodule ElixirPrecompiledTest do
 
     assert out =~ "is not writable; using #{Path.join(lib, ".precompiled/home")}"
   end
+
+  test "a shutdown exit is passed on, any other exit is one warning" do
+    Application.put_env(:elixir_precompiled, :source, "https://example.test/x")
+
+    exiting = fn reason ->
+      %Env{
+        candidates: Stream.map([:x], fn _ -> exit(reason) end),
+        lock: %{},
+        build_lib: "/nonexistent",
+        deps_path: "/nonexistent"
+      }
+    end
+
+    for reason <- [:normal, :shutdown, {:shutdown, :stop}] do
+      assert catch_exit(ElixirPrecompiled.run(env: exiting.(reason), host?: false)) == reason
+    end
+
+    out =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert ElixirPrecompiled.run(env: exiting.(:boom), host?: false) == :disabled
+      end)
+
+    assert out =~ "precompiled: internal error, compiling from source"
+  end
 end

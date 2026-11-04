@@ -62,7 +62,7 @@ defmodule ElixirPrecompiled.Check do
   @doc false
   # The home must take writes (trust state, cache). One that cannot (none
   # at all, read-only, or a pre-seeded CI cache) moves to _build for this
-  # run; its files/ stay readable as :ro_home.
+  # run.
   @spec with_home(map(), Env.t()) :: map()
   def with_home(config, env) do
     home = config.home
@@ -72,7 +72,7 @@ defmodule ElixirPrecompiled.Check do
     else
       fallback = Path.join([env.build_lib, ".precompiled", "home"])
       Output.warning("precompiled: cache dir #{inspect(home)} is not writable; using #{fallback}")
-      Map.merge(config, %{home: fallback, ro_home: home})
+      %{config | home: fallback}
     end
   end
 
@@ -198,14 +198,45 @@ defmodule ElixirPrecompiled.Check do
     end
   end
 
+  # Unlinked workers under a supervisor of this run: a worker that dies
+  # outright (killed, or a crash one/5 cannot catch) is one FAIL line for
+  # its dep, never an exit that takes the caller and the build with it.
   defp install_lines(candidates, config, batch, env, config_fun) do
-    candidates
-    |> Task.async_stream(&one(&1, config, batch, env, config_fun),
-      max_concurrency: 8,
-      timeout: :infinity,
-      ordered: true
-    )
-    |> Enum.map(fn {:ok, line} -> line end)
+    {:ok, sup} = Task.Supervisor.start_link()
+
+    try do
+      sup
+      |> Task.Supervisor.async_stream_nolink(
+        candidates,
+        &one(&1, config, batch, env, config_fun),
+        max_concurrency: 8,
+        timeout: :infinity,
+        ordered: true
+      )
+      |> Enum.zip(candidates)
+      |> Enum.map(fn
+        {{:ok, line}, _dep} -> line
+        {{:exit, reason}, dep} -> worker_died(dep, reason, env)
+      end)
+    after
+      Supervisor.stop(sup)
+    end
+  end
+
+  # Nothing of a dead worker's install may stay behind: no staging dir and
+  # no build dir carrying Mix's marker, so Mix compiles the dep.
+  defp worker_died(dep, reason, env) do
+    sname = Atom.to_string(dep.name)
+    _ = File.rm_rf(Path.join([env.build_lib, ".precompiled", sname]))
+    _ = File.rm_rf(Path.join(env.build_lib, sname))
+
+    %{
+      name: sname,
+      version: dep.version,
+      bytes: 0,
+      status: :fail,
+      detail: "candidate crashed: #{inspect(reason)}"
+    }
   end
 
   defp debug(msg), do: if(Config.debug?(), do: Output.info(msg))
@@ -249,11 +280,11 @@ defmodule ElixirPrecompiled.Check do
          config_fun
        ) do
     sname = Atom.to_string(name)
-    base = %{name: sname, version: version, bytes: 0}
-
-    {sha, path} = manifest_ref(batch, sname)
 
     try do
+      base = %{name: sname, version: version, bytes: 0}
+      {sha, path} = manifest_ref(batch, sname)
+
       # Mix compiles this dep unless it is installed now: a provenance file
       # left by an earlier install would vouch for Mix's own build.
       _ = File.rm(Fetch.provenance_path(env.build_lib, name))

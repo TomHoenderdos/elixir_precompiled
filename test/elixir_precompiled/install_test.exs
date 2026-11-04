@@ -184,4 +184,18 @@ defmodule ElixirPrecompiled.InstallTest do
     assert out =~ "precompiled: internal error, compiling from source (boom)"
     assert_received {:installed, [], []}
   end
+
+  test "a shutdown exit in the precompiled step is passed on", %{config: config} do
+    installer = fn _deps, _opts -> flunk("Mix.install ran after a shutdown") end
+
+    capture_io(fn ->
+      assert catch_exit(
+               Install.run([], [], config,
+                 installer: installer,
+                 in_project?: false,
+                 check: fn -> exit({:shutdown, :stop}) end
+               )
+             ) == {:shutdown, :stop}
+    end)
+  end
 end

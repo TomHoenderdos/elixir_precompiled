@@ -878,7 +878,7 @@ defmodule ElixirPrecompiled.CheckTest do
     end
   end
 
-  test "an unwritable home falls back to _build and still reads the old cache", %{
+  test "an unwritable home falls back to a cache under _build", %{
     f: f,
     config: config,
     env: env,
@@ -901,5 +901,41 @@ defmodule ElixirPrecompiled.CheckTest do
     assert_received {:report, {:ok, %{hits: 1}}}
     assert out =~ "is not writable; using #{Path.join(lib, ".precompiled/home")}"
     assert File.dir?(Path.join(lib, ".precompiled/home/files"))
+  end
+
+  test "a worker that dies outright is one FAIL, leaves nothing behind, and the rest install",
+       %{f: f, config: config, env: env, lib: lib} do
+    killer = %{
+      "app" => "jason",
+      "path" => ["k"],
+      "value" => Base.url_encode64(:erlang.term_to_binary(1), padding: false)
+    }
+
+    jason = put_in(good_entry(f, "jason", "1.31.0"), ["build", "compile_env"], [killer])
+
+    F.publish(f, %{
+      "ash" => %{"versions" => %{"3.5.2" => %{"builds" => [good_entry(f, "ash", "1.31.0")]}}},
+      "jason" => %{"versions" => %{"1.4.5" => %{"builds" => [jason]}}}
+    })
+
+    # What a half-finished install would leave: a staging dir and a build
+    # dir that carries Mix's "already compiled" marker.
+    File.mkdir_p!(Path.join(lib, ".precompiled/jason"))
+    File.mkdir_p!(Path.join(lib, "jason/.mix"))
+    File.write!(Path.join(lib, "jason/.mix/compile.elixir_scm"), "")
+
+    config_fun = fn
+      "jason", _ -> Process.exit(self(), :kill)
+      _, _ -> :error
+    end
+
+    out = run_capturing(config, env, config_fun: config_fun)
+    assert_received {:report, {:ok, %{hits: 1, fails: 1, lines: lines}}}
+    assert [%{name: "ash", status: :hit}, %{name: "jason", status: :fail, detail: detail}] = lines
+    assert detail =~ "candidate crashed: :killed"
+    assert out =~ ~r/jason 1\.4\.5\s+FAIL/
+    refute File.exists?(Path.join(lib, "jason"))
+    refute File.exists?(Path.join(lib, ".precompiled/jason"))
+    assert File.exists?(Path.join(lib, "ash/.mix/compile.elixir_scm"))
   end
 end
