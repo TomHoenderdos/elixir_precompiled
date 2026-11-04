@@ -44,6 +44,9 @@ defmodule ElixirPrecompiled do
     config = Config.load()
 
     cond do
+      skipped_task?(opts, Mix.Tasks.Precompiled.Install.top_level_task()) ->
+        :disabled
+
       config == nil ->
         off(opts)
 
@@ -76,6 +79,15 @@ defmodule ElixirPrecompiled do
   end
 
   defp build_lib(), do: Path.join(Mix.Project.build_path(), "lib")
+
+  @doc false
+  # A Mix-project run (no :env: the fork's nerves.init hook, or the task)
+  # under a top-level task that never compiles deps or only inspects or
+  # undoes installs (precompiled.*) does nothing, as the task itself
+  # already decides for its own call.
+  @spec skipped_task?(keyword(), String.t()) :: boolean()
+  def skipped_task?(opts, task),
+    do: not Keyword.has_key?(opts, :env) and Mix.Tasks.Precompiled.Install.skip?(task)
 
   # `host?:` (the old option) wins; `allow_host: true` is what the Mix task
   # passes, so a plain project on the host target gets pure_elixir builds;

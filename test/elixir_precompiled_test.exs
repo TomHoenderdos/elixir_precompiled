@@ -18,6 +18,19 @@ defmodule ElixirPrecompiledTest do
     %{env: %Env{candidates: [], lock: %{}, build_lib: "/nonexistent", deps_path: "/nonexistent"}}
   end
 
+  test "a run from the nerves.init hook skips the tasks precompiled.install skips" do
+    # The fork's hook calls run/1 with no :env; precompiled.status and
+    # precompiled.clean only inspect or undo installs.
+    for task <- ~w(precompiled.status precompiled.clean help clean),
+        do: assert(ElixirPrecompiled.skipped_task?([], task))
+
+    for task <- ~w(compile test deps.loadpaths),
+        do: refute(ElixirPrecompiled.skipped_task?([], task))
+
+    # Mix.install/2 and other callers that pass the env are never skipped.
+    refute ElixirPrecompiled.skipped_task?([env: :x], "precompiled.status")
+  end
+
   test "disabled without a source", %{env: env} do
     assert ElixirPrecompiled.run(env: env, host?: false) == :disabled
   end

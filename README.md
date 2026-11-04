@@ -414,6 +414,12 @@ completely: it removes its installs and Mix compiles everything.
 * Builds made for a Nerves system may have stripped beams: protocols they
   define are not consolidated and Dialyzer has no types for them (a run
   says how many).
+* With the Nerves fork, `nerves.init` calls this library itself. The
+  library does nothing under `help`, `clean` and `precompiled.*` tasks, but
+  the hook still runs its own setup first; the fork's `nerves.init` skip
+  list should name `precompiled.*` as well (a change on the fork's side).
+* Released nerves 1.x has no `Nerves.build_plan/0`, so no Nerves system is
+  known and only `pure_elixir` builds match (see Nerves above).
 
 ## Development
 
