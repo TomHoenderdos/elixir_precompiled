@@ -390,16 +390,6 @@ defmodule ElixirPrecompiled.Trust do
           (String.t(), String.t() | nil ->
              {:ok, binary(), String.t() | nil} | :not_modified | {:error, term()})
 
-  @spec fetch_batch(map(), root(), (String.t() -> {:ok, binary()} | {:error, term()})) ::
-          {:ok, batch()} | {:error, String.t()}
-  def fetch_batch(config, root, fetch) do
-    with {:ok, body} <- fetch.(config.source <> "/batch.json") |> or_error("batch unavailable") do
-      verify_batch(config, root, body, state_dir(config))
-    end
-  rescue
-    _ -> {:error, "batch malformed"}
-  end
-
   @doc """
   The current batch, asking the source only whether it changed: the last
   verified batch and its ETag are kept in the state dir and the ETag is sent

@@ -52,14 +52,14 @@ defmodule ElixirPrecompiled.StatusTest do
            }) =~
              ~r/jason 1\.4\.5\s+batch 9\s+manifest aaaaaaaaaaaa\s+s/
 
-    assert Status.clean(lib) == 2
+    assert length(Status.sweep(lib).removed) == 2
     assert File.ls!(lib) == ["decimal"]
   end
 
   test "a missing build lib lists nothing and cleans nothing", %{tmp_dir: dir} do
     lib = Path.join(dir, "nope")
     assert Status.installed(lib) == []
-    assert Status.clean(lib) == 0
+    assert Status.sweep(lib).removed == []
   end
 
   test "links are never followed: a linked dep dir, .mix or provenance is not an install", %{
@@ -89,7 +89,7 @@ defmodule ElixirPrecompiled.StatusTest do
     File.ln_s!(Path.join(outside, "far"), Path.join(lib, "real/priv"))
 
     assert [%{name: "real"}] = Status.installed(lib)
-    assert Status.clean(lib) == 1
+    assert length(Status.sweep(lib).removed) == 1
     assert File.ls!(lib) |> Enum.sort() == ["far", "mixlink", "provlink"]
     assert File.regular?(Path.join(outside, "far/ebin/far.app"))
     assert File.regular?(Path.join(outside, "far/.mix/elixir_precompiled.json"))
@@ -100,7 +100,7 @@ defmodule ElixirPrecompiled.StatusTest do
     dep(real, "jason", "1.4.5", "{}")
     File.ln_s!(real, Path.join(dir, "lib"))
     assert Status.installed(Path.join(dir, "lib")) == []
-    assert Status.clean(Path.join(dir, "lib")) == 0
+    assert Status.sweep(Path.join(dir, "lib")).removed == []
     assert File.dir?(Path.join(real, "jason"))
   end
 

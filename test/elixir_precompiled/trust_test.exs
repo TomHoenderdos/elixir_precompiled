@@ -76,56 +76,57 @@ defmodule ElixirPrecompiled.TrustTest do
     assert {:error, _} = Trust.load_root(config)
   end
 
-  test "fetches a valid batch and stores the sequence", %{config: config, f: f, fetch: fetch} do
+  test "fetches a valid batch and stores the sequence", %{config: config, f: f} do
     F.publish(f, %{"ash" => %{"versions" => %{}}}, sequence: 5, format: 1)
     {:ok, root} = Trust.load_root(config)
 
     assert {:ok, %{sequence: 5, manifests: %{"ash" => _}, manifests_v2: nil}} =
-             Trust.fetch_batch(config, root, fetch)
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
 
     assert File.read!(Path.join(state_dir(config), "state")) =~ "5"
   end
 
-  test "a batch with manifests_v2 returns it", %{config: config, f: f, fetch: fetch} do
+  test "a batch with manifests_v2 returns it", %{config: config, f: f} do
     F.publish(f, %{"ash" => %{"versions" => %{}}})
     {:ok, root} = Trust.load_root(config)
 
     assert {:ok, %{manifests: %{}, manifests_v2: %{"ash" => sha}}} =
-             Trust.fetch_batch(config, root, fetch)
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
 
     assert sha =~ ~r/\A[0-9a-f]{64}\z/
   end
 
   test "a batch whose manifests_v2 is not a map is malformed", %{
     config: config,
-    f: f,
-    fetch: fetch
+    f: f
   } do
     F.publish(f, %{}, format: 1, batch_extra: %{"manifests_v2" => ["ash"]})
     {:ok, root} = Trust.load_root(config)
-    assert {:error, "batch malformed"} = Trust.fetch_batch(config, root, fetch)
+    assert {:error, "batch malformed"} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 
-  test "an expired batch is refused", %{config: config, f: f, fetch: fetch} do
+  test "an expired batch is refused", %{config: config, f: f} do
     F.publish(f, %{}, expires: "2020-01-01T00:00:00Z")
     {:ok, root} = Trust.load_root(config)
-    assert {:error, "batch expired" <> _} = Trust.fetch_batch(config, root, fetch)
+    assert {:error, "batch expired" <> _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 
   test "a replayed older batch is refused and state unchanged", %{
     config: config,
-    f: f,
-    fetch: fetch
+    f: f
   } do
     {:ok, root} = Trust.load_root(config)
     F.publish(f, %{}, sequence: 7)
-    assert {:ok, _} = Trust.fetch_batch(config, root, fetch)
+    assert {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
     F.publish(f, %{}, sequence: 6)
-    assert {:error, "batch sequence 6 is older than 7"} = Trust.fetch_batch(config, root, fetch)
+
+    assert {:error, "batch sequence 6 is older than 7"} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
     assert File.read!(Path.join(state_dir(config), "state")) =~ "7"
   end
 
-  test "a batch signed by an unknown key is refused", %{config: config, f: f, fetch: fetch} do
+  test "a batch signed by an unknown key is refused", %{config: config, f: f} do
     {pub, priv} = :crypto.generate_key(:eddsa, :ed25519)
 
     other = %{
@@ -136,7 +137,9 @@ defmodule ElixirPrecompiled.TrustTest do
 
     F.publish(f, %{}, signers: [other])
     {:ok, root} = Trust.load_root(config)
-    assert {:error, "batch signature invalid"} = Trust.fetch_batch(config, root, fetch)
+
+    assert {:error, "batch signature invalid"} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 
   test "a newer root signed by the current root is adopted and cached", %{
@@ -233,8 +236,7 @@ defmodule ElixirPrecompiled.TrustTest do
 
   test "a batch whose root lacks a batch role is refused, not raised", %{
     config: config,
-    f: f,
-    fetch: fetch
+    f: f
   } do
     payload =
       :json.encode(%{
@@ -250,7 +252,9 @@ defmodule ElixirPrecompiled.TrustTest do
     File.write!(config.root_path, :json.encode(F.sign(payload, [f.key])))
     F.publish(f, %{}, sequence: 1)
     {:ok, root} = Trust.load_root(config)
-    assert {:error, "batch signature invalid"} = Trust.fetch_batch(config, root, fetch)
+
+    assert {:error, "batch signature invalid"} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 
   test "a shipped root past its own expiry is refused, not raised", %{tmp_dir: dir} do
@@ -325,10 +329,12 @@ defmodule ElixirPrecompiled.TrustTest do
     {:ok, root} = Trust.load_root(config)
 
     F.publish(f, %{}, sequence: 7)
-    assert {:ok, %{sequence: 7}} = Trust.fetch_batch(config, root, fetch)
+    assert {:ok, %{sequence: 7}} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
     F.publish(f, %{}, sequence: 6)
-    assert {:ok, %{sequence: 6}} = Trust.fetch_batch(other, root, fetch)
-    assert {:error, "batch sequence 6 is older than 7"} = Trust.fetch_batch(config, root, fetch)
+    assert {:ok, %{sequence: 6}} = Trust.fetch_batch_cached(other, root, &cond_fetch/2)
+
+    assert {:error, "batch sequence 6 is older than 7"} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
 
     refute state_dir(config) == state_dir(other)
     assert Path.dirname(state_dir(config)) == config.home
@@ -355,7 +361,7 @@ defmodule ElixirPrecompiled.TrustTest do
     {:ok, root} = Trust.load_root(config)
     {:ok, rotated} = Trust.update_root(config, root, fetch)
     F.publish(f, %{}, sequence: 4, signers: [k2])
-    assert {:ok, %{sequence: 4}} = Trust.fetch_batch(config, rotated, fetch)
+    assert {:ok, %{sequence: 4}} = Trust.fetch_batch_cached(config, rotated, &cond_fetch/2)
     assert File.read!(Path.join(state_dir(config), "state")) =~ "4"
   end
 
@@ -517,15 +523,15 @@ defmodule ElixirPrecompiled.TrustTest do
 
   test "an unwritable state dir is named as such, not as a malformed batch", %{
     config: config,
-    f: f,
-    fetch: fetch
+    f: f
   } do
     F.publish(f, %{}, sequence: 2)
     {:ok, root} = Trust.load_root(config)
     File.mkdir_p!(config.home)
     File.write!(state_dir(config), "a file where the state dir should be")
 
-    assert {:error, "state dir unwritable: " <> _} = Trust.fetch_batch(config, root, fetch)
+    assert {:error, "state dir unwritable: " <> _} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 
   test "R17: an adopted root version survives roots.json disappearing", %{
@@ -546,12 +552,15 @@ defmodule ElixirPrecompiled.TrustTest do
     _ = v2
   end
 
-  test "R4: a corrupt state file warns and counts as 0", %{config: config, f: f, fetch: fetch} do
+  test "R4: a corrupt state file warns and counts as 0", %{config: config, f: f} do
     File.mkdir_p!(state_dir(config))
     File.write!(Path.join(state_dir(config), "state"), "not a number")
     F.publish(f, %{}, sequence: 4)
     {:ok, root} = Trust.load_root(config)
-    {result, log} = capture_warning(fn -> Trust.fetch_batch(config, root, fetch) end)
+
+    {result, log} =
+      capture_warning(fn -> Trust.fetch_batch_cached(config, root, &cond_fetch/2) end)
+
     assert {:ok, %{sequence: 4}} = result
     assert log =~ "sequence state"
   end
@@ -594,92 +603,102 @@ defmodule ElixirPrecompiled.TrustTest do
   defp iso(dt), do: DateTime.to_iso8601(dt)
   defp ago(seconds), do: DateTime.add(DateTime.utc_now(), -seconds, :second)
 
-  test "R1: a batch issued 15 minutes ago is accepted", %{config: config, f: f, fetch: fetch} do
+  test "R1: a batch issued 15 minutes ago is accepted", %{config: config, f: f} do
     F.publish(f, %{}, sequence: 3, issued: iso(ago(15 * 60)))
     {:ok, root} = Trust.load_root(config)
-    assert {:ok, %{sequence: 3}} = Trust.fetch_batch(config, root, fetch)
+    assert {:ok, %{sequence: 3}} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 
   test "R2: an unexpired batch issued 25 hours ago is refused as stale", %{
     config: config,
-    f: f,
-    fetch: fetch
+    f: f
   } do
     F.publish(f, %{}, sequence: 3, issued: iso(ago(25 * 3600)))
     {:ok, root} = Trust.load_root(config)
-    assert {:error, "batch stale" <> _} = Trust.fetch_batch(config, root, fetch)
+    assert {:error, "batch stale" <> _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
     refute File.exists?(Path.join(state_dir(config), "state"))
   end
 
   test "R7/R8: the clock offset moves now: 23 h accepted, 25 h stale", %{
     config: config,
-    f: f,
-    fetch: fetch
+    f: f
   } do
     F.publish(f, %{}, sequence: 3, issued: iso(DateTime.utc_now()))
     {:ok, root} = Trust.load_root(config)
 
     assert {:ok, _} =
-             Trust.fetch_batch(Map.put(config, :clock_offset_seconds, 23 * 3600), root, fetch)
+             Trust.fetch_batch_cached(
+               Map.put(config, :clock_offset_seconds, 23 * 3600),
+               root,
+               &cond_fetch/2
+             )
 
     assert {:error, "batch stale" <> _} =
-             Trust.fetch_batch(Map.put(config, :clock_offset_seconds, 25 * 3600), root, fetch)
+             Trust.fetch_batch_cached(
+               Map.put(config, :clock_offset_seconds, 25 * 3600),
+               root,
+               &cond_fetch/2
+             )
   end
 
   test "R9: issued an hour in the future is refused as clock", %{
     config: config,
-    f: f,
-    fetch: fetch
+    f: f
   } do
     F.publish(f, %{}, issued: iso(DateTime.add(DateTime.utc_now(), 3600, :second)))
     {:ok, root} = Trust.load_root(config)
-    assert {:error, "clock" <> _} = Trust.fetch_batch(config, root, fetch)
+    assert {:error, "clock" <> _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 
-  test "R10: issued 2 minutes in the future is accepted", %{config: config, f: f, fetch: fetch} do
+  test "R10: issued 2 minutes in the future is accepted", %{config: config, f: f} do
     F.publish(f, %{}, issued: iso(DateTime.add(DateTime.utc_now(), 120, :second)))
     {:ok, root} = Trust.load_root(config)
-    assert {:ok, _} = Trust.fetch_batch(config, root, fetch)
+    assert {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 
   test "R12: a clock before the library's compile-time floor is refused as clock", %{
     config: config,
-    f: f,
-    fetch: fetch
+    f: f
   } do
     F.publish(f, %{})
     {:ok, root} = Trust.load_root(config)
     behind = DateTime.diff(Trust.clock_floor(), DateTime.utc_now(), :second) - 86_400
 
     assert {:error, "clock" <> _} =
-             Trust.fetch_batch(Map.put(config, :clock_offset_seconds, behind), root, fetch)
+             Trust.fetch_batch_cached(
+               Map.put(config, :clock_offset_seconds, behind),
+               root,
+               &cond_fetch/2
+             )
   end
 
-  test "R13: a clock a year ahead sees an expired batch", %{config: config, f: f, fetch: fetch} do
+  test "R13: a clock a year ahead sees an expired batch", %{config: config, f: f} do
     F.publish(f, %{}, expires: iso(DateTime.add(DateTime.utc_now(), 86_400, :second)))
     {:ok, root} = Trust.load_root(config)
 
     assert {:error, reason} =
-             Trust.fetch_batch(Map.put(config, :clock_offset_seconds, 365 * 86_400), root, fetch)
+             Trust.fetch_batch_cached(
+               Map.put(config, :clock_offset_seconds, 365 * 86_400),
+               root,
+               &cond_fetch/2
+             )
 
     assert reason =~ ~r/^batch (expired|stale)/
   end
 
   test "T8: a batch whose expires is more than 30 days after issued is refused", %{
     config: config,
-    f: f,
-    fetch: fetch
+    f: f
   } do
     now = DateTime.utc_now()
     F.publish(f, %{}, issued: iso(now), expires: iso(DateTime.add(now, 31 * 86_400, :second)))
     {:ok, root} = Trust.load_root(config)
-    assert {:error, "batch lifetime" <> _} = Trust.fetch_batch(config, root, fetch)
+    assert {:error, "batch lifetime" <> _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 
   test "R11: a 30-day batch is still refused once 24 h past issued", %{
     config: config,
-    f: f,
-    fetch: fetch
+    f: f
   } do
     issued = ago(25 * 3600)
 
@@ -689,33 +708,32 @@ defmodule ElixirPrecompiled.TrustTest do
     )
 
     {:ok, root} = Trust.load_root(config)
-    assert {:error, "batch stale" <> _} = Trust.fetch_batch(config, root, fetch)
+    assert {:error, "batch stale" <> _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 
-  test "a batch without issued is malformed", %{config: config, f: f, fetch: fetch} do
+  test "a batch without issued is malformed", %{config: config, f: f} do
     F.publish(f, %{}, issued: nil)
     {:ok, root} = Trust.load_root(config)
-    assert {:error, "batch malformed"} = Trust.fetch_batch(config, root, fetch)
+    assert {:error, "batch malformed"} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 
   test "issued without any offset is malformed, never read as local time", %{
     config: config,
-    f: f,
-    fetch: fetch
+    f: f
   } do
     F.publish(f, %{}, issued: Calendar.strftime(ago(600), "%Y-%m-%dT%H:%M:%S"))
     {:ok, root} = Trust.load_root(config)
-    assert {:error, "batch malformed"} = Trust.fetch_batch(config, root, fetch)
+    assert {:error, "batch malformed"} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 
-  test "issued with an offset is read as an instant", %{config: config, f: f, fetch: fetch} do
+  test "issued with an offset is read as an instant", %{config: config, f: f} do
     # The same instant as 10 minutes ago, written in +01:00 local time.
     offset =
       Calendar.strftime(DateTime.add(ago(600), 3600, :second), "%Y-%m-%dT%H:%M:%S") <> "+01:00"
 
     F.publish(f, %{}, issued: offset)
     {:ok, root} = Trust.load_root(config)
-    assert {:ok, _} = Trust.fetch_batch(config, root, fetch)
+    assert {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 
   test "root_keys drops keys whose keyid is not their hash or whose type is not ed25519" do
@@ -743,15 +761,16 @@ defmodule ElixirPrecompiled.TrustTest do
 
   test "two concurrent batch fetches on one home both succeed", %{
     config: config,
-    f: f,
-    fetch: fetch
+    f: f
   } do
     F.publish(f, %{"ash" => %{"versions" => %{}}}, sequence: 5)
     {:ok, root} = Trust.load_root(config)
 
     results =
       1..8
-      |> Task.async_stream(fn _ -> Trust.fetch_batch(config, root, fetch) end, max_concurrency: 8)
+      |> Task.async_stream(fn _ -> Trust.fetch_batch_cached(config, root, &cond_fetch/2) end,
+        max_concurrency: 8
+      )
       |> Enum.map(fn {:ok, r} -> r end)
 
     assert Enum.all?(results, &match?({:ok, %{sequence: 5}}, &1))
@@ -849,7 +868,7 @@ defmodule ElixirPrecompiled.TrustTest do
     assert {:error, "batch stale" <> _} = Trust.fetch_batch_cached(stale, root, &cond_fetch/2)
   end
 
-  test "a batch's content origins are read, https only", %{config: config, f: f, fetch: fetch} do
+  test "a batch's content origins are read, https only", %{config: config, f: f} do
     F.publish(f, %{},
       batch_extra: %{"content" => ["https://cdn.example.test/p/", "http://cdn.example.test"]}
     )
@@ -857,10 +876,10 @@ defmodule ElixirPrecompiled.TrustTest do
     {:ok, root} = Trust.load_root(config)
 
     assert {:ok, %{content: ["https://cdn.example.test/p"]}} =
-             Trust.fetch_batch(config, root, fetch)
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
 
     F.publish(f, %{}, sequence: 2, batch_extra: %{"content" => "not a list"})
-    assert {:ok, %{content: nil}} = Trust.fetch_batch(config, root, fetch)
+    assert {:ok, %{content: nil}} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 
   test "the root is due for a check until a fetch of it is stamped", %{
@@ -993,8 +1012,7 @@ defmodule ElixirPrecompiled.TrustTest do
 
   test "batch content origins are https only, even on loopback", %{
     config: config,
-    f: f,
-    fetch: fetch
+    f: f
   } do
     F.publish(f, %{},
       batch_extra: %{"content" => ["http://127.0.0.1:9", "https://cdn.example.test"]}
@@ -1003,6 +1021,6 @@ defmodule ElixirPrecompiled.TrustTest do
     {:ok, root} = Trust.load_root(config)
 
     assert {:ok, %{content: ["https://cdn.example.test"]}} =
-             Trust.fetch_batch(config, root, fetch)
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 end

@@ -45,9 +45,6 @@ defmodule ElixirPrecompiled.Status do
       "manifest #{manifest}  #{dep.source || ""}"
   end
 
-  @spec clean(Path.t()) :: non_neg_integer()
-  def clean(build_lib), do: length(sweep(build_lib).removed)
-
   @doc false
   # Every install in the build lib removed (see remove/2), and the stale
   # provenance file of every dep Mix rebuilt since. Only lstat and the
