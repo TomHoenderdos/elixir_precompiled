@@ -460,10 +460,14 @@ defmodule ChainTest.Conformance do
             allowlist: Compiled.allowlist(@project_app)
           })
 
+        build_dir = Path.join([opts.fixture_dir, "_build", "#{opts.target}_dev"])
+        installed = installed(build_dir)
+
         observed = %{
           before: before,
           after: home_view(home, context),
-          installed: installed(Path.join([opts.fixture_dir, "_build", "#{opts.target}_dev"])),
+          installed: installed,
+          installed_files: installed_files(build_dir, installed),
           log: Map.get(build, :log, "")
         }
 
@@ -630,6 +634,17 @@ defmodule ChainTest.Conformance do
       end
     end)
     |> Enum.sort()
+  end
+
+  # The sha256 of every regular file under an installed dep's `ebin` and
+  # `priv`: which cache entries an install used.
+  defp installed_files(build_dir, deps) do
+    for dep <- deps,
+        sub <- ["ebin", "priv"],
+        path <- Path.wildcard(Path.join([build_dir, "lib", dep, sub, "**"]), match_dot: true),
+        {:file, sha} <- [fingerprint(path)],
+        into: MapSet.new(),
+        do: sha
   end
 
   # The deps nerves pulls in, which the client leaves to nerves_bootstrap.

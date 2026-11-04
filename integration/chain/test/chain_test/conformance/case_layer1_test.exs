@@ -392,5 +392,96 @@ defmodule ChainTest.Conformance.CaseLayer1Test do
     end
   end
 
+  describe "cache: :verified against what setup planted (C1)" do
+    defp verified(before, now, installed_files) do
+      c = Map.put(@t0, :after, %{cache: :verified})
+
+      Case.judge(c, %{
+        rows: [%Result{step: :build, check: "hit:jason", class: :pass}],
+        report: Synthetic.report([{"jason", "1.4.5", "hit", ""}]),
+        requests: served(["jason"]),
+        snapshot: snap(%{"jason" => 1}),
+        hits: [:jason],
+        observed: %{
+          before: before,
+          after: now,
+          installed: ["jason"],
+          installed_files: MapSet.new(installed_files)
+        }
+      })
+    end
+
+    test "a planted corrupt entry for a file no install used may stay as setup left it" do
+      planted = view(%{"files" => :dir, "files/#{@sha_a}" => {:file, sha("corrupt")}})
+      assert %Result{class: :pass} = verified(planted, planted, [])
+    end
+
+    test "a planted corrupt entry for a file the build installed must be fetched again" do
+      planted = view(%{"files" => :dir, "files/#{@sha_a}" => {:file, sha("corrupt")}})
+
+      assert %Result{class: :fail, detail: detail} = verified(planted, planted, [@sha_a])
+      assert detail =~ "files/#{@sha_a}"
+
+      fixed = view(%{"files" => :dir, "files/#{@sha_a}" => {:file, @sha_a}})
+      assert %Result{class: :pass} = verified(planted, fixed, [@sha_a])
+    end
+
+    test "a corrupt entry the build wrote or changed fails" do
+      planted = view(%{"files" => :dir, "files/#{@sha_a}" => {:file, sha("corrupt")}})
+      changed = view(%{"files" => :dir, "files/#{@sha_a}" => {:file, sha("other")}})
+      assert %Result{class: :fail} = verified(planted, changed, [])
+    end
+  end
+
+  describe "a warm build's carried-over rows (R16)" do
+    test "kept deps' integrity/unreported rows and compiled_here are the warm build's" do
+      c =
+        Map.merge(@t0, %{
+          runs: 2,
+          client: %{default: :recheck, deps: %{}},
+          after: %{installed: :recheck}
+        })
+
+      s =
+        snap(%{"jason" => 1, "ash" => 1}, %{
+          info: %{manifests: %{}, manifests_v2: %{"jason" => "j", "ash" => "a"}},
+          previous:
+            {:ok,
+             %{
+               sequence: 6,
+               path: "batches/6.json",
+               info: %{manifests: %{}, manifests_v2: %{"jason" => @sha_a, "ash" => "a"}},
+               manifests: %{}
+             }}
+        })
+
+      rows = fn extra ->
+        [
+          %Result{step: :integrity, check: "unreported:ash", class: :disagreement, detail: "x"},
+          %Result{step: :compiled, check: "compiled_here", class: :fail, detail: "warm"}
+        ] ++ extra
+      end
+
+      judge = fn rs ->
+        Case.judge(c, %{
+          rows: rs,
+          report:
+            Synthetic.report([{"jason", "1.4.5", "fail", "manifest hash differs from batch"}]),
+          requests: served([]),
+          snapshot: s,
+          hits: [:jason, :ash],
+          observed: %{before: view(%{}), after: view(%{}), installed: ["ash"]}
+        })
+      end
+
+      assert %Result{class: :pass} = judge.(rows.([]))
+
+      # jason was rechecked, not kept: its unreported row is not excused.
+      jason = %Result{step: :integrity, check: "unreported:jason", class: :disagreement}
+      assert %Result{class: :fail, detail: detail} = judge.(rows.([jason]))
+      assert detail =~ "unreported:jason"
+    end
+  end
+
   defp sha(bytes), do: Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
 end

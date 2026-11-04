@@ -87,7 +87,9 @@ defmodule ChainTest.Conformance.Case do
         `t:fingerprint/0`: `:untouched`, every entry as setup left it
         (bytes, link target, kind; nothing gained or removed);
         `:verified`, every entry a regular file directly in `files/` whose
-        bytes hash to its name.
+        bytes hash to its name, except one setup planted that is as setup
+        left it and whose name no installed file hashes to (a build the
+        client never selected).
       * `outside` - `:untouched`: what setup planted under
         `ChainTest.Conformance.Setup.outside_dir/0` (symlink targets, C2)
         as it left it; a setup that planted nothing there fails it.
@@ -156,6 +158,7 @@ defmodule ChainTest.Conformance.Case do
           required(:before) => home_view(),
           required(:after) => home_view(),
           required(:installed) => [String.t()],
+          optional(:installed_files) => MapSet.t(String.t()),
           optional(:log) => String.t()
         }
   @type home_view :: %{
@@ -541,6 +544,27 @@ defmodule ChainTest.Conformance.Case do
   defp describe_line(nil), do: "no report line"
   defp describe_line(l), do: "#{l["status"]} (#{inspect(l["detail"])})"
 
+  # A warm second build (`runs: 2`) keeps installs the cold build made and
+  # its step 3 and 4 checked: the integrity `unreported:` row of a dep it
+  # kept (no report line this time), and step 4's `compiled_here`, which
+  # lists the deps the cold build compiled and this one did not report.
+  # Kept installs are still judged: by their client line (none) and by
+  # `installed`.
+  defp carried_over(c, snap) do
+    if runs(c) == 2 do
+      named = Map.new(c.client.deps, fn {dep, want} -> {to_string(dep), want} end)
+
+      kept =
+        for {name, _} <- snap.deps,
+            resolve(Map.get(named, name, c.client.default), snap, name) == :kept,
+            do: "integrity/unreported:#{name}"
+
+      ["compiled/compiled_here" | kept]
+    else
+      []
+    end
+  end
+
   defp derived_misses(c, snap) do
     named = Map.new(c.client.deps, fn {dep, want} -> {to_string(dep), want} end)
 
@@ -570,10 +594,13 @@ defmodule ChainTest.Conformance.Case do
     # name; its client line, judged above, says what the row would.
     derived = derived_misses(c, snap)
 
+    carried = carried_over(c, snap)
+
     unnamed =
       for r <- rows,
           not Map.has_key?(c.harness, key(r)),
           not (r.step == :build and r.check in derived),
+          key(r) not in carried,
           r.class not in @benign,
           do: "unexpected #{r.class} #{key(r)}: #{r.detail}"
 
@@ -705,10 +732,15 @@ defmodule ChainTest.Conformance.Case do
     do: tree_changes("cache", "the cache untouched", seen.before.cache, seen.after.cache)
 
   # No mutated or stray bytes stayed in the cache: every entry below
-  # `files/` is a regular file named by the sha256 its bytes hash to.
+  # `files/` is a regular file named by the sha256 its bytes hash to. A
+  # file setup planted (C1) may stay as setup left it only when no install
+  # used its sha256; one an install used must have been fetched again.
   defp post_problem(:cache, :verified, seen, _snap, _input) do
+    used = Map.get(seen, :installed_files, MapSet.new())
+
     for {rel, fp} <- Enum.sort(seen.after.cache),
         why = unverified(rel, fp),
+        not left_unused?(rel, fp, seen.before.cache, used),
         do: "after cache: expected only verified files, #{rel} #{why}"
   end
 
@@ -725,6 +757,9 @@ defmodule ChainTest.Conformance.Case do
           Map.get(seen.after, :outside, %{})
         )
   end
+
+  defp left_unused?(rel, fp, before, used),
+    do: before[rel] == fp and not MapSet.member?(used, Path.basename(rel))
 
   defp unverified("files", :dir), do: nil
   defp unverified("files", {:link, to}), do: "is a symlink to #{to}"

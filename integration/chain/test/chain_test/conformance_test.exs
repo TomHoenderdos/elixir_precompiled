@@ -768,6 +768,32 @@ defmodule ChainTest.ConformanceTest do
       assert detail =~ "after outside"
     end
 
+    test "cache: :verified knows which planted entries an install used (C1)", ctx do
+      build_lib = Path.join(ctx.tmp, "fixture/_build/rpi4_dev/lib")
+      used = :crypto.hash(:sha256, "x") |> Base.encode16(case: :lower)
+      s = steps(self(), ctx.snapshot)
+
+      build = fn input ->
+        Synthetic.dep(build_lib, :jason, %{"ebin/x.beam" => "x"}, :installed)
+        s.build.(input)
+      end
+
+      # Planted corrupt under the name of a file jason installed: not
+      # fetched again, so the case fails. Under an unused name: allowed.
+      for {name, class} <- [{used, :fail}, {@sha, :pass}] do
+        c =
+          Map.merge(@t0, %{
+            setup: planting(%{"files/#{name}" => "corrupt"}),
+            after: %{cache: :verified}
+          })
+
+        cases!(ctx.opts, [c])
+
+        assert {[%Result{class: ^class}], _} = Conformance.run(kept(ctx), %{s | build: build}),
+               name
+      end
+    end
+
     test "runs: 2 builds twice: first cold, served unchanged, in its own home; then warm",
          ctx do
       cases!(ctx.opts, [Map.put(@t0, :runs, 2)])

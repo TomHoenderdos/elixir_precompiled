@@ -377,7 +377,7 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     runs: 2,
     transform: {ChainTest.Mirror.OlderBatch, %{batch: :previous, recheck: true}},
     client: %{default: :recheck, deps: %{}},
-    harness: %{"build/sequence" => :rerun, "integrity/integrity" => :not_exercised},
+    harness: %{"build/sequence" => :rerun},
     after: %{state_sequence: :previous, installed: :recheck}
   }
 ]
