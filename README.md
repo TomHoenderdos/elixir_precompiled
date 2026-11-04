@@ -203,7 +203,7 @@ A warm run whose installs the batch still vouches for prints nothing.
 | `:except` | Dependencies never installed precompiled, e.g. `[:ash]`. |
 | `:content` | Content origins (mirrors, CDNs) to fetch files and manifests from instead of the ones the signed batch names. `https` only (`http` on loopback). |
 | `:root` | A `root.json` to trust instead of the one this library ships. |
-| `:home` / `ELIXIR_PRECOMPILED_HOME` | Cache and trust state dir. Default: the user cache dir (`:filename.basedir(:user_cache, "elixir_precompiled")`). `ELIXIR_PRECOMPILED_HOME=~/.nerves/precompiled` keeps using the pre-rename cache. |
+| `:home` / `ELIXIR_PRECOMPILED_HOME` | Cache and trust state dir. Unlike `:source`, the config key beats the variable. Default: the user cache dir (`:filename.basedir(:user_cache, "elixir_precompiled")`). `ELIXIR_PRECOMPILED_HOME=~/.nerves/precompiled` keeps using the pre-rename cache. |
 | `:deadline_seconds` | All network for one run (default 300); what is still waiting then compiles. Root and batch get 15 s together, connects 5 s. |
 | `:root_check_seconds` | How often the served root is checked for a rotation (default 3600; a batch that fails to verify checks it at once). |
 | `:cache_max_mb` | Cache size bound (default 4096), least recently used evicted, checked once a day. Trust state is never evicted. |
@@ -297,8 +297,14 @@ ago ("batch stale"), more than 5 minutes in the future ("clock"), when it
 stays valid for more than 30 days past `issued` ("batch lifetime"), or when
 `issued` does not parse ("batch malformed"). A local clock reading earlier
 than the moment this library was built is refused outright ("clock"),
-since none of the above can be trusted on it. A refused batch is reported
-as `batch unavailable: <why>`. Every refusal falls back to compiling.
+since none of the above can be trusted on it. A batch the source did not
+deliver (a network error, a 4xx or 5xx, a refused redirect, no usable
+cached batch to stand in) is reported as `batch unavailable: <why>`; a
+batch that was delivered and fails a check is reported by the check alone:
+`batch signature invalid`, `batch stale: ...`, `batch expired at ...`,
+`batch sequence N is older than M`, `batch lifetime over 30 days ...`,
+`batch malformed`, `clock: ...` or `clock is before ...`. Every refusal
+falls back to compiling.
 `clock_offset_seconds` moves the client's notion of now for these checks;
 it is test-only, read only from project config, and never from an
 environment variable.
@@ -319,11 +325,13 @@ about to compile still get their own FAIL line with the reason.
 `report.json` lists every kept build as `fail` with a detail ending
 `(installed build kept)`.
 
-An install is checked before it is placed: every path must stay inside the
-dependency's own build dir (`foreign path`), no two paths may collide,
-including case and Unicode-normalisation variants (`path collision`),
-`ebin/` may hold only `.beam` files, `<dep>.app` and `<dep>.appup`, and
-the `.app` must list exactly the beams shipped. Cache entries are never
+An install is checked before it is placed: every path must be a plain
+relative path inside the dependency's own build dir, with a safe mode
+(`unsafe path or mode (...)`); no two paths may collide, including case
+and Unicode-normalisation variants (`path collision: ...`); `ebin/` may
+hold only `.beam` files, `<dep>.app` and `<dep>.appup` (anything else,
+such as another app's `.app`, is `foreign path: ...`); and the `.app` must
+list exactly the beams shipped. Cache entries are never
 followed through symlinks.
 
 Root rotation follows TUF: each adopted root must be signed by the
@@ -358,7 +366,8 @@ Igniter's installer needs Elixir 1.18.
 
 | Line | What it means |
 | --- | --- |
-| `batch unavailable: <why>` | No verified batch this run: everything compiles from source. `<why>` names the refusal or the network error. |
+| `batch unavailable: <why>` | The source did not deliver a batch (network error, 4xx/5xx, refused redirect) and no cached one could stand in: everything compiles from source. |
+| `batch signature invalid`, `batch stale: ...`, `batch expired at ...`, `batch sequence N is older than M`, `batch lifetime ...`, `batch malformed` | A batch was delivered but failed that check; it is never used, and nothing installs this run. A stale or expired batch usually means the source stopped publishing. |
 | `source unreachable (<why>); using the cached batch` | The network failed; a cached batch that still passes every check stood in. |
 | `no fresh batch (<why>); N installed builds kept, not rechecked` | Earlier installs stay as they are until a batch is available again. |
 | `clock is before ...` | The machine's clock is wrong (a device before NTP). Set it; nothing installs until then. |

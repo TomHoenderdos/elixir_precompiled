@@ -13,7 +13,9 @@
 * Never fails a build: any internal error is one warning and a source
   compile; no `HOME` or an unwritable cache moves the cache under `_build`.
 * Warm runs make one conditional batch request (`If-None-Match`) and
-  download nothing; the root is checked at most once an hour; manifests are
+  download nothing once the source answers `If-None-Match` with `304` (until
+  then the batch itself is downloaded again; manifests and files still come
+  from the cache); the root is checked at most once an hour; manifests are
   cached by SHA-256; files of a dependency download in parallel.
   `ELIXIR_PRECOMPILED_OFFLINE=1` works from the cache; a run has a network
   deadline (`:deadline_seconds`, 300; root and batch 15 s). When the source
@@ -24,10 +26,10 @@
 * An installed build is kept while the batch still offers its exact files,
   so a new portal run of the same inputs no longer recompiles the project.
 * Install refuses colliding paths (duplicate, case or Unicode variants,
-  `path collision: ...`), paths outside the dependency's own build dir or
-  naming another app's `.app` (`foreign path: ...`), `ebin/` entries other
-  than beams, `<dep>.app` and `<dep>.appup`, and beams the `.app` does not
-  list; linking happens before the install is renamed into place. A cache
+  `path collision: ...`), paths that are not plain relative paths inside
+  the dependency's own build dir (`unsafe path or mode (...)`), `ebin/`
+  entries other than beams, `<dep>.app` and `<dep>.appup`, such as another
+  app's `.app` (`foreign path: ...`), and beams the `.app` does not list; linking happens before the install is renamed into place. A cache
   entry that is a symlink is never followed: that dependency compiles, and
   the line names the path to remove.
 * Dependencies that read `Mix.target()` or environment variables at compile
@@ -40,8 +42,10 @@
   host installs, never a device target's.
 * `mix precompiled.status` and `mix precompiled.clean [--cache]`; the cache
   is bounded (`:cache_max_mb`, 4096).
-* A batch that cannot be had is reported as `batch unavailable: <why>`
-  (before: the bare reason).
+* A batch the source did not deliver is reported as
+  `batch unavailable: <why>` (before: the bare reason); a delivered batch
+  that fails a check is still reported by the check alone (`batch stale`,
+  `batch signature invalid`, ...).
 * Lower-case proxy variables, `NO_PROXY`, and a CA bundle
   (`ELIXIR_PRECOMPILED_CACERTS_PATH` or `HEX_CACERTS_PATH`). The bundle
   replaces the OS store, as Hex's does: verification stays on and only its
