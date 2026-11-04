@@ -351,6 +351,197 @@ defmodule ChainTest.MirrorTest do
     assert [%{status: 500, mutated: true}] = Mirror.requests(mirror)
   end
 
+  # The response to one GET, read until the mirror closes: `{head, body}`,
+  # `head` the status line and headers as a map of lowercase names.
+  defp exchange(mirror, path) do
+    response = raw_bytes(mirror, "GET #{path} HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n")
+    split(response)
+  end
+
+  defp split(""), do: {nil, ""}
+
+  defp split(response) do
+    [head, body] = String.split(response, "\r\n\r\n", parts: 2)
+    [status | lines] = String.split(head, "\r\n")
+
+    headers =
+      Map.new(lines, fn line ->
+        [k, v] = String.split(line, ": ", parts: 2)
+        {String.downcase(k), v}
+      end)
+
+    {%{status: code(status), headers: headers}, body}
+  end
+
+  describe "response contract v2" do
+    test "{status, headers, body} sends the headers; the mirror owns content-length",
+         %{dir: dir} do
+      mirror =
+        start!(dir,
+          transform: fn _, bytes ->
+            {200, [{"Content-Type", "text/plain"}, {"x-a", "1"}], bytes}
+          end
+        )
+
+      assert {%{status: 200, headers: h}, ~s({"root":1})} = exchange(mirror, "/root.json")
+      assert h["content-type"] == "text/plain"
+      assert h["x-a"] == "1"
+      assert h["content-length"] == "10"
+      assert h["connection"] == "close"
+      # Even with the same status and bytes, a v2 shape is a change.
+      assert [%{status: 200, mutated: true}] = Mirror.requests(mirror)
+    end
+
+    test "headers the mirror owns, or that would split the response, are a 500", %{dir: dir} do
+      for headers <- [
+            [{"content-length", "1"}],
+            [{"Connection", "keep-alive"}],
+            [{"transfer-encoding", "chunked"}],
+            [{"x-a", "1\r\nx-b: 2"}],
+            [{"x a", "1"}],
+            [{:x, "1"}],
+            List.duplicate({"x-a", "1"}, 33),
+            [{"x-a", String.duplicate("v", 4097)}],
+            :nope
+          ] do
+        mirror = start!(dir, transform: fn _, b -> {200, headers, b} end)
+        assert {%{status: 500}, _} = exchange(mirror, "/root.json"), inspect(headers)
+        assert [%{status: 500, mutated: true}] = Mirror.requests(mirror)
+      end
+    end
+
+    test "a redirect answers a 3xx with location and no body", %{dir: dir} do
+      mirror =
+        start!(dir, transform: fn _, _ -> {:redirect, 302, "http://127.0.0.1:1/batch.json"} end)
+
+      assert {%{status: 302, headers: h}, ""} = exchange(mirror, "/batch.json")
+      assert h["location"] == "http://127.0.0.1:1/batch.json"
+      assert h["content-length"] == "0"
+      assert [%{status: 302, mutated: true}] = Mirror.requests(mirror)
+
+      for bad <- [{:redirect, 200, "http://x"}, {:redirect, 301, "a\nb"}, {:redirect, 301, :x}] do
+        mirror = start!(dir, transform: fn _, _ -> bad end)
+        assert {%{status: 500}, _} = exchange(mirror, "/batch.json"), inspect(bad)
+      end
+    end
+
+    test "a stream sends its chunks with the delay, no content-length, then closes",
+         %{dir: dir} do
+      mirror = start!(dir, transform: fn _, _ -> {:stream, 200, ["a", "b", "c"], 60} end)
+      t0 = System.monotonic_time(:millisecond)
+
+      assert {%{status: 200, headers: h}, "abc"} = exchange(mirror, "/batch.json")
+      assert System.monotonic_time(:millisecond) - t0 >= 150
+      refute Map.has_key?(h, "content-length")
+      assert [%{status: 200, mutated: true}] = Mirror.requests(mirror)
+    end
+
+    test "a stream is cut at the mirror's byte and time caps", %{dir: dir} do
+      chunks = List.duplicate(String.duplicate("x", 100), 10)
+
+      mirror =
+        start!(dir, transform: fn _, _ -> {:stream, 200, chunks, 0} end, stream_max_bytes: 250)
+
+      assert {%{status: 200}, body} = exchange(mirror, "/batch.json")
+      assert byte_size(body) <= 250
+
+      mirror =
+        start!(dir, transform: fn _, _ -> {:stream, 200, chunks, 100} end, stream_max_ms: 250)
+
+      t0 = System.monotonic_time(:millisecond)
+      assert {%{status: 200}, body} = exchange(mirror, "/batch.json")
+      assert byte_size(body) < 1000
+      assert System.monotonic_time(:millisecond) - t0 < 1_000
+    end
+
+    test "a truncated response declares the whole body and sends n bytes", %{dir: dir} do
+      mirror = start!(dir, transform: fn _, bytes -> {:truncate, 200, bytes, 3} end)
+
+      assert {%{status: 200, headers: h}, ~s({"r)} = exchange(mirror, "/root.json")
+      assert h["content-length"] == "10"
+      assert [%{status: 200, mutated: true}] = Mirror.requests(mirror)
+
+      for n <- [10, 11, -1, :x] do
+        mirror = start!(dir, transform: fn _, bytes -> {:truncate, 200, bytes, n} end)
+        assert {%{status: 500}, _} = exchange(mirror, "/root.json"), inspect(n)
+      end
+    end
+
+    test ":close closes without a response, logged as status 0 and mutated", %{dir: dir} do
+      mirror = start!(dir, transform: fn _, _ -> :close end)
+      assert {nil, ""} = exchange(mirror, "/root.json")
+      assert {:error, _} = HTTP.get(mirror.url <> "/root.json", 5_000)
+      assert [%{status: 0, mutated: true}, %{status: 0, mutated: true}] = Mirror.requests(mirror)
+    end
+
+    test "an endless response stops at the byte cap", %{dir: dir} do
+      mirror =
+        start!(dir,
+          transform: fn _, _ -> {:endless, 200, String.duplicate("z", 64), 0} end,
+          stream_max_bytes: 4096
+        )
+
+      assert {%{status: 200, headers: h}, body} = exchange(mirror, "/batch.json")
+      refute Map.has_key?(h, "content-length")
+      assert byte_size(body) == 4096
+      assert [%{status: 200, mutated: true}] = Mirror.requests(mirror)
+    end
+
+    test "an endless response stops at the time cap", %{dir: dir} do
+      mirror =
+        start!(dir,
+          transform: fn _, _ -> {:endless, 200, "z", 20} end,
+          stream_max_ms: 200
+        )
+
+      t0 = System.monotonic_time(:millisecond)
+      assert {%{status: 200}, body} = exchange(mirror, "/batch.json")
+      elapsed = System.monotonic_time(:millisecond) - t0
+      assert elapsed >= 150 and elapsed < 1_500
+      assert byte_size(body) in 1..20
+    end
+
+    test "an endless response ends when the client hangs up; the mirror keeps serving",
+         %{dir: dir} do
+      mirror =
+        start!(dir,
+          transform: fn
+            "batch.json", _ -> {:endless, 200, String.duplicate("z", 1024), 1}
+            _, b -> {200, b}
+          end
+        )
+
+      {:ok, sock} = :gen_tcp.connect({127, 0, 0, 1}, mirror.port, [:binary, active: false])
+      :ok = :gen_tcp.send(sock, "GET /batch.json HTTP/1.1\r\n\r\n")
+      assert {:ok, _} = :gen_tcp.recv(sock, 0, 5_000)
+      :gen_tcp.close(sock)
+
+      assert {:ok, _} = HTTP.get(mirror.url <> "/root.json", 5_000)
+    end
+
+    test "malformed stream and endless shapes are a 500", %{dir: dir} do
+      for bad <- [
+            {:stream, 200, "abc", 0},
+            {:stream, 200, [:a], 0},
+            {:stream, 200, ["a"], -1},
+            {:stream, 200, ["a"], 60_001},
+            {:stream, 99, ["a"], 0},
+            {:endless, 200, "", 0},
+            {:endless, 200, "z", -1},
+            {:endless, 200, String.duplicate("z", 1024 * 1024 + 1), 0},
+            {:endless, 200, :z, 0}
+          ] do
+        mirror = start!(dir, transform: fn _, _ -> bad end)
+        assert {%{status: 500}, _} = exchange(mirror, "/batch.json"), inspect(bad)
+        assert [%{status: 500, mutated: true}] = Mirror.requests(mirror)
+      end
+    end
+
+    test "the caps default to 64 MiB and 120 s" do
+      assert Mirror.stream_limits() == %{max_bytes: 64 * 1024 * 1024, max_ms: 120_000}
+    end
+  end
+
   test "route/1 maps request paths to snapshot paths" do
     assert Mirror.route("/root.json") == {:ok, "root.json"}
     assert Mirror.route("/batches/12.json") == {:ok, "batches/12.json"}
@@ -378,5 +569,26 @@ defmodule ChainTest.MirrorTest do
     assert fun.("root.json", "x") == {503, ""}
     assert fun.("batch.json", "y") == {200, "y"}
     assert Transform.fun({Identity, %{}}).("root.json", "x") == {200, "x"}
+  end
+
+  test "a transform gets the case's runtime context under :case" do
+    fun = Transform.fun({ChainTest.TestTransform, %{mirrors: 2}}, %{mirror: 1, second_url: "u"})
+    assert fun.("batch.json", "x") == {:redirect, 302, "u/batch.json"}
+    fun = Transform.fun({ChainTest.TestTransform, %{mirrors: 2}}, %{mirror: 2, second_url: nil})
+    assert fun.("batch.json", "x") == {200, "x"}
+  end
+
+  test "mirrors/1 and needs/1 read the transform's args; :case is reserved" do
+    assert Transform.mirrors({Identity, %{}}) == 1
+    assert Transform.mirrors({ChainTest.TestTransform, %{mirrors: 2}}) == 2
+    assert Transform.needs({Identity, %{}}) == []
+    assert Transform.needs({ChainTest.TestTransform, %{needs: [:old]}}) == [:old]
+
+    assert Transform.valid?({ChainTest.TestTransform, %{mirrors: 2, needs: [:previous, :old]}})
+    refute Transform.valid?({ChainTest.TestTransform, %{mirrors: 3}})
+    refute Transform.valid?({ChainTest.TestTransform, %{mirrors: 0}})
+    refute Transform.valid?({ChainTest.TestTransform, %{needs: [:newer]}})
+    refute Transform.valid?({ChainTest.TestTransform, %{needs: :old}})
+    refute Transform.valid?({Identity, %{case: %{}}})
   end
 end

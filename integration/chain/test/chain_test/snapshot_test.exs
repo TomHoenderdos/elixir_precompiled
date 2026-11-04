@@ -363,4 +363,156 @@ defmodule ChainTest.SnapshotTest do
       assert why =~ "jason"
     end
   end
+
+  describe "older batches" do
+    # Serves batches/<n>.json for each `{n, hours_ago}`, signed by `key`
+    # (the root's batch key unless given), naming `manifests_v2`.
+    defp serve_older(ctx, batches, opts \\ []) do
+      key = Keyword.get(opts, :key, ctx.key)
+      v2 = Keyword.get(opts, :manifests_v2, %{"jason" => Synthetic.sha(ctx.manifest)})
+      File.mkdir_p!(Path.join(ctx.served, "batches"))
+
+      for {n, hours} <- batches do
+        issued = DateTime.add(DateTime.utc_now(), -round(hours * 3600), :second)
+
+        File.write!(
+          Path.join(ctx.served, "batches/#{n}.json"),
+          Signed.batch(key, sequence: n, issued: issued, manifests: %{}, manifests_v2: v2)
+        )
+      end
+    end
+
+    # The batch.json of the setup is sequence 7, issued now.
+    @history [{1, 30}, {2, 27}, {3, 25.5}, {4, 24.5}, {5, 10}, {6, 0.25}]
+
+    test "take/1 stores N-1 and the newest batch issued over 25 h before N", ctx do
+      serve_older(ctx, @history)
+      assert {:ok, snap} = Snapshot.take(ctx.input)
+
+      assert {:ok, %{sequence: 6, path: "batches/6.json", manifests: %{}}} = snap.previous
+      assert {:ok, %{sequence: 3, path: "batches/3.json", manifests: %{}}} = snap.old
+      assert Snapshot.older(snap, :previous) == snap.previous
+
+      for n <- [3, 6] do
+        assert File.read!(Path.join(ctx.input.dir, "batches/#{n}.json")) ==
+                 File.read!(Path.join(ctx.served, "batches/#{n}.json"))
+      end
+
+      meta = JSON.decode!(File.read!(Path.join(ctx.input.dir, "snapshot.json")))
+      assert meta["previous"] == %{"sequence" => 6}
+      assert meta["old"] == %{"sequence" => 3}
+    end
+
+    test "an older batch naming another manifest for a fixture dep records it", ctx do
+      other = String.duplicate("c", 64)
+      serve_older(ctx, @history)
+      serve_older(ctx, [{3, 25.5}], manifests_v2: %{"jason" => other})
+
+      assert {:ok, snap} = Snapshot.take(ctx.input)
+
+      assert {:ok, %{manifests: %{"jason" => %{dir: "v2/manifests", sha256: ^other}}}} =
+               snap.old
+
+      assert {:ok, %{manifests: %{}}} = snap.previous
+    end
+
+    test "missing older batches are missing with the reason, and the take still succeeds",
+         ctx do
+      assert {:ok, snap} = Snapshot.take(ctx.input)
+      assert {:missing, why} = snap.previous
+      assert why =~ "batches/6.json"
+      assert {:missing, why} = snap.old
+      assert why =~ "25 h"
+
+      meta = JSON.decode!(File.read!(Path.join(ctx.input.dir, "snapshot.json")))
+      assert %{"missing" => _} = meta["previous"]
+      assert %{"missing" => _} = meta["old"]
+    end
+
+    test "a history that does not reach 25 h back has no old batch", ctx do
+      serve_older(ctx, [{5, 10}, {6, 0.25}])
+      assert {:ok, snap} = Snapshot.take(ctx.input)
+      assert {:ok, %{sequence: 6}} = snap.previous
+      assert {:missing, why} = snap.old
+      assert why =~ "25 h"
+    end
+
+    test "an older batch that does not verify is missing and not stored", ctx do
+      serve_older(ctx, @history)
+      serve_older(ctx, [{6, 0.25}, {3, 25.5}], key: Signed.key())
+
+      assert {:ok, snap} = Snapshot.take(ctx.input)
+      assert {:missing, why} = snap.previous
+      assert why =~ "batch_signature"
+      assert {:missing, _} = snap.old
+      refute File.exists?(Path.join(ctx.input.dir, "batches/6.json"))
+      refute File.exists?(Path.join(ctx.input.dir, "batches/3.json"))
+    end
+
+    test "a batch served under another sequence's name is not that batch", ctx do
+      serve_older(ctx, @history)
+      File.cp!(Path.join(ctx.served, "batches/5.json"), Path.join(ctx.served, "batches/6.json"))
+
+      assert {:ok, snap} = Snapshot.take(ctx.input)
+      assert {:missing, why} = snap.previous
+      assert why =~ "sequence"
+    end
+
+    test "load/2 re-verifies the older batches", ctx do
+      serve_older(ctx, @history)
+      {:ok, taken} = Snapshot.take(ctx.input)
+      opts = %{trust_opts: ctx.input.trust_opts}
+
+      assert {:ok, loaded} = Snapshot.load(ctx.input.dir, opts)
+      assert loaded.previous == taken.previous
+      assert loaded.old == taken.old
+
+      issued = DateTime.add(DateTime.utc_now(), -26, :hour)
+
+      File.write!(
+        Path.join(ctx.input.dir, "batches/3.json"),
+        Signed.batch(Signed.key(), sequence: 3, issued: issued, manifests: %{})
+      )
+
+      assert {:error, why} = Snapshot.load(ctx.input.dir, opts)
+      assert why =~ "batches/3.json"
+    end
+
+    test "load/2 of a snapshot taken before older batches marks them missing", ctx do
+      serve_older(ctx, @history)
+      {:ok, _} = Snapshot.take(ctx.input)
+      rewrite_meta(ctx.input.dir, &Map.drop(&1, ["previous", "old"]))
+
+      assert {:ok, snap} = Snapshot.load(ctx.input.dir, %{trust_opts: ctx.input.trust_opts})
+      assert {:missing, why} = Snapshot.older(snap, :old)
+      assert why =~ "take a new one"
+    end
+
+    test "load/2 refuses older entries that name the wrong batch or are malformed", ctx do
+      serve_older(ctx, @history)
+      {:ok, _} = Snapshot.take(ctx.input)
+      opts = %{trust_opts: ctx.input.trust_opts}
+
+      for {key, entry} <- [
+            {"previous", %{"sequence" => 3}},
+            {"old", %{"sequence" => 7}},
+            {"old", %{"sequence" => 6}},
+            {"old", "3"}
+          ] do
+        rewrite_meta(ctx.input.dir, &Map.put(&1, key, entry))
+        assert {:error, _} = Snapshot.load(ctx.input.dir, opts), inspect({key, entry})
+
+        rewrite_meta(
+          ctx.input.dir,
+          &Map.merge(&1, %{"previous" => %{"sequence" => 6}, "old" => %{"sequence" => 3}})
+        )
+      end
+
+      assert {:ok, _} = Snapshot.load(ctx.input.dir, opts)
+    end
+
+    test "older/2 of a snapshot map without them is missing" do
+      assert {:missing, _} = Snapshot.older(%{}, :previous)
+    end
+  end
 end

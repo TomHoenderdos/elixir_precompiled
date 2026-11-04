@@ -11,6 +11,13 @@ defmodule ChainTest.Build do
   in this run. The client's `report.json` and its batch `state` file are read
   afterwards.
 
+  A conformance case changes two things, for its own build only: a home its
+  setup prepared (`:home_prepared`, taken as it is), and `:client_config`,
+  merged into the fixture's `config :elixir_precompiled` through a config
+  file the fixture imports from `CHAIN_CLIENT_CONFIG` (written outside the
+  home, removed after the build; without a `:client_config` the variable is
+  unset, so nothing reaches the next build).
+
   Checks:
 
     * `home` - only when a caller-given home is not empty: `:fail`, and
@@ -50,11 +57,19 @@ defmodule ChainTest.Build do
   @unset ~w(ELIXIR_PRECOMPILED NERVES_PRECOMPILED NERVES_PRECOMPILED_HOME MIX_BUILD_PATH
             MIX_BUILD_ROOT MIX_DEPS_PATH MIX_EXS MIX_LOCKFILE)
 
+  @type client_config :: %{
+          optional(:clock_offset_seconds) => integer(),
+          optional(:root) => Path.t(),
+          optional(:source) => String.t()
+        }
+
   @type input :: %{
           required(:fixture_dir) => Path.t(),
           required(:target) => String.t(),
           required(:source) => String.t(),
           optional(:home) => Path.t(),
+          optional(:home_prepared) => boolean(),
+          optional(:client_config) => client_config() | nil,
           optional(:trust) => ChainTest.Trust.info() | nil,
           optional(:expected) => %{hits: [atom()], never: [atom()]},
           optional(:target_config) => Path.t(),
@@ -77,6 +92,18 @@ defmodule ChainTest.Build do
   @spec unset_env() :: [String.t()]
   def unset_env(), do: @unset
 
+  @doc "Whether `config` is a `t:client_config/0`: known keys, each with a value of its type."
+  @spec client_config?(term()) :: boolean()
+  def client_config?(config) when is_map(config),
+    do: Enum.all?(config, fn {k, v} -> client_value?(k, v) end)
+
+  def client_config?(_), do: false
+
+  defp client_value?(:clock_offset_seconds, v), do: is_integer(v)
+  defp client_value?(:root, v), do: is_binary(v) and v != ""
+  defp client_value?(:source, v), do: is_binary(v) and v != ""
+  defp client_value?(_, _), do: false
+
   @doc "Whether a client detail is a refusal."
   @spec refusal?(String.t()) :: boolean()
   def refusal?(detail) when is_binary(detail),
@@ -87,17 +114,26 @@ defmodule ChainTest.Build do
   @doc """
   Runs step 2. `home` is the client's `ELIXIR_PRECOMPILED_HOME`: a fresh
   temp dir per run when not given, removed after the run, and refused
-  (check `home` fails, nothing runs) when given but not empty. `trust` is step 1's info (`nil` when the batch could not be
-  trusted, which leaves `sequence` not exercised); `expected` defaults to
-  the fixture's `expected.exs`.
+  (check `home` fails, nothing runs) when given but not empty, unless
+  `home_prepared` says the caller prepared it. `trust` is step 1's info
+  (`nil` when the batch could not be trusted, which leaves `sequence` not
+  exercised); `expected` defaults to the fixture's `expected.exs`.
+  `client_config` must satisfy `client_config?/1`, else this raises
+  `ArgumentError` before anything runs.
   """
   @spec run(input()) :: {[Result.t()], info()}
   def run(%{fixture_dir: fixture, target: target} = input) do
+    client = Map.get(input, :client_config)
+
+    unless client == nil or client_config?(client),
+      do: raise(ArgumentError, "not a client config: #{inspect(client)}")
+
     build_lib = Path.join([fixture, "_build", "#{target}_dev", "lib"])
 
     given = Map.get(input, :home)
+    home = if Map.get(input, :home_prepared, false), do: {:ok, given}, else: fresh_home(given)
 
-    case fresh_home(given) do
+    case home do
       {:ok, home} ->
         try do
           build(input, home)
@@ -150,12 +186,15 @@ defmodule ChainTest.Build do
 
     File.rm_rf!(build_dir)
 
+    client = client_config_file(Map.get(input, :client_config))
+
     env =
       [
         {"MIX_TARGET", target},
         {"MIX_ENV", "dev"},
         {"ELIXIR_PRECOMPILED_HOME", home},
-        {"CHAIN_SOURCE", source}
+        {"CHAIN_SOURCE", source},
+        {"CHAIN_CLIENT_CONFIG", client}
       ] ++
         target_config(Map.get(input, :target_config)) ++ Enum.map(@unset, &{&1, nil})
 
@@ -163,9 +202,13 @@ defmodule ChainTest.Build do
     command = Map.get(input, :command, ["firmware"])
 
     {{status, log}, ms} =
-      Result.timed(fn ->
-        Cmd.run("mix", command, cd: fixture, env: env, timeout_ms: timeout)
-      end)
+      try do
+        Result.timed(fn ->
+          Cmd.run("mix", command, cd: fixture, env: env, timeout_ms: timeout)
+        end)
+      after
+        if client, do: File.rm_rf(Path.dirname(client))
+      end
 
     fw = fw_path(build_dir)
     report = read_report(build_lib)
@@ -184,6 +227,28 @@ defmodule ChainTest.Build do
        fw_path: fw,
        sequence: sequence
      }}
+  end
+
+  # The case's client config as a config file in a private temp dir of its
+  # own (never the home, whose contents a case judges), values written with
+  # inspect/1 so each is an Elixir literal.
+  defp client_config_file(nil), do: nil
+
+  defp client_config_file(config) do
+    dir = Path.join(System.tmp_dir!(), "chain_client_config-#{random()}")
+    File.mkdir_p!(dir)
+    File.chmod!(dir, 0o700)
+    path = Path.join(dir, "client.exs")
+
+    opts = config |> Enum.sort() |> Enum.map_join(", ", fn {k, v} -> "#{k}: #{inspect(v)}" end)
+
+    File.write!(
+      path,
+      "# A conformance case's client config, for one build.\nimport Config\n" <>
+        "config :elixir_precompiled, #{opts}\n"
+    )
+
+    path
   end
 
   # The fixture's config/target.exs imports the operator file named here.

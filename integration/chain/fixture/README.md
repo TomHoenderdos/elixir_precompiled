@@ -42,6 +42,7 @@ Without it, a target build stops with `chain fixture: no site config at
 | --- | --- |
 | `CHAIN_SOURCE` | The precompiled API the client uses (default: the production portal). |
 | `CHAIN_TARGET_CONFIG` | The operator file (default `~/.config/chain_test/target.exs`). |
+| `CHAIN_CLIENT_CONFIG` | A config file merged into `config :elixir_precompiled`; the harness writes one for a conformance case's `client_config`, for that build only. |
 | `CHAIN_NERVES_PATH` | A local nerves checkout instead of the `feat/precompiled` branch. |
 
 ## The probe

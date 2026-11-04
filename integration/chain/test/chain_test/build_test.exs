@@ -114,6 +114,116 @@ defmodule ChainTest.BuildTest do
     end)
   end
 
+  describe "client_config" do
+    defp client_run(ctx, extra) do
+      copy = Path.join(ctx.tmp, "client.exs")
+      grab = "[ -n \"$CHAIN_CLIENT_CONFIG\" ] && cp \"$CHAIN_CLIENT_CONFIG\" '#{copy}'\n"
+
+      FakeBin.with_stubs(%{"mix" => grab <> fake_mix(ctx, @hits, sequence: 7)}, fn _ ->
+        Build.run(
+          Map.merge(
+            %{
+              fixture_dir: ctx.fixture,
+              target: "rpi4",
+              source: "http://127.0.0.1:1/api/precompiled",
+              home: ctx.home,
+              trust: Synthetic.info(7, %{})
+            },
+            extra
+          )
+        )
+
+        {File.read!(Path.join(ctx.tmp, "mix.env")), File.read(copy)}
+      end)
+    end
+
+    test "is passed to the fixture as a config file for this build only", ctx do
+      config = %{clock_offset_seconds: 90_000, root: "/r/root.json", source: "http://127.0.0.1:2"}
+      {env, {:ok, file}} = client_run(ctx, %{client_config: config})
+
+      [_, path] = Regex.run(~r/^CHAIN_CLIENT_CONFIG=(.*)$/m, env)
+      refute File.exists?(path), "the client config file outlives the build"
+      refute String.starts_with?(path, ctx.home)
+
+      path = Path.join(ctx.tmp, "client_config.exs")
+      File.write!(path, file)
+
+      assert Config.Reader.read!(path) == [
+               elixir_precompiled: [
+                 clock_offset_seconds: 90_000,
+                 root: "/r/root.json",
+                 source: "http://127.0.0.1:2"
+               ]
+             ]
+    end
+
+    test "without one, CHAIN_CLIENT_CONFIG is unset, even when the caller has it", ctx do
+      System.put_env("CHAIN_CLIENT_CONFIG", "/leftover.exs")
+
+      try do
+        {env, copied} = client_run(ctx, %{})
+        refute env =~ ~r/^CHAIN_CLIENT_CONFIG=/m
+        assert {:error, :enoent} = copied
+      after
+        System.delete_env("CHAIN_CLIENT_CONFIG")
+      end
+    end
+
+    test "the fixture's config merges the file over its own source", ctx do
+      client = Path.join(ctx.tmp, "client.exs")
+      File.write!(client, "import Config\nconfig :elixir_precompiled, clock_offset_seconds: 5\n")
+      System.put_env("CHAIN_SOURCE", "http://127.0.0.1:3")
+      System.put_env("CHAIN_CLIENT_CONFIG", client)
+
+      try do
+        config = Config.Reader.read!(Path.join(ChainTest.CLI.root(), "fixture/config/config.exs"))
+
+        assert config[:elixir_precompiled] == [
+                 source: "http://127.0.0.1:3",
+                 clock_offset_seconds: 5
+               ]
+      after
+        System.delete_env("CHAIN_SOURCE")
+        System.delete_env("CHAIN_CLIENT_CONFIG")
+      end
+    end
+
+    test "an unknown key or a bad value raises" do
+      for bad <- [%{other: 1}, %{clock_offset_seconds: "1"}, %{root: :x}, %{source: ""}] do
+        assert_raise ArgumentError, fn ->
+          Build.run(%{
+            fixture_dir: "/nonexistent",
+            target: "rpi4",
+            source: "x",
+            client_config: bad
+          })
+        end
+      end
+    end
+  end
+
+  test "a prepared home that is not empty is used as it is", ctx do
+    planted = Path.join(ctx.home, "files/abc")
+    File.mkdir_p!(Path.dirname(planted))
+    File.write!(planted, "x")
+
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, @hits, sequence: 7)}, fn dir ->
+      {results, _info} =
+        Build.run(%{
+          fixture_dir: ctx.fixture,
+          target: "rpi4",
+          source: "http://127.0.0.1:1/api/precompiled",
+          home: ctx.home,
+          home_prepared: true,
+          trust: Synthetic.info(7, %{})
+        })
+
+      assert FakeBin.argv(dir, "mix") != nil
+      refute find(results, "home")
+      assert File.read!(planted) == "x"
+    end)
+  end
+
   test "a target config is passed to the fixture build as CHAIN_TARGET_CONFIG", ctx do
     FakeBin.with_stubs(%{"mix" => fake_mix(ctx, @hits, sequence: 7)}, fn _ ->
       Build.run(%{

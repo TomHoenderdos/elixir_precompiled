@@ -10,6 +10,7 @@ defmodule ChainTest.Snapshot do
 
       root.json, batch.json     as served
       batches/<sequence>.json   the batch's bytes again
+      batches/<n>.json          the older batches below, when the portal has them
       <dir>/<name>.json         the manifest the batch names for each Hex dep
                                 of the fixture lock (dir: manifests or v2/manifests)
       files/<sha256>            every file of every build the client could
@@ -26,6 +27,19 @@ defmodule ChainTest.Snapshot do
   directory next to the target and renamed into place only once it is
   complete and verified, so the target either holds a whole snapshot or does
   not exist; a failed `take/1` removes its staging directory.
+
+  Two older batches are kept too, for the cases that serve one: `previous`,
+  the batch `N-1` before the current `N`, and `old`, the newest batch
+  issued more than 25 hours before `N` (found by probing `batches/<n>.json`
+  downwards, then bisecting; at most 64 probes). Each is verified like
+  the current one except for its age: freshness and expiry are what the
+  cases using it test. Each records, as `manifests`, the fixture deps it
+  names a manifest for that differs from `N`'s (`%{dep => %{dir, sha256}}`);
+  their bytes are not stored, since the portal serves only the current
+  batch's manifests. An older batch the portal does not have, or that does
+  not verify, is `{:missing, why}` (and not stored): the cases that need it
+  are not testable here, and the snapshot is still taken. `older/2` reads
+  them.
 
   A snapshot is good for 24 hours: after that its batch is stale for the
   client and for `ChainTest.Trust`, and `load/2` refuses it. A directory
@@ -45,6 +59,11 @@ defmodule ChainTest.Snapshot do
   @max_age_s 24 * 3600
   @max_future_s 300
   @repo_root Path.expand("../../../..", __DIR__)
+  @old_after_s 25 * 3600
+  @probe_step 100
+  @max_probes 64
+  # The checks an older batch is excused: its age is what the cases test.
+  @age_checks ["batch_freshness", "batch_expiry"]
 
   @type dep :: %{
           version: String.t(),
@@ -55,6 +74,16 @@ defmodule ChainTest.Snapshot do
           file_shas: [String.t()]
         }
 
+  @type older_name :: :previous | :old
+  @type older_batch :: %{
+          sequence: integer(),
+          path: String.t(),
+          issued: DateTime.t(),
+          info: Trust.info(),
+          manifests: %{String.t() => %{dir: String.t(), sha256: String.t()}}
+        }
+  @type older :: {:ok, older_batch()} | {:missing, String.t()}
+
   @type t :: %{
           dir: Path.t(),
           source: String.t(),
@@ -62,8 +91,18 @@ defmodule ChainTest.Snapshot do
           sequence: integer(),
           info: Trust.info(),
           taken_at: DateTime.t(),
-          deps: %{String.t() => dep()}
+          deps: %{String.t() => dep()},
+          previous: older(),
+          old: older()
         }
+
+  @doc """
+  The snapshot's older batch `name` (`:previous` or `:old`, see the
+  moduledoc), `{:missing, why}` when it has none.
+  """
+  @spec older(map(), older_name()) :: older()
+  def older(snap, name) when name in [:previous, :old],
+    do: Map.get(snap, name, {:missing, "the snapshot holds no #{name} batch"})
 
   @doc "A fresh directory name under the system tmp dir."
   @spec default_dir() :: Path.t()
@@ -182,21 +221,25 @@ defmodule ChainTest.Snapshot do
     with {:ok, meta} <- read_meta(dir),
          {:ok, taken_at} <- fresh(meta),
          :ok <- same_toolchain(meta),
-         {:ok, info} <- verify(dir, Map.get(opts, :trust_opts, %{})),
+         {:ok, info} <- verify(dir, trust_opts(opts)),
          :ok <- same_sequence(meta, info),
          :ok <- same_batch(dir, info),
          {:ok, stored} <- stored_files(dir),
-         {:ok, deps} <- stored_deps(dir, meta, info, stored) do
+         {:ok, deps} <- stored_deps(dir, meta, info, stored),
+         {:ok, older} <- stored_older(dir, meta, info, trust_opts(opts), Map.keys(deps)) do
       {:ok,
-       %{
-         dir: dir,
-         source: meta["source"],
-         target: meta["target"],
-         sequence: info.sequence,
-         info: info,
-         taken_at: taken_at,
-         deps: deps
-       }}
+       Map.merge(
+         %{
+           dir: dir,
+           source: meta["source"],
+           target: meta["target"],
+           sequence: info.sequence,
+           info: info,
+           taken_at: taken_at,
+           deps: deps
+         },
+         older
+       )}
     end
   end
 
@@ -282,17 +325,22 @@ defmodule ChainTest.Snapshot do
          {:ok, batch} <- download(source, "batch.json", staging, timeout, HTTP.max_bytes()),
          {:ok, info} <- verify(staging, trust_opts),
          :ok <- write(staging, "batches/#{info.sequence}.json", batch),
-         {:ok, deps} <- collect(source, staging, lock, target, info, timeout) do
+         {:ok, deps} <- collect(source, staging, lock, target, info, timeout),
+         {:ok, older} <-
+           take_older(source, staging, info, trust_opts, timeout, Map.keys(deps)) do
       {:ok,
-       %{
-         dir: staging,
-         source: source,
-         target: target,
-         sequence: info.sequence,
-         info: info,
-         taken_at: DateTime.utc_now() |> DateTime.truncate(:second),
-         deps: deps
-       }}
+       Map.merge(
+         %{
+           dir: staging,
+           source: source,
+           target: target,
+           sequence: info.sequence,
+           info: info,
+           taken_at: DateTime.utc_now() |> DateTime.truncate(:second),
+           deps: deps
+         },
+         older
+       )}
     end
   end
 
@@ -356,15 +404,18 @@ defmodule ChainTest.Snapshot do
 
   # The harness's own trust checks, on the stored bytes as a mirror serves
   # them. The mirror is not linked to the caller: it is always stopped here.
-  defp verify(dir, trust_opts) do
+  defp verify(dir, trust_opts, batch_path \\ "batch.json", excused \\ []) do
     case Mirror.start(dir) do
       {:ok, mirror} ->
         try do
-          {results, info} = Trust.check(Map.merge(trust_opts, %{source: mirror.url}))
+          cfg = Map.merge(trust_opts, %{source: mirror.url, batch_path: batch_path})
+          {results, info} = Trust.check(cfg)
+          kept = Enum.reject(results, &(&1.check in excused))
 
           cond do
-            not Trust.accepted?(results, info) ->
-              {:error, "the harness rejects the snapshot's batch: " <> problem(results)}
+            not Trust.accepted?(kept, info) ->
+              what = if batch_path == "batch.json", do: "the snapshot's batch", else: batch_path
+              {:error, "the harness rejects #{what}: " <> problem(kept)}
 
             not served_root_pinned?(results) ->
               {:error, "the harness rejects the snapshot's root: " <> served_root(results)}
@@ -520,8 +571,267 @@ defmodule ChainTest.Snapshot do
       else: {:error, "a manifest names file #{inspect(sha)}"}
   end
 
+  defp trust_opts(opts), do: Map.get(opts, :trust_opts, %{})
+
+  # older batches
+
+  defp take_older(source, dir, info, trust_opts, timeout, names) do
+    with {:ok, issued} <- issued_at(dir, "batch.json") do
+      previous = take_previous(source, dir, info, trust_opts, timeout, names)
+      old = take_old(source, dir, {info, issued}, trust_opts, timeout, names)
+      {:ok, %{previous: previous, old: old}}
+    end
+  end
+
+  defp take_previous(source, dir, info, trust_opts, timeout, names) do
+    n = info.sequence - 1
+    rel = "batches/#{n}.json"
+
+    case HTTP.get("#{source}/#{rel}", timeout, max_bytes: HTTP.max_bytes()) do
+      {:ok, bytes} -> keep_older(dir, n, bytes, info, trust_opts, names, &any_age/1)
+      {:error, why} -> {:missing, "#{rel}: #{why}"}
+    end
+  end
+
+  defp take_old(source, dir, {info, issued}, trust_opts, timeout, names) do
+    probe = &probe(source, &1, issued, timeout)
+
+    case search_old(probe, info.sequence) do
+      {:ok, n, bytes} -> keep_older(dir, n, bytes, info, trust_opts, names, old_check(issued, n))
+      {:missing, why} -> {:missing, why}
+    end
+  end
+
+  defp any_age(_issued), do: :ok
+
+  defp old_check(n_issued, n) do
+    fn issued ->
+      if DateTime.diff(n_issued, issued, :second) > @old_after_s,
+        do: :ok,
+        else:
+          {:error,
+           "batches/#{n}.json was issued #{DateTime.to_iso8601(issued)}, not more than " <>
+             "25 h before the current batch"}
+    end
+  end
+
+  # Stores an older batch's bytes, verified; one that does not verify is
+  # removed again and missing.
+  defp keep_older(dir, n, bytes, info, trust_opts, names, check) do
+    rel = "batches/#{n}.json"
+
+    with :ok <- write(dir, rel, bytes),
+         {:ok, older} <- older_batch(dir, n, info, trust_opts, names, check) do
+      {:ok, older}
+    else
+      {:error, why} ->
+        File.rm(Path.join(dir, rel))
+        {:missing, why}
+    end
+  end
+
+  # The stored batches/<n>.json, verified except for its age, carrying
+  # sequence n and passing `check` on its issue instant.
+  defp older_batch(dir, n, info, trust_opts, names, check) do
+    rel = "batches/#{n}.json"
+
+    with {:ok, older} <- verify(dir, trust_opts, rel, @age_checks),
+         :ok <- same_number(older.sequence, n, rel),
+         {:ok, issued} <- issued_at(dir, rel),
+         :ok <- check.(issued) do
+      {:ok,
+       %{
+         sequence: n,
+         path: rel,
+         issued: issued,
+         info: older,
+         manifests: differing(older, info, names)
+       }}
+    end
+  end
+
+  defp same_number(n, n, _rel), do: :ok
+  defp same_number(got, _n, rel), do: {:error, "#{rel} carries sequence #{got}"}
+
+  # The fixture deps the older batch names a manifest for that differs from
+  # the current batch's.
+  defp differing(older, info, names) do
+    for name <- Enum.sort(names),
+        {sha, mdir} = named <- [Trust.manifest_sha(older, name)],
+        named != Trust.manifest_sha(info, name),
+        into: %{},
+        do: {name, %{dir: mdir, sha256: sha}}
+  end
+
+  # The issue instant of a stored batch's payload (its signature is
+  # verified elsewhere).
+  defp issued_at(dir, rel) do
+    case File.read(Path.join(dir, rel)) do
+      {:ok, bytes} ->
+        case fields(bytes) do
+          {:ok, _sequence, issued} -> {:ok, issued}
+          :error -> {:error, "#{rel} carries no issue instant"}
+        end
+
+      {:error, why} ->
+        {:error, "#{rel}: #{:file.format_error(why)}"}
+    end
+  end
+
+  defp fields(bytes) do
+    with {:ok, %{"payload" => p}} when is_binary(p) <- JSON.decode(bytes),
+         {:ok, payload} <- Base.url_decode64(p, padding: false),
+         {:ok, %{"sequence" => seq, "issued" => text}} when is_integer(seq) <-
+           JSON.decode(payload),
+         {:ok, issued, _} <- DateTime.from_iso8601(text) do
+      {:ok, seq, issued}
+    else
+      _ -> :error
+    end
+  end
+
+  # What batches/<n>.json says about its age, before any verification:
+  # `{:ok, :new}` (issued 25 h or less before the current batch), `{:ok,
+  # {:old, bytes}}`, `{:ok, :missing}` (404), or `{:missing, why}`, which
+  # ends the search. The candidate the search settles on is verified.
+  defp probe(source, n, n_issued, timeout) do
+    rel = "batches/#{n}.json"
+
+    case HTTP.get("#{source}/#{rel}", timeout, max_bytes: HTTP.max_bytes()) do
+      {:ok, bytes} ->
+        case fields(bytes) do
+          {:ok, ^n, issued} ->
+            if DateTime.diff(n_issued, issued, :second) > @old_after_s,
+              do: {:ok, {:old, bytes}},
+              else: {:ok, :new}
+
+          {:ok, seq, _} ->
+            {:missing, "#{rel} carries sequence #{seq}"}
+
+          :error ->
+            {:missing, "#{rel} is not a batch"}
+        end
+
+      {:error, why} ->
+        if String.ends_with?(why, "answered 404"),
+          do: {:ok, :missing},
+          else: {:missing, "#{rel}: #{why}"}
+    end
+  end
+
+  # Sequences are numbered by one, issue instants rise with them, and the
+  # portal may have dropped the oldest: missing < old < new. Steps down from
+  # `n` (100 at a time, doubling: the portal signs every 15 minutes) to a
+  # batch that is not new, then bisects to the newest batch that is not.
+  defp search_old(probe, n) do
+    st = %{memo: %{}, left: @max_probes, probe: probe}
+
+    with {:ok, lo, hi, st} <- bracket(n, @probe_step, n, st),
+         {:ok, lo, st} <- bisect(lo, hi, st) do
+      case st.memo[lo] do
+        {:old, bytes} ->
+          {:ok, lo, bytes}
+
+        _ ->
+          {:missing,
+           "the portal keeps no batch issued more than 25 h before batch #{n} " <>
+             "(batches/#{lo}.json is not there)"}
+      end
+    end
+  end
+
+  defp bracket(n, step, hi, st) do
+    m = max(n - step, 0)
+
+    with {:ok, class, st} <- class(m, st) do
+      cond do
+        class != :new ->
+          {:ok, m, hi, st}
+
+        m == 0 ->
+          {:missing,
+           "every batch back to batches/0.json was issued 25 h or less before batch #{n}"}
+
+        true ->
+          bracket(n, step * 2, m, st)
+      end
+    end
+  end
+
+  defp bisect(lo, hi, st) when hi - lo <= 1, do: {:ok, lo, st}
+
+  defp bisect(lo, hi, st) do
+    mid = div(lo + hi, 2)
+
+    with {:ok, class, st} <- class(mid, st) do
+      if class == :new, do: bisect(lo, mid, st), else: bisect(mid, hi, st)
+    end
+  end
+
+  defp class(m, %{memo: memo} = st) when is_map_key(memo, m), do: {:ok, kind(memo[m]), st}
+
+  defp class(_m, %{left: 0}),
+    do: {:missing, "no batch issued more than 25 h before found within #{@max_probes} probes"}
+
+  defp class(m, st) do
+    case st.probe.(m) do
+      {:ok, v} -> {:ok, kind(v), %{st | memo: Map.put(st.memo, m, v), left: st.left - 1}}
+      {:missing, why} -> {:missing, why}
+    end
+  end
+
+  defp kind({:old, _bytes}), do: :old
+  defp kind(class), do: class
+
+  # A kept snapshot's older batches, re-verified as when taken; one that no
+  # longer verifies fails the load. A snapshot taken before they were kept
+  # has none.
+  defp stored_older(dir, meta, info, trust_opts, names) do
+    with {:ok, issued} <- issued_at(dir, "batch.json") do
+      ctx = %{dir: dir, info: info, trust_opts: trust_opts, names: names}
+      previous = fn n -> n == info.sequence - 1 end
+      old = fn n -> n < info.sequence end
+
+      with {:ok, p} <-
+             older_entry(ctx, meta["previous"], "previous", previous, fn _ -> &any_age/1 end),
+           {:ok, o} <- older_entry(ctx, meta["old"], "old", old, &old_check(issued, &1)) do
+        {:ok, %{previous: p, old: o}}
+      end
+    end
+  end
+
+  # `allowed?` says which sequence the entry may name, `check` (given that
+  # sequence) what the batch's issue instant must pass.
+  defp older_entry(ctx, entry, key, allowed?, check) do
+    case entry do
+      nil ->
+        {:ok,
+         {:missing, "the snapshot was taken before snapshots kept older batches; take a new one"}}
+
+      %{"missing" => why} when is_binary(why) ->
+        {:ok, {:missing, why}}
+
+      %{"sequence" => n} when is_integer(n) ->
+        if allowed?.(n) do
+          with {:ok, older} <-
+                 older_batch(ctx.dir, n, ctx.info, ctx.trust_opts, ctx.names, check.(n)),
+               do: {:ok, {:ok, older}}
+        else
+          {:error, "snapshot.json names batch #{n} as the #{key} batch of #{ctx.info.sequence}"}
+        end
+
+      _ ->
+        {:error, "snapshot.json has a malformed #{key} entry: #{inspect(entry)}"}
+    end
+  end
+
+  defp older_meta({:ok, older}), do: %{"sequence" => older.sequence}
+  defp older_meta({:missing, why}), do: %{"missing" => why}
+
   defp meta(snap) do
     %{
+      "previous" => older_meta(snap.previous),
+      "old" => older_meta(snap.old),
       "format" => 1,
       "source" => snap.source,
       "target" => snap.target,

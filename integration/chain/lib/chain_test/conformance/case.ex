@@ -7,7 +7,8 @@ defmodule ChainTest.Conformance.Case do
   One conformance case, as data, and its verdict.
 
   The case file (`conformance/cases.exs`) evaluates to a list of maps, each
-  with exactly these keys:
+  with these keys (and, optionally, `setup`, `client_config` and `after`,
+  below):
 
       %{
         id: "T0",
@@ -36,6 +37,28 @@ defmodule ChainTest.Conformance.Case do
       `:rerun` is a difference too: the snapshot never moves, so a rerun
       means the client used a batch the mirror never served.
 
+  Optional keys, each absent by default:
+
+    * `setup` - `{module, args}`: a `ChainTest.Conformance.Setup` and its
+      args (checked like a transform's), run against the case's fresh client
+      home before the build.
+    * `client_config` - merged into the fixture's `config
+      :elixir_precompiled` for this case's build only
+      (`ChainTest.Build.client_config?/1`): `clock_offset_seconds`
+      (integer), `root` (path), `source` (URL).
+    * `after` - post-conditions on the client home and `_build` after the
+      build, a non-empty map of:
+      * `state_sequence` - the client's state file for the case's source
+        and root under the case home (`ChainTest.Conformance.Setup.state_dir/3`):
+        an integer it must hold, `:snapshot` (the snapshot batch's
+        sequence), `:absent` (no such file), or `:unchanged` (every state
+        file in the home, this one included, as setup left it).
+      * `installed` - `:none` (no `.mix/elixir_precompiled.json` anywhere
+        in the target's `_build`) or `:snapshot` (one for exactly the deps
+        the snapshot holds a build of, the Nerves tooling aside).
+      * `cache` - `:untouched`: no entry in the client cache (`files/`
+        under the home) beyond what setup wrote.
+
   Whatever the case expects, a report line that calls a dep a hit when the
   snapshot holds no build of it the client could select is a difference:
   the client installed something the portal never served it.
@@ -55,20 +78,49 @@ defmodule ChainTest.Conformance.Case do
       harness result match, `:fail` naming each difference.
   """
 
-  alias ChainTest.{Mirror, Result}
+  alias ChainTest.{Build, Mirror, Result}
+  alias ChainTest.Conformance.Setup
   alias ChainTest.Mirror.Transform
 
   @type status :: :hit | :miss | :fail
   @type expect :: :snapshot | status() | {status(), String.t()}
+  @type post :: %{
+          optional(:state_sequence) => integer() | :snapshot | :absent | :unchanged,
+          optional(:installed) => :none | :snapshot,
+          optional(:cache) => :untouched
+        }
   @type t :: %{
-          id: String.t(),
-          description: String.t(),
-          transform: {module(), map()},
-          client: %{default: expect(), deps: %{atom() => expect()}},
-          harness: %{String.t() => Result.class()}
+          required(:id) => String.t(),
+          required(:description) => String.t(),
+          required(:transform) => {module(), map()},
+          required(:client) => %{default: expect(), deps: %{atom() => expect()}},
+          required(:harness) => %{String.t() => Result.class()},
+          optional(:setup) => {module(), map()},
+          optional(:client_config) => ChainTest.Build.client_config(),
+          optional(:after) => post()
+        }
+
+  @typedoc """
+  What the runner saw of the case home, right after setup (`before`) and
+  after the build (`after`): every client state file (`"<dir>/state" =>
+  contents`), the cache entries (paths under the home), and the case
+  source's own state file (`{:ok, "<dir>/state"}`, or why it has none); and
+  the deps `_build` holds a provenance file for (a stray one by its path).
+  """
+  @type observed :: %{
+          before: home_view(),
+          after: home_view(),
+          installed: [String.t()]
+        }
+  @type home_view :: %{
+          states: %{String.t() => binary()},
+          cache: MapSet.t(String.t()),
+          own: {:ok, String.t()} | {:error, String.t()}
         }
 
   @keys [:client, :description, :harness, :id, :transform]
+  @optional [:after, :client_config, :setup]
+  @post_keys [:cache, :installed, :state_sequence]
   @statuses [:hit, :miss, :fail]
   @benign [:pass, :miss]
   @identity ChainTest.Mirror.Identity
@@ -103,33 +155,60 @@ defmodule ChainTest.Conformance.Case do
   defp problem(%{} = c) do
     id = inspect(Map.get(c, :id))
 
+    case required_problem(c) || optional_problem(c) do
+      nil -> nil
+      why -> {:error, "case #{id}: " <> why}
+    end
+  end
+
+  defp problem(other), do: {:error, "a case must be a map, got #{inspect(other)}"}
+
+  defp required_problem(c) do
+    keys = Map.keys(c)
+
     cond do
-      Enum.sort(Map.keys(c)) != @keys ->
-        {:error, "case #{id}: keys must be #{inspect(@keys)}, got #{inspect(Map.keys(c))}"}
+      Enum.sort(keys -- @optional) != @keys or keys -- (@keys ++ @optional) != [] ->
+        "keys must be #{inspect(@keys)}, optionally #{inspect(@optional)}, got #{inspect(keys)}"
 
       not id?(c.id) ->
-        {:error, "case #{id}: an id is a letter or digit, then letters, digits, . or -"}
+        "an id is a letter or digit, then letters, digits, . or -"
 
       not description?(c.description) ->
-        {:error, "case #{id}: description must be a sentence"}
+        "description must be a sentence"
 
       not Transform.valid?(c.transform) ->
-        {:error,
-         "case #{id}: transform #{inspect(c.transform)} is not {module, args} with " <>
-           "args the module accepts"}
+        "transform #{inspect(c.transform)} is not {module, args} with args the module accepts"
 
       not client?(c.client) ->
-        {:error, "case #{id}: client must be %{default: expect, deps: %{dep => expect}}"}
+        "client must be %{default: expect, deps: %{dep => expect}}"
 
       not harness?(c.harness) ->
-        {:error, "case #{id}: harness must map \"step/check\" to a result class"}
+        "harness must map \"step/check\" to a result class"
 
       true ->
         nil
     end
   end
 
-  defp problem(other), do: {:error, "a case must be a map, got #{inspect(other)}"}
+  defp optional_problem(c) do
+    cond do
+      Map.has_key?(c, :setup) and not Setup.valid?(c.setup) ->
+        "setup #{inspect(c.setup)} is not {module, args} with a " <>
+          "ChainTest.Conformance.Setup and args it accepts"
+
+      Map.has_key?(c, :client_config) and not Build.client_config?(c.client_config) ->
+        "client_config must map clock_offset_seconds to an integer, root and source to " <>
+          "non-empty strings, got #{inspect(c.client_config)}"
+
+      Map.has_key?(c, :after) and not post?(c.after) ->
+        "after must be a non-empty map of state_sequence (integer, :snapshot, :absent, " <>
+          ":unchanged), installed (:none, :snapshot), cache (:untouched), got " <>
+          inspect(c.after)
+
+      true ->
+        nil
+    end
+  end
 
   defp id?(id), do: is_binary(id) and id =~ ~r/\A[A-Za-z0-9][A-Za-z0-9.-]{0,31}\z/
 
@@ -154,6 +233,17 @@ defmodule ChainTest.Conformance.Case do
 
   defp harness?(_), do: false
 
+  defp post?(post) when is_map(post) and map_size(post) > 0,
+    do: Enum.all?(post, fn {k, v} -> k in @post_keys and post_value?(k, v) end)
+
+  defp post?(_), do: false
+
+  defp post_value?(:state_sequence, v),
+    do: is_integer(v) or v in [:snapshot, :absent, :unchanged]
+
+  defp post_value?(:installed, v), do: v in [:none, :snapshot]
+  defp post_value?(:cache, v), do: v == :untouched
+
   @doc "The case's verdict on one run (see the moduledoc)."
   @spec judge(t(), %{
           required(:rows) => [Result.t()],
@@ -161,7 +251,8 @@ defmodule ChainTest.Conformance.Case do
           required(:requests) => [Mirror.request()],
           required(:snapshot) => map(),
           required(:hits) => [atom()],
-          optional(:tooling) => [String.t()]
+          optional(:tooling) => [String.t()],
+          optional(:observed) => observed() | nil
         }) :: Result.t()
   def judge(
         c,
@@ -181,7 +272,8 @@ defmodule ChainTest.Conformance.Case do
         problems =
           unused ++
             client_problems(c, report, snap, hits, input) ++
-            unheld_hits(report, snap) ++ harness_problems(c, rows)
+            unheld_hits(report, snap) ++
+            harness_problems(c, rows) ++ post_problems(c, input, snap)
 
         case problems do
           [] -> result(c, :pass, "as expected: #{c.description}")
@@ -313,6 +405,88 @@ defmodule ChainTest.Conformance.Case do
   end
 
   defp key(%Result{step: step, check: check}), do: "#{step}/#{check}"
+
+  # The case's `after`, against what the runner observed.
+  defp post_problems(c, input, snap) do
+    case {Map.get(c, :after), Map.get(input, :observed)} do
+      {nil, _} ->
+        []
+
+      {_post, nil} ->
+        ["after: the runner observed nothing to check the post-conditions against"]
+
+      {post, seen} ->
+        post
+        |> Enum.sort()
+        |> Enum.flat_map(fn {key, want} -> post_problem(key, want, seen, snap, input) end)
+    end
+  end
+
+  defp post_problem(:state_sequence, :unchanged, seen, _snap, _input) do
+    before = seen.before.states
+    now = seen.after.states
+
+    for rel <- Enum.sort(Enum.uniq(Map.keys(before) ++ Map.keys(now))),
+        before[rel] != now[rel],
+        do:
+          "after state_sequence: expected the state unchanged, #{rel} was " <>
+            "#{state(before[rel])}, is #{state(now[rel])}"
+  end
+
+  defp post_problem(:state_sequence, want, seen, snap, _input) do
+    case seen.after.own do
+      {:error, why} ->
+        ["after state_sequence: cannot name the client's state dir: #{why}"]
+
+      {:ok, rel} ->
+        got = seen.after.states[rel]
+
+        case {want, got} do
+          {:absent, nil} -> []
+          {:absent, got} -> ["after state_sequence: expected no #{rel}, it holds #{state(got)}"]
+          {n, got} -> sequence_problem(sequence(n, snap), got, rel)
+        end
+    end
+  end
+
+  defp post_problem(:installed, :none, seen, _snap, _input) do
+    case seen.installed do
+      [] -> []
+      found -> ["after installed: expected nothing installed, found #{Enum.join(found, ", ")}"]
+    end
+  end
+
+  defp post_problem(:installed, :snapshot, seen, snap, input) do
+    tooling = Map.get(input, :tooling, [])
+    want = for {name, _} <- snap.deps, held?(snap, name), name not in tooling, do: name
+    want = Enum.sort(want)
+    got = Enum.sort(seen.installed)
+
+    if got == want,
+      do: [],
+      else: [
+        "after installed: expected exactly #{inspect(want)} installed, found #{inspect(got)}"
+      ]
+  end
+
+  defp post_problem(:cache, :untouched, seen, _snap, _input) do
+    case seen.after.cache |> MapSet.difference(seen.before.cache) |> Enum.sort() do
+      [] -> []
+      new -> ["after cache: expected the cache untouched, it gained #{Enum.join(new, ", ")}"]
+    end
+  end
+
+  defp sequence(:snapshot, snap), do: snap.sequence
+  defp sequence(n, _snap), do: n
+
+  defp sequence_problem(n, got, rel) do
+    if is_binary(got) and Integer.parse(String.trim(got)) == {n, ""},
+      do: [],
+      else: ["after state_sequence: expected #{rel} to hold #{n}, it holds #{state(got)}"]
+  end
+
+  defp state(nil), do: "absent"
+  defp state(bytes), do: inspect(bytes, limit: 8, printable_limit: 32)
 
   defp result(c, class, detail),
     do: %Result{step: :conformance, check: c.id, class: class, detail: detail}

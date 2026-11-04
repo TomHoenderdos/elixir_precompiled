@@ -16,14 +16,38 @@ defmodule ChainTest.Mirror do
   directory) is passed through the transform, `(path, bytes) -> {status,
   bytes}`, with `path` relative to the snapshot, before it is sent; one it
   does not hold is a 404 that never reaches the transform. A transform that
-  raises, throws or exits, or answers anything but `{100..599, binary}`, is
+  raises, throws or exits, or answers anything but a `t:response/0`, is
   answered 500 and logged.
+
+  A transform answers one of (`status` is 100..599):
+
+    * `{status, body}` - the response, with a `content-length`.
+    * `{status, headers, body}` - the same plus `headers`, `[{name, value}]`
+      (at most 32, token names, values up to 4096 bytes without CR, LF or
+      NUL). A `content-type` among them replaces the mirror's; the mirror
+      owns `content-length`, `connection` and `transfer-encoding`, which a
+      transform may not name.
+    * `{:redirect, 300..399, location}` - an empty body and `location`
+      (up to 2048 bytes, without CR, LF or NUL).
+    * `{:stream, status, chunks, delay_ms}` - no `content-length`; each
+      chunk (a list of binaries) is sent after `delay_ms` (0..60000), then
+      the connection is closed.
+    * `{:truncate, status, body, n}` - declares `byte_size(body)` but sends
+      only its first `n` bytes (`0 <= n < byte_size(body)`), then closes.
+    * `:close` - closes the connection without a response.
+    * `{:endless, status, chunk, delay_ms}` - no `content-length`; sends
+      `chunk` (1 byte to 1 MiB) after every `delay_ms` (0..60000) until the
+      client hangs up.
+
+  A streamed body (`:stream`, `:endless`) is cut off, and the connection
+  closed, at the mirror's caps: `:stream_max_bytes` (default 64 MiB) sent or
+  `:stream_max_ms` (default 120 s) after the head, whichever comes first.
 
   Every request is logged in arrival order as `%{method, path, status,
   mutated}`, `mutated` true when the transform answered anything but
-  `{200, bytes}`. One request per connection (`connection: close`). Built on
-  `:gen_tcp` rather than `:httpd` so a transform has the whole response in
-  hand.
+  `{200, bytes}` with the bytes it was given; `status` is 0 for `:close`.
+  One request per connection (`connection: close`). Built on `:gen_tcp`
+  rather than `:httpd` so a transform has the whole response in hand.
 
   A misbehaving client cannot hang a test run. Every line of the request
   head is capped at 8192 bytes (400), the request target at 1024
@@ -36,11 +60,20 @@ defmodule ChainTest.Mirror do
 
   use GenServer
 
-  @type transform :: (String.t(), binary() -> {pos_integer(), binary()})
+  @type status :: 100..599
+  @type response ::
+          {status(), binary()}
+          | {status(), [{String.t(), String.t()}], binary()}
+          | {:redirect, 300..399, String.t()}
+          | {:stream, status(), [binary()], non_neg_integer()}
+          | {:truncate, status(), binary(), non_neg_integer()}
+          | :close
+          | {:endless, status(), binary(), non_neg_integer()}
+  @type transform :: (String.t(), binary() -> response())
   @type request :: %{
           method: String.t(),
           path: String.t(),
-          status: pos_integer(),
+          status: non_neg_integer(),
           mutated: boolean()
         }
   @type t :: %{pid: pid(), port: :inet.port_number(), url: String.t()}
@@ -52,6 +85,14 @@ defmodule ChainTest.Mirror do
   @max_connections 64
   @send_timeout_ms 5_000
   @accept_backoff_ms 50
+  @stream_max_bytes 64 * 1024 * 1024
+  @stream_max_ms 120_000
+  @max_delay_ms 60_000
+  @max_chunk 1024 * 1024
+  @max_response_headers 32
+  @max_header_value 4096
+  @max_location 2048
+  @owned_headers ["content-length", "connection", "transfer-encoding"]
 
   @routes [
     ~r|\Aroot\.json\z|,
@@ -80,10 +121,15 @@ defmodule ChainTest.Mirror do
   @spec identity() :: transform()
   def identity(), do: fn _path, bytes -> {200, bytes} end
 
+  @doc "The default caps on a streamed body (see the moduledoc)."
+  @spec stream_limits() :: %{max_bytes: pos_integer(), max_ms: pos_integer()}
+  def stream_limits(), do: %{max_bytes: @stream_max_bytes, max_ms: @stream_max_ms}
+
   @doc """
   Starts a mirror over `dir` on a free port of 127.0.0.1. Options
   `:transform` (default `identity/0`), `:request_timeout_ms` (default
-  5000) and `:max_connections` (default 64).
+  5000), `:max_connections` (default 64), `:stream_max_bytes` and
+  `:stream_max_ms` (`stream_limits/0`).
   """
   @spec start(Path.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def start(dir, opts \\ []) do
@@ -91,7 +137,9 @@ defmodule ChainTest.Mirror do
       dir: Path.expand(dir),
       transform: Keyword.get(opts, :transform, identity()),
       timeout: Keyword.get(opts, :request_timeout_ms, @request_timeout_ms),
-      max: Keyword.get(opts, :max_connections, @max_connections)
+      max: Keyword.get(opts, :max_connections, @max_connections),
+      stream_max_bytes: Keyword.get(opts, :stream_max_bytes, @stream_max_bytes),
+      stream_max_ms: Keyword.get(opts, :stream_max_ms, @stream_max_ms)
     }
 
     case GenServer.start(__MODULE__, config) do
@@ -185,7 +233,7 @@ defmodule ChainTest.Mirror do
         if live >= config.max do
           entry = %{method: "?", path: "?", status: 503, mutated: false}
           log(server, entry)
-          :gen_tcp.send(sock, head(503, "", "?"))
+          :gen_tcp.send(sock, head(503, [], 0, "?"))
           :gen_tcp.close(sock)
           accept(listen, server, config, live)
         else
@@ -246,9 +294,16 @@ defmodule ChainTest.Mirror do
         :ok
 
       result ->
-        {status, body, path, mutated} = answer(result, config)
-        log(server, %{method: method_of(result), path: path, status: status, mutated: mutated})
-        respond(sock, status, body, path)
+        {reply, path, mutated} = answer(result, config)
+
+        log(server, %{
+          method: method_of(result),
+          path: path,
+          status: reply_status(reply),
+          mutated: mutated
+        })
+
+        respond(sock, reply, path, config)
     end
 
     :gen_tcp.close(sock)
@@ -311,11 +366,11 @@ defmodule ChainTest.Mirror do
     end
   end
 
-  defp answer(:bad, _config), do: {400, "", "?", false}
-  defp answer(:timeout, _config), do: {408, "", "?", false}
+  defp answer(:bad, _config), do: {plain(400), "?", false}
+  defp answer(:timeout, _config), do: {plain(408), "?", false}
 
   defp answer({:ok, _method, target}, _config) when byte_size(target) > @max_target,
-    do: {414, "", binary_part(target, 0, @max_target), false}
+    do: {plain(414), binary_part(target, 0, @max_target), false}
 
   defp answer({:ok, "GET", target}, config) do
     with false <- String.contains?(target, "?"),
@@ -323,11 +378,13 @@ defmodule ChainTest.Mirror do
          {:ok, bytes} <- read_inside(config.dir, rel) do
       transformed(rel, bytes, config.transform)
     else
-      _ -> {404, "", target, false}
+      _ -> {plain(404), target, false}
     end
   end
 
-  defp answer({:ok, _method, target}, _config), do: {405, "", target, false}
+  defp answer({:ok, _method, target}, _config), do: {plain(405), target, false}
+
+  defp plain(status, body \\ ""), do: {:full, status, [], body}
 
   # Reads `rel` below `dir` only when every component below `dir` is a
   # directory or, the last, a regular file: a symlink is never followed.
@@ -354,28 +411,134 @@ defmodule ChainTest.Mirror do
   end
 
   defp transformed(rel, bytes, transform) do
-    case transform.(rel, bytes) do
-      {status, body} = out when is_integer(status) and status in 100..599 and is_binary(body) ->
-        {status, body, rel, out != {200, bytes}}
+    out = transform.(rel, bytes)
 
-      other ->
-        {500, "transform returned #{inspect(other)}", rel, true}
+    case reply(out) do
+      {:ok, reply} -> {reply, rel, out != {200, bytes}}
+      :error -> {plain(500, "transform returned #{inspect(out, limit: 20)}"), rel, true}
     end
   rescue
-    e -> {500, Exception.message(e), rel, true}
+    e -> {plain(500, Exception.message(e)), rel, true}
   catch
-    kind, reason -> {500, Exception.format_banner(kind, reason), rel, true}
+    kind, reason -> {plain(500, Exception.format_banner(kind, reason)), rel, true}
   end
 
-  defp respond(sock, status, body, path) do
-    :gen_tcp.send(sock, [head(status, body, path), body])
+  defguardp status?(s) when is_integer(s) and s in 100..599
+  defguardp delay?(d) when is_integer(d) and d in 0..@max_delay_ms
+
+  # A transform's answer as what `respond/4` sends, or `:error` when it is
+  # not a `t:response/0`.
+  defp reply({s, body}) when status?(s) and is_binary(body), do: {:ok, plain(s, body)}
+
+  defp reply({s, headers, body}) when status?(s) and is_binary(body) do
+    if headers?(headers), do: {:ok, {:full, s, headers, body}}, else: :error
   end
 
-  defp head(status, body, path) do
-    "HTTP/1.1 #{status} #{Map.get(@reasons, status, "Status")}\r\n" <>
-      "content-type: #{content_type(path)}\r\n" <>
-      "content-length: #{byte_size(body)}\r\n" <>
-      "connection: close\r\n\r\n"
+  defp reply({:redirect, s, location}) when is_integer(s) and s in 300..399 do
+    if is_binary(location) and byte_size(location) <= @max_location and value?(location),
+      do: {:ok, {:full, s, [{"location", location}], ""}},
+      else: :error
+  end
+
+  defp reply({:stream, s, chunks, delay}) when status?(s) and is_list(chunks) and delay?(delay) do
+    if Enum.all?(chunks, &is_binary/1), do: {:ok, {:stream, s, chunks, delay}}, else: :error
+  end
+
+  defp reply({:truncate, s, body, n})
+       when status?(s) and is_binary(body) and is_integer(n) and n >= 0 and n < byte_size(body),
+       do: {:ok, {:truncate, s, body, n}}
+
+  defp reply(:close), do: {:ok, :close}
+
+  defp reply({:endless, s, chunk, delay})
+       when status?(s) and is_binary(chunk) and byte_size(chunk) in 1..@max_chunk and
+              delay?(delay),
+       do: {:ok, {:endless, s, chunk, delay}}
+
+  defp reply(_), do: :error
+
+  defp headers?(headers) when is_list(headers) and length(headers) <= @max_response_headers,
+    do: Enum.all?(headers, &header?/1)
+
+  defp headers?(_), do: false
+
+  defp header?({name, value}) when is_binary(name) and is_binary(value) do
+    name =~ ~r/\A[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}\z/ and
+      String.downcase(name) not in @owned_headers and
+      byte_size(value) <= @max_header_value and value?(value)
+  end
+
+  defp header?(_), do: false
+
+  defp value?(v), do: not String.contains?(v, ["\r", "\n", <<0>>])
+
+  defp reply_status(:close), do: 0
+  defp reply_status(reply), do: elem(reply, 1)
+
+  defp respond(sock, {:full, status, headers, body}, path, _config),
+    do: :gen_tcp.send(sock, [head(status, headers, byte_size(body), path), body])
+
+  defp respond(sock, {:truncate, status, body, n}, path, _config),
+    do: :gen_tcp.send(sock, [head(status, [], byte_size(body), path), binary_part(body, 0, n)])
+
+  defp respond(_sock, :close, _path, _config), do: :ok
+
+  defp respond(sock, {:stream, status, chunks, delay}, path, config),
+    do: stream(sock, head(status, [], nil, path), chunks, delay, config)
+
+  defp respond(sock, {:endless, status, chunk, delay}, path, config),
+    do: stream(sock, head(status, [], nil, path), {:repeat, chunk}, delay, config)
+
+  # Sends the head, then each chunk after `delay` ms, until the chunks run
+  # out, the client hangs up, or a cap is reached.
+  defp stream(sock, head, chunks, delay, config) do
+    deadline = System.monotonic_time(:millisecond) + config.stream_max_ms
+
+    with :ok <- :gen_tcp.send(sock, head),
+         do: drip(sock, chunks, delay, config.stream_max_bytes, deadline)
+  end
+
+  defp drip(_sock, [], _delay, _left, _deadline), do: :ok
+  defp drip(_sock, _chunks, _delay, left, _deadline) when left <= 0, do: :ok
+
+  defp drip(sock, chunks, delay, left, deadline) do
+    {chunk, rest} = next_chunk(chunks)
+    Process.sleep(max(min(delay, deadline - System.monotonic_time(:millisecond)), 0))
+
+    if System.monotonic_time(:millisecond) >= deadline do
+      :ok
+    else
+      part = binary_part(chunk, 0, min(byte_size(chunk), left))
+
+      case :gen_tcp.send(sock, part) do
+        :ok -> drip(sock, rest, delay, left - byte_size(part), deadline)
+        {:error, _} -> :ok
+      end
+    end
+  end
+
+  defp next_chunk([chunk | rest]), do: {chunk, rest}
+  defp next_chunk({:repeat, chunk} = repeat), do: {chunk, repeat}
+
+  # `length` nil: a body that runs until the connection closes.
+  defp head(status, headers, length, path) do
+    type =
+      if Enum.any?(headers, fn {k, _} -> String.downcase(k) == "content-type" end),
+        do: [],
+        else: [{"content-type", content_type(path)}]
+
+    framing = if length, do: [{"content-length", Integer.to_string(length)}], else: []
+
+    lines =
+      Enum.map(type ++ headers ++ framing ++ [{"connection", "close"}], fn {k, v} ->
+        k <> ": " <> v <> "\r\n"
+      end)
+
+    IO.iodata_to_binary([
+      "HTTP/1.1 #{status} #{Map.get(@reasons, status, "Status")}\r\n",
+      lines,
+      "\r\n"
+    ])
   end
 
   defp content_type(path) do

@@ -5,7 +5,8 @@
 defmodule ChainTest.ConformanceTest do
   use ExUnit.Case, async: true
 
-  alias ChainTest.{Conformance, HTTP, Result, Synthetic}
+  alias ChainTest.{Conformance, HTTP, Result, Synthetic, Trust}
+  alias ChainTest.Conformance.Setup
 
   @moduletag :tmp_dir
 
@@ -127,7 +128,10 @@ defmodule ChainTest.ConformanceTest do
     assert_received {:integrity, integrity}
     assert build.command == ["compile"]
     assert build.trust == ctx.snapshot.info
-    refute Map.has_key?(build, :home)
+    assert build.home_prepared
+    assert build.client_config == nil
+    assert String.starts_with?(build.home, Path.expand(System.tmp_dir!()))
+    refute File.exists?(build.home), "the case home outlives the case"
     assert String.starts_with?(build.source, "http://127.0.0.1:")
     assert File.read!(build.target_config) =~ "import Config"
     assert String.starts_with?(integrity.source, "http://127.0.0.1:")
@@ -269,5 +273,190 @@ defmodule ChainTest.ConformanceTest do
 
     assert detail =~ "emfile"
     refute_received {:build, _}
+  end
+
+  describe "case model v2" do
+    # The fake build of steps/2, which also records the home it found and
+    # writes the client's state for its source, as the client does after
+    # accepting batch 7.
+    defp v2_steps(test, snapshot, opts \\ []) do
+      s = steps(test, snapshot)
+
+      build = fn input ->
+        send(test, {:home_at_build, File.ls!(input.home)})
+        source = (input.client_config || %{})[:source] || input.source
+
+        if Keyword.get(opts, :write_state, true) do
+          {:ok, dir} = Setup.state_dir(input.home, source, Trust.library_root_path())
+          File.mkdir_p!(dir)
+          File.write!(Path.join(dir, "state"), "7")
+        end
+
+        s.build.(input)
+      end
+
+      %{s | build: build}
+    end
+
+    defp v2(c, extra), do: Map.merge(c, extra)
+
+    test "setup runs in the case's home before the build, with the case's context", ctx do
+      Process.register(self(), :conformance_v2_test)
+
+      c =
+        v2(@t0, %{
+          setup:
+            {ChainTest.TestSetup,
+             %{files: %{"files/planted" => "x"}, notify: :conformance_v2_test}}
+        })
+
+      cases!(ctx.opts, [c])
+      {[verdict], _} = Conformance.run(ctx.opts, v2_steps(self(), ctx.snapshot))
+
+      assert %Result{class: :pass} = verdict
+      assert_received {:setup, home, snap}
+      assert_received {:home_at_build, ["files"]}
+      assert_received {:build, build}
+      assert build.home == home
+      assert snap.case.source == build.source
+      assert snap.case.root == Trust.library_root_path()
+      assert snap.case.mirrors == [build.source]
+      assert snap.sequence == 7
+    end
+
+    test "a setup that fails fails the case without a build", ctx do
+      failing = v2(@t0, %{id: "S1", setup: {ChainTest.TestSetup, %{fail: "no space"}}})
+      cases!(ctx.opts, [failing, @t0])
+      {verdicts, _} = Conformance.run(ctx.opts, v2_steps(self(), ctx.snapshot))
+
+      assert [%Result{check: "S1", class: :fail, detail: detail}, %Result{class: :pass}] =
+               verdicts
+
+      assert detail =~ "no space"
+      assert_received {:build, _}
+      refute_received {:build, _}
+    end
+
+    test "client_config reaches that case's build only, and names the case's source", ctx do
+      Process.register(self(), :conformance_v2_test)
+      source = "http://127.0.0.1:9"
+
+      first =
+        v2(@t0, %{
+          id: "C1",
+          client_config: %{clock_offset_seconds: 60, source: source},
+          setup: {ChainTest.TestSetup, %{notify: :conformance_v2_test}}
+        })
+
+      cases!(ctx.opts, [first, @t0])
+      Conformance.run(ctx.opts, v2_steps(self(), ctx.snapshot))
+
+      assert_received {:build, %{client_config: %{clock_offset_seconds: 60}}}
+      assert_received {:build, %{client_config: nil}}
+      assert_received {:setup, _home, %{case: %{source: ^source}}}
+    end
+
+    test "after: post-conditions are checked against the case home and _build", ctx do
+      pass = v2(@t0, %{id: "A1", after: %{state_sequence: :snapshot, cache: :untouched}})
+      fail = v2(@t0, %{id: "A2", after: %{state_sequence: :unchanged}})
+      cases!(ctx.opts, [pass, fail])
+
+      {verdicts, _} = Conformance.run(ctx.opts, v2_steps(self(), ctx.snapshot))
+
+      assert [
+               %Result{check: "A1", class: :pass},
+               %Result{check: "A2", class: :fail, detail: detail}
+             ] = verdicts
+
+      assert detail =~ "state_sequence"
+    end
+
+    test "after installed reads the provenance files under the target's _build", ctx do
+      build_lib = Path.join(ctx.tmp, "fixture/_build/rpi4_dev/lib")
+      s = v2_steps(self(), ctx.snapshot)
+
+      build = fn input ->
+        Synthetic.dep(build_lib, :jason, %{"ebin/x.beam" => "x"}, :installed)
+        {rows, info} = s.build.(input)
+        {rows, %{info | build_lib: build_lib}}
+      end
+
+      cases!(ctx.opts, [
+        v2(@t0, %{id: "I1", after: %{installed: :snapshot}}),
+        v2(@t0, %{id: "I2", after: %{installed: :none}})
+      ])
+
+      {verdicts, _} = Conformance.run(ctx.opts, %{s | build: build})
+
+      assert [
+               %Result{check: "I1", class: :pass},
+               %Result{check: "I2", class: :fail, detail: detail}
+             ] = verdicts
+
+      assert detail =~ "jason"
+    end
+
+    test "a case needing an older batch the snapshot lacks is not testable here, unbuilt",
+         ctx do
+      c = v2(@t0, %{setup: {ChainTest.TestSetup, %{needs: [:old]}}})
+      t = %{@t0 | id: "T2", transform: {ChainTest.TestTransform, %{needs: [:previous]}}}
+      cases!(ctx.opts, [c, t])
+
+      snapshot = Map.put(ctx.snapshot, :old, {:missing, "the portal keeps no old batch"})
+
+      assert {[
+                %Result{check: "T0", class: :not_exercised, detail: detail},
+                %Result{check: "T2", class: :not_exercised, detail: detail2}
+              ], _} = Conformance.run(ctx.opts, v2_steps(self(), snapshot))
+
+      assert detail =~ "not testable here"
+      assert detail =~ "the portal keeps no old batch"
+      assert detail2 =~ "previous"
+      refute_received {:build, _}
+    end
+
+    test "mirrors: 2 starts a second mirror the case mirror knows; both are stopped", ctx do
+      test = self()
+
+      mirror = fn dir, opts ->
+        {:ok, m} = ChainTest.Mirror.start(dir, opts)
+        send(test, {:mirror, m})
+        {:ok, m}
+      end
+
+      build = fn input ->
+        send(test, {:build, input})
+        {:ok, _} = HTTP.get(input.source <> "/v2/manifests/jason.json", 5_000)
+        {:error, why} = HTTP.get(input.source <> "/batch.json", 5_000)
+        send(test, {:batch, why})
+
+        {:ok, {{_, 302, _}, headers, _}} =
+          :httpc.request(:get, {~c"#{input.source}/batch.json", []}, [autoredirect: false], [])
+
+        send(test, {:location, to_string(:proplists.get_value(~c"location", headers))})
+
+        {[%Result{step: :build, check: "compile", class: :pass}],
+         %{report: Synthetic.report([]), build_lib: "/nonexistent", fw_path: nil, sequence: 7}}
+      end
+
+      c = %{@t0 | id: "N1", transform: {ChainTest.TestTransform, %{mirrors: 2}}}
+      cases!(ctx.opts, [c])
+
+      s = v2_steps(self(), ctx.snapshot) |> Map.merge(%{mirror: mirror, build: build})
+      Conformance.run(ctx.opts, s)
+
+      assert_received {:mirror, _reference}
+      assert_received {:mirror, second}
+      assert_received {:mirror, case_mirror}
+      assert_received {:build, %{source: source}}
+      assert source == case_mirror.url
+      assert_received {:batch, why}
+      assert why =~ "302"
+      assert_received {:location, location}
+      assert location == second.url <> "/batch.json"
+
+      refute Process.alive?(second.pid)
+      refute Process.alive?(case_mirror.pid)
+    end
   end
 end

@@ -402,4 +402,147 @@ defmodule ChainTest.Conformance.CaseTest do
                })
     end
   end
+
+  describe "optional keys" do
+    @v2 %{
+      id: "R3",
+      description: "State N, mirror serves N-1.",
+      transform: {ChainTest.Mirror.Identity, %{}},
+      client: %{default: :snapshot, deps: %{}},
+      harness: %{},
+      setup: {ChainTest.TestSetup, %{state: "7"}},
+      client_config: %{clock_offset_seconds: 3600, root: "/r.json", source: "http://127.0.0.1:1"},
+      after: %{state_sequence: :unchanged, installed: :none, cache: :untouched}
+    }
+
+    test "a case with setup, client_config and after loads; the old cases stay valid",
+         %{tmp_dir: tmp} do
+      assert {:ok, [@t0, @v2]} = Case.load(write(tmp, [@t0, @v2]))
+
+      for post <- [%{state_sequence: 9}, %{state_sequence: :absent}, %{state_sequence: :snapshot}] do
+        assert {:ok, _} = Case.load(write(tmp, [%{@v2 | after: post}]))
+      end
+
+      assert {:ok, _} = Case.load(write(tmp, [%{@v2 | after: %{installed: :snapshot}}]))
+      assert {:ok, _} = Case.load(write(tmp, [%{@v2 | client_config: %{}}]))
+    end
+
+    for {name, key, value} <- [
+          {"a setup that is not one", :setup, {String, %{}}},
+          {"setup args the module refuses", :setup, {ChainTest.TestSetup, %{other: 1}}},
+          {"setup args with the reserved :case", :setup, {ChainTest.TestSetup, %{case: 1}}},
+          {"a setup needing an unknown batch", :setup, {ChainTest.TestSetup, %{needs: [:x]}}},
+          {"an unknown client_config key", :client_config, %{home: "/h"}},
+          {"a client_config value of the wrong type", :client_config,
+           %{clock_offset_seconds: "1"}},
+          {"a client_config that is not a map", :client_config, [source: "x"]},
+          {"an unknown after key", :after, %{installed: :none, files: :none}},
+          {"a bad state_sequence", :after, %{state_sequence: "7"}},
+          {"a bad installed", :after, %{installed: :all}},
+          {"a bad cache", :after, %{cache: :empty}},
+          {"an empty after", :after, %{}}
+        ] do
+      test "refuses #{name}", %{tmp_dir: tmp} do
+        bad = Map.put(@v2, unquote(key), unquote(Macro.escape(value)))
+        assert {:error, why} = Case.load(write(tmp, [bad]))
+        assert why =~ "R3"
+        assert why =~ unquote(to_string(key))
+      end
+    end
+  end
+
+  describe "judge/2 post-conditions" do
+    defp obs(states, cache \\ [], own \\ {:ok, "abc/state"}),
+      do: %{states: states, cache: MapSet.new(cache), own: own}
+
+    defp judged(post, observed, snap_extra \\ %{}) do
+      c = Map.put(@t0, :after, post)
+      report = Synthetic.report([{"jason", "1.4.5", "hit", ""}])
+
+      Case.judge(c, %{
+        rows: [row(:build, "hit:jason", :pass)],
+        report: report,
+        requests: served(["jason"]),
+        snapshot: Map.merge(snap(%{"jason" => 1, "ash" => 0}), Map.put(snap_extra, :sequence, 7)),
+        hits: [:jason],
+        observed: observed
+      })
+    end
+
+    test "state_sequence: an integer or :snapshot is the own state file's number" do
+      seen = %{before: obs(%{}), after: obs(%{"abc/state" => "7"}), installed: ["jason"]}
+      assert %Result{class: :pass} = judged(%{state_sequence: 7}, seen)
+      assert %Result{class: :pass} = judged(%{state_sequence: :snapshot}, seen)
+
+      assert %Result{class: :fail, detail: detail} = judged(%{state_sequence: 8}, seen)
+      assert detail =~ "state_sequence"
+
+      other = %{seen | after: obs(%{"zzz/state" => "7"})}
+      assert %Result{class: :fail, detail: detail} = judged(%{state_sequence: 7}, other)
+      assert detail =~ "abc/state"
+    end
+
+    test "state_sequence: :unchanged means every state file in the home is as setup left it" do
+      same = %{before: obs(%{"abc/state" => "9"}), after: obs(%{"abc/state" => "9"})}
+      assert %Result{class: :pass} = judged(%{state_sequence: :unchanged}, same)
+
+      for post <- [%{"abc/state" => "7"}, %{}, %{"abc/state" => "9", "zzz/state" => "7"}] do
+        moved = %{same | after: obs(post)}
+        assert %Result{class: :fail, detail: d} = judged(%{state_sequence: :unchanged}, moved)
+        assert d =~ "state_sequence"
+      end
+    end
+
+    test "state_sequence: :absent means no own state file" do
+      assert %Result{class: :pass} =
+               judged(%{state_sequence: :absent}, %{
+                 before: obs(%{}),
+                 after: obs(%{"zzz/state" => "1"})
+               })
+
+      assert %Result{class: :fail} =
+               judged(%{state_sequence: :absent}, %{
+                 before: obs(%{}),
+                 after: obs(%{"abc/state" => "1"})
+               })
+    end
+
+    test "a state dir the harness cannot name fails" do
+      seen = %{before: obs(%{}), after: obs(%{}, [], {:error, "no root"})}
+      assert %Result{class: :fail, detail: detail} = judged(%{state_sequence: :absent}, seen)
+      assert detail =~ "no root"
+    end
+
+    test "installed: :none and :snapshot" do
+      none = %{before: obs(%{}), after: obs(%{}), installed: []}
+      assert %Result{class: :pass} = judged(%{installed: :none}, none)
+
+      some = %{none | installed: ["jason"]}
+      assert %Result{class: :fail, detail: detail} = judged(%{installed: :none}, some)
+      assert detail =~ "jason"
+
+      # The snapshot holds a build of jason only.
+      assert %Result{class: :pass} = judged(%{installed: :snapshot}, some)
+      assert %Result{class: :fail} = judged(%{installed: :snapshot}, none)
+
+      assert %Result{class: :fail} =
+               judged(%{installed: :snapshot}, %{none | installed: ["jason", "ash"]})
+    end
+
+    test "cache: :untouched allows no entry setup did not write" do
+      before = obs(%{}, ["files/a"])
+
+      assert %Result{class: :pass} =
+               judged(%{cache: :untouched}, %{before: before, after: before})
+
+      grown = %{before: before, after: obs(%{}, ["files/a", "files/b"])}
+      assert %Result{class: :fail, detail: detail} = judged(%{cache: :untouched}, grown)
+      assert detail =~ "files/b"
+    end
+
+    test "post-conditions nobody observed fail" do
+      assert %Result{class: :fail, detail: detail} = judged(%{cache: :untouched}, nil)
+      assert detail =~ "after"
+    end
+  end
 end

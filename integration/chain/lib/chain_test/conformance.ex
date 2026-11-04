@@ -13,13 +13,20 @@ defmodule ChainTest.Conformance do
   `--snapshot-dir` already holds (`ChainTest.Snapshot.obtain/1`: re-verified,
   under 24 hours old, same source, target and fixture lock, else the run is
   refused), and starts a reference mirror
-  that serves it unchanged. Per case: a mirror over the snapshot with the
-  case's transform; the fixture build (`ChainTest.Build`, `mix compile` for
-  the target, a fresh client home, the client's source at the case's
-  mirror, an empty site config); step 3 (`ChainTest.Integrity`) against the
-  snapshot's verified batch through the reference mirror, never the case's;
-  step 4 (`ChainTest.Compiled`); then the case's verdict. A case that
-  raises is a `:fail` verdict; the other cases still run. The snapshot is
+  that serves it unchanged. Per case: a case that needs an older batch the
+  snapshot lacks (`ChainTest.Snapshot.older/2`) is `:not_exercised`, "not
+  testable here", and nothing runs; otherwise a mirror over the snapshot
+  with the case's transform (two when its args say `mirrors: 2`: the second
+  is started first, so the case mirror knows its URL); a fresh, empty client
+  home (a private temp dir, removed after the case) and the case's
+  `setup` in it (a failed setup fails the case, unbuilt); the fixture build
+  (`ChainTest.Build`, `mix compile` for the target, that home, the client's
+  source at the case's mirror, the case's `client_config`, an empty site
+  config); step 3 (`ChainTest.Integrity`) against the snapshot's verified
+  batch through the reference mirror, never the case's; step 4
+  (`ChainTest.Compiled`); what the home and `_build` hold, for the case's
+  `after`; then the case's verdict. A case that raises is a `:fail`
+  verdict; the other cases still run. The snapshot is
   removed after the run unless it was taken into `--snapshot-dir`. A run
   that selects no case is refused (`setup`, `:not_exercised`).
 
@@ -43,8 +50,9 @@ defmodule ChainTest.Conformance do
     Snapshot
   }
 
-  alias ChainTest.Conformance.Case
+  alias ChainTest.Conformance.{Case, Setup}
   alias ChainTest.Mirror.Transform
+  alias ChainTest.Trust
 
   @project_app "chain_fixture"
   @switches [
@@ -217,28 +225,71 @@ defmodule ChainTest.Conformance do
     }
   end
 
-  # The mirror is not linked to this process: it is always stopped here.
+  # The mirrors are not linked to this process: they are always stopped here.
   defp run_case(c, run) do
-    case run.steps.mirror.(run.snap.dir, transform: Transform.fun(c.transform)) do
-      {:ok, mirror} ->
-        try do
-          judge_case(c, run, mirror)
-        rescue
-          e -> crashed(c, Exception.format(:error, e, __STACKTRACE__))
-        catch
-          kind, reason -> crashed(c, Exception.format(kind, reason, __STACKTRACE__))
-        end
-
-      {:error, why} ->
-        verdict = %Result{
-          step: :conformance,
-          check: c.id,
-          class: :not_exercised,
-          detail: "cannot start the case's mirror: #{inspect(why)}"
-        }
-
+    with :ok <- testable(c, run.snap),
+         {:ok, mirrors} <- start_mirrors(c, run) do
+      try do
+        judge_case(c, run, mirrors)
+      rescue
+        e -> crashed(c, Exception.format(:error, e, __STACKTRACE__))
+      catch
+        kind, reason -> crashed(c, Exception.format(kind, reason, __STACKTRACE__))
+      after
+        Enum.each(mirrors, &Mirror.stop/1)
+      end
+    else
+      {:not_exercised, why} ->
+        verdict = %Result{step: :conformance, check: c.id, class: :not_exercised, detail: why}
         CLI.print(verdict)
         verdict
+    end
+  end
+
+  # Every older batch the case's transform or setup needs is in the snapshot.
+  defp testable(c, snap) do
+    setup = if Map.has_key?(c, :setup), do: Setup.needs(c.setup), else: []
+
+    missing =
+      for name <- Enum.uniq(Transform.needs(c.transform) ++ setup),
+          {:missing, why} <- [Snapshot.older(snap, name)],
+          do: "the #{name} batch: #{why}"
+
+    case missing do
+      [] -> :ok
+      _ -> {:not_exercised, "not testable here: " <> Enum.join(missing, "; ")}
+    end
+  end
+
+  # `[case_mirror]` or `[case_mirror, second]`; the second is started first,
+  # so the case mirror's transform knows where it is.
+  defp start_mirrors(c, run) do
+    start = fn mirror, second_url ->
+      context = %{mirror: mirror, second_url: second_url, snapshot: run.snap}
+      run.steps.mirror.(run.snap.dir, transform: Transform.fun(c.transform, context))
+    end
+
+    result =
+      case Transform.mirrors(c.transform) do
+        1 ->
+          with {:ok, m} <- start.(1, nil), do: {:ok, [m]}
+
+        2 ->
+          with {:ok, second} <- start.(2, nil) do
+            case start.(1, second.url) do
+              {:ok, m} ->
+                {:ok, [m, second]}
+
+              error ->
+                Mirror.stop(second)
+                error
+            end
+          end
+      end
+
+    case result do
+      {:ok, mirrors} -> {:ok, mirrors}
+      {:error, why} -> {:not_exercised, "cannot start the case's mirror: #{inspect(why)}"}
     end
   end
 
@@ -258,16 +309,57 @@ defmodule ChainTest.Conformance do
     verdict
   end
 
-  defp judge_case(c, run, mirror) do
-    %{opts: opts, steps: s, snap: snap} = run
+  defp judge_case(c, run, [mirror | _] = mirrors) do
+    home = case_home()
 
-    {rows, report, requests, tooling} =
+    try do
+      client = Map.get(c, :client_config) || %{}
+
+      context = %{
+        source: Map.get(client, :source, mirror.url),
+        root: Map.get(client, :root, Trust.library_root_path()),
+        mirrors: Enum.map(mirrors, & &1.url)
+      }
+
+      case setup(c, home, Map.put(run.snap, :case, context)) do
+        :ok ->
+          verdict = build_and_judge(c, run, mirrors, home, context)
+          CLI.print(verdict)
+          verdict
+
+        {:error, why} ->
+          verdict = %Result{
+            step: :conformance,
+            check: c.id,
+            class: :fail,
+            detail: "the case's setup failed, nothing was built: #{why}"
+          }
+
+          CLI.print(verdict)
+          verdict
+      end
+    after
+      File.rm_rf(home)
+    end
+  end
+
+  defp setup(%{setup: setup}, home, snap), do: Setup.run(setup, home, snap)
+  defp setup(_c, _home, _snap), do: :ok
+
+  defp build_and_judge(c, run, [mirror | _] = mirrors, home, context) do
+    %{opts: opts, steps: s, snap: snap} = run
+    before = home_view(home, context)
+
+    {rows, report, requests, tooling, observed} =
       try do
         {build_rows, build} =
           s.build.(%{
             fixture_dir: opts.fixture_dir,
             target: opts.target,
             source: mirror.url,
+            home: home,
+            home_prepared: true,
+            client_config: Map.get(c, :client_config),
             trust: snap.info,
             target_config: run.site,
             command: ["compile"]
@@ -289,26 +381,103 @@ defmodule ChainTest.Conformance do
             allowlist: Compiled.allowlist(@project_app)
           })
 
+        observed = %{
+          before: before,
+          after: home_view(home, context),
+          installed: installed(Path.join([opts.fixture_dir, "_build", "#{opts.target}_dev"]))
+        }
+
         {build_rows ++ integrity ++ compiled, build.report, Mirror.requests(mirror),
-         tooling(opts.fixture_dir, build.build_lib)}
+         tooling(opts.fixture_dir, build.build_lib), observed}
       after
-        Mirror.stop(mirror)
+        Enum.each(mirrors, &Mirror.stop/1)
       end
 
     {:ok, _} = Report.write(opts.report_dir, "#{opts.target}-#{c.id}", rows, run.meta)
 
-    verdict =
-      Case.judge(c, %{
-        rows: rows,
-        report: report,
-        requests: requests,
-        snapshot: snap,
-        hits: run.hits,
-        tooling: tooling
-      })
+    Case.judge(c, %{
+      rows: rows,
+      report: report,
+      requests: requests,
+      snapshot: snap,
+      hits: run.hits,
+      tooling: tooling,
+      observed: observed
+    })
+  end
 
-    CLI.print(verdict)
-    verdict
+  # A fresh, private client home for one case.
+  defp case_home() do
+    rand = Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+    home = Path.join(Path.expand(System.tmp_dir!()), "chain_conformance_home-" <> rand)
+    File.mkdir_p!(home)
+    File.chmod!(home, 0o700)
+    home
+  end
+
+  # The client state files and cache entries in `home` (see
+  # `ChainTest.Conformance.Case.observed/0`), never following a symlink.
+  defp home_view(home, context) do
+    states =
+      for path <- Path.wildcard(Path.join(home, "*/state"), match_dot: true),
+          {:ok, %File.Stat{type: :regular}} <- [File.lstat(path)],
+          into: %{},
+          do: {Path.relative_to(path, home), read_or_error(path)}
+
+    own =
+      case Setup.state_dir(home, context.source, context.root) do
+        {:ok, dir} -> {:ok, Path.relative_to(Path.join(dir, "state"), home)}
+        {:error, why} -> {:error, why}
+      end
+
+    %{states: states, cache: MapSet.new(entries(home, "files")), own: own}
+  end
+
+  defp read_or_error(path) do
+    case File.read(path) do
+      {:ok, bytes} -> bytes
+      {:error, why} -> "(unreadable: #{:file.format_error(why)})"
+    end
+  end
+
+  # Every path under `home/rel` (rel included when it exists), relative to
+  # `home`; a symlink is listed, not followed.
+  defp entries(home, rel) do
+    path = Path.join(home, rel)
+
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :directory}} ->
+        children =
+          case File.ls(path) do
+            {:ok, names} -> Enum.flat_map(Enum.sort(names), &entries(home, Path.join(rel, &1)))
+            {:error, _} -> []
+          end
+
+        [rel | children]
+
+      {:ok, _} ->
+        [rel]
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  # The deps with a provenance file in the target's `_build` dir, by name;
+  # one outside `lib/<dep>/.mix/` by its path.
+  defp installed(build_dir) do
+    build_lib = Path.join(build_dir, "lib")
+
+    build_dir
+    |> Path.join("**/.mix/elixir_precompiled.json")
+    |> Path.wildcard(match_dot: true)
+    |> Enum.map(fn path ->
+      case Path.split(Path.relative_to(path, build_lib)) do
+        [dep, ".mix", "elixir_precompiled.json"] -> dep
+        _ -> Path.relative_to(path, build_dir)
+      end
+    end)
+    |> Enum.sort()
   end
 
   # The deps nerves pulls in, which the client leaves to nerves_bootstrap.
