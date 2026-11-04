@@ -44,7 +44,8 @@ defmodule ChainTest.Conformance do
   `L2-T0` (selected whenever a layer-2 case is) runs first; unless it
   passes, the client is not shown to take the test root, and every other
   layer-2 case is `:not_exercised`, as they all are when the copy cannot be
-  made. The verdicts keep the case file's order. A real-root case fails
+  made. A case with a `gate` runs only once that earlier case passed, else
+  it is `:not_exercised` too. The verdicts keep the case file's order. A real-root case fails
   when its home or client config shows a test root (a state dir named for
   one, a file naming a test key id, a root path among the test material);
   a layer-2 case fails when its home holds a state dir named for the real
@@ -155,7 +156,7 @@ defmodule ChainTest.Conformance do
           integrity: &Integrity.run/1,
           compiled: &Compiled.run/1,
           mirror: &Mirror.start/2,
-          layer2: &TestKey.prepare/1
+          layer2: &TestKey.prepare/2
         },
         steps
       )
@@ -201,17 +202,24 @@ defmodule ChainTest.Conformance do
   defp only(cases, nil), do: {:ok, cases}
   defp only(_cases, []), do: {:error, "--only names no case"}
 
-  # A selected layer-2 case brings its control along.
+  # A selected case brings its gates along, and a layer-2 one the control.
   defp only(cases, ids) do
     case ids -- Enum.map(cases, & &1.id) do
       [] ->
-        selected = Enum.filter(cases, &(&1.id in ids))
-        control? = Enum.any?(selected, &Case.layer2?/1)
-        {:ok, Enum.filter(cases, &(&1.id in ids or (control? and Case.control?(&1))))}
+        wanted = with_gates(MapSet.new(ids), Map.new(cases, &{&1.id, &1}))
+        control? = Enum.any?(cases, &(&1.id in wanted and Case.layer2?(&1)))
+        {:ok, Enum.filter(cases, &(&1.id in wanted or (control? and Case.control?(&1))))}
 
       unknown ->
         {:error, "--only names cases the file does not have: #{Enum.join(unknown, ", ")}"}
     end
+  end
+
+  defp with_gates(ids, by_id) do
+    more =
+      for id <- ids, gate = Case.gate(by_id[id]), gate not in ids, into: MapSet.new(), do: gate
+
+    if MapSet.size(more) == 0, do: ids, else: with_gates(MapSet.union(ids, more), by_id)
   end
 
   defp run_cases(cases, snap, opts, s, meta) do
@@ -225,14 +233,13 @@ defmodule ChainTest.Conformance do
 
     case s.mirror.(snap.dir, []) do
       {:ok, ref} ->
-        layer2 = if Enum.any?(cases, &Case.layer2?/1), do: s.layer2.(snap), else: nil
+        layer2 =
+          if Enum.any?(cases, &Case.layer2?/1), do: s.layer2.(snap, opts.fixture_dir), else: nil
 
         try do
           run = run_state(snap, ref, site, opts, s, meta)
           run = Map.put(run, :layer2, material(layer2))
-          {real, test} = Enum.split_with(cases, &(not Case.layer2?(&1)))
-          verdicts = Enum.map(real, &run_case(&1, run)) ++ layer2_cases(test, layer2, run)
-          by_id = Map.new(verdicts, &{&1.check, &1})
+          by_id = run_in_order(cases, layer2, run)
           Enum.map(cases, &Map.fetch!(by_id, &1.id))
         after
           with {:ok, l2} <- layer2, do: TestKey.cleanup(l2)
@@ -259,31 +266,52 @@ defmodule ChainTest.Conformance do
   defp material({:ok, l2}), do: l2
   defp material(_layer2), do: nil
 
-  # The control first, against the test-signed copy; the rest only once it
-  # passed.
-  defp layer2_cases([], _layer2, _run), do: []
+  # Real-root cases first, then the layer-2 control, then the other
+  # layer-2 cases, each in file order; a case runs only when what it
+  # depends on passed (see the moduledoc). The verdicts by id.
+  defp run_in_order(cases, layer2, run) do
+    {real, test} = Enum.split_with(cases, &(not Case.layer2?(&1)))
+    {control, rest} = Enum.split_with(test, &Case.control?/1)
 
-  defp layer2_cases(cases, {:error, why}, _run) do
-    for c <- cases,
-        do: not_exercised(c, "the test-key snapshot could not be prepared: #{why}")
+    Enum.reduce(real ++ control ++ rest, %{}, fn c, done ->
+      verdict =
+        case blocked(c, layer2, done) do
+          nil -> run_case(c, run_for(c, layer2, run))
+          why -> not_exercised(c, why)
+        end
+
+      Map.put(done, c.id, verdict)
+    end)
   end
 
-  defp layer2_cases(cases, {:ok, l2}, run) do
-    run = %{run | snap: l2.snapshot}
-    {[control], rest} = Enum.split_with(cases, &Case.control?/1)
+  defp run_for(c, {:ok, l2}, run),
+    do: if(Case.layer2?(c), do: %{run | snap: l2.snapshot}, else: run)
 
-    case run_case(control, run) do
-      %Result{class: :pass} = verdict ->
-        [verdict | Enum.map(rest, &run_case(&1, run))]
+  defp run_for(_c, _layer2, run), do: run
 
-      verdict ->
-        why =
-          "the layer-2 control #{control.id} did not pass (#{verdict.class}): the client is " <>
-            "not shown to take the test root, so no test-key case can say anything"
+  defp blocked(c, layer2, done) do
+    control = Case.control_id()
 
-        [verdict | Enum.map(rest, &not_exercised(&1, why))]
+    cond do
+      Case.layer2?(c) and match?({:error, _}, layer2) ->
+        {:error, why} = layer2
+        "the test-key snapshot could not be prepared: #{why}"
+
+      Case.layer2?(c) and not Case.control?(c) and not passed?(done, control) ->
+        "the layer-2 control #{control} did not pass (#{class(done, control)}): the client is " <>
+          "not shown to take the test root, so no test-key case can say anything"
+
+      (gate = Case.gate(c)) && not passed?(done, gate) ->
+        "its gate #{gate} did not pass (#{class(done, gate)}): without that positive " <>
+          "control this case says nothing"
+
+      true ->
+        nil
     end
   end
+
+  defp passed?(done, id), do: match?(%Result{class: :pass}, done[id])
+  defp class(done, id), do: if(r = done[id], do: r.class, else: "not run")
 
   defp not_exercised(c, why) do
     verdict = %Result{step: :conformance, check: c.id, class: :not_exercised, detail: why}
@@ -590,15 +618,22 @@ defmodule ChainTest.Conformance do
           ["isolation: cannot name the real root's state dir: #{why}"]
       end
     else
-      real_root_isolation(l2, home, context)
+      real_root_isolation(l2, home, context, client_env(Map.get(c, :client_env), home))
     end
   end
 
-  defp real_root_isolation(l2, home, context) do
+  defp real_root_isolation(l2, home, context, env) do
+    under? = &(is_binary(&1) and String.starts_with?(&1, l2.dir <> "/"))
+
     config =
-      if String.starts_with?(context.root, l2.dir <> "/"),
-        do: ["isolation: the client config names test root #{context.root}"],
-        else: []
+      for {what, value} <- [{"root", context.root}, {"source", context.source}],
+          under?.(value),
+          do: "isolation: the client config names test root material: #{what} #{value}"
+
+    env =
+      for {name, value} <- Enum.sort(env || %{}),
+          under?.(value),
+          do: "isolation: the build's #{name} names test root material: #{value}"
 
     dirs =
       for {name, path} <- Enum.sort(l2.roots),
@@ -619,7 +654,7 @@ defmodule ChainTest.Conformance do
           do:
             "isolation: #{Path.relative_to(path, home)} names test key #{String.slice(kid, 0, 12)}"
 
-    config ++ dirs ++ named
+    config ++ env ++ dirs ++ named
   end
 
   # A clock age resolved against the snapshot batch's issue, now, so the

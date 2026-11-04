@@ -74,16 +74,17 @@ defmodule ChainTest.TestKey do
   def signer_names(), do: @signers
 
   @doc """
-  Builds the layer-2 material for `snap` (a `ChainTest.Snapshot`) and checks
+  Builds the layer-2 material for `snap` (a `ChainTest.Snapshot`; the
+  fixture at `fixture_dir` names P5's deps, `ChainTest.Mirror.Forge`) and checks
   its batch with the harness's own trust checks against the test root; on
   any error nothing is left behind.
   """
-  @spec prepare(map()) :: {:ok, t()} | {:error, String.t()}
-  def prepare(snap) do
+  @spec prepare(map(), Path.t()) :: {:ok, t()} | {:error, String.t()}
+  def prepare(snap, fixture_dir) do
     base = private_dir()
 
     try do
-      with {:ok, l2} <- build(base, snap),
+      with {:ok, l2} <- build(base, snap, fixture_dir),
            :ok <- verify(l2, snap) do
         {:ok, l2}
       else
@@ -144,7 +145,7 @@ defmodule ChainTest.TestKey do
     dir
   end
 
-  defp build(base, snap) do
+  defp build(base, snap, fixture_dir) do
     keys = Map.new(@key_names, &{&1, :crypto.generate_key(:eddsa, :ed25519)})
     sign = signer(keys)
     expires = DateTime.utc_now() |> DateTime.add(365, :day) |> DateTime.to_iso8601()
@@ -193,7 +194,7 @@ defmodule ChainTest.TestKey do
             test: test
           })
 
-        :ok = Forge.prepare(l2_snap)
+        :ok = Forge.prepare(l2_snap, fixture_dir)
         {:ok, %{dir: base, snapshot: l2_snap, roots: roots, keyids: keyids}}
 
       {:error, why} ->

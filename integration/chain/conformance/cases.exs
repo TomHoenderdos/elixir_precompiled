@@ -417,18 +417,27 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
 
     # A forged manifest the client must never even consider: everything
     # installs as in L2-T0, nothing more.
-    ignored = fn id, kind, description ->
+    # The client must not even ask for the manifests of `names`.
+    ignored = fn id, kind, names, description ->
+      unrequested = for n <- names, dir <- ["v2/manifests", "manifests"], do: "#{dir}/#{n}.json"
+
       l2.(
         Map.merge(accepted, %{
           id: id,
           description: description,
           transform: {ChainTest.Mirror.Forge, %{forge: kind}},
-          after: fresh
+          after: Map.put(fresh, :unrequested, unrequested)
         })
       )
     end
 
-    unsafe = {:fail, "unsafe path or mode"}
+    # The client's reason names the entry's path: no other refusal (a 404,
+    # a hash, a staging crash) can stand in for it.
+    unsafe = &{:fail, "unsafe path or mode (#{inspect(&1)})"}
+    # The reasons plan 4's client hardening gives: a file outside the dep's
+    # app dir or another app's .app, and colliding paths. Red until it lands.
+    foreign = {:fail, "foreign path"}
+    collision = {:fail, "path collision"}
 
     [
       l2_accepted.(fresh)
@@ -443,15 +452,7 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
         description: "The batch signed by a key the root's batch role does not name: refused.",
         transform: {ChainTest.Mirror.TestBatch, %{signers: [:outside]}}
       }),
-      # Threshold counted per key id: one key's signature twice is one.
-      Map.merge(l2_refused.("batch signature invalid"), %{
-        id: "T3-duplicated",
-        description:
-          "Under a root whose batch role needs two signatures, the batch carries one key's signature twice: refused.",
-        transform: {ChainTest.Mirror.TestBatch, %{signers: [:pair_a, :pair_a]}},
-        client_config: %{root: {:test_root, :threshold_2}}
-      }),
-      # T3-duplicated's own control: the same root accepts two keys.
+      # T3-duplicated's gate: the same root accepts two distinct keys.
       l2_accepted.(fresh)
       |> Map.merge(%{
         id: "T3-pair",
@@ -460,9 +461,28 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
         transform: {ChainTest.Mirror.TestBatch, %{signers: [:pair_a, :pair_b]}},
         client_config: %{root: {:test_root, :threshold_2}}
       }),
+      # Threshold counted per key id: one key's signature twice is one.
+      Map.merge(l2_refused.("batch signature invalid"), %{
+        id: "T3-duplicated",
+        description:
+          "Under a root whose batch role needs two signatures, the batch carries one key's signature twice: refused.",
+        transform: {ChainTest.Mirror.TestBatch, %{signers: [:pair_a, :pair_a]}},
+        client_config: %{root: {:test_root, :threshold_2}},
+        gate: "T3-pair"
+      }),
+      # T7's gate: the same request shape with a validly chained v2, so T7's
+      # refusal is the broken chain's.
+      l2_accepted.(Map.put(fresh, :root_version, 2))
+      |> Map.merge(%{
+        id: "T7-chained",
+        description:
+          "The mirror serves a root v2 that v1 signed, and a batch only v2's key signed: v2 is adopted, the batch accepted.",
+        transform: {ChainTest.Mirror.TestBatch, %{root: :rotated, signers: [:rotated]}}
+      }),
       l2_refused.("batch signature invalid")
       |> Map.merge(%{
         id: "T7",
+        gate: "T7-chained",
         description:
           "The mirror serves a root v2 that v1 did not sign, and a batch only v2's key signed: v2 is not adopted, the batch refused.",
         transform: {ChainTest.Mirror.TestBatch, %{root: :unchained, signers: [:unchained]}}
@@ -522,43 +542,43 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
       forged.(
         "P1-dotdot",
         :dotdot,
-        unsafe,
+        unsafe.("ebin/../../chain_forged.beam"),
         "jason's build names a file at ebin/../..: refused, nothing of jason installed."
       ),
       forged.(
         "P1-absolute",
         :absolute,
-        unsafe,
+        unsafe.("/tmp/chain_forged.beam"),
         "jason's build names a file at an absolute path: refused, nothing of jason installed."
       ),
       forged.(
         "P1-outside",
         :outside_dirs,
-        unsafe,
+        unsafe.("lib/chain_forged.beam"),
         "jason's build names a file outside ebin/ and priv/: refused, nothing of jason installed."
       ),
       forged.(
         "P2-setuid",
         :setuid,
-        unsafe,
+        unsafe.("ebin/jason.app"),
         "jason's .app with a setuid mode: refused, only 644 and 755 are allowed."
       ),
       forged.(
         "P2-0777",
         :mode_777,
-        unsafe,
+        unsafe.("ebin/jason.app"),
         "jason's .app with mode 0777: refused, only 644 and 755 are allowed."
       ),
       forged.(
         "P3-escape",
         :escape_app_dir,
-        unsafe,
+        unsafe.("ebin/../../chain_fixture/ebin/chain_fixture.app"),
         "jason's build names a file in the project's own app dir: refused."
       ),
       forged.(
         "P3-app",
         :project_app,
-        :fail,
+        foreign,
         "jason's build carries the project's .app name in its ebin, ahead of the project's own on the code path: refused."
       ),
       forged.(
@@ -576,7 +596,8 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
       ignored.(
         "P5",
         :path_dep,
-        "The batch names a build for nerves (a git dep) and elixir_precompiled (a path dep): never precompiled."
+        ["nerves", "elixir_precompiled"],
+        "The batch names a build for nerves (a git dep) and elixir_precompiled (a path dep), each at its own version and identity: never precompiled, their manifests never even asked for."
       ),
       forged.(
         "P6-name",
@@ -595,25 +616,26 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
       forged.(
         "P8-duplicate",
         :duplicate,
-        :fail,
+        collision,
         "jason's build names one beam path twice, with other bytes: refused."
       ),
       forged.(
         "P8-case",
         :case_variant,
-        :fail,
+        collision,
         "jason's build names a beam path and its lower-case variant: refused."
       ),
       forged.(
         "P8-unicode",
         :unicode_variant,
-        :fail,
+        collision,
         "jason's build names one priv path precomposed and decomposed: refused."
       ),
       ignored.(
         "P9",
         :unlocked_package,
-        "The batch names a build for a package the project does not lock: nothing installed for it."
+        ["chain_absent"],
+        "The batch names a build for a package the project does not lock: nothing installed for it, its manifest never asked for."
       )
     ]
     # Last, so a case's own client_config (a clock, the threshold-2 root)

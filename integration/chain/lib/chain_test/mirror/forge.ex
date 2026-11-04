@@ -28,8 +28,14 @@ defmodule ChainTest.Mirror.Forge do
       own on the code path;
     * `:package_checksum`, `:deps_lock` (P4) - the build's package checksum,
       or one locked dep's checksum in its deps lock, zeroed;
-    * `:path_dep` (P5) - the batch also names jason's manifest for `nerves`
-      (a git dep) and `elixir_precompiled` (a path dep);
+    * `:path_dep` (P5) - the batch also names a manifest for `nerves` (a git
+      dep) and one for `elixir_precompiled` (a path dep), each with one
+      build at that dep's own identity: its version (from its `mix.exs`),
+      the lock's git commit as its package checksum (a path dep has none:
+      the sha256 of its `mix.exs`), a `pure_elixir` build for this Elixir
+      and OTP, an `.app` naming the dep at that version. Nothing but the
+      client's git/path rule (and its tooling list, which names both) can
+      keep it out;
     * `:app_name`, `:app_version` (P6) - `ebin/jason.app` replaced by a served
       `.app` naming `chain_forged`, or version `9.9.9`;
     * `:duplicate`, `:case_variant`, `:unicode_variant` (P8) - one more
@@ -37,10 +43,16 @@ defmodule ChainTest.Mirror.Forge do
       `priv/café` written precomposed and decomposed, with other bytes;
     * `:unlocked_package` (P9) - the batch also names jason's manifest for
       `chain_absent`, which the fixture does not lock.
+
+  The manifests of new names (`<dir>/nerves.json`, ...) sit in the layer-2
+  snapshot for every case that uses it, but only a batch that names them,
+  this transform's for those kinds, leads a client there. The snapshot's
+  manifests and files are hard links into the real snapshot, so nothing
+  here writes over a file that exists (`write_new!/2`).
   """
   @behaviour ChainTest.Mirror.Transform
 
-  alias ChainTest.{TestKey, Trust}
+  alias ChainTest.{Lock, TestKey, Trust}
 
   @target "jason"
   @project_app "chain_fixture"
@@ -64,6 +76,12 @@ defmodule ChainTest.Mirror.Forge do
     :unlocked_package
   ]
   @new_names %{path_dep: ["elixir_precompiled", "nerves"], unlocked_package: ["chain_absent"]}
+  # Where a non-Hex dep of the fixture lives when the lock has no git entry
+  # for it: relative to the fixture dir, or an environment variable.
+  @path_deps %{
+    "elixir_precompiled" => {:rel, "../../.."},
+    "nerves" => {:env, "CHAIN_NERVES_PATH"}
+  }
 
   @doc "Every forgery this transform serves."
   @spec kinds() :: [atom()]
@@ -80,9 +98,12 @@ defmodule ChainTest.Mirror.Forge do
   @impl true
   def transform("batch.json", bytes, %{forge: kind, case: %{snapshot: snap}}) do
     test = TestKey.test!(snap)
-    sha = sha256(File.read!(forged_path(snap, kind)))
     {key, _dir} = batch_key(snap)
-    named = Map.new(names(kind), &{&1, sha})
+
+    named =
+      Map.new(forged(snap, kind), fn {name, rel} ->
+        {name, sha256(File.read!(Path.join(snap.dir, rel)))}
+      end)
 
     payload =
       bytes
@@ -103,7 +124,21 @@ defmodule ChainTest.Mirror.Forge do
       else: {200, bytes}
   end
 
-  defp names(kind), do: Map.get(@new_names, kind, [@target])
+  @doc """
+  The manifests `kind` makes the batch name, `%{dep => path under the
+  snapshot}`: jason's forged manifest, or for P5 and P9 the new names'.
+  """
+  @spec forged(map(), atom()) :: %{String.t() => String.t()}
+  def forged(snap, kind) when kind in @kinds do
+    case Map.fetch(@new_names, kind) do
+      {:ok, names} ->
+        {_key, mdir} = batch_key(snap)
+        Map.new(names, &{&1, "#{mdir}/#{&1}.json"})
+
+      :error ->
+        %{@target => "forged/#{kind}.json"}
+    end
+  end
 
   defp forged_path(snap, kind), do: Path.join(snap.dir, "forged/#{kind}.json")
 
@@ -116,26 +151,115 @@ defmodule ChainTest.Mirror.Forge do
     end
   end
 
-  @doc "Writes every forgery into the layer-2 snapshot `snap` (see the moduledoc)."
-  @spec prepare(map()) :: :ok
-  def prepare(%{dir: dir} = snap) do
+  @doc """
+  Writes every forgery into the layer-2 snapshot `snap` (see the
+  moduledoc); `fixture_dir` is the fixture project, whose lock and deps
+  give P5's identities. Raises when one cannot be found.
+  """
+  @spec prepare(map(), Path.t()) :: :ok
+  def prepare(%{dir: dir} = snap, fixture_dir) do
     ctx = context(snap)
     {_key, mdir} = batch_key(snap)
     File.mkdir_p!(Path.join(dir, "forged"))
+    File.mkdir_p!(Path.join(dir, mdir))
 
-    for kind <- @kinds do
+    for kind <- @kinds -- [:path_dep] do
       {doc, extra} = forge(kind, ctx)
-      for bytes <- extra, do: File.write!(Path.join([dir, "files", sha256(bytes)]), bytes)
+      for bytes <- extra, do: write_new!(Path.join([dir, "files", sha256(bytes)]), bytes)
       bytes = JSON.encode!(doc)
-      File.write!(forged_path(snap, kind), bytes)
+      write_new!(forged_path(snap, kind), bytes)
 
-      for name <- Map.get(@new_names, kind, []) do
-        File.mkdir_p!(Path.join(dir, mdir))
-        File.write!(Path.join([dir, mdir, "#{name}.json"]), bytes)
-      end
+      for name <- Map.get(@new_names, kind, []),
+          do: write_new!(Path.join([dir, mdir, "#{name}.json"]), bytes)
+    end
+
+    for {name, rel} <- forged(snap, :path_dep) do
+      {doc, app} = identity_manifest(name, fixture_dir)
+      write_new!(Path.join([dir, "files", sha256(app)]), app)
+      write_new!(Path.join(dir, rel), JSON.encode!(doc))
     end
 
     :ok
+  end
+
+  # A file that exists is left alone when it holds these bytes and refused
+  # otherwise: it may be a hard link into the real snapshot.
+  defp write_new!(path, bytes) do
+    case File.lstat(path) do
+      {:error, :enoent} ->
+        File.write!(path, bytes)
+
+      {:ok, %File.Stat{type: :regular}} ->
+        if File.read!(path) == bytes,
+          do: :ok,
+          else: raise(ArgumentError, "will not write over #{path}")
+
+      other ->
+        raise ArgumentError, "will not write #{path}: #{inspect(other)}"
+    end
+  end
+
+  # P5: a format-2 manifest with one build at the dep's own identity, and
+  # its `.app` bytes.
+  defp identity_manifest(name, fixture_dir) do
+    {:ok, lock} = Lock.read(Path.join(fixture_dir, "mix.lock"))
+
+    {dir, checksum} =
+      case Lock.git_ref(lock, name) do
+        nil -> path_dep(name, fixture_dir)
+        ref -> {Path.join([fixture_dir, "deps", name]), ref}
+      end
+
+    mix_exs = File.read!(Path.join(dir, "mix.exs"))
+
+    vsn =
+      case Regex.run(~r/@version\s+"([^"]+)"/, mix_exs) do
+        [_, v] -> v
+        _ -> raise ArgumentError, "no @version in #{dir}/mix.exs"
+      end
+
+    app =
+      ~s({application,#{name},[{description,"#{name}"},{vsn,"#{vsn}"},{modules,[]}]}.\n)
+
+    build = %{
+      "target" => "pure_elixir",
+      "ebin" => [
+        %{
+          "path" => "ebin/#{name}.app",
+          "sha256" => sha256(app),
+          "size" => byte_size(app),
+          "mode" => 0o100644
+        }
+      ],
+      "priv" => [],
+      "build" => %{
+        "elixir" => System.version(),
+        "otp" => System.otp_release(),
+        "dep_env" => "prod",
+        "package_checksum" => checksum || sha256(mix_exs),
+        "deps" => %{},
+        "compile_env" => [],
+        "run_id" => "chain-forged"
+      }
+    }
+
+    {%{"format" => 2, "versions" => %{vsn => %{"builds" => [build]}}}, app}
+  end
+
+  defp path_dep(name, fixture_dir) do
+    case Map.get(@path_deps, name) do
+      {:rel, rel} ->
+        {Path.expand(rel, fixture_dir), nil}
+
+      {:env, var} ->
+        case System.get_env(var) do
+          nil -> raise ArgumentError, "#{name} is neither a git dep in the lock nor at $#{var}"
+          path -> {Path.expand(path), nil}
+        end
+
+      nil ->
+        raise ArgumentError, "no known location for the fixture's #{name}"
+    end
   end
 
   defp context(snap) do

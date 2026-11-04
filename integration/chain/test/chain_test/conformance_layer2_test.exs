@@ -119,7 +119,7 @@ defmodule ChainTest.ConformanceLayer2Test do
 
     %{
       snapshot: fn _ -> {:ok, snapshot} end,
-      layer2: fn snap ->
+      layer2: fn snap, _fixture_dir ->
         send(test, {:layer2, snap})
         Keyword.get(opts, :layer2, {:ok, l2})
       end,
@@ -129,8 +129,12 @@ defmodule ChainTest.ConformanceLayer2Test do
         {:ok, _} = HTTP.get(input.source <> "/v2/manifests/jason.json", 5_000)
         send(test, {:build, input, batch})
 
-        {status, class} =
-          if batch == Keyword.get(opts, :miss_batch), do: {"miss", :miss}, else: {"hit", :pass}
+        miss? =
+          batch == Keyword.get(opts, :miss_batch) or
+            (Keyword.get(opts, :miss_source, false) and
+               input.client_config[:root] == l2.roots.threshold_2)
+
+        {status, class} = if miss?, do: {"miss", :miss}, else: {"hit", :pass}
 
         {[
            %Result{step: :build, check: "compile", class: :pass},
@@ -230,7 +234,70 @@ defmodule ChainTest.ConformanceLayer2Test do
     refute File.exists?(ctx.l2.dir)
   end
 
+  describe "gate" do
+    @gated %{
+      id: "T3-dup",
+      description: "Gated on the pair.",
+      transform: {ChainTest.Mirror.Identity, %{}},
+      client: %{default: :snapshot, deps: %{}},
+      harness: %{},
+      client_config: %{root: {:test_root, :threshold_2}},
+      gate: "T3-pair"
+    }
+
+    test "a case whose gate did not pass is not exercised, and never built", ctx do
+      cases!(ctx.opts, [@l2_t0, @l2_pair, @gated])
+      # The double misses on whatever the pair's mirror serves.
+      s = steps(self(), ctx.snapshot, ctx.l2, miss_source: true)
+      {verdicts, _} = Conformance.run(ctx.opts, s)
+
+      assert [
+               %Result{check: "L2-T0", class: :pass},
+               %Result{check: "T3-pair", class: :fail},
+               %Result{check: "T3-dup", class: :not_exercised, detail: d}
+             ] = verdicts
+
+      assert d =~ "T3-pair"
+      assert length(builds()) == 2
+    end
+
+    test "a passing gate lets the case run", ctx do
+      cases!(ctx.opts, [@l2_t0, @l2_pair, @gated])
+      {verdicts, _} = Conformance.run(ctx.opts, steps(self(), ctx.snapshot, ctx.l2))
+      assert Enum.map(verdicts, & &1.class) == [:pass, :pass, :pass]
+    end
+
+    test "--only a gated case runs its gate and the control", ctx do
+      cases!(ctx.opts, [@t0, @l2_t0, @l2_pair, @gated])
+
+      {verdicts, _} =
+        Conformance.run(%{ctx.opts | only: ["T3-dup"]}, steps(self(), ctx.snapshot, ctx.l2))
+
+      assert ["L2-T0", "T3-pair", "T3-dup"] == Enum.map(verdicts, & &1.check)
+    end
+  end
+
   describe "isolation" do
+    test "a real-root case whose config or environment names a test root fails", ctx do
+      named = %{@t0 | id: "T0-root"} |> Map.put(:client_config, %{root: ctx.l2.roots.v1})
+
+      env =
+        %{@t0 | id: "T0-env"}
+        |> Map.put(:client_env, %{"ELIXIR_PRECOMPILED_ROOT" => ctx.l2.roots.threshold_2})
+
+      cases!(ctx.opts, [named, env, @l2_t0])
+      {verdicts, _} = Conformance.run(ctx.opts, steps(self(), ctx.snapshot, ctx.l2))
+
+      assert [
+               %Result{check: "T0-root", class: :fail, detail: d1},
+               %Result{check: "T0-env", class: :fail, detail: d2},
+               %Result{check: "L2-T0", class: :pass}
+             ] = verdicts
+
+      assert d1 =~ "client config names test root"
+      assert d2 =~ "ELIXIR_PRECOMPILED_ROOT" and d2 =~ "test root"
+    end
+
     test "a real-root case whose home holds a test root's state dir fails", ctx do
       cases!(ctx.opts, [@t0, @l2_t0])
 

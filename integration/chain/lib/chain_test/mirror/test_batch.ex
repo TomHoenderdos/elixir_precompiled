@@ -15,8 +15,9 @@ defmodule ChainTest.Mirror.TestBatch do
       many seconds, `expires` moved with it (the lifetime kept);
     * `lifetime` - `expires` set this many seconds after `issued`;
     * `root` - `:unchained`: `root.json` is the test root v2 that v1 did not
-      sign (T7); `:withheld`: `root.json` is a 404, as a mirror hiding a
-      newer root (R18).
+      sign (T7); `:rotated`: the v2 that v1 did sign, a valid rotation
+      (T7-chained, T7's control); `:withheld`: `root.json` is a 404, as a
+      mirror hiding a newer root (R18).
 
   Without `issued_ahead` or `lifetime`, the payload is the real batch's,
   byte for byte. Everything else is served unchanged.
@@ -37,7 +38,7 @@ defmodule ChainTest.Mirror.TestBatch do
       {:signers, [_ | _] = s} -> Enum.all?(s, &(&1 in TestKey.signer_names()))
       {:issued_ahead, s} -> is_integer(s)
       {:lifetime, s} -> is_integer(s) and s > 0
-      {:root, r} -> r in [:unchained, :withheld]
+      {:root, r} -> r in [:unchained, :rotated, :withheld]
       {_key, _value} -> false
     end) and Enum.all?(Map.keys(args), &(&1 in @keys))
   end
@@ -53,6 +54,9 @@ defmodule ChainTest.Mirror.TestBatch do
 
   def transform("root.json", _bytes, %{root: :unchained, case: %{snapshot: snap}}),
     do: {200, TestKey.test!(snap).unchained_v2}
+
+  def transform("root.json", _bytes, %{root: :rotated, case: %{snapshot: snap}}),
+    do: {200, TestKey.test!(snap).rotated_v2}
 
   def transform("root.json", _bytes, %{root: :withheld}), do: {404, ""}
 

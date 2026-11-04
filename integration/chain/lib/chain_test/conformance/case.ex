@@ -100,6 +100,15 @@ defmodule ChainTest.Conformance.Case do
       * `root_version` - the `root_version` file in the client's state dir
         for the case's source and root: `:absent` (no root adopted), or the
         integer it must hold (an adopted root's version, R17).
+      * `unrequested` - a non-empty list of snapshot paths
+        (`"v2/manifests/nerves.json"`) the client must never have asked the
+        case's mirror for (P5, P9: a manifest it must not even consider).
+
+  `gate` (optional) - the id of an earlier case in the file, of the same
+  layer (both real-root, or both layer 2): this case runs only after that
+  one passed, else it is `:not_exercised` naming it. A refusal whose
+  positive control did not pass says nothing (T7 on T7-chained,
+  T3-duplicated on T3-pair). `--only` brings a case's gates along.
 
   Layer 2, test-key cases: a case whose `client_config` gives `root:
   {:test_root, name}` (`ChainTest.TestKey.root_names/0`) is pinned to that
@@ -150,7 +159,8 @@ defmodule ChainTest.Conformance.Case do
           optional(:cache) => :untouched | :verified,
           optional(:outside) => :untouched,
           optional(:second_mirror) => :requested | :untouched,
-          optional(:root_version) => :absent | non_neg_integer()
+          optional(:root_version) => :absent | non_neg_integer(),
+          optional(:unrequested) => [String.t()]
         }
   @type t :: %{
           required(:id) => String.t(),
@@ -162,6 +172,7 @@ defmodule ChainTest.Conformance.Case do
           optional(:client_config) => ChainTest.Build.client_config(),
           optional(:client_env) => %{String.t() => Path.t() | {:home, Path.t()}},
           optional(:runs) => 2,
+          optional(:gate) => String.t(),
           optional(:after) => post()
         }
 
@@ -195,7 +206,7 @@ defmodule ChainTest.Conformance.Case do
           :dir | {:file, String.t()} | {:link, String.t()} | {:other, atom()}
 
   @keys [:client, :description, :harness, :id, :transform]
-  @optional [:after, :client_config, :client_env, :runs, :setup]
+  @optional [:after, :client_config, :client_env, :gate, :runs, :setup]
   @post_keys [
     :cache,
     :installed,
@@ -204,7 +215,8 @@ defmodule ChainTest.Conformance.Case do
     :outside,
     :root_version,
     :second_mirror,
-    :state_sequence
+    :state_sequence,
+    :unrequested
   ]
   @control "L2-T0"
   @statuses [:hit, :miss, :fail]
@@ -219,7 +231,8 @@ defmodule ChainTest.Conformance.Case do
     with :ok <- list(cases),
          :ok <- Enum.find_value(cases, :ok, &problem/1),
          :ok <- unique(cases),
-         :ok <- control(cases) do
+         :ok <- control(cases),
+         :ok <- gates(cases) do
       {:ok, cases}
     end
   rescue
@@ -254,6 +267,40 @@ defmodule ChainTest.Conformance.Case do
            "control: ChainTest.Mirror.Identity under root {:test_root, :v1}"}
     end
   end
+
+  # Each gate names an earlier case of the same layer.
+  defp gates(cases) do
+    cases
+    |> Enum.with_index()
+    |> Enum.find_value(:ok, fn {c, i} ->
+      case Map.fetch(c, :gate) do
+        :error -> nil
+        {:ok, gate} -> gate_problem(c, gate, Enum.take(cases, i))
+      end
+    end)
+  end
+
+  defp gate_problem(c, gate, earlier) do
+    target = Enum.find(earlier, &(&1.id == gate))
+
+    cond do
+      target == nil ->
+        {:error,
+         "case #{inspect(c.id)}: gate #{inspect(gate)} must name an earlier case in the file"}
+
+      layer2?(target) != layer2?(c) ->
+        {:error,
+         "case #{inspect(c.id)}: gate #{inspect(gate)} is of the other layer; a gate runs " <>
+           "in the same layer as the case it gates"}
+
+      true ->
+        nil
+    end
+  end
+
+  @doc "The id of the case `c` is gated on, or `nil`."
+  @spec gate(map()) :: String.t() | nil
+  def gate(c), do: Map.get(c, :gate)
 
   @doc "Whether `c` is the layer-2 control, `L2-T0` (see the moduledoc)."
   @spec control?(map()) :: boolean()
@@ -378,7 +425,7 @@ defmodule ChainTest.Conformance.Case do
           ":previous, :absent, :unchanged), other_states (:unchanged), installed " <>
           "(:none, :snapshot, :recheck, {:without, [dep name]}), cache (:untouched, " <>
           ":verified), outside (:untouched), log (non-empty strings), " <>
-          "second_mirror (:requested, :untouched), root_version (:absent, integer), got " <>
+          "second_mirror (:requested, :untouched), root_version (:absent, integer), unrequested ([path]), got " <>
           inspect(post)
 
       Map.has_key?(post, :second_mirror) and Transform.mirrors(transform) != 2 ->
@@ -445,6 +492,11 @@ defmodule ChainTest.Conformance.Case do
   defp post_value?(:outside, v), do: v == :untouched
   defp post_value?(:second_mirror, v), do: v in [:requested, :untouched]
   defp post_value?(:root_version, v), do: v == :absent or (is_integer(v) and v >= 0)
+
+  defp post_value?(:unrequested, [_ | _] = paths),
+    do: Enum.all?(paths, &(is_binary(&1) and &1 != ""))
+
+  defp post_value?(:unrequested, _v), do: false
 
   @doc "How many builds the case runs: 2 with `runs: 2` (a warm build first), else 1."
   @spec runs(t()) :: 1 | 2
@@ -840,6 +892,14 @@ defmodule ChainTest.Conformance.Case do
               else: ["after root_version: expected #{rel} to hold #{n}, it holds #{state(got)}"]
         end
     end
+  end
+
+  defp post_problem(:unrequested, paths, _seen, _snap, input) do
+    asked = MapSet.new(for %{path: path} <- Map.get(input, :requests, []), do: path)
+
+    for path <- paths,
+        MapSet.member?(asked, path),
+        do: "after unrequested: the client asked the case's mirror for #{path}"
   end
 
   defp post_problem(:cache, :untouched, seen, _snap, _input),

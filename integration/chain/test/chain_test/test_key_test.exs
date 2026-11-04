@@ -12,7 +12,7 @@ defmodule ChainTest.TestKeyTest do
 
   setup %{tmp_dir: tmp} do
     snap = Layer2Fixture.snapshot(tmp)
-    {:ok, l2} = TestKey.prepare(snap)
+    {:ok, l2} = TestKey.prepare(snap, Layer2Fixture.fixture_dir(tmp))
     on_exit(fn -> TestKey.cleanup(l2) end)
     %{snap: snap, l2: l2}
   end
@@ -50,7 +50,8 @@ defmodule ChainTest.TestKeyTest do
     end)
   end
 
-  test "everything lies in one private tmp dir; cleanup removes it", %{l2: l2, snap: snap} do
+  test "everything lies in one private tmp dir; cleanup removes it",
+       %{l2: l2, snap: snap, tmp_dir: tmp} do
     assert String.starts_with?(l2.dir, Path.expand(System.tmp_dir!()))
     assert {:ok, %File.Stat{mode: mode}} = File.stat(l2.dir)
     assert Bitwise.band(mode, 0o777) == 0o700
@@ -58,7 +59,7 @@ defmodule ChainTest.TestKeyTest do
     assert Path.dirname(l2.roots.v1) == Path.join(l2.dir, "trust")
     refute String.starts_with?(snap.dir, l2.dir)
 
-    other = TestKey.prepare(snap) |> elem(1)
+    other = TestKey.prepare(snap, Layer2Fixture.fixture_dir(tmp)) |> elem(1)
     TestKey.cleanup(other)
     refute File.exists?(other.dir)
   end
@@ -180,7 +181,7 @@ defmodule ChainTest.TestKeyTest do
     empty = Path.join(tmp, "empty")
     File.mkdir_p!(empty)
     before = Path.wildcard(Path.join(System.tmp_dir!(), "chain_layer2-*"))
-    assert {:error, _} = TestKey.prepare(%{snap | dir: empty})
+    assert {:error, _} = TestKey.prepare(%{snap | dir: empty}, Layer2Fixture.fixture_dir(tmp))
     assert Path.wildcard(Path.join(System.tmp_dir!(), "chain_layer2-*")) -- before == []
   end
 end

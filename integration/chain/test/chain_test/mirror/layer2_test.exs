@@ -14,7 +14,7 @@ defmodule ChainTest.Mirror.Layer2Test do
 
   setup %{tmp_dir: tmp} do
     snap = Layer2Fixture.snapshot(tmp)
-    {:ok, l2} = TestKey.prepare(snap)
+    {:ok, l2} = TestKey.prepare(snap, Layer2Fixture.fixture_dir(tmp))
     on_exit(fn -> TestKey.cleanup(l2) end)
     batch = File.read!(Path.join(l2.snapshot.dir, "batch.json"))
     %{snap: snap, l2: l2, s: l2.snapshot, batch: batch}
@@ -75,8 +75,11 @@ defmodule ChainTest.Mirror.Layer2Test do
                3650 * 86_400
     end
 
-    test "root: :unchained serves the unchained v2; :withheld a 404; others unchanged",
+    test "root: :unchained or :rotated serves that v2; :withheld a 404; others unchanged",
          %{s: s} do
+      assert {200, s.test.rotated_v2} ==
+               TestBatch.transform("root.json", "v1", args(s, %{root: :rotated}))
+
       assert {200, s.test.unchained_v2} ==
                TestBatch.transform("root.json", "v1", args(s, %{root: :unchained}))
 
@@ -137,16 +140,23 @@ defmodule ChainTest.Mirror.Layer2Test do
       for kind <- Forge.kinds() do
         {200, out} = Forge.transform("batch.json", batch, args(s, %{forge: kind}))
         {payload, [^batch_key]} = decode(out)
-        sha = Synthetic.sha(forged(s, kind))
 
-        names =
+        named =
+          Map.new(Forge.forged(s, kind), fn {name, rel} ->
+            {name, Synthetic.sha(File.read!(Path.join(s.dir, rel)))}
+          end)
+
+        names = Map.keys(named)
+
+        expected =
           case kind do
             :path_dep -> ["elixir_precompiled", "nerves"]
             :unlocked_package -> ["chain_absent"]
             _ -> ["jason"]
           end
 
-        assert Map.take(payload["manifests_v2"], names) == Map.new(names, &{&1, sha}), "#{kind}"
+        assert Enum.sort(names) == expected, "#{kind}"
+        assert Map.take(payload["manifests_v2"], names) == named, "#{kind}"
 
         assert Map.drop(payload["manifests_v2"], names) == Map.drop(real["manifests_v2"], names)
         assert Map.drop(payload, ["manifests_v2"]) == Map.drop(real, ["manifests_v2"])
@@ -161,14 +171,44 @@ defmodule ChainTest.Mirror.Layer2Test do
       assert {200, "real"} ==
                Forge.transform("v2/manifests/jason.json", "real", args(s, %{forge: :path_dep}))
 
-      for name <- ["nerves", "elixir_precompiled"],
-          do:
-            assert(
-              File.read!(Path.join(s.dir, "v2/manifests/#{name}.json")) == forged(s, :path_dep)
-            )
-
       assert File.read!(Path.join(s.dir, "v2/manifests/chain_absent.json")) ==
                forged(s, :unlocked_package)
+    end
+
+    test "P5: each git or path dep gets a build at its own identity, so only the git/path rule can stop it",
+         %{s: s} do
+      for {name, vsn, checksum} <- [
+            {"nerves", "2.0.0-pre.4", "0123456789abcdef0123456789abcdef01234567"},
+            {"elixir_precompiled", "0.1.0", nil}
+          ] do
+        rel = Map.fetch!(Forge.forged(s, :path_dep), name)
+        assert rel == "v2/manifests/#{name}.json"
+        doc = JSON.decode!(File.read!(Path.join(s.dir, rel)))
+        assert %{"format" => 2, "versions" => %{^vsn => %{"builds" => [build]}}} = doc
+        assert build["target"] == "pure_elixir"
+        assert build["build"]["elixir"] == System.version()
+        assert build["build"]["otp"] == System.otp_release()
+        assert build["build"]["dep_env"] == "prod"
+        if checksum, do: assert(build["build"]["package_checksum"] == checksum)
+        assert [%{"path" => app_path, "sha256" => sha}] = build["ebin"]
+        assert app_path == "ebin/#{name}.app"
+        app = File.read!(Path.join(s.dir, "files/#{sha}"))
+        assert app =~ "{application,#{name}," and app =~ ~s("#{vsn}")
+      end
+    end
+
+    test "forging never writes over a file that exists (hard links into the real snapshot)",
+         %{snap: snap, s: s} do
+      real = Path.join(snap.dir, "v2/manifests/jason.json")
+      before = File.read!(real)
+
+      # A second prepare over the same layer-2 snapshot finds every file in place.
+      assert :ok = Forge.prepare(s, Layer2Fixture.fixture_dir(Path.dirname(snap.dir)))
+      assert File.read!(real) == before
+
+      for {_n, %{file_shas: shas}} <- snap.deps,
+          sha <- shas,
+          do: assert(Synthetic.sha(File.read!(Path.join(snap.dir, "files/#{sha}"))) == sha)
     end
 
     test "path, mode and app-dir forgeries", %{s: s} do
@@ -238,7 +278,7 @@ defmodule ChainTest.Mirror.Layer2Test do
       assert foreign["target"] == "nerves_system_other"
       refute File.regular?(Path.join(s.dir, "files/#{hd(foreign["ebin"])["sha256"]}"))
 
-      for kind <- Forge.kinds(),
+      for kind <- Forge.kinds() -- [:path_dep],
           build <- forged_builds(s, kind),
           build["target"] == "pure_elixir",
           %{"sha256" => sha} <- entries(build),
