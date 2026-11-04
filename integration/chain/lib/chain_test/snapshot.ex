@@ -36,6 +36,7 @@ defmodule ChainTest.Snapshot do
 
   @timeout_ms 60_000
   @max_manifest_bytes 64 * 1024 * 1024
+  @concurrency 8
   @max_age_s 24 * 3600
   @max_future_s 300
   @repo_root Path.expand("../../../..", __DIR__)
@@ -45,7 +46,8 @@ defmodule ChainTest.Snapshot do
           manifest: String.t() | nil,
           sha256: String.t() | nil,
           builds: non_neg_integer(),
-          files: non_neg_integer()
+          files: non_neg_integer(),
+          file_shas: [String.t()]
         }
 
   @type t :: %{
@@ -84,15 +86,17 @@ defmodule ChainTest.Snapshot do
          {:ok, existing} <- target_dir(dir),
          {:ok, lock} <- lock(fixture),
          {:ok, staging} <- staging_dir(dir) do
-      result =
+      # After a successful rename the staging path no longer exists; on an
+      # error or a raise it is removed here.
+      try do
         with {:ok, snap} <- fill(staging, source, lock, target, trust_opts, timeout),
              :ok <- write(staging, "snapshot.json", JSON.encode!(meta(snap))),
              :ok <- move(staging, dir, existing) do
           {:ok, %{snap | dir: dir}}
         end
-
-      with {:error, _} <- result, do: File.rm_rf(staging)
-      result
+      after
+        File.rm_rf(staging)
+      end
     end
   end
 
@@ -113,8 +117,8 @@ defmodule ChainTest.Snapshot do
          {:ok, info} <- verify(dir, Map.get(opts, :trust_opts, %{})),
          :ok <- same_sequence(meta, info),
          :ok <- same_batch(dir, info),
-         {:ok, deps} <- stored_deps(dir, meta, info),
-         :ok <- stored_files(dir) do
+         {:ok, stored} <- stored_files(dir),
+         {:ok, deps} <- stored_deps(dir, meta, info, stored) do
       {:ok,
        %{
          dir: dir,
@@ -130,13 +134,33 @@ defmodule ChainTest.Snapshot do
 
   # taking
 
+  # Both sides resolved through symlinks, so a dir reached through a link
+  # into the repository is caught.
   defp outside_repo(dir, repo_root) do
-    root = Path.expand(repo_root)
+    {dir, root} = {real_path(dir), real_path(repo_root)}
 
     if dir == root or String.starts_with?(dir, root <> "/"),
       do:
         {:error, "snapshot dir #{dir} is inside the repository; downloaded bytes stay out of it"},
       else: :ok
+  end
+
+  # `path` with every symlink among its existing components resolved; the
+  # components that do not exist are kept as they are.
+  defp real_path(path), do: resolve(Path.split(Path.expand(path)), "/", 0)
+
+  defp resolve([], acc, _hops), do: acc
+
+  defp resolve([part | rest], acc, hops) do
+    next = Path.join(acc, part)
+
+    case File.read_link(next) do
+      {:ok, target} when hops < 40 ->
+        resolve(Path.split(Path.expand(target, acc)) ++ rest, "/", hops + 1)
+
+      _ ->
+        resolve(rest, next, hops)
+    end
   end
 
   # `{:ok, :absent | :empty}`: the target must not exist or be an empty,
@@ -270,15 +294,34 @@ defmodule ChainTest.Snapshot do
         try do
           {results, info} = Trust.check(Map.merge(trust_opts, %{source: mirror.url}))
 
-          if Trust.accepted?(results, info),
-            do: {:ok, info},
-            else: {:error, "the harness rejects the snapshot's batch: " <> problem(results)}
+          cond do
+            not Trust.accepted?(results, info) ->
+              {:error, "the harness rejects the snapshot's batch: " <> problem(results)}
+
+            not served_root_pinned?(results) ->
+              {:error, "the harness rejects the snapshot's root: " <> served_root(results)}
+
+            true ->
+              {:ok, info}
+          end
         after
           Mirror.stop(mirror)
         end
 
       {:error, why} ->
         {:error, "cannot serve #{dir}: #{inspect(why)}"}
+    end
+  end
+
+  # `Trust.accepted?/2` tolerates a served root other than the pinned one;
+  # a snapshot stores the served root as its baseline, so it must not.
+  defp served_root_pinned?(results),
+    do: Enum.any?(results, &(&1.check == "served_root" and &1.class == :pass))
+
+  defp served_root(results) do
+    case Enum.find(results, &(&1.check == "served_root")) do
+      nil -> "served_root: not checked"
+      r -> "served_root: #{r.detail}"
     end
   end
 
@@ -315,7 +358,7 @@ defmodule ChainTest.Snapshot do
         {:ok, nil}
 
       {vsn, nil} ->
-        {:ok, %{version: vsn, manifest: nil, sha256: nil, builds: 0, files: 0}}
+        {:ok, %{version: vsn, manifest: nil, sha256: nil, builds: 0, files: 0, file_shas: []}}
 
       {vsn, {sha, mdir}} ->
         rel = "#{mdir}/#{name}.json"
@@ -324,8 +367,16 @@ defmodule ChainTest.Snapshot do
              :ok <- manifest_sha(bytes, sha, rel),
              {:ok, doc} <- manifest_doc(bytes, rel),
              builds = Integrity.eligible_builds(doc, name, vsn, selection),
-             {:ok, n} <- files(source, dir, builds, timeout) do
-          {:ok, %{version: vsn, manifest: rel, sha256: sha, builds: length(builds), files: n}}
+             {:ok, shas} <- files(source, dir, builds, timeout) do
+          {:ok,
+           %{
+             version: vsn,
+             manifest: rel,
+             sha256: sha,
+             builds: length(builds),
+             files: length(shas),
+             file_shas: shas
+           }}
         end
     end
   end
@@ -348,17 +399,36 @@ defmodule ChainTest.Snapshot do
            "during the snapshot; take it again"}
   end
 
+  # At most @concurrency downloads at once; the first error halts the
+  # stream (which shuts the other downloads down) and fails the take.
   defp files(source, dir, builds, timeout) do
-    builds
-    |> Enum.flat_map(&(List.wrap(&1["ebin"]) ++ List.wrap(&1["priv"])))
-    |> Enum.filter(&is_map/1)
-    |> Enum.uniq_by(& &1["sha256"])
-    |> Enum.reduce_while({:ok, 0}, fn entry, {:ok, n} ->
-      case file(source, dir, entry, timeout) do
-        :ok -> {:cont, {:ok, n + 1}}
-        {:error, _} = error -> {:halt, error}
-      end
+    entries =
+      builds
+      |> Enum.flat_map(&(List.wrap(&1["ebin"]) ++ List.wrap(&1["priv"])))
+      |> Enum.filter(&is_map/1)
+      |> Enum.uniq_by(& &1["sha256"])
+
+    case mkdirs(dir, "files") do
+      :ok -> download_files(source, dir, entries, timeout)
+      {:error, why} -> {:error, "#{dir}/files: #{:file.format_error(why)}"}
+    end
+  end
+
+  defp download_files(source, dir, entries, timeout) do
+    entries
+    |> Task.async_stream(&file(source, dir, &1, timeout),
+      max_concurrency: @concurrency,
+      ordered: true,
+      timeout: :infinity
+    )
+    |> Enum.reduce_while({:ok, []}, fn
+      {:ok, {:ok, sha}}, {:ok, acc} -> {:cont, {:ok, [sha | acc]}}
+      {:ok, {:error, _} = error}, _ -> {:halt, error}
     end)
+    |> case do
+      {:ok, shas} -> {:ok, Enum.reverse(shas)}
+      error -> error
+    end
   end
 
   defp file(source, dir, %{"sha256" => sha, "size" => size}, timeout)
@@ -368,7 +438,7 @@ defmodule ChainTest.Snapshot do
     with :ok <- file_name(sha),
          {:ok, bytes} <- download(source, rel, dir, timeout, size) do
       if sha256(bytes) == sha,
-        do: :ok,
+        do: {:ok, sha},
         else: {:error, "#{rel}: the bytes do not hash to their name"}
     end
   end
@@ -399,7 +469,8 @@ defmodule ChainTest.Snapshot do
              "manifest" => d.manifest,
              "sha256" => d.sha256,
              "builds" => d.builds,
-             "files" => d.files
+             "files" => d.files,
+             "file_shas" => d.file_shas
            }}
         end)
     }
@@ -467,31 +538,47 @@ defmodule ChainTest.Snapshot do
     end
   end
 
-  defp stored_deps(dir, meta, info) do
+  defp stored_deps(dir, meta, info, stored) do
     Enum.reduce_while(meta["deps"], {:ok, %{}}, fn {name, d}, {:ok, acc} ->
-      case stored_dep(dir, name, d, info) do
+      case stored_dep(dir, name, d, info, stored) do
         {:ok, dep} -> {:cont, {:ok, Map.put(acc, name, dep)}}
         {:error, _} = error -> {:halt, error}
       end
     end)
   end
 
-  defp stored_dep(dir, name, d, info) when is_map(d) do
+  defp stored_dep(dir, name, %{"file_shas" => shas} = d, info, stored) when is_list(shas) do
     dep = %{
       version: d["version"],
       manifest: d["manifest"],
       sha256: d["sha256"],
       builds: d["builds"],
-      files: d["files"]
+      files: d["files"],
+      file_shas: shas
     }
 
+    with :ok <- stored_manifest(dir, name, dep, info),
+         :ok <- listed_files(name, dep, stored) do
+      {:ok, dep}
+    end
+  end
+
+  defp stored_dep(_dir, name, _d, _info, _stored),
+    do: {:error, "snapshot.json has a malformed entry for #{name}"}
+
+  defp stored_manifest(dir, name, dep, info) do
     case {dep.manifest, Trust.manifest_sha(info, name)} do
-      {nil, _} ->
-        {:ok, dep}
+      {nil, nil} ->
+        :ok
+
+      {nil, {_sha, mdir}} ->
+        {:error,
+         "snapshot.json names no manifest for #{name}, but the stored batch names " <>
+           "#{mdir}/#{name}.json"}
 
       {rel, {sha, mdir}} when rel == mdir <> "/" <> name <> ".json" ->
         case File.read(Path.join(dir, rel)) do
-          {:ok, bytes} -> with :ok <- manifest_sha(bytes, sha, rel), do: {:ok, dep}
+          {:ok, bytes} -> manifest_sha(bytes, sha, rel)
           {:error, why} -> {:error, "#{rel}: #{:file.format_error(why)}"}
         end
 
@@ -501,24 +588,42 @@ defmodule ChainTest.Snapshot do
     end
   end
 
-  defp stored_dep(_dir, name, _d, _info),
-    do: {:error, "snapshot.json has a malformed entry for #{name}"}
+  # Every file a dep lists is stored (and so, by `stored_files/1`, hashes to
+  # its name), and the count agrees with the list.
+  defp listed_files(name, dep, stored) do
+    cond do
+      dep.files != length(dep.file_shas) ->
+        {:error,
+         "snapshot.json counts #{inspect(dep.files)} files for #{name} but lists " <>
+           "#{length(dep.file_shas)}"}
 
+      dep.manifest == nil and dep.file_shas != [] ->
+        {:error, "snapshot.json lists files for #{name}, which has no manifest"}
+
+      missing = Enum.find(dep.file_shas, &(not MapSet.member?(stored, &1))) ->
+        {:error, "files/#{missing}, listed for #{name}, is not in the snapshot"}
+
+      true ->
+        :ok
+    end
+  end
+
+  # The names of the stored files, each checked to hash to its name.
   defp stored_files(dir) do
     dir
     |> Path.join("files/*")
     |> Path.wildcard()
-    |> Enum.find_value(:ok, fn path ->
+    |> Enum.reduce_while({:ok, MapSet.new()}, fn path, {:ok, acc} ->
       name = Path.basename(path)
 
       case File.read(path) do
         {:ok, bytes} ->
           if sha256(bytes) == name,
-            do: nil,
-            else: {:error, "files/#{name}: the bytes do not hash to their name"}
+            do: {:cont, {:ok, MapSet.put(acc, name)}},
+            else: {:halt, {:error, "files/#{name}: the bytes do not hash to their name"}}
 
         {:error, why} ->
-          {:error, "files/#{name}: #{:file.format_error(why)}"}
+          {:halt, {:error, "files/#{name}: #{:file.format_error(why)}"}}
       end
     end)
   end

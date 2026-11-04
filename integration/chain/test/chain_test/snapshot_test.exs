@@ -58,7 +58,26 @@ defmodule ChainTest.SnapshotTest do
       trust_opts: %{root_path: root_path, library_root_path: root_path}
     }
 
-    %{input: input, served: served, batch: batch, manifest: manifest, tmp: tmp}
+    %{input: input, served: served, batch: batch, manifest: manifest, tmp: tmp, key: key}
+  end
+
+  # Serves `files` as jason's only build and returns the new manifest bytes.
+  defp serve_build(ctx, files) do
+    manifest = Synthetic.manifest("1.4.5", [Synthetic.build(files, outer: @outer)])
+    Synthetic.serve_manifest(ctx.served, "v2/manifests", "jason", manifest)
+
+    for {_path, bytes} <- files do
+      File.write!(Path.join([ctx.served, "files", Synthetic.sha(bytes)]), bytes)
+    end
+
+    ctx.batch.(manifests_v2: %{"jason" => Synthetic.sha(manifest)})
+    manifest
+  end
+
+  defp rewrite_meta(dir, fun) do
+    path = Path.join(dir, "snapshot.json")
+    meta = path |> File.read!() |> JSON.decode!() |> fun.()
+    File.write!(path, JSON.encode!(meta))
   end
 
   test "take/1 stores the verified layout and describes it", %{input: input, manifest: manifest} do
@@ -208,5 +227,102 @@ defmodule ChainTest.SnapshotTest do
     a = Snapshot.default_dir()
     assert String.starts_with?(a, Path.expand(System.tmp_dir!()))
     refute a == Snapshot.default_dir()
+  end
+
+  describe "fix round 1" do
+    test "a served root other than the pinned one is refused and nothing is stored", ctx do
+      File.write!(Path.join(ctx.served, "root.json"), Signed.root(Signed.key()))
+
+      assert {:error, why} = Snapshot.take(ctx.input)
+      assert why =~ "served_root"
+      refute File.exists?(ctx.input.dir)
+      assert Path.wildcard(Path.join(ctx.tmp, ".snap*"), match_dot: true) == []
+    end
+
+    test "load/1 refuses a stored root other than the pinned one", %{input: input} do
+      {:ok, _} = Snapshot.take(input)
+      File.write!(Path.join(input.dir, "root.json"), Signed.root(Signed.key()))
+
+      assert {:error, why} = Snapshot.load(input.dir, %{trust_opts: input.trust_opts})
+      assert why =~ "served_root"
+    end
+
+    test "a dir reached through a symlink into the repository is refused", ctx do
+      File.mkdir_p!(ctx.input.repo_root)
+      link = Path.join(ctx.tmp, "link")
+      File.ln_s!(ctx.input.repo_root, link)
+
+      assert {:error, why} = Snapshot.take(%{ctx.input | dir: Path.join(link, "snap")})
+      assert why =~ "inside the repository"
+      assert File.ls!(ctx.input.repo_root) == []
+    end
+
+    test "the files are downloaded concurrently, all of them verified", ctx do
+      files = Map.new(1..40, fn i -> {"ebin/m#{i}.beam", "beam #{i}"} end)
+      serve_build(ctx, files)
+
+      assert {:ok, snap} = Snapshot.take(ctx.input)
+      assert snap.deps["jason"].files == 40
+      assert length(snap.deps["jason"].file_shas) == 40
+
+      for {_path, bytes} <- files do
+        assert File.read!(Path.join([ctx.input.dir, "files", Synthetic.sha(bytes)])) == bytes
+      end
+    end
+
+    test "one bad file among many fails the take", ctx do
+      files = Map.new(1..40, fn i -> {"ebin/m#{i}.beam", "beam #{i}"} end)
+      serve_build(ctx, files)
+      File.write!(Path.join([ctx.served, "files", Synthetic.sha("beam 17")]), "other")
+
+      assert {:error, why} = Snapshot.take(ctx.input)
+      assert why =~ "files/#{Synthetic.sha("beam 17")}"
+      refute File.exists?(ctx.input.dir)
+    end
+
+    test "snapshot.json lists each dep's file shas", %{input: input} do
+      {:ok, snap} = Snapshot.take(input)
+      expected = @files |> Map.values() |> Enum.map(&Synthetic.sha/1) |> Enum.sort()
+
+      assert Enum.sort(snap.deps["jason"].file_shas) == expected
+      meta = JSON.decode!(File.read!(Path.join(input.dir, "snapshot.json")))
+      assert Enum.sort(meta["deps"]["jason"]["file_shas"]) == expected
+    end
+
+    test "load/1 refuses a dep without a manifest the batch names one for", %{input: input} do
+      {:ok, _} = Snapshot.take(input)
+
+      rewrite_meta(input.dir, fn meta ->
+        put_in(meta, ["deps", "jason"], %{
+          "version" => "1.4.5",
+          "manifest" => nil,
+          "sha256" => nil,
+          "builds" => 0,
+          "files" => 0,
+          "file_shas" => []
+        })
+      end)
+
+      assert {:error, why} = Snapshot.load(input.dir, %{trust_opts: input.trust_opts})
+      assert why =~ "jason"
+      assert why =~ "batch names"
+    end
+
+    test "load/1 refuses a listed file that is missing", %{input: input} do
+      {:ok, _} = Snapshot.take(input)
+      [file | _] = Path.wildcard(Path.join(input.dir, "files/*"))
+      File.rm!(file)
+
+      assert {:error, why} = Snapshot.load(input.dir, %{trust_opts: input.trust_opts})
+      assert why =~ "files/#{Path.basename(file)}"
+    end
+
+    test "load/1 refuses file counts that do not match the listed shas", %{input: input} do
+      {:ok, _} = Snapshot.take(input)
+      rewrite_meta(input.dir, &put_in(&1, ["deps", "jason", "files"], 5))
+
+      assert {:error, why} = Snapshot.load(input.dir, %{trust_opts: input.trust_opts})
+      assert why =~ "jason"
+    end
   end
 end
