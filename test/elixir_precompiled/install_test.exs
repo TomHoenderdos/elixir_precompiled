@@ -36,17 +36,19 @@ defmodule ElixirPrecompiled.InstallTest do
              ]
   end
 
-  test "project_dir is MIX_INSTALL_DIR/ex-<elixir>-erl-<erts>/<id>", %{tmp_dir: dir} do
+  # Mix.install/2's own naming, which changed in Elixir 1.19: our install
+  # must land in the dir Mix.install/2 then uses, or it compiles anyway.
+  test "project_dir is the dir Mix.install/2 uses on this Elixir", %{tmp_dir: dir} do
     deps = [:jason]
+    md5 = :erlang.md5(:erlang.term_to_binary({[{:jason, ">= 0.0.0"}], [], [], true}))
+    {elixir, erts} = {System.version(), :erlang.system_info(:version)}
 
-    id =
-      {[{:jason, ">= 0.0.0"}], [], [], true}
-      |> :erlang.term_to_binary()
-      |> :erlang.md5()
-      |> Base.url_encode64(padding: false)
+    expected =
+      if Version.match?(elixir, ">= 1.19.0"),
+        do: Path.join([dir, "ex-#{elixir}-erl-#{erts}", Base.url_encode64(md5, padding: false)]),
+        else: Path.join([dir, "elixir-#{elixir}-erts-#{erts}", Base.encode16(md5, case: :lower)])
 
-    assert Install.project_dir(deps, []) ==
-             Path.join([dir, "ex-#{System.version()}-erl-#{:erlang.system_info(:version)}", id])
+    assert Install.project_dir(deps, []) == expected
 
     # The id changes with the config and consolidation options, as in Mix.
     refute Install.project_dir(deps, consolidate_protocols: false) ==

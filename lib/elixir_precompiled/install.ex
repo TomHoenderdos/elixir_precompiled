@@ -123,24 +123,32 @@ defmodule ElixirPrecompiled.Install do
   end
 
   @doc false
-  # Mix 1.20.3, Mix.install/2: the id is the md5 of {deps, config, system_env,
-  # consolidate_protocols?} after dep normalisation; the dir is
-  # MIX_INSTALL_DIR (or <mix cache>/installs) / ex-<elixir>-erl-<erts> / id.
-  # test/integration/install_test.exs compares this with
+  # Mix.install/2's own formula: the id is the md5 of {deps, config,
+  # system_env, consolidate_protocols?} after dep normalisation; the dir is
+  # MIX_INSTALL_DIR (or <mix cache>/installs) / <version dir> / id. Elixir
+  # 1.19 renamed both parts: ex-<elixir>-erl-<erts> and the md5 in url-safe
+  # base64, where 1.17 and 1.18 use elixir-<elixir>-erts-<erts> and lower
+  # hex. test/integration/install_test.exs compares this with
   # Mix.install_project_dir/0 after a real Mix.install/2, so a Mix that
   # changes the formula fails loudly there.
   @spec project_dir([term()], keyword()) :: Path.t()
   def project_dir(deps, mix_opts) do
-    id =
+    md5 =
       {normalize_deps(deps), Keyword.get(mix_opts, :config, []),
        Keyword.get(mix_opts, :system_env, []),
        Keyword.get(mix_opts, :consolidate_protocols, true)}
       |> :erlang.term_to_binary()
       |> :erlang.md5()
-      |> Base.url_encode64(padding: false)
+
+    {elixir, erts} = {System.version(), :erlang.system_info(:version)}
+
+    {version_dir, id} =
+      if Version.match?(elixir, ">= 1.19.0"),
+        do: {"ex-#{elixir}-erl-#{erts}", Base.url_encode64(md5, padding: false)},
+        else: {"elixir-#{elixir}-erts-#{erts}", Base.encode16(md5, case: :lower)}
 
     root = System.get_env("MIX_INSTALL_DIR") || Path.join(Mix.Utils.mix_cache(), "installs")
-    Path.join([root, "ex-#{System.version()}-erl-#{:erlang.system_info(:version)}", id])
+    Path.join([root, version_dir, id])
   end
 
   @doc false
