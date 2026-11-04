@@ -1601,7 +1601,8 @@ defmodule ElixirPrecompiled.CheckTest do
 
     # What a half-finished install would leave: a staging dir and a build
     # dir that carries Mix's "already compiled" marker.
-    File.mkdir_p!(Path.join(lib, ".precompiled/jason"))
+    staged = ElixirPrecompiled.Fetch.staging_path(lib, :jason)
+    File.mkdir_p!(staged)
     File.mkdir_p!(Path.join(lib, "jason/.mix"))
     File.write!(Path.join(lib, "jason/.mix/compile.elixir_scm"), "")
 
@@ -1616,7 +1617,7 @@ defmodule ElixirPrecompiled.CheckTest do
     assert detail =~ "candidate crashed: :killed"
     assert out =~ ~r/jason 1\.4\.5\s+FAIL/
     refute File.exists?(Path.join(lib, "jason"))
-    refute File.exists?(Path.join(lib, ".precompiled/jason"))
+    refute File.exists?(staged)
     assert File.exists?(Path.join(lib, "ash/.mix/compile.elixir_scm"))
   end
 

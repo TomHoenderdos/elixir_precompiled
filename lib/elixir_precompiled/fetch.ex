@@ -7,8 +7,9 @@ defmodule ElixirPrecompiled.Fetch do
   Bytes in, verified files in the project's `_build` out. Manifests are checked against
   the hash the batch names; files against the hash the manifest names,
   before anything reaches the build directory. Install is atomic per
-  dependency: staged under `_build/<t>/lib/.precompiled/<dep>`, renamed
-  into place with Mix's "already compiled" marker.
+  dependency: staged under `_build/<t>/lib/.precompiled/<dep>.<os pid>-<n>`
+  (one dir per install), renamed into place with Mix's "already compiled"
+  marker.
   """
 
   alias ElixirPrecompiled.{FileUtil, Manifest}
@@ -403,12 +404,15 @@ defmodule ElixirPrecompiled.Fetch do
           | {:fail, String.t()}
   def install(config, dep, entry, lock_entry, build_lib, opts \\ []) do
     files = (entry["ebin"] || []) ++ (entry["priv"] || [])
-    staging = Path.join([build_lib, ".precompiled", Atom.to_string(dep)])
+    staging = staging_path(build_lib, dep)
     dest = Path.join(build_lib, Atom.to_string(dep))
     verify_app = Keyword.get(opts, :verify_app, fn _ -> :ok end)
     link = Keyword.get(opts, :link_sources, &link_sources/5)
 
     try do
+      # What a killed run left staged.
+      for stale <- staging_dirs(build_lib, dep, :stale), do: File.rm_rf(stale)
+
       with :ok <- validate(files, dep),
            {:ok, stats} <- stage(config, files, staging),
            :ok <- verify_app.(Path.join([staging, "ebin", "#{dep}.app"])),
@@ -433,6 +437,46 @@ defmodule ElixirPrecompiled.Fetch do
         {:fail, "install failed: #{Exception.message(e)}"}
     end
   end
+
+  @doc false
+  # One staging dir per install: two Mix processes (or two calls) on one
+  # _build never remove or rename each other's half-written dir. Named
+  # `<dep>.<os pid>-<unique>`, so this OS process's own can be found again
+  # (staging_dirs/2) after a worker died.
+  @spec staging_path(Path.t(), atom()) :: Path.t()
+  def staging_path(build_lib, dep) do
+    unique = "#{System.pid()}-#{System.unique_integer([:positive])}"
+    Path.join([build_lib, ".precompiled", "#{dep}.#{unique}"])
+  end
+
+  @doc false
+  # The staging dirs of `dep` this OS process made, or, with `:stale`, the
+  # ones any process left over an hour ago (a killed Mix run).
+  @spec staging_dirs(Path.t(), atom(), :own | :stale) :: [Path.t()]
+  def staging_dirs(build_lib, dep, which) do
+    dir = Path.join(build_lib, ".precompiled")
+    prefix = if which == :own, do: "#{dep}.#{System.pid()}-", else: "#{dep}."
+    cutoff = System.os_time(:second) - 3600
+
+    case File.ls(dir) do
+      {:ok, names} ->
+        for name <- names,
+            String.starts_with?(name, prefix),
+            path = Path.join(dir, name),
+            which == :own or old_dir?(path, cutoff),
+            do: path
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  defp old_dir?(path, cutoff),
+    do:
+      match?(
+        {:ok, %File.Stat{type: :directory, mtime: m}} when m < cutoff,
+        File.lstat(path, time: :posix)
+      )
 
   # Mix links deps/<dep>/include (and src for rebar deps, and priv) into
   # _build when it builds a dep; a dep installed here is never built, so
@@ -595,7 +639,6 @@ defmodule ElixirPrecompiled.Fetch do
   # so the first failing file (in manifest order) is the one reported.
   defp stage(config, files, staging) do
     with {:ok, _dir} <- cache_dir(config, "files") do
-      File.rm_rf!(staging)
       File.mkdir_p!(staging)
       stage_files(config, files, staging)
     end

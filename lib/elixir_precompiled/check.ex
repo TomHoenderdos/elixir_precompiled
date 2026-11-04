@@ -322,7 +322,7 @@ defmodule ElixirPrecompiled.Check do
   # no build dir carrying Mix's marker, so Mix compiles the dep.
   defp worker_died(dep, reason, env) do
     sname = Atom.to_string(dep.name)
-    _ = File.rm_rf(Path.join([env.build_lib, ".precompiled", sname]))
+    for dir <- Fetch.staging_dirs(env.build_lib, dep.name, :own), do: File.rm_rf(dir)
     _ = File.rm_rf(Path.join(env.build_lib, sname))
 
     %{

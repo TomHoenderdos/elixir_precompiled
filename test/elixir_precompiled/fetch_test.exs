@@ -284,9 +284,9 @@ defmodule ElixirPrecompiled.FetchTest do
              )
 
     assert_received {:app, path}
-    assert String.ends_with?(path, ".precompiled/ash/ebin/ash.app")
+    assert path =~ ~r{/\.precompiled/ash\.\d+-\d+/ebin/ash\.app$}
     refute File.exists?(Path.join(lib, "ash"))
-    refute File.exists?(Path.join(lib, ".precompiled/ash"))
+    assert File.ls!(Path.join(lib, ".precompiled")) == []
   end
 
   test "a dependency without an .app file fails", %{
@@ -955,7 +955,70 @@ defmodule ElixirPrecompiled.FetchTest do
 
     assert File.read!(Path.join(lib, "ash/ebin/stale.beam")) == "old"
     refute File.exists?(Path.join(lib, "ash/.mix/compile.elixir_scm"))
-    refute File.exists?(Path.join(lib, ".precompiled/ash"))
+    assert File.ls!(Path.join(lib, ".precompiled")) == []
+  end
+
+  test "two installs of one dep at once stage apart and both complete", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+    test = self()
+
+    held =
+      Task.async(fn ->
+        Fetch.install(config, :ash, e, @lock_entry, lib,
+          deps_path: deps,
+          link_sources: fn _, _, staging, _, _ ->
+            send(test, {:staged, self(), staging})
+
+            receive do
+              :go -> :ok
+            end
+          end
+        )
+      end)
+
+    assert_receive {:staged, pid, first}, 5_000
+
+    # Another Mix process on this _build installs the same dep meanwhile.
+    assert {:ok, _} =
+             Fetch.install(config, :ash, e, @lock_entry, lib,
+               deps_path: deps,
+               link_sources: fn _, _, staging, _, _ ->
+                 refute staging == first
+                 assert File.regular?(Path.join(first, "ebin/ash.app"))
+                 :ok
+               end
+             )
+
+    assert File.regular?(Path.join(first, "ebin/ash.app"))
+    send(pid, :go)
+    assert {:ok, _} = Task.await(held)
+    assert File.regular?(Path.join(lib, "ash/ebin/ash.app"))
+    assert File.ls!(Path.join(lib, ".precompiled")) == []
+  end
+
+  test "an install removes what a killed run staged over an hour ago, not a live run's", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    old = Path.join(lib, ".precompiled/ash.1-1")
+    live = Path.join(lib, ".precompiled/ash.2-1")
+    other = Path.join(lib, ".precompiled/ashes.1-1")
+    for d <- [old, live, other], do: File.mkdir_p!(d)
+    File.touch!(old, System.os_time(:second) - 7200)
+    File.touch!(other, System.os_time(:second) - 7200)
+    e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+
+    assert {:ok, _} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+    refute File.exists?(old)
+    assert File.dir?(live)
+    assert File.dir?(other)
   end
 
   describe "content origins" do
