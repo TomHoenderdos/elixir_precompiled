@@ -25,7 +25,8 @@ defmodule ElixirPrecompiled.Env do
           deps_path: Path.t(),
           installed: [atom()],
           installed_envs: %{optional(atom()) => String.t()},
-          tooling: [atom()] | nil
+          tooling: [atom()] | nil,
+          mix_target: String.t()
         }
 
   # `installed`: Hex deps Mix counts as compiled this run whose build dir
@@ -44,7 +45,10 @@ defmodule ElixirPrecompiled.Env do
             deps_path: nil,
             installed: [],
             installed_envs: %{},
-            tooling: nil
+            tooling: nil,
+            # The project's MIX_TARGET name, for deps that read Mix.target() at
+            # compile time.
+            mix_target: "host"
 
   @doc """
   The locked Hex entries among `apps`, in the order given. `envs` names each

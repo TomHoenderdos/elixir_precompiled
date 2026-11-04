@@ -182,6 +182,7 @@ defmodule ElixirPrecompiled.Match do
 
     [
       fn -> target_ok(build["target"], b["system_version"], ctx.system) end,
+      fn -> compile_inputs_ok(build["target"], b, ctx) end,
       fn -> toolchain_present(b) end,
       fn -> elixir_ok(b["elixir"], ctx.elixir) end,
       fn -> otp_ok(b["otp"], ctx.otp) end,
@@ -205,6 +206,37 @@ defmodule ElixirPrecompiled.Match do
     do: {:miss, "built for #{t} #{built}, project has #{project}"}
 
   defp target_ok(t, _, _), do: {:miss, "not built for this system (#{t})"}
+
+  # What the build key does not record (G6): a dep whose own sources read
+  # an env var at module level could have been compiled with any value of
+  # it; one that reads Mix.target() must have been built for this project's
+  # target name: the one the build records, else its system's conventional
+  # name (nerves_system_rpi4 -> rpi4; pure_elixir builds are made on host).
+  defp compile_inputs_ok(target, build, ctx) do
+    case Map.get(ctx, :reads) do
+      %{env: [var | _]} -> {:miss, "reads #{var} at compile time, which no build records"}
+      %{target: true} -> target_name_ok(target, build, Map.get(ctx, :mix_target, "host"))
+      _ -> :ok
+    end
+  end
+
+  defp target_name_ok(target, build, running) do
+    built =
+      case build["mix_target"] do
+        t when is_binary(t) -> t
+        _ -> conventional_target(target)
+      end
+
+    if built == running,
+      do: :ok,
+      else:
+        {:miss,
+         "reads Mix.target() at compile time; built for target #{built}, project targets #{running}"}
+  end
+
+  defp conventional_target("pure_elixir"), do: "host"
+  defp conventional_target("nerves_system_" <> name), do: name
+  defp conventional_target(other), do: to_string(other)
 
   defp toolchain_present(%{"elixir" => e, "otp" => o}) when is_binary(e) and is_binary(o),
     do: :ok

@@ -237,6 +237,31 @@ defmodule ElixirPrecompiled.CheckTest do
     refute File.exists?(Path.join(lib, "ash"))
   end
 
+  test "a pure_elixir build of a dep that reads Mix.target is not served to a device", %{
+    f: f,
+    config: config,
+    env: env,
+    tmp_dir: dir
+  } do
+    File.mkdir_p!(Path.join(dir, "deps/ash/lib"))
+
+    File.write!(
+      Path.join(dir, "deps/ash/lib/ash.ex"),
+      "defmodule Ash do\n  @t Mix.target()\nend\n"
+    )
+
+    e = good_entry(f, "ash", nil, "pure_elixir")
+    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [e]}}}})
+
+    out = run_capturing(config, %{env | candidates: [hd(env.candidates)], mix_target: "rpi4"})
+    assert_received {:report, {:ok, %{misses: 1}}}
+    assert out =~ ~r/ash 3\.5\.2\s+MISS\s+reads Mix\.target\(\) at compile time/
+
+    # The same dep on host takes it.
+    out = run_capturing(config, %{env | candidates: [hd(env.candidates)], mix_target: "host"})
+    assert_received {:report, {:ok, %{hits: 1}}}, out
+  end
+
   test "an invalid batch fails every candidate", %{f: f, config: config, env: env} do
     F.publish(f, %{}, expires: "2020-01-01T00:00:00Z")
     out = run_capturing(config, env)
@@ -468,12 +493,118 @@ defmodule ElixirPrecompiled.CheckTest do
       beam = Path.join(lib, "ash/ebin/Elixir.X.beam")
       before = File.stat!(beam, time: :posix)
 
+      F.clear_requests()
       out = run_capturing(config, env)
       assert_received {:report, {:ok, report}}
       assert report.lines == []
       assert out == ""
       assert File.stat!(beam, time: :posix) == before
       assert File.exists?(Path.join(lib, "ash/.mix/elixir_precompiled.json"))
+      # Matched again from the cached manifest: still one request.
+      assert [%{path: "/precompiled/batch.json"}] = F.requests()
+    end
+
+    # The batch (and so the manifest sha) is unchanged in each of these;
+    # what changed is the project, so the build is matched again.
+    test "same batch, another OTP: the installed build is removed", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      out = run_capturing(config, env, toolchain: {System.version(), "0"})
+      assert_received {:report, {:ok, %{misses: 1}}}
+      assert out =~ ~r/ash 3\.5\.2\s+MISS\s+built on OTP \d+, running 0/
+      refute File.exists?(Path.join(lib, "ash"))
+    end
+
+    test "same batch, an older Elixir: the installed build is removed", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      otp = to_string(:erlang.system_info(:otp_release))
+      out = run_capturing(config, env, toolchain: {"1.0.0", otp})
+      assert_received {:report, {:ok, %{misses: 1}}}
+      assert out =~ ~r/ash 3\.5\.2\s+MISS\s+built with Elixir .*, running 1\.0\.0/
+      refute File.exists?(Path.join(lib, "ash"))
+    end
+
+    test "same batch, a lock that now gives ash a dependency: removed", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      env = install_ash(f, config, env)
+      ash = {:hex, :ash, "3.5.2", "i", [:mix], [{:jason, "~> 1.4", []}], "hexpm", "ASHOUTER"}
+      out = run_capturing(config, %{env | lock: %{env.lock | ash: ash}})
+      assert_received {:report, {:ok, %{misses: 1}}}
+      assert out =~ ~r/ash 3\.5\.2\s+MISS\s+built without jason, lock has 1\.4\.5/
+      refute File.exists?(Path.join(lib, "ash"))
+    end
+
+    test "same batch, another compile_env: removed, by the manifest or by the .app", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib,
+      tmp_dir: dir
+    } do
+      env = %{env | candidates: [hd(env.candidates)]}
+      fast = fn "ash", ["mode"] -> {:ok, :fast} end
+      slow = fn "ash", ["mode"] -> {:ok, :slow} end
+
+      for {honest?, sequence} <- [{true, 1}, {false, 2}] do
+        F.publish(f, ash_with_compile_env(f, dir, honest?), sequence: sequence)
+        run_capturing(config, env, config_fun: fast)
+        assert_received {:report, {:ok, %{hits: 1}}}
+        installed = %{env | candidates: [], installed: [:ash]}
+
+        assert run_capturing(config, installed, config_fun: fast) == ""
+        assert File.exists?(Path.join(lib, "ash"))
+
+        out = run_capturing(config, installed, config_fun: slow)
+
+        if honest?,
+          do: assert(out =~ ~r/ash 3\.5\.2\s+MISS\s+compile_env differs: ash \[:mode\]/),
+          else: assert(out =~ ~r/ash 3\.5\.2\s+FAIL\s+downloaded \.app: compile_env differs/)
+
+        refute File.exists?(Path.join(lib, "ash"))
+      end
+    end
+
+    # ash with a .app recording compile_env mode = fast; the manifest says
+    # so too when honest, and records none otherwise.
+    defp ash_with_compile_env(f, dir, honest?) do
+      app =
+        "{application, ash, [{vsn, \"3.5.2\"}, {modules, ['Elixir.X']}, " <>
+          "{compile_env, [{ash, [mode], {ok, fast}}]}]}.\n"
+
+      app_path = Path.join(dir, "ash.app")
+      File.write!(app_path, app)
+      e = good_entry(f, "ash", "1.31.0")
+
+      e =
+        update_in(e["ebin"], fn files ->
+          Enum.map(files, fn
+            %{"path" => "ebin/ash.app"} = x ->
+              %{x | "sha256" => F.file(f, app), "size" => byte_size(app)}
+
+            x ->
+              x
+          end)
+        end)
+
+      e =
+        if honest?,
+          do: put_in(e, ["build", "compile_env"], Match.compile_env_from_app(app_path)),
+          else: e
+
+      %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [e]}}}}
     end
 
     test "a build the batch dropped is removed and reported as revoked", %{

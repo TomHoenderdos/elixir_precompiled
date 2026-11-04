@@ -35,7 +35,7 @@ defmodule ElixirPrecompiled.Check do
       debug("precompiled: no dependencies to check")
       :nothing_to_do
     else
-      config = config |> with_home(env) |> with_deadline()
+      config = config |> with_home(env) |> with_deadline() |> with_toolchain(opts)
       # Temp files a killed run left behind; an hour back, so a run sharing
       # this home mid-write keeps its own.
       Fetch.sweep_tmp(config, System.os_time(:second) - 3600)
@@ -77,6 +77,17 @@ defmodule ElixirPrecompiled.Check do
       Output.warning("precompiled: cache dir #{inspect(home)} is not writable; using #{fallback}")
       %{config | home: fallback}
     end
+  end
+
+  # The Elixir and OTP builds are matched against; `:toolchain` in opts
+  # stands in for the running ones (tests).
+  defp with_toolchain(config, opts) do
+    Map.put(
+      config,
+      :toolchain,
+      Keyword.get(opts, :toolchain) ||
+        {System.version(), to_string(:erlang.system_info(:otp_release))}
+    )
   end
 
   # The whole run, every request in it, ends at :deadline_at; whatever is
@@ -134,11 +145,14 @@ defmodule ElixirPrecompiled.Check do
   end
 
   # R16: an installed build is only as good as the batch that still names
-  # it. Same manifest sha: nothing to do. Another sha: matched again like
-  # any candidate, preferring the installed files, kept only when the
-  # selected build is exactly what is on disk and removed when nothing
-  # matches. Not named, or no readable provenance: removed, so Mix compiles
-  # it from source in this same run.
+  # it and the project it sits in. Named (same manifest sha or another):
+  # matched again like any candidate on every run, preferring the
+  # installed files, kept only when the selected build is exactly what is
+  # on disk and its .app passes today's config, and removed when nothing
+  # matches; a changed toolchain, lock, compile_env or target under an
+  # unchanged batch is caught that way. An unchanged sha reads the manifest
+  # from the cache, so this costs no request. Not named, or no readable
+  # provenance: removed, so Mix compiles it from source in this same run.
   defp recheck(installed, batch, env) do
     Enum.reduce(installed, {[], []}, fn dep, {revoked, replaced} ->
       {sha, _path} = manifest_ref(batch, Atom.to_string(dep.name))
@@ -149,14 +163,11 @@ defmodule ElixirPrecompiled.Check do
              provenance_field(env.build_lib, dep.name, "manifest_sha256"),
              env
            ) do
-        :keep -> {revoked, replaced}
         {:replace, dep} -> {revoked, replaced ++ [dep]}
         line -> {revoked ++ [line], replaced}
       end
     end)
   end
-
-  defp recheck_one(_dep, sha, sha, _env) when is_binary(sha), do: :keep
 
   # The recorded files hash only says which build to prefer; whether the
   # disk holds it is read from the disk (`Fetch.installed_as?/3`).
@@ -350,8 +361,9 @@ defmodule ElixirPrecompiled.Check do
       result =
         with sha when is_binary(sha) <- sha || {:miss, "not in batch"},
              {:ok, manifest} <- Fetch.manifest(config, sname, sha, path),
+             reads = scan_reads(config, env, sname, candidate.lock_entry),
              {:ok, entry, _system_key} <-
-               Match.select(manifest, ctx(candidate, env, config_fun)) do
+               Match.select(manifest, ctx(candidate, env, config, config_fun, reads)) do
           provenance = %{
             sha: sha,
             path: path,
@@ -383,20 +395,34 @@ defmodule ElixirPrecompiled.Check do
   defp crashed(base, why),
     do: Map.merge(base, %{status: :fail, detail: "candidate crashed: #{why}"})
 
-  defp ctx(candidate, env, config_fun) do
+  defp ctx(candidate, env, config, config_fun, reads) do
+    {elixir, otp} = config.toolchain
+
     %{
       name: Atom.to_string(candidate.name),
       version: candidate.version,
       lock_entry: candidate.lock_entry,
       lock: env.lock,
       system: env.system || {"host", ""},
-      elixir: System.version(),
-      otp: to_string(:erlang.system_info(:otp_release)),
+      elixir: elixir,
+      otp: otp,
       dep_env: Map.get(candidate, :dep_env, "prod"),
       config: config_fun,
-      prefer: Map.get(candidate, :installed_hash)
+      prefer: Map.get(candidate, :installed_hash),
+      mix_target: Map.get(env, :mix_target, "host"),
+      reads: reads
     }
   end
+
+  # What the dep's own sources read at compile time (SourceScan), from the
+  # sources deps.get fetched; scanned only when a manifest is in hand, once
+  # per package checksum. No sources on disk: nil, no rule.
+  defp scan_reads(config, env, sname, {:hex, _, _, _, _, _, _, outer}) do
+    dir = Path.join(env.deps_path, sname)
+    if File.dir?(dir), do: ElixirPrecompiled.SourceScan.cached(config.home, dir, outer)
+  end
+
+  defp scan_reads(_config, _env, _sname, _lock_entry), do: nil
 
   # The selected build may be the one installed: then only its provenance
   # moves, once the disk is checked to hold exactly its files and its .app

@@ -32,7 +32,8 @@ defmodule ElixirPrecompiled.Env.MixProject do
       deps_path: Mix.Project.deps_path(),
       installed: Enum.map(installed, &elem(&1, 0)),
       installed_envs: Map.new(installed),
-      tooling: nerves_children_from(deps)
+      tooling: nerves_children_from(deps),
+      mix_target: Atom.to_string(Mix.target())
     }
   end
 

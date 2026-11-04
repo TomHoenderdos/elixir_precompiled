@@ -555,4 +555,42 @@ defmodule ElixirPrecompiled.MatchTest do
       assert {:miss, _} = Match.select(doc([old]), ctx(prefer: Match.files_hash(old)))
     end
   end
+
+  describe "compile-time inputs" do
+    test "a dep reading Mix.target gets no pure_elixir build on a device target" do
+      reads = %{target: true, env: []}
+
+      assert {:miss,
+              "reads Mix.target() at compile time; built for target host, project targets rpi4"} =
+               Match.select(doc([pe(@build)]), ctx(reads: reads, mix_target: "rpi4"))
+
+      assert {:ok, _, "pure_elixir"} =
+               Match.select(doc([pe(@build)]), ctx(reads: reads, mix_target: "host"))
+    end
+
+    test "a system build is served only under its conventional or recorded target name" do
+      reads = %{target: true, env: []}
+      assert {:ok, _, _} = Match.select(manifest(), ctx(reads: reads, mix_target: "rpi4"))
+
+      assert {:miss,
+              "reads Mix.target() at compile time; built for target rpi4, project targets my_board"} =
+               Match.select(manifest(), ctx(reads: reads, mix_target: "my_board"))
+
+      recorded = entry(%{"build" => Map.put(entry()["build"], "mix_target", "my_board")})
+
+      assert {:ok, _, _} =
+               Match.select(
+                 manifest("nerves_system_rpi4", recorded),
+                 ctx(reads: reads, mix_target: "my_board")
+               )
+    end
+
+    test "a module-level env read is a miss for every build; no scan is no rule" do
+      assert {:miss, "reads FOO_URL at compile time, which no build records"} =
+               Match.select(doc([pe(@build)]), ctx(reads: %{target: false, env: ["FOO_URL"]}))
+
+      assert {:ok, _, _} = Match.select(doc([pe(@build)]), ctx(reads: nil))
+      assert {:ok, _, _} = Match.select(doc([pe(@build)]), ctx(reads: %{target: false, env: []}))
+    end
+  end
 end

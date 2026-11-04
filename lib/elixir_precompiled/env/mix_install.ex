@@ -27,6 +27,7 @@ defmodule ElixirPrecompiled.Env.MixInstall do
     build_lib = Path.join([project_dir, "_build", Atom.to_string(Mix.env()), "lib"])
 
     envs = dep_envs(deps)
+    system = system()
 
     {compiled, apps} =
       lock |> Map.keys() |> Enum.sort() |> Enum.split_with(&compiled?(build_lib, &1))
@@ -34,7 +35,8 @@ defmodule ElixirPrecompiled.Env.MixInstall do
     installed = Enum.filter(compiled, &File.regular?(Fetch.provenance_path(build_lib, &1)))
 
     %Env{
-      system: system(),
+      system: system,
+      mix_target: mix_target(system),
       candidates: Env.hex_candidates(lock, apps, envs),
       lock: lock,
       build_lib: build_lib,
@@ -43,6 +45,13 @@ defmodule ElixirPrecompiled.Env.MixInstall do
       installed_envs: Map.new(installed, &{&1, Map.get(envs, &1, "prod")})
     }
   end
+
+  @doc false
+  # Mix.install on a device compiles as :host, but a build for the device's
+  # own system is the right one; its conventional target name stands in.
+  @spec mix_target({String.t(), String.t()} | nil) :: String.t()
+  def mix_target({"nerves_system_" <> name, _version}), do: name
+  def mix_target(_), do: "host"
 
   # Mix.install/2 deps can carry env:; transitive deps compile as prod, as
   # Mix.Dep.Loader defaults them.

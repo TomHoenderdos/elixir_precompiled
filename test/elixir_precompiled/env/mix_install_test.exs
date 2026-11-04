@@ -160,4 +160,9 @@ defmodule ElixirPrecompiled.Env.MixInstallTest do
 
     assert MixInstall.system([missing], loaded) == nil
   end
+
+  test "on a device the target is the system's conventional name" do
+    assert MixInstall.mix_target({"nerves_system_rpi4", "1.31.0"}) == "rpi4"
+    assert MixInstall.mix_target(nil) == "host"
+  end
 end
