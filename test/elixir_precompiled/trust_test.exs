@@ -882,7 +882,9 @@ defmodule ElixirPrecompiled.TrustTest do
     test "only while the cached batch passes every check", %{config: config, root: root} do
       later = Map.put(config, :clock_offset_seconds, 25 * 3600)
       unreachable = answer({:error, {:unreachable, "Status 502 Bad Gateway"}})
-      assert {:error, "batch unavailable"} = Trust.fetch_batch_cached(later, root, unreachable)
+
+      assert {:error, "batch unavailable: Status 502 Bad Gateway"} =
+               Trust.fetch_batch_cached(later, root, unreachable)
     end
 
     test "never on a response the source gave and that is refused", %{
@@ -890,8 +892,15 @@ defmodule ElixirPrecompiled.TrustTest do
       root: root,
       f: f
     } do
-      assert {:error, "batch unavailable"} =
+      assert {:error, "batch unavailable: Status 404 Not Found"} =
                Trust.fetch_batch_cached(config, root, answer({:error, "Status 404 Not Found"}))
+
+      assert {:error, "batch unavailable: redirect to another host refused"} =
+               Trust.fetch_batch_cached(
+                 config,
+                 root,
+                 answer({:error, "redirect to another host refused"})
+               )
 
       assert {:error, "batch signature invalid"} =
                Trust.fetch_batch_cached(

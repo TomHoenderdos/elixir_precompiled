@@ -36,6 +36,9 @@ defmodule ElixirPrecompiled.Check do
       :nothing_to_do
     else
       config = config |> with_home(env) |> with_deadline()
+      # Temp files a killed run left behind; an hour back, so a run sharing
+      # this home mid-write keeps its own.
+      Fetch.sweep_tmp(config, System.os_time(:second) - 3600)
       debug_skipped(skipped)
       config_fun = Keyword.get(opts, :config_fun, &CompileEnv.lookup/2)
 
@@ -393,22 +396,26 @@ defmodule ElixirPrecompiled.Check do
 
   defp manifest_ref(batch, name), do: {batch.manifests[name], "manifests"}
 
+  @doc false
   # Release-stripped beams (no debug_info chunk) still load and run, but
   # Mix cannot consolidate the protocols they define. Judged by the first
-  # module the .app lists.
-  defp stripped?(dir, name) do
+  # module the .app lists. The beam is read here and handed to beam_lib as
+  # bytes: given a file name, beam_lib turns it into an atom on some error
+  # paths, which raises for a name over 255 characters.
+  @spec stripped?(Path.t(), String.t()) :: boolean()
+  def stripped?(dir, name) do
     with {:ok, [{:application, _, props}]} <-
            :file.consult(String.to_charlist(Path.join([dir, "ebin", name <> ".app"]))),
-         [first | _] <- Keyword.get(props, :modules, []) do
-      beam = Path.join([dir, "ebin", "#{first}.beam"])
-
-      not match?(
-        {:ok, {_, [{:debug_info, _}]}},
-        :beam_lib.chunks(String.to_charlist(beam), [:debug_info])
-      )
+         [first | _] <- Keyword.get(props, :modules, []),
+         {:ok, bytes} <- File.read(Path.join([dir, "ebin", "#{first}.beam"])) do
+      not match?({:ok, {_, [{:debug_info, _}]}}, :beam_lib.chunks(bytes, [:debug_info]))
     else
       _ -> false
     end
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
   end
 
   defp line_for(base, {:hit, %{bytes: bytes, files: files, cached: cached} = stats}) do

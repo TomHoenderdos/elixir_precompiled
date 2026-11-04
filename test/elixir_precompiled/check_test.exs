@@ -73,7 +73,7 @@ defmodule ElixirPrecompiled.CheckTest do
   defp good_entry(f, dep, system_version, target \\ "nerves_system_rpi4") do
     beam = "beam #{dep}"
     vsn = if dep == "ash", do: "3.5.2", else: "1.4.5"
-    app = "{application, #{dep}, [{vsn, \"#{vsn}\"}]}.\n"
+    app = "{application, #{dep}, [{vsn, \"#{vsn}\"}, {modules, ['Elixir.X']}]}.\n"
 
     %{
       "target" => target,
@@ -215,7 +215,9 @@ defmodule ElixirPrecompiled.CheckTest do
     lib: lib
   } do
     e = good_entry(f, "ash", "1.31.0")
-    app = "{application, ash, [{vsn, \"3.5.2\"}, {compile_env, [{ash, [mode], {ok, fast}}]}]}.\n"
+
+    app =
+      "{application, ash, [{vsn, \"3.5.2\"}, {modules, ['Elixir.X']}, {compile_env, [{ash, [mode], {ok, fast}}]}]}.\n"
 
     e =
       update_in(e["ebin"], fn files ->
@@ -364,7 +366,9 @@ defmodule ElixirPrecompiled.CheckTest do
 
   test "a throw inside a candidate is that candidate's FAIL", %{f: f, config: config, env: env} do
     e = good_entry(f, "ash", "1.31.0")
-    app = "{application, ash, [{vsn, \"3.5.2\"}, {compile_env, [{ash, [mode], {ok, fast}}]}]}.\n"
+
+    app =
+      "{application, ash, [{vsn, \"3.5.2\"}, {modules, ['Elixir.X']}, {compile_env, [{ash, [mode], {ok, fast}}]}]}.\n"
 
     e =
       update_in(e["ebin"], fn files ->
@@ -662,12 +666,12 @@ defmodule ElixirPrecompiled.CheckTest do
       assert_received {:report, {:ok, report}}
 
       assert out ==
-               "precompiled: no fresh batch (batch unavailable); " <>
+               "precompiled: no fresh batch (batch unavailable: cannot connect (econnrefused)); " <>
                  "2 installed builds kept, not rechecked\n"
 
       assert [
-               %{name: "ash", status: :fail, detail: "batch unavailable (installed build kept)"},
-               %{name: "jason", status: :fail, detail: "batch unavailable (installed build kept)"}
+               %{name: "ash", status: :fail, detail: "batch unavailable: " <> _},
+               %{name: "jason", status: :fail, detail: "batch unavailable: " <> _}
              ] = report.lines
 
       assert [_, _] =
@@ -1170,5 +1174,32 @@ defmodule ElixirPrecompiled.CheckTest do
     refute File.exists?(Path.join(lib, "jason"))
     refute File.exists?(Path.join(lib, ".precompiled/jason"))
     assert File.exists?(Path.join(lib, "ash/.mix/compile.elixir_scm"))
+  end
+
+  test "stripped?/2 never crashes on a long path to an unreadable beam", %{tmp_dir: dir} do
+    long = Path.join([dir | List.duplicate(String.duplicate("d", 60), 5)])
+    ebin = Path.join([long, "ash", "ebin"])
+    File.mkdir_p!(ebin)
+    File.write!(Path.join(ebin, "ash.app"), "{application, ash, [{modules, ['Elixir.X']}]}.\n")
+    File.write!(Path.join(ebin, "Elixir.X.beam"), "not a beam")
+    assert byte_size(Path.join(ebin, "Elixir.X.beam")) > 255
+    assert Check.stripped?(Path.join(long, "ash"), "ash") == true
+    File.rm!(Path.join(ebin, "Elixir.X.beam"))
+    assert is_boolean(Check.stripped?(Path.join(long, "ash"), "ash"))
+  end
+
+  test "a run sweeps temp files killed runs left in the cache", %{f: f, config: config, env: env} do
+    F.publish(f, %{
+      "ash" => %{"versions" => %{"3.5.2" => %{"builds" => [good_entry(f, "ash", "1.31.0")]}}}
+    })
+
+    files = Path.join(config.home, "files")
+    File.mkdir_p!(files)
+    orphan = Path.join(files, String.duplicate("a", 64) <> ".tmp-1-2")
+    File.write!(orphan, "x")
+    File.touch!(orphan, System.os_time(:second) - 2 * 86_400)
+    _ = run_capturing(config, env)
+    assert_received {:report, {:ok, _}}
+    refute File.exists?(orphan)
   end
 end

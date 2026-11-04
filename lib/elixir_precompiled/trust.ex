@@ -451,6 +451,14 @@ defmodule ElixirPrecompiled.Trust do
       {:error, {:unreachable, why}} when cached != nil ->
         from_cache(config, root, cached.body, dir, why)
 
+      # The reason stays in the line: "redirect to another host refused"
+      # says more than "batch unavailable" alone.
+      {:error, {:unreachable, why}} when is_binary(why) ->
+        {:error, "batch unavailable: #{why}"}
+
+      {:error, why} when is_binary(why) ->
+        {:error, "batch unavailable: #{why}"}
+
       _ ->
         {:error, "batch unavailable"}
     end
@@ -467,7 +475,7 @@ defmodule ElixirPrecompiled.Trust do
         {:ok, batch}
 
       {:error, _} ->
-        {:error, "batch unavailable"}
+        {:error, "batch unavailable: #{why}"}
     end
   end
 

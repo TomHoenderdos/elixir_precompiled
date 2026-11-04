@@ -114,6 +114,14 @@ defmodule ElixirPrecompiled.Fetch do
   defp describe_error(:cross_origin_redirect), do: "redirect to another host refused"
   defp describe_error(:too_many_redirects), do: "too many redirects"
   defp describe_error(reason) when is_binary(reason), do: reason
+
+  defp describe_error({:failed_connect, info}) when is_list(info) do
+    case List.keyfind(info, :inet, 0) do
+      {:inet, _, why} when is_atom(why) -> "cannot connect (#{why})"
+      _ -> "cannot connect"
+    end
+  end
+
   defp describe_error(reason), do: inspect(reason)
 
   @doc """
@@ -130,13 +138,13 @@ defmodule ElixirPrecompiled.Fetch do
   @spec manifest(map(), String.t(), String.t(), String.t()) ::
           {:ok, map()} | {:miss, String.t()} | {:fail, String.t()}
   def manifest(config, name, expected_sha, path \\ "manifests") do
-    if sha256?(expected_sha) do
+    with true <- sha256?(expected_sha) || {:fail, "manifest hash malformed"},
+         {:ok, _dir} <- cache_dir(config, "manifests") do
       case cached_manifest(config, expected_sha) do
         {:ok, bytes} -> decode_manifest(bytes)
-        :error -> uncached_manifest(config, name, expected_sha, path)
+        :absent -> uncached_manifest(config, name, expected_sha, path)
+        {:fail, _} = fail -> fail
       end
-    else
-      {:fail, "manifest hash malformed"}
     end
   end
 
@@ -154,12 +162,13 @@ defmodule ElixirPrecompiled.Fetch do
   end
 
   # By-sha paths exist where the signed batch advertises content origins:
-  # the portal signs "content" into batches once it serves them. Check sets
-  # :by_sha from the batch; without it, a :content list stands for it.
+  # the portal signs "content" into batches once it serves them. Only Check
+  # sets :by_sha, from the batch; a :content list alone (the project's own
+  # origins) does not say the source has them.
   defp by_sha_origins(config) do
     content = Map.get(config, :content)
 
-    if is_list(content) and Map.get(config, :by_sha, true),
+    if is_list(content) and Map.get(config, :by_sha, false),
       do: content ++ [config.source],
       else: []
   end
@@ -199,9 +208,9 @@ defmodule ElixirPrecompiled.Fetch do
   defp decode_manifest(bytes), do: with({:ok, map} <- decode(bytes), do: Manifest.normalize(map))
 
   defp cached_manifest(config, sha) do
-    case read_regular(manifest_cache_path(config, sha), @max_manifest_bytes) do
-      {:ok, bytes} -> if sha256(bytes) == sha, do: {:ok, bytes}, else: :error
-      :error -> :error
+    case read_cached(manifest_cache_path(config, sha), @max_manifest_bytes) do
+      {:ok, bytes} -> if sha256(bytes) == sha, do: {:ok, bytes}, else: :absent
+      other -> other
     end
   end
 
@@ -211,15 +220,120 @@ defmodule ElixirPrecompiled.Fetch do
 
   defp manifest_cache_path(config, sha), do: Path.join([config.home, "manifests", sha <> ".json"])
 
-  # A cache entry is read only when it is a regular file itself: never
-  # through a symlink, whatever it points at, and never past `max` bytes.
-  defp read_regular(path, max) do
-    with {:ok, %File.Stat{type: :regular, size: size}} when size <= max <- File.lstat(path),
-         {:ok, bytes} <- File.read(path) do
+  # A cache entry is read only when it is a regular file itself. Anything
+  # else under that name (a symlink, whatever it points at, a FIFO, a
+  # directory) means someone else has been writing the cache: the dep is
+  # refused and the entry left as it is, never replaced through. A regular
+  # file with the wrong bytes (or more than `max` of them) is `:absent`: it
+  # is fetched again and replaced.
+  #
+  # The file is opened only after lstat says it is regular, and the open
+  # handle must be that same file (inode and device): a swap between the
+  # two is refused. The read stops at `max` + 1 bytes, whatever the file
+  # has grown to since.
+  defp read_cached(path, max) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular, size: size}} when size > max -> :absent
+      {:ok, %File.Stat{type: :regular} = stat} -> read_regular(path, stat, max)
+      {:ok, %File.Stat{}} -> {:fail, "cache refused (#{path} is not a regular file)"}
+      {:error, _} -> :absent
+    end
+  end
+
+  defp read_regular(path, lstat, max) do
+    case :file.open(String.to_charlist(path), [:read, :raw, :binary]) do
+      {:ok, fd} ->
+        try do
+          read_open(fd, path, lstat, max)
+        after
+          :file.close(fd)
+        end
+
+      {:error, _} ->
+        :absent
+    end
+  end
+
+  defp read_open(fd, path, lstat, max) do
+    with {:ok, info} <- :file.read_file_info(fd, time: :posix),
+         %File.Stat{type: :regular} = stat <- File.Stat.from_record(info),
+         true <- {stat.inode, stat.major_device} == {lstat.inode, lstat.major_device},
+         {:ok, bytes} when byte_size(bytes) <= max <- read_capped(fd, max + 1, []) do
       {:ok, bytes}
     else
-      _ -> :error
+      {:ok, _too_long} -> :absent
+      {:error, _} -> :absent
+      _ -> {:fail, "cache refused (#{path} changed while being read)"}
     end
+  end
+
+  defp read_capped(fd, left, acc) when left > 0 do
+    case :file.read(fd, left) do
+      {:ok, data} -> read_capped(fd, left - byte_size(data), [acc | data])
+      :eof -> {:ok, IO.iodata_to_binary(acc)}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp read_capped(_fd, _left, acc), do: {:ok, IO.iodata_to_binary(acc)}
+
+  # `files` and `manifests` under the home must be plain directories:
+  # created when missing, refused when a symlink (by lstat, so a link is
+  # never followed) or anything else, and never written through. A plain
+  # directory in the home holds whatever is under it inside the home.
+  defp cache_dir(config, name) do
+    dir = Path.join(config.home, name)
+
+    case File.lstat(dir) do
+      {:ok, %File.Stat{type: :directory}} ->
+        {:ok, dir}
+
+      {:error, :enoent} ->
+        # A home that cannot take the dir only costs downloads: reads miss,
+        # writes fail quietly.
+        _ = File.mkdir_p(dir)
+
+        if match?({:ok, %File.Stat{type: :symlink}}, File.lstat(dir)),
+          do: refused(dir),
+          else: {:ok, dir}
+
+      {:ok, %File.Stat{}} ->
+        refused(dir)
+
+      {:error, _} ->
+        {:ok, dir}
+    end
+  end
+
+  defp refused(dir), do: {:fail, "cache refused (#{dir} is not a plain directory)"}
+
+  @doc """
+  Removes the temp files (`*.tmp-*`) that runs killed mid-write left in
+  the cache's `files` and `manifests` dirs, when last modified before
+  `cutoff` (Unix seconds). Another run sharing the home may be writing its
+  own right now, so the cutoff is well before this run started. Only
+  regular files directly in a plain cache dir are removed, and a failure
+  is ignored: it costs disk, never a build.
+  """
+  @spec sweep_tmp(map(), integer()) :: :ok
+  def sweep_tmp(config, cutoff) do
+    for name <- ["files", "manifests"],
+        dir = Path.join(config.home, name),
+        match?({:ok, %File.Stat{type: :directory}}, File.lstat(dir)),
+        {:ok, entries} <- [File.ls(dir)],
+        entry <- entries,
+        String.contains?(entry, ".tmp-"),
+        path = Path.join(dir, entry),
+        match?(
+          {:ok, %File.Stat{type: :regular, mtime: m}} when m < cutoff,
+          File.lstat(path, time: :posix)
+        ) do
+      File.rm(path)
+    end
+
+    :ok
+  rescue
+    _ -> :ok
   end
 
   defp decode(bytes) do
@@ -228,6 +342,16 @@ defmodule ElixirPrecompiled.Fetch do
     _ -> {:fail, "manifest is not JSON"}
   end
 
+  @doc """
+  Verifies and installs one dependency's build into `build_lib`.
+  Everything (files, Mix's marker, provenance, the include/src links) is
+  put together in staging first; replacing the old dep dir by a rename is
+  the last step, so any failure leaves `_build` as it was.
+
+  Options: `:deps_path` (required), `:provenance`, `:verify_app` (a check
+  on the staged `.app`), and `:link_sources`, a test seam that replaces
+  the linker (`(dep, entry, staging, dest, deps_path -> :ok)`).
+  """
   @spec install(map(), atom(), map(), tuple(), Path.t(), keyword()) ::
           {:ok, %{files: non_neg_integer(), bytes: non_neg_integer(), cached: non_neg_integer()}}
           | {:fail, String.t()}
@@ -236,19 +360,21 @@ defmodule ElixirPrecompiled.Fetch do
     staging = Path.join([build_lib, ".precompiled", Atom.to_string(dep)])
     dest = Path.join(build_lib, Atom.to_string(dep))
     verify_app = Keyword.get(opts, :verify_app, fn _ -> :ok end)
+    link = Keyword.get(opts, :link_sources, &link_sources/5)
 
     try do
       with :ok <- validate(files, dep),
            {:ok, stats} <- stage(config, files, staging),
-           :ok <- verify_app.(Path.join([staging, "ebin", "#{dep}.app"])) do
+           :ok <- verify_app.(Path.join([staging, "ebin", "#{dep}.app"])),
+           :ok <- modules_ok(staging, dep) do
         write_marker(staging, lock_entry)
         write_provenance(staging, Keyword.get(opts, :provenance))
+        :ok = link.(dep, entry, staging, dest, Keyword.fetch!(opts, :deps_path))
+        # Everything is in staging before _build changes: a failure up to
+        # here leaves the old dep dir as it was.
         File.rm_rf!(dest)
         File.mkdir_p!(build_lib)
         File.rename!(staging, dest)
-
-        link_sources(dep, entry, dest, Keyword.fetch!(opts, :deps_path))
-
         {:ok, stats}
       else
         {:fail, _} = fail ->
@@ -264,31 +390,25 @@ defmodule ElixirPrecompiled.Fetch do
 
   # Mix links deps/<dep>/include (and src for rebar deps, and priv) into
   # _build when it builds a dep; a dep installed here is never built, so
-  # mirror that or a dependent's -include_lib/Record.extract fails.
-  defp link_sources(dep, entry, dest, deps_path) do
+  # mirror that or a dependent's -include_lib/Record.extract fails. The
+  # links are made in staging but relative to where they will live after
+  # the rename (`dest`), as Mix makes them, so a moved project tree keeps
+  # its links; a copy where the filesystem refuses one.
+  defp link_sources(dep, entry, staging, dest, deps_path) do
     source = Path.join(deps_path, Atom.to_string(dep))
     priv = if (entry["priv"] || []) == [], do: ["priv"], else: []
 
     for name <- ["include", "src" | priv],
         from = Path.join(source, name),
-        to = Path.join(dest, name),
+        to = Path.join(staging, name),
         File.dir?(from) and not File.exists?(to) do
-      symlink_or_copy(from, to)
+      case File.ln_s(Path.relative_to(from, dest, force: true), to) do
+        :ok -> :ok
+        {:error, _} -> File.cp_r!(from, to)
+      end
     end
 
     :ok
-  end
-
-  # Mix.Utils.symlink_or_copy/2 without Mix: a relative symlink, as Mix
-  # makes, so a moved project tree keeps its links; a copy where the
-  # filesystem refuses one.
-  defp symlink_or_copy(from, to) do
-    relative = Path.relative_to(from, Path.dirname(to), force: true)
-
-    case File.ln_s(relative, to) do
-      :ok -> :ok
-      {:error, _} -> File.cp_r!(from, to) && :ok
-    end
   end
 
   defp validate(files, dep) do
@@ -296,10 +416,90 @@ defmodule ElixirPrecompiled.Fetch do
 
     cond do
       why = Enum.find_value(files, &bad_file/1) -> {:fail, why}
+      why = collision(files) -> {:fail, why}
+      why = foreign(files, app) -> {:fail, why}
       not Enum.any?(files, &(&1["path"] == app)) -> {:fail, "no #{app} in entry"}
       true -> :ok
     end
   end
+
+  @doc false
+  # Two entries that are one file on a case-insensitive or normalising
+  # filesystem (APFS, NTFS) would overwrite each other: refused before
+  # anything is written (spec P8). Runs after bad_file/1, so every path is
+  # valid UTF-8.
+  @spec collision([map()]) :: String.t() | nil
+  def collision(files) do
+    files
+    |> Enum.group_by(&fold(&1["path"]))
+    |> Enum.filter(fn {_key, group} -> length(group) > 1 end)
+    |> Enum.min_by(fn {key, _} -> key end, fn -> nil end)
+    |> case do
+      nil -> nil
+      {_key, group} -> "path collision: " <> Enum.map_join(group, ", ", &inspect(&1["path"]))
+    end
+  end
+
+  defp fold(path) do
+    path
+    |> :unicode.characters_to_nfc_binary()
+    |> :string.casefold()
+    |> :unicode.characters_to_nfc_binary()
+  end
+
+  # The only .app a build may carry is the dep's own, at ebin/<dep>.app:
+  # another one in ebin (the project's own, or another dep's) would sit on
+  # the code path ahead of the real one (spec P3). Case-folded, as the
+  # filesystem may fold it.
+  defp foreign(files, app) do
+    own = fold(app)
+
+    Enum.find_value(files, fn %{"path" => path} ->
+      folded = fold(path)
+
+      if String.starts_with?(folded, "ebin/") and String.ends_with?(folded, ".app") and
+           folded != own,
+         do: "foreign path: #{inspect(path)} is not #{Path.basename(app)}"
+    end)
+  end
+
+  @doc false
+  # The beams in ebin must be exactly the modules the .app lists: a beam
+  # the app does not own could shadow another application's module through
+  # code-path order.
+  @spec modules_ok(Path.t(), atom()) :: :ok | {:fail, String.t()}
+  def modules_ok(staging, dep) do
+    ebin = Path.join(staging, "ebin")
+
+    with {:ok, [{:application, _, props}]} when is_list(props) <-
+           :file.consult(String.to_charlist(Path.join(ebin, "#{dep}.app"))),
+         mods when is_list(mods) <- Keyword.get(props, :modules, []),
+         true <- Enum.all?(mods, &is_atom/1) do
+      listed = MapSet.new(mods, &Atom.to_string/1)
+
+      beams =
+        ebin
+        |> File.ls!()
+        |> Enum.filter(&String.ends_with?(&1, ".beam"))
+        |> MapSet.new(&Path.rootname/1)
+
+      cond do
+        beams == listed ->
+          :ok
+
+        extra = first(MapSet.difference(beams, listed)) ->
+          {:fail, "#{extra}.beam is not a module of #{dep}"}
+
+        true ->
+          {:fail,
+           "#{dep}.app lists #{first(MapSet.difference(listed, beams))}, which the build lacks"}
+      end
+    else
+      _ -> {:fail, "staged .app unreadable"}
+    end
+  end
+
+  defp first(set), do: Enum.min(set, fn -> nil end)
 
   # `sha256` becomes a cache file name and `size` a download cap, so both
   # are checked as strictly as the path before anything touches the disk.
@@ -338,10 +538,14 @@ defmodule ElixirPrecompiled.Fetch do
   # by its declared size and the run deadline; results are taken in order,
   # so the first failing file (in manifest order) is the one reported.
   defp stage(config, files, staging) do
-    File.rm_rf!(staging)
-    File.mkdir_p!(staging)
-    File.mkdir_p!(Path.join(config.home, "files"))
+    with {:ok, _dir} <- cache_dir(config, "files") do
+      File.rm_rf!(staging)
+      File.mkdir_p!(staging)
+      stage_files(config, files, staging)
+    end
+  end
 
+  defp stage_files(config, files, staging) do
     files
     |> Task.async_stream(&stage_file(config, &1, staging),
       max_concurrency: @file_concurrency,
@@ -362,6 +566,10 @@ defmodule ElixirPrecompiled.Fetch do
       {:ok, {:fail, _} = fail}, _ ->
         {:halt, fail}
 
+      # stage_file never raises, and the tasks are linked: a task that dies
+      # anyway (killed from outside) takes this process with it unless it
+      # traps exits. Only then does the stream yield {:exit, _}; it is
+      # handled so even that case is one dep's FAIL, not a crash.
       {:exit, reason}, _ ->
         {:halt, {:fail, "install failed: #{inspect(reason)}"}}
     end)
@@ -386,18 +594,17 @@ defmodule ElixirPrecompiled.Fetch do
   defp fetch_file(config, %{"sha256" => sha, "size" => size, "path" => path}) do
     case cached_file(config, sha, size) do
       {:ok, bytes} -> {:ok, bytes, true}
-      :error -> download_file(config, sha, size, path)
+      :absent -> download_file(config, sha, size, path)
+      {:fail, _} = fail -> fail
     end
   end
 
-  # The cached copy, re-hashed on every use; a symlink, a wrong size or a
-  # wrong hash is no copy at all.
+  # The cached copy, re-hashed on every use; a wrong size or a wrong hash
+  # is no copy at all, and anything but a regular file refuses the dep.
   defp cached_file(config, sha, size) do
-    with {:ok, bytes} <- read_regular(file_cache_path(config, sha), size),
-         :ok <- check_bytes(bytes, sha, size) do
-      {:ok, bytes}
-    else
-      _ -> :error
+    case read_cached(file_cache_path(config, sha), size) do
+      {:ok, bytes} -> if check_bytes(bytes, sha, size) == :ok, do: {:ok, bytes}, else: :absent
+      other -> other
     end
   end
 

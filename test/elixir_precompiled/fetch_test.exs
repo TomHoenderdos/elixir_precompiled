@@ -38,9 +38,15 @@ defmodule ElixirPrecompiled.FetchTest do
   defp file_entry(sha, size, path \\ "ebin/Elixir.Ash.beam", mode \\ 33188),
     do: %{"path" => path, "sha256" => sha, "size" => size, "mode" => mode}
 
-  # The validator requires ebin/<dep>.app; most entries need one alongside the file under test.
+  # The validator requires ebin/<dep>.app, and its modules must be exactly
+  # the entry's beams.
   defp with_app(f, files) do
-    app = "{application, ash, []}.\n"
+    mods =
+      for %{"path" => "ebin/" <> base} <- files,
+          String.ends_with?(base, ".beam"),
+          do: "'#{Path.rootname(base)}'"
+
+    app = "{application, ash, [{modules, [#{Enum.join(mods, ", ")}]}]}.\n"
     files ++ [file_entry(F.file(f, app), byte_size(app), "ebin/ash.app")]
   end
 
@@ -117,7 +123,7 @@ defmodule ElixirPrecompiled.FetchTest do
     deps: deps
   } do
     beam = "beam bytes"
-    app = "{application, ash, [{vsn, \"3.5.2\"}]}.\n"
+    app = "{application, ash, [{vsn, \"3.5.2\"}, {modules, ['Elixir.Ash']}]}.\n"
     s1 = F.file(f, beam)
     s2 = F.file(f, app)
     e = entry([file_entry(s1, byte_size(beam)), file_entry(s2, byte_size(app), "ebin/ash.app")])
@@ -488,7 +494,7 @@ defmodule ElixirPrecompiled.FetchTest do
     assert length(F.requests()) == 1
   end
 
-  test "a cached manifest or file that is a symlink is never used", %{
+  test "a cached manifest or file that is a symlink is never used, and left alone", %{
     f: f,
     config: config,
     build_lib: lib,
@@ -505,22 +511,110 @@ defmodule ElixirPrecompiled.FetchTest do
     File.ln_s!(Path.join(elsewhere, "m"), cached)
 
     F.clear_requests()
-    assert {:ok, _} = Fetch.manifest(config, "ash", sha, "v2/manifests")
-    assert length(F.requests()) == 1
-    assert {:ok, %File.Stat{type: :regular}} = File.lstat(cached)
+    assert {:fail, "cache refused" <> _} = Fetch.manifest(config, "ash", sha, "v2/manifests")
+    assert F.requests() == []
+    assert {:ok, %File.Stat{type: :symlink}} = File.lstat(cached)
 
     beam_sha = F.file(f, "b")
     File.write!(Path.join(elsewhere, "b"), "b")
     File.mkdir_p!(Path.join(config.home, "files"))
-    File.ln_s!(Path.join(elsewhere, "b"), Path.join([config.home, "files", beam_sha]))
+    link = Path.join([config.home, "files", beam_sha])
+    File.ln_s!(Path.join(elsewhere, "b"), link)
 
-    F.clear_requests()
     e = entry(with_app(f, [file_entry(beam_sha, 1)]))
-    assert {:ok, %{cached: 0}} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
-    assert Enum.any?(F.requests(), &(&1.path == "/precompiled/files/" <> beam_sha))
 
-    assert {:ok, %File.Stat{type: :regular}} =
-             File.lstat(Path.join([config.home, "files", beam_sha]))
+    assert {:fail, "cache refused" <> _} =
+             Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+
+    refute File.exists?(Path.join(lib, "ash"))
+    assert {:ok, %File.Stat{type: :symlink}} = File.lstat(link)
+    assert File.read!(Path.join(elsewhere, "b")) == "b"
+  end
+
+  test "a cache dir that is a symlink is never read or written through", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps,
+    tmp_dir: dir
+  } do
+    outside = Path.join(dir, "outside")
+    File.mkdir_p!(outside)
+    File.mkdir_p!(config.home)
+    File.ln_s!(outside, Path.join(config.home, "files"))
+    File.ln_s!(outside, Path.join(config.home, "manifests"))
+
+    F.publish(f, %{"ash" => %{"versions" => %{}}})
+
+    assert {:fail, "cache refused" <> _} =
+             Fetch.manifest(config, "ash", batch_sha("ash"), "v2/manifests")
+
+    e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+
+    assert {:fail, "cache refused" <> _} =
+             Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+
+    assert File.ls!(outside) == []
+    refute File.exists?(Path.join(lib, "ash"))
+  end
+
+  test "a cache entry that is a FIFO is refused without blocking", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    sha = F.file(f, "b")
+    File.mkdir_p!(Path.join(config.home, "files"))
+    {_, 0} = System.cmd("mkfifo", [Path.join([config.home, "files", sha])])
+    e = entry(with_app(f, [file_entry(sha, 1)]))
+
+    task = Task.async(fn -> Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps) end)
+    assert {:fail, "cache refused" <> _} = Task.await(task, 5_000)
+  end
+
+  test "a cached file larger than its declared size is fetched again and replaced", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    sha = F.file(f, "b")
+    path = Path.join([config.home, "files", sha])
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, "bbbb")
+    e = entry(with_app(f, [file_entry(sha, 1)]))
+    assert {:ok, %{cached: 0}} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+    assert File.read!(path) == "b"
+  end
+
+  test "sweep_tmp removes temp files older than the cutoff, keeps the rest", %{config: config} do
+    files = Path.join(config.home, "files")
+    File.mkdir_p!(files)
+    old = Path.join(files, String.duplicate("a", 64) <> ".tmp-1-2")
+    fresh = Path.join(files, String.duplicate("b", 64) <> ".tmp-3-4")
+    keep = Path.join(files, String.duplicate("c", 64))
+    for p <- [old, fresh, keep], do: File.write!(p, "x")
+    now = System.os_time(:second)
+    File.touch!(old, now - 7200)
+    File.touch!(keep, now - 7200)
+
+    assert :ok = Fetch.sweep_tmp(config, now - 3600)
+    refute File.exists?(old)
+    assert File.exists?(fresh)
+    assert File.exists?(keep)
+  end
+
+  test "sweep_tmp never follows a symlinked cache dir", %{config: config, tmp_dir: dir} do
+    outside = Path.join(dir, "outside")
+    File.mkdir_p!(outside)
+    victim = Path.join(outside, "x.tmp-1-2")
+    File.write!(victim, "x")
+    File.touch!(victim, 0)
+    File.mkdir_p!(config.home)
+    File.ln_s!(outside, Path.join(config.home, "files"))
+    assert :ok = Fetch.sweep_tmp(config, System.os_time(:second))
+    assert File.exists?(victim)
   end
 
   test "a batch sha that is not 64 hex digits never becomes a file name", %{config: config} do
@@ -588,12 +682,112 @@ defmodule ElixirPrecompiled.FetchTest do
     refute File.exists?(Path.join(lib, ".precompiled/ash"))
   end
 
+  for {label, paths} <- [
+        {"a duplicate path", ["ebin/Elixir.A.beam", "ebin/Elixir.A.beam"]},
+        {"a case variant", ["ebin/Elixir.A.beam", "ebin/elixir.a.beam"]},
+        {"a Unicode normalisation variant", ["priv/caf\u00e9.txt", "priv/cafe\u0301.txt"]}
+      ] do
+    test "#{label} refuses the dependency", %{f: f, config: config, build_lib: lib, deps: deps} do
+      files =
+        for {p, i} <- Enum.with_index(unquote(paths)),
+            do: file_entry(F.file(f, "#{i}"), byte_size("#{i}"), p)
+
+      assert {:fail, "path collision: " <> _} =
+               Fetch.install(config, :ash, entry(with_app(f, files)), @lock_entry, lib,
+                 deps_path: deps
+               )
+
+      refute File.exists?(Path.join(lib, "ash"))
+    end
+  end
+
+  test "collision/1 names the colliding paths, nil when there are none" do
+    e = &%{"path" => &1}
+    assert Fetch.collision([e.("ebin/a.beam"), e.("priv/a")]) == nil
+
+    assert Fetch.collision([e.("ebin/A.beam"), e.("ebin/a.beam")]) ==
+             ~s(path collision: "ebin/A.beam", "ebin/a.beam")
+  end
+
+  for {label, path} <- [
+        {"the project's own .app", "ebin/chain_fixture.app"},
+        {"another app's .app in a case variant", "ebin/Other.APP"},
+        {"an .app nested under ebin", "ebin/sub/ash.app"}
+      ] do
+    test "#{label} in a build is a foreign path", %{
+      f: f,
+      config: config,
+      build_lib: lib,
+      deps: deps
+    } do
+      files = [file_entry(F.file(f, "x"), 1, unquote(path))]
+
+      assert {:fail, "foreign path" <> _} =
+               Fetch.install(config, :ash, entry(with_app(f, files)), @lock_entry, lib,
+                 deps_path: deps
+               )
+
+      refute File.exists?(Path.join(lib, "ash"))
+    end
+  end
+
+  test "a beam the .app does not list is refused (no shadowing another app's module)", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    app = "{application, ash, [{modules, ['Elixir.Ash']}]}.\n"
+
+    files = [
+      file_entry(F.file(f, "a"), 1, "ebin/Elixir.Ash.beam"),
+      file_entry(F.file(f, "j"), 1, "ebin/Elixir.Jason.beam"),
+      file_entry(F.file(f, app), byte_size(app), "ebin/ash.app")
+    ]
+
+    assert {:fail, "Elixir.Jason.beam is not a module of ash"} =
+             Fetch.install(config, :ash, entry(files), @lock_entry, lib, deps_path: deps)
+
+    app2 = "{application, ash, [{modules, ['Elixir.Ash', 'Elixir.Gone']}]}.\n"
+
+    files2 = [
+      file_entry(F.file(f, "a"), 1, "ebin/Elixir.Ash.beam"),
+      file_entry(F.file(f, app2), byte_size(app2), "ebin/ash.app")
+    ]
+
+    assert {:fail, "ash.app lists Elixir.Gone, which the build lacks"} =
+             Fetch.install(config, :ash, entry(files2), @lock_entry, lib, deps_path: deps)
+
+    refute File.exists?(Path.join(lib, "ash"))
+  end
+
+  test "a failure while linking sources leaves _build as it was", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    File.mkdir_p!(Path.join(lib, "ash/ebin"))
+    File.write!(Path.join(lib, "ash/ebin/stale.beam"), "old")
+    e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+
+    assert {:fail, "install failed: link boom"} =
+             Fetch.install(config, :ash, e, @lock_entry, lib,
+               deps_path: deps,
+               link_sources: fn _, _, _, _, _ -> raise "link boom" end
+             )
+
+    assert File.read!(Path.join(lib, "ash/ebin/stale.beam")) == "old"
+    refute File.exists?(Path.join(lib, "ash/.mix/compile.elixir_scm"))
+    refute File.exists?(Path.join(lib, ".precompiled/ash"))
+  end
+
   describe "content origins" do
     setup %{config: config} do
       cdn_port = ElixirPrecompiled.TestServer.port() + 2
       start_supervised!({ElixirPrecompiled.TestServer, port: cdn_port})
       cdn = "http://127.0.0.1:#{cdn_port}/precompiled"
-      %{cdn_port: cdn_port, config: Map.put(config, :content, [cdn])}
+      %{cdn_port: cdn_port, config: config |> Map.put(:content, [cdn]) |> Map.put(:by_sha, true)}
     end
 
     test "files and manifests come from the content origin", %{
@@ -628,6 +822,10 @@ defmodule ElixirPrecompiled.FetchTest do
       assert {:ok, _} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
       assert File.read!(Path.join(lib, "ash/ebin/Elixir.Ash.beam")) == "good"
       assert Enum.any?(F.requests(), &(&1.port != p))
+      assert File.read!(Path.join([config.home, "files", F.file(f, "good")])) == "good"
+
+      assert File.read!(Path.join([config.home, "manifests", sha <> ".json"])) ==
+               F.get(:manifests_v2)["ash"]
     end
 
     test "an unreachable content origin falls back to the source", %{
@@ -638,9 +836,27 @@ defmodule ElixirPrecompiled.FetchTest do
     } do
       config = Map.put(config, :content, ["http://127.0.0.1:1/precompiled"])
       F.publish(f, %{"ash" => %{"versions" => %{}}})
+      F.clear_requests()
       assert {:ok, _} = Fetch.manifest(config, "ash", batch_sha("ash"), "v2/manifests")
       e = entry(with_app(f, [file_entry(F.file(f, "good"), 4)]))
       assert {:ok, _} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+      source = ElixirPrecompiled.TestServer.port()
+      paths = for %{port: ^source, path: path} <- F.requests(), do: path
+      assert ("/precompiled/files/" <> F.file(f, "good")) in paths
+      assert Enum.any?(paths, &String.starts_with?(&1, "/precompiled/v2/manifests/"))
+    end
+
+    test "by-sha manifest paths are used only when Check says the batch has them", %{
+      f: f,
+      config: config,
+      cdn_port: p
+    } do
+      F.publish(f, %{"ash" => %{"versions" => %{}}})
+      F.clear_requests()
+      config = Map.delete(config, :by_sha)
+      assert {:ok, _} = Fetch.manifest(config, "ash", batch_sha("ash"), "v2/manifests")
+      assert [%{path: "/precompiled/v2/manifests/ash.json"} = r] = F.requests()
+      assert r.port != p
     end
 
     test "without by-sha (the batch names no content) manifests use the source's name path", %{
