@@ -16,6 +16,7 @@ defmodule ChainTest.Mirror.Layer1BytesTest do
     OlderBatch,
     OlderManifest,
     Redirect,
+    Status,
     Transform
   }
 
@@ -296,12 +297,63 @@ defmodule ChainTest.Mirror.Layer1BytesTest do
       assert why =~ "no file"
     end
 
+    test "deps: all_files plants only the named deps' files", ctx do
+      home = Path.join(ctx.tmp_dir, "home")
+      assert :ok = Setup.run({Cache, %{plant: :all_files, deps: ["jason"]}}, home, ctx.snap)
+
+      assert Enum.sort(File.ls!(Path.join(home, "files"))) ==
+               Enum.sort(ctx.snap.deps["jason"].file_shas)
+
+      for sha <- ctx.snap.deps["jason"].file_shas,
+          do: assert(sha(File.read!(Path.join(home, "files/" <> sha))) == sha)
+    end
+
+    test "deps naming no held file is an error, not a vacuous setup", ctx do
+      home = Path.join(ctx.tmp_dir, "home")
+
+      for deps <- [["plug"], ["absent"]] do
+        assert {:error, why} =
+                 Setup.run({Cache, %{plant: :all_files, deps: deps}}, home, ctx.snap)
+
+        assert why =~ "no file"
+      end
+    end
+
     test "args" do
       for p <- [:all_files, :corrupt_files, :link_entries, :link_dir],
           do: assert(Setup.valid?({Cache, %{plant: p}}))
 
+      assert Setup.valid?({Cache, %{plant: :all_files, deps: ["jason"]}})
+      refute Setup.valid?({Cache, %{plant: :all_files, deps: []}})
+      refute Setup.valid?({Cache, %{plant: :all_files, deps: [:jason]}})
+      refute Setup.valid?({Cache, %{plant: :link_dir, deps: ["jason"]}})
       refute Setup.valid?({Cache, %{plant: :other}})
       refute Setup.valid?({Cache, %{}})
+    end
+  end
+
+  describe "Status files_of (C0)" do
+    test "answers the status for every file of the named dep, the rest unchanged", ctx do
+      a = args(%{files_of: "jason", status: 404}, ctx.snap)
+
+      for sha <- ctx.snap.deps["jason"].file_shas,
+          do: assert(Status.transform("files/" <> sha, "x", a) == {404, ""})
+
+      [ash] = ctx.snap.deps["ash"].file_shas
+      assert Status.transform("files/" <> ash, "y", a) == {200, "y"}
+      assert Status.transform("v2/manifests/jason.json", "m", a) == {200, "m"}
+      assert Status.transform("batch.json", "b", a) == {200, "b"}
+    end
+
+    test "args: files_of a dep name instead of paths; only it is a trap" do
+      assert Transform.valid?({Status, %{files_of: "jason", status: 404}})
+      refute Transform.valid?({Status, %{files_of: "", status: 404}})
+      refute Transform.valid?({Status, %{files_of: :jason, status: 404}})
+      refute Transform.valid?({Status, %{files_of: "jason", paths: ["batch.json"], status: 404}})
+
+      assert Transform.trap?({Status, %{files_of: "jason", status: 404}})
+      refute Transform.trap?({Status, %{paths: ["batch.json"], status: 404}})
+      refute Transform.trap?({ChainTest.Mirror.Identity, %{}})
     end
   end
 end

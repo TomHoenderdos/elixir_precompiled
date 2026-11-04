@@ -33,9 +33,9 @@ defmodule ChainTest.Mirror.Transform do
       two-mirror case only).
 
   A module that needs something of the snapshot (`t:ChainTest.Snapshot.need/0`:
-  an older batch, `:previous`, `:old`; `:previous_manifests`;
-  `:batch_threshold_2`) says so in `needs/1`; a case whose snapshot lacks
-  it is not testable here and is never run.
+  an older batch, `:previous`, `:old`; `:previous_manifests`; ...) says so
+  in `needs/1`; a case whose snapshot lacks it is not testable here and is
+  never run.
   """
 
   @callback transform(path :: String.t(), bytes :: binary(), args :: map()) ::
@@ -47,7 +47,15 @@ defmodule ChainTest.Mirror.Transform do
   @doc "What the transform needs of the snapshot. Optional: without it, nothing."
   @callback needs(args :: map()) :: [ChainTest.Snapshot.need()]
 
-  @optional_callbacks valid_args?: 1, needs: 1
+  @doc """
+  Whether the transform is a trap: it changes only responses the case
+  expects the client never to ask for (C0's files, which the client's
+  cache holds). Optional: without it, `false`. A trap whose mirror changed
+  nothing is judged as usual, not `:not_exercised`.
+  """
+  @callback trap?(args :: map()) :: boolean()
+
+  @optional_callbacks valid_args?: 1, needs: 1, trap?: 1
 
   @doc """
   The mirror hook for `{module, args}`; `context`, when given, is put in the
@@ -136,6 +144,13 @@ defmodule ChainTest.Mirror.Transform do
   @doc "How many mirrors the case runs: 2 when the args say `mirrors: 2`, else 1."
   @spec mirrors({module(), map()}) :: 1 | 2
   def mirrors({_module, args}), do: Map.get(args, :mirrors, 1)
+
+  @doc "Whether `{module, args}` is a trap (`trap?/1`, else `false`)."
+  @spec trap?({module(), map()}) :: boolean()
+  def trap?({module, args}) do
+    Code.ensure_loaded?(module) and function_exported?(module, :trap?, 1) and
+      module.trap?(args) == true
+  end
 
   @doc "What `{module, args}` needs of the snapshot (`needs/1`, else nothing)."
   @spec needs({module(), map()}) :: [ChainTest.Snapshot.need()]

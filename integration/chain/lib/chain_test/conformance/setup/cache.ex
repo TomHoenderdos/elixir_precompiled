@@ -18,6 +18,9 @@ defmodule ChainTest.Conformance.Setup.Cache do
     * `:link_dir` - `files` itself a symlink, by absolute path, to an empty
       directory under `outside_dir/0` (C2).
 
+  With `:all_files`, `deps` (a non-empty list of dep names) plants only
+  those deps' files (C0: one expected hit's files, already in the cache).
+
   A snapshot without a file to plant is an error: the case would prove
   nothing.
   """
@@ -30,19 +33,24 @@ defmodule ChainTest.Conformance.Setup.Cache do
 
   @impl true
   def valid_args?(%{plant: plant} = args) when map_size(args) == 1, do: plant in @plants
+
+  def valid_args?(%{plant: :all_files, deps: [_ | _] = deps} = args) when map_size(args) == 2,
+    do: Enum.all?(deps, &(is_binary(&1) and &1 != ""))
+
   def valid_args?(_args), do: false
 
   @impl true
-  def setup(home, snap, %{plant: plant}) do
-    case shas(snap) do
+  def setup(home, snap, %{plant: plant} = args) do
+    case shas(snap, Map.get(args, :deps)) do
       [] -> {:error, "the snapshot holds no file of any build to plant in the cache"}
       shas -> plant(plant, home, snap, shas)
     end
   end
 
-  defp shas(snap) do
-    for {_name, %{builds: n} = dep} <- Map.get(snap, :deps, %{}),
+  defp shas(snap, only) do
+    for {name, %{builds: n} = dep} <- Map.get(snap, :deps, %{}),
         is_integer(n) and n > 0,
+        only == nil or name in only,
         sha <- Map.get(dep, :file_shas, []),
         uniq: true,
         do: sha

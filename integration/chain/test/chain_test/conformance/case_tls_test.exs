@@ -281,23 +281,40 @@ defmodule ChainTest.Conformance.CaseTlsTest do
     end
   end
 
-  test "the README's case table names exactly the cases, their spec ids, layers and gates" do
+  # Rows a case covers beyond those its id names: M4 is T0's integrity step.
+  @also %{"T0" => ["M4"]}
+  # Rows with no case of their own: R14 is every refusal's after-condition,
+  # R20 the production policy check, P7 known and not testable.
+  @no_case ~w(R14 R20 P7)
+
+  defp readme_table(readme, header) do
+    [_, table] = String.split(readme, header, parts: 2)
+
+    table
+    |> String.split("\n")
+    |> Enum.drop(2)
+    |> Enum.take_while(&String.starts_with?(&1, "|"))
+    |> Enum.map(fn line ->
+      line |> String.trim("|") |> String.split(" | ") |> Enum.map(&String.trim/1)
+    end)
+  end
+
+  test "the README's case table names exactly the cases, their rows, layers and gates" do
     {:ok, cases} = Case.load(Path.join(ChainTest.CLI.root(), "conformance/cases.exs"))
     readme = File.read!(Path.join(ChainTest.CLI.root(), "README.md"))
-    [_, table] = String.split(readme, "| Case | Spec | Layer | What it shows |", parts: 2)
 
     rows =
-      for line <- String.split(table, "\n"),
-          [_, id, spec, layer, what] <-
-            [Regex.run(~r/^\| `([^`]+)` \| ([^|]*) \| ([^|]*) \| (.*) \|$/, line)],
-          do: {id, String.trim(spec), String.trim(layer), what}
+      for [id, rows, layer, what] <-
+            readme_table(readme, "| Case | Rows | Layer | What it shows |"),
+          do: {String.trim(id, "`"), rows, layer, what}
 
     assert Enum.map(rows, &elem(&1, 0)) == Enum.map(cases, & &1.id)
     by = Map.new(cases, &{&1.id, &1})
 
-    for {id, spec, layer, what} <- rows do
+    for {id, rows, layer, what} <- rows do
       c = by[id]
-      assert spec == Enum.join(ChainTest.Report.spec_ids(id), ", "), id
+      expected = ChainTest.Report.row_ids(id) ++ Map.get(@also, id, [])
+      assert rows == Enum.join(expected, ", "), id
       assert layer == if(Case.layer2?(c), do: "2", else: "1"), id
 
       case Case.gate(c) do
@@ -305,5 +322,25 @@ defmodule ChainTest.Conformance.CaseTlsTest do
         gate -> assert String.ends_with?(what, "(after #{gate})"), id
       end
     end
+  end
+
+  test "the README's attack-vector table: every row has a case or says why not" do
+    {:ok, cases} = Case.load(Path.join(ChainTest.CLI.root(), "conformance/cases.exs"))
+    readme = File.read!(Path.join(ChainTest.CLI.root(), "README.md"))
+
+    vectors =
+      for [id, vector, expected] <- readme_table(readme, "| Row | Vector | Expected |") do
+        assert vector != "" and expected != "", id
+        id
+      end
+
+    assert vectors == Enum.uniq(vectors)
+
+    covered =
+      cases
+      |> Enum.flat_map(&(ChainTest.Report.row_ids(&1.id) ++ Map.get(@also, &1.id, [])))
+      |> MapSet.new()
+
+    assert MapSet.new(vectors) == MapSet.union(covered, MapSet.new(@no_case))
   end
 end

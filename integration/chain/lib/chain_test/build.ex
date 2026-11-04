@@ -57,7 +57,7 @@ defmodule ChainTest.Build do
 
   @timeout_ms 45 * 60 * 1000
 
-  # Plan 1's refusal reasons: the client would have installed, but refused.
+  # The client's batch refusal reasons: it would have installed, but refused.
   @refusals [
     "batch stale",
     "clock",

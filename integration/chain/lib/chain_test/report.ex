@@ -10,7 +10,7 @@ defmodule ChainTest.Report do
   Sections after the results: the time per step; "Per layer" when the meta
   carries `layers` (a conformance summary: each layer's verdicts counted by
   class); "Not testable here", one line per `:not_testable` case with the
-  spec ids its case id names and its reason; and "Known, not testable",
+  attack-vector rows its case id names and its reason; and "Known, not testable",
   the meta's `known_gaps`.
   """
 
@@ -171,23 +171,23 @@ defmodule ChainTest.Report do
 
       rs ->
         "\n## Not testable here\n\n" <>
-          Enum.map_join(rs, "", &"- #{cell(&1.check)}#{spec(&1.check)}: #{cell(&1.detail)}\n")
+          Enum.map_join(rs, "", &"- #{cell(&1.check)}#{rows(&1.check)}: #{cell(&1.detail)}\n")
     end
   end
 
-  defp spec(id) do
-    case spec_ids(to_string(id)) do
+  defp rows(id) do
+    case row_ids(to_string(id)) do
       [] -> ""
-      ids -> " (spec #{Enum.join(ids, ", ")})"
+      ids -> " (rows #{Enum.join(ids, ", ")})"
     end
   end
 
   @doc """
-  The spec's ids (`T4`, `R3`, ...: a row letter and a number) a case id
-  names: `"T4.R3"` both, `"N1-manifest"` N1, `"L2-T0"` T0.
+  The ids of the attack-vector table in README.md (`T4`, `R3`, ...: a row
+  letter and a number) a case id names: `"T4.R3"` both, `"N1-manifest"` N1, `"L2-T0"` T0.
   """
-  @spec spec_ids(String.t()) :: [String.t()]
-  def spec_ids(id) do
+  @spec row_ids(String.t()) :: [String.t()]
+  def row_ids(id) do
     ~r/(?<![A-Za-z0-9])[TMFNCRP][0-9]+(?![0-9])/
     |> Regex.scan(id)
     |> List.flatten()

@@ -19,7 +19,7 @@ defmodule ChainTest.Conformance.Case do
       }
 
     * `id` - unique; a letter or digit, then letters, digits, `.` or `-`
-      (at most 32). Use the spec's case IDs.
+      (at most 32). Use the ids of the attack-vector table in README.md.
     * `transform` - `{module, args}`: a `ChainTest.Mirror.Transform` and its
       args map (checked with the module's `valid_args?/1` when it has one),
       applied to every response of the case's mirror.
@@ -159,7 +159,8 @@ defmodule ChainTest.Conformance.Case do
 
     * `:fail` when either of the case's mirrors logged a `transform_error`
       (the transform crashed or answered a malformed shape), naming each;
-    * `:not_exercised` when the transform is not `ChainTest.Mirror.Identity`
+    * `:not_exercised` when the transform is neither
+      `ChainTest.Mirror.Identity` nor a trap (`ChainTest.Mirror.Transform.trap?/1`)
       and the mirror served nothing it changed, or when the transform is
       `ChainTest.Mirror.Identity` and the mirror shows no use by the client;
     * else `:pass` when the client used the mirror and the client and every
@@ -611,7 +612,7 @@ defmodule ChainTest.Conformance.Case do
       identity? and unused != [] ->
         result(c, :not_exercised, Enum.join(unused, "; "))
 
-      not identity? and not Enum.any?(requests, & &1.mutated) ->
+      not identity? and not changed_or_trap?(c, requests) ->
         result(c, :not_exercised, "the mirror never served anything the transform changed")
 
       true ->
@@ -621,6 +622,11 @@ defmodule ChainTest.Conformance.Case do
         )
     end
   end
+
+  # The mirror changed a response the client asked for, or the transform is
+  # a trap, whose changing nothing is the expected outcome (C0).
+  defp changed_or_trap?(c, requests),
+    do: ChainTest.Mirror.Transform.trap?(c.transform) or Enum.any?(requests, & &1.mutated)
 
   # N3, N2: the client cannot have used a mirror it refused or never asked;
   # the mirror's log, as the case's `after` says, is the evidence.

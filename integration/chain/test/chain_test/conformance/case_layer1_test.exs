@@ -306,7 +306,7 @@ defmodule ChainTest.Conformance.CaseLayer1Test do
 
     test "every brief row has its case", %{by: by} do
       for id <- ~w(M1 M2 M3 F1 F2-truncated F2-larger F2-endless N1 N1-manifest N1-batch N4
-                   C1 C2-entry C2-dir R15-refused R15-unserved R16),
+                   N5-batch C0 C1 C2-entry C2-dir R15-refused R15-unserved R16),
           do: assert(Map.has_key?(by, id), id)
 
       # M4 is T0 plus Integrity's selected-build check (N6, over TLS, is
@@ -333,6 +333,31 @@ defmodule ChainTest.Conformance.CaseLayer1Test do
       assert args.stream_max_ms > 300_000 and args.stream_max_ms <= 600_000
     end
 
+    test "C0, the cache-read control, gates the cache cases", %{by: by} do
+      c0 = by["C0"]
+      assert {ChainTest.Mirror.Status, %{files_of: dep, status: 404}} = c0.transform
+      assert c0.setup == {ChainTest.Conformance.Setup.Cache, %{plant: :all_files, deps: [dep]}}
+      assert c0.client == %{default: :snapshot, deps: %{}}
+      assert c0.after.installed == :snapshot
+      assert Case.gate(c0) == nil
+
+      for id <- ~w(C1 R15-refused R15-unserved), do: assert(Case.gate(by[id]) == "C0", id)
+    end
+
+    test "N5-batch: batch.json a 503 is no batch, R14's after-conditions", %{by: by} do
+      c = by["N5-batch"]
+      assert c.transform == {ChainTest.Mirror.Status, %{paths: ["batch.json"], status: 503}}
+      assert c.client == %{default: {:fail, "batch unavailable"}, deps: %{}}
+      assert c.after == %{state_sequence: :unchanged, installed: :none, cache: :untouched}
+      assert c.harness["build/sequence"] == :not_exercised
+    end
+
+    test "R5 and R19 are gated on the rollback refusal; T6 adopts no root", %{by: by} do
+      assert Case.gate(by["R5"]) == "T4.R3"
+      assert Case.gate(by["R19"]) == "T4.R3"
+      assert by["T6"].after.root_version == :absent
+    end
+
     test "R16 builds twice and needs a previous batch that differs", %{by: by} do
       assert Case.runs(by["R16"]) == 2
 
@@ -340,6 +365,34 @@ defmodule ChainTest.Conformance.CaseLayer1Test do
                :previous,
                :previous_differs
              ]
+    end
+  end
+
+  describe "a trap transform (C0)" do
+    test "judged when nothing it changes was asked for; another transform is not exercised" do
+      c =
+        Map.merge(@t0, %{
+          id: "C0",
+          transform: {ChainTest.Mirror.Status, %{files_of: "jason", status: 404}}
+        })
+
+      input = %{
+        rows: [%Result{step: :build, check: "hit:jason", class: :pass}],
+        report: Synthetic.report([{"jason", "1.4.5", "hit", ""}]),
+        requests: served(["jason"]),
+        snapshot: snap(%{"jason" => 1}),
+        hits: [:jason],
+        observed: %{before: view(%{}), after: view(%{}), installed: ["jason"]}
+      }
+
+      assert %Result{class: :pass} = Case.judge(c, input)
+
+      plain = %{
+        c
+        | transform: {ChainTest.Mirror.Status, %{paths: ["files/#{@sha_a}"], status: 404}}
+      }
+
+      assert %Result{class: :not_exercised} = Case.judge(plain, input)
     end
   end
 

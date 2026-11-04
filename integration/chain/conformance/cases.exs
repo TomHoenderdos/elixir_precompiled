@@ -4,10 +4,11 @@
 #
 # Conformance cases for `mix chain_conformance`. The format is described in
 # ChainTest.Conformance.Case and in README.md, "Conformance". Ids are the
-# spec's (docs: "Attack vectors"); one case may stand for several rows when
-# this harness runs them the same way, its id joining theirs with ".".
-# T3's duplicated signature needs a batch threshold of 2: a test-key case
-# (layer 2, at the end).
+# rows of the attack-vector table in README.md; one case may stand for
+# several rows when this harness runs them the same way, its id joining
+# theirs with ".". T3's duplicated signature needs a batch threshold of 2:
+# a test-key case (layer 2, at the end). R14 is every refusal's
+# after-condition, not a case of its own.
 #
 # M4 (entry selection) has no case of its own: with real signed bytes it is
 # T0's, whose integrity step checks that every hit installed exactly the
@@ -140,7 +141,7 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     description:
       "The mirror serves an attacker's newer root.json: the client keeps its shipped root and installs as in T0.",
     transform: {ChainTest.Mirror.RootSwap, %{}},
-    after: %{state_sequence: :snapshot, installed: :snapshot}
+    after: %{state_sequence: :snapshot, installed: :snapshot, root_version: :absent}
   }),
   Map.merge(accepted, %{
     id: "T9",
@@ -190,8 +191,11 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     transform: {ChainTest.Mirror.OlderBatch, %{batch: :old}},
     setup: {ChainTest.Conformance.Setup.State, %{sequence: :corrupt}}
   }),
+  # R5 and R19 accept what T4.R3 refuses but for the gap or the source:
+  # without the rollback refusal working, their acceptance says nothing.
   Map.merge(accepted, %{
     id: "R5",
+    gate: "T4.R3",
     description:
       "The state holds a sequence 40 below the current batch: gaps are allowed, it is accepted.",
     transform: {ChainTest.Mirror.Identity, %{}},
@@ -214,8 +218,8 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     transform: {ChainTest.Mirror.Identity, %{}},
     client_config: %{clock_offset_seconds: -30 * 86_400}
   }),
-  # The spec row, amended: freshness is checked before expiry, so a clock a
-  # year ahead reads as stale, not expired.
+  # Freshness is checked before expiry, so a clock a year ahead reads as
+  # stale, not expired.
   Map.merge(refused.("batch stale", :not_exercised), %{
     id: "R13",
     description:
@@ -225,6 +229,7 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
   }),
   Map.merge(accepted_previous, %{
     id: "R19",
+    gate: "T4.R3",
     description:
       "Two sources: one's state holds the current sequence, the other is served the batch before it; accepted there, the first source's state untouched.",
     transform: {ChainTest.Mirror.OlderBatch, %{batch: :previous, hits: true, mirrors: 2}},
@@ -321,8 +326,30 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
       "batch.json dripped one byte every 2 seconds: the client gives up at its own deadline and compiles everything.",
     transform: {ChainTest.Mirror.Drip, %{paths: :batch, stream_max_ms: 330_000}}
   }),
+  Map.merge(no_batch, %{
+    id: "N5-batch",
+    description:
+      "The mirror answers 503 for batch.json: no batch, nothing installed, everything compiles.",
+    transform: {ChainTest.Mirror.Status, %{paths: ["batch.json"], status: 503}}
+  }),
+  # C0, the control for the cache cases: the client must read its cache
+  # for C1's and R15's results to say anything. jason's files are in the
+  # cache and the mirror answers 404 for them, so jason is a hit only from
+  # the cache. A trap transform: the mirror changing nothing is the
+  # expected outcome.
+  %{
+    id: "C0",
+    description:
+      "The control: the cache holds jason's files, the mirror answers 404 for them; jason is installed from the cache.",
+    transform: {ChainTest.Mirror.Status, %{files_of: "jason", status: 404}},
+    setup: {ChainTest.Conformance.Setup.Cache, %{plant: :all_files, deps: ["jason"]}},
+    client: %{default: :snapshot, deps: %{}},
+    harness: %{},
+    after: %{state_sequence: :snapshot, installed: :snapshot, cache: :verified}
+  },
   %{
     id: "C1",
+    gate: "C0",
     description:
       "The cache holds every file with one byte changed, its size kept: each is fetched again, and only the right bytes are installed and cached.",
     transform: {ChainTest.Mirror.Identity, %{}},
@@ -353,6 +380,7 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
   # layer 2.
   Map.merge(refused.("batch signature invalid", :not_exercised), %{
     id: "R15-refused",
+    gate: "C0",
     description:
       "The cache holds every file of every build, the batch is refused: nothing is installed from the cache.",
     transform: {ChainTest.Mirror.BatchSignatures, %{change: :flip_bit}},
@@ -360,6 +388,7 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
   }),
   %{
     id: "R15-unserved",
+    gate: "C0",
     description:
       "The cache holds every file of every build, jason's manifest is not served: jason is not installed from the cache.",
     transform:
@@ -540,8 +569,8 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     # The client's reason names the entry's path: no other refusal (a 404,
     # a hash, a staging crash) can stand in for it.
     unsafe = &{:fail, "unsafe path or mode (#{inspect(&1)})"}
-    # The reasons plan 4's client hardening gives: a file outside the dep's
-    # app dir or another app's .app, and colliding paths. Red until it lands.
+    # The reasons the client hardening gives: a file outside the dep's app
+    # dir or another app's .app, and colliding paths. Red until it lands.
     foreign = {:fail, "foreign path"}
     collision = {:fail, "path collision"}
 

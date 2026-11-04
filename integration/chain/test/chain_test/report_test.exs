@@ -135,7 +135,7 @@ defmodule ChainTest.ReportTest do
     assert md =~ "## Not testable here\n\n- X1: not testable here: no old batch\n"
 
     named = %{untestable | check: "M3"}
-    assert write.([named], "n") =~ "- M3 (spec M3): not testable here: no old batch\n"
+    assert write.([named], "n") =~ "- M3 (rows M3): not testable here: no old batch\n"
 
     assert hd(String.split(write.([pass, untestable, miss], "m"), "\n")) ==
              "# Chain test: rpi4 (PASS (1 miss, 1 not testable here))"
@@ -204,15 +204,15 @@ defmodule ChainTest.ReportTest do
     assert Enum.any?(Report.known_gaps(), &(&1 =~ "P7" and &1 =~ "trusts the signed claim"))
   end
 
-  test "spec_ids/1 reads the spec's ids out of a case id" do
-    assert Report.spec_ids("T4.R3") == ["T4", "R3"]
-    assert Report.spec_ids("R1.R6.T10") == ["R1", "R6", "T10"]
-    assert Report.spec_ids("N1-manifest") == ["N1"]
-    assert Report.spec_ids("N5-manifest-500") == ["N5"]
-    assert Report.spec_ids("L2-T0") == ["T0"]
-    assert Report.spec_ids("TLS-T0") == ["T0"]
-    assert Report.spec_ids("N3-self-signed") == ["N3"]
-    assert Report.spec_ids("X1") == []
+  test "row_ids/1 reads the attack-vector rows out of a case id" do
+    assert Report.row_ids("T4.R3") == ["T4", "R3"]
+    assert Report.row_ids("R1.R6.T10") == ["R1", "R6", "T10"]
+    assert Report.row_ids("N1-manifest") == ["N1"]
+    assert Report.row_ids("N5-manifest-500") == ["N5"]
+    assert Report.row_ids("L2-T0") == ["T0"]
+    assert Report.row_ids("TLS-T0") == ["T0"]
+    assert Report.row_ids("N3-self-signed") == ["N3"]
+    assert Report.row_ids("X1") == []
   end
 
   test "meta layers become a per-layer table; without them there is none", %{tmp_dir: dir} do
