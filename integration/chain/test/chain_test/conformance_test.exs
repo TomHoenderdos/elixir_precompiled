@@ -544,23 +544,6 @@ defmodule ChainTest.ConformanceTest do
       assert Result.exit_code(verdicts) == 0
     end
 
-    test "a case needing a snapshot fact it lacks is not testable here, unbuilt", ctx do
-      File.write!(
-        Path.join(ctx.snapshot.dir, "root.json"),
-        ChainTest.Signed.root(ChainTest.Signed.key())
-      )
-
-      t = %{@t0 | id: "T3", transform: {ChainTest.TestTransform, %{needs: [:batch_threshold_2]}}}
-      cases!(ctx.opts, [t])
-
-      assert {[%Result{check: "T3", class: :not_testable, detail: detail}], _} =
-               Conformance.run(ctx.opts, v2_steps(self(), ctx.snapshot))
-
-      assert detail =~ "not testable here"
-      assert detail =~ "batch threshold is 1 in the snapshot's root"
-      refute_received {:build, _}
-    end
-
     test "mirrors: 2 starts a second mirror the case mirror knows; both are stopped", ctx do
       test = self()
 

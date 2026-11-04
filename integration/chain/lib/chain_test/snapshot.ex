@@ -126,9 +126,7 @@ defmodule ChainTest.Snapshot do
   `needs/1`): an older batch (`:previous`, `:old`); `:previous_manifests`,
   a previous batch naming the same manifest as `N` for every dep the
   snapshot holds a build of (the portal serves only `N`'s manifest bytes,
-  so a case that installs from `N-1` can only be served those); or
-  `:batch_threshold_2`, a root whose batch role needs at least two
-  signatures (with one, a duplicated signature cannot count twice);
+  so a case that installs from `N-1` can only be served those);
   `:previous_differs`, a previous batch that names another manifest, or
   none, for at least one dep the snapshot holds a build of (`recheck/1`:
   a warm `_build` installed from `N` holds a build that batch no longer
@@ -140,7 +138,6 @@ defmodule ChainTest.Snapshot do
   @type need ::
           older_name()
           | :previous_manifests
-          | :batch_threshold_2
           | :previous_differs
           | :older_manifest_bytes
 
@@ -148,7 +145,6 @@ defmodule ChainTest.Snapshot do
     :previous,
     :old,
     :previous_manifests,
-    :batch_threshold_2,
     :previous_differs,
     :older_manifest_bytes
   ]
@@ -174,23 +170,6 @@ defmodule ChainTest.Snapshot do
     case older(snap, :previous) do
       {:ok, previous} -> same_manifests(snap, previous)
       {kind, why} when kind in @absent -> {kind, "the previous batch: #{why}"}
-    end
-  end
-
-  def available(snap, :batch_threshold_2) do
-    case batch_threshold(Path.join(snap.dir, "root.json")) do
-      {:ok, t} when t >= 2 ->
-        :ok
-
-      # The snapshot's root.json is the served root, which equals the trusted
-      # one: the client adopts only roots that chain from it.
-      {:ok, t} ->
-        {:missing,
-         "batch threshold is #{t} in the snapshot's root: one signature meets it, so a " <>
-           "duplicated signature has nothing to count twice towards"}
-
-      {:error, why} ->
-        {:missing, why}
     end
   end
 
@@ -315,18 +294,6 @@ defmodule ChainTest.Snapshot do
         {:missing,
          "the previous batch names other manifests than batch #{snap.sequence} for " <>
            Enum.join(names, ", ") <> ", and the portal serves only the current batch's"}
-    end
-  end
-
-  defp batch_threshold(path) do
-    with {:ok, body} <- File.read(path),
-         {:ok, %{"payload" => p}} when is_binary(p) <- JSON.decode(body),
-         {:ok, payload} <- Base.url_decode64(p, padding: false),
-         {:ok, %{"roles" => %{"batch" => %{"threshold" => t}}}} when is_integer(t) <-
-           JSON.decode(payload) do
-      {:ok, t}
-    else
-      _ -> {:error, "the snapshot's root.json names no batch threshold"}
     end
   end
 

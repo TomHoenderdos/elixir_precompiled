@@ -48,16 +48,6 @@ defmodule ChainTest.Mirror.Layer1Test do
       assert {_payload, []} = decode(out)
     end
 
-    test "duplicate keeps only the first signature, twice", ctx do
-      key2 = Signed.key()
-      two = Signed.envelope(elem(decode(ctx.batch), 0), [ctx.key, key2])
-
-      assert {200, out} = BatchSignatures.transform("batch.json", two, %{change: :duplicate})
-      {payload, [a, b]} = decode(out)
-      assert a == b
-      assert verifies?(payload, a, ctx.key)
-    end
-
     test "every other path is served unchanged", ctx do
       assert BatchSignatures.transform("root.json", "x", %{change: :remove}) == {200, "x"}
 
@@ -71,14 +61,14 @@ defmodule ChainTest.Mirror.Layer1Test do
       end
     end
 
-    test "args and needs: duplicate needs a batch threshold of two" do
-      for change <- [:flip_bit, :remove, :duplicate],
+    test "args: flip_bit or remove, nothing else; no needs" do
+      for change <- [:flip_bit, :remove],
           do: assert(Transform.valid?({BatchSignatures, %{change: change}}))
 
       refute Transform.valid?({BatchSignatures, %{change: :other}})
       refute Transform.valid?({BatchSignatures, %{}})
       refute Transform.valid?({BatchSignatures, %{change: :remove, extra: 1}})
-      assert Transform.needs({BatchSignatures, %{change: :duplicate}}) == [:batch_threshold_2]
+      refute Transform.valid?({BatchSignatures, %{change: :duplicate}})
       assert Transform.needs({BatchSignatures, %{change: :flip_bit}}) == []
     end
   end
