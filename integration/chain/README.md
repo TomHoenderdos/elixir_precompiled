@@ -122,8 +122,9 @@ either, the client batch's failed checks stay failures.
 It takes a fresh snapshot of the portal first (`mix chain_snapshot` does
 only that): the root, the current batch, the fixture's manifests and the
 files of the builds the client could select, verified by the harness and
-kept in a directory under the system tmp dir. A snapshot is good for 24
-hours, the client's batch freshness bound, so every run takes a new one.
+kept in a directory under the system tmp dir and removed after the run
+(`--snapshot-dir DIR` keeps it there). A snapshot is good for 24 hours, the
+client's batch freshness bound, so every run takes a new one.
 That download is the only time a run contacts the portal.
 
 Each case gets a mirror over the snapshot that changes its responses as the
@@ -137,14 +138,18 @@ Cases are data, in `conformance/cases.exs`, one map per case:
 | --- | --- |
 | `id` | Unique; a letter or digit, then letters, digits, `.` or `-`. |
 | `description` | One plain sentence. |
-| `transform` | `{module, args}`: a `ChainTest.Mirror.Transform` and its args. `ChainTest.Mirror.Identity` serves unchanged; `ChainTest.Mirror.Status` answers `status` for `paths`. A transform gets each response's path relative to the snapshot (`"v2/manifests/jason.json"`) and bytes, and returns `{status, bytes}`. |
+| `transform` | `{module, args}`: a `ChainTest.Mirror.Transform` and its args. `ChainTest.Mirror.Identity` serves unchanged; `ChainTest.Mirror.Status` takes `%{paths: ["v2/manifests/jason.json", ...], status: 500}` (a non-empty list of snapshot paths and an HTTP status 100-599; nothing else) and answers that status with an empty body for those paths. A transform may define `valid_args?/1`; the case file is refused before any download when it returns false. A transform gets each response's path relative to the snapshot (`"v2/manifests/jason.json"`) and bytes, and returns `{status, bytes}`. |
 | `client` | `%{default: expect, deps: %{dep => expect}}`: what `report.json` must say for each expected hit and each dep in `deps`. `expect` is `:hit`, `:miss`, `:fail`, `{status, "detail prefix"}`, or `:snapshot` (a hit when the snapshot holds a build the client could select). |
-| `harness` | `%{"step/check" => class}`: harness results that must have that class. Every other result must be `pass`, `miss` or `rerun`. |
+| `harness` | `%{"step/check" => class}`: harness results that must have that class. `step` is `build`, `integrity` or `compiled`, `check` as the per-case report prints it (`"build/hit:jason"`, `"integrity/integrity:ash"`, `"compiled/reported_miss:jason"`). Every other result must be `pass` or `miss`; a `rerun` is a difference, since the snapshot never moves. |
 
-A case passes when the client and the harness say what it expects. Whatever
-a case expects, a report line calling a dep a hit when the snapshot holds no
-build of it fails the case: the client installed something it was never
-served. A case whose transform changed nothing the client asked for is
-`not_exercised`.
+A case passes when the client used its mirror and the client and the
+harness say what it expects. Using the mirror means the mirror's log has a
+`GET batch.json` and a `GET` of the manifest of every dep the report calls a
+hit; without that, an identity case is `not_exercised` and any other case
+fails. Whatever a case expects, a report line calling a dep a hit when the
+snapshot holds no build of it fails the case: the client installed something
+it was never served. A case whose transform changed nothing the client asked
+for is `not_exercised`. A case that crashes is a `fail`; the others still
+run. An empty `--only`, or a run that selects no case, is refused.
 Each case's own results are in `<target>-<id>-<stamp>.md`; the verdicts in
 `<target>-conformance-<stamp>.md`.

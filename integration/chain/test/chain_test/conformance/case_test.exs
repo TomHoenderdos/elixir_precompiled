@@ -32,7 +32,19 @@ defmodule ChainTest.Conformance.CaseTest do
     path
   end
 
-  defp snap(builds), do: %{deps: Map.new(builds, fn {n, b} -> {n, %{builds: b}} end)}
+  defp snap(builds),
+    do: %{
+      deps:
+        Map.new(builds, fn {n, b} -> {n, %{builds: b, manifest: "v2/manifests/#{n}.json"}} end)
+    }
+
+  # The mirror log of a client that read the batch and the manifests of `deps`.
+  defp served(deps) do
+    [get("batch.json")] ++ Enum.map(deps, &get("v2/manifests/#{&1}.json"))
+  end
+
+  defp get(path, status \\ 200, mutated \\ false),
+    do: %{method: "GET", path: path, status: status, mutated: mutated}
 
   defp change(c, key, :delete), do: Map.delete(c, key)
   defp change(c, key, value), do: Map.put(c, key, value)
@@ -66,6 +78,28 @@ defmodule ChainTest.Conformance.CaseTest do
       end
     end
 
+    for {name, args} <- [
+          {"no paths", %{paths: [], status: 500}},
+          {"a status that is not one", %{paths: ["batch.json"], status: 99_000}},
+          {"a path that is not a string", %{paths: [:batch], status: 500}},
+          {"an unknown arg", %{paths: ["batch.json"], status: 500, extra: 1}}
+        ] do
+      test "refuses Status args with #{name}", %{tmp_dir: tmp} do
+        bad = %{@status | transform: {ChainTest.Mirror.Status, unquote(Macro.escape(args))}}
+        assert {:error, why} = Case.load(write(tmp, [bad]))
+        assert why =~ "N5-manifest-500"
+      end
+    end
+
+    test "refuses a case file that throws or exits", %{tmp_dir: tmp} do
+      for {body, what} <- [{"throw(:nope)", "nope"}, {"exit(:gone)", "gone"}] do
+        path = Path.join(tmp, "bad.exs")
+        File.write!(path, body)
+        assert {:error, why} = Case.load(path)
+        assert why =~ what
+      end
+    end
+
     test "refuses a duplicate id", %{tmp_dir: tmp} do
       assert {:error, why} = Case.load(write(tmp, [@t0, @t0]))
       assert why =~ "duplicate"
@@ -85,7 +119,7 @@ defmodule ChainTest.Conformance.CaseTest do
         Case.judge(@t0, %{
           rows: [row(:build, "hit:jason", :pass), row(:build, "hit:ash", :miss)],
           report: report,
-          requests: [],
+          requests: served(["jason", "ash"]),
           snapshot: snap(%{"jason" => 1, "ash" => 0}),
           hits: [:jason, :ash]
         })
@@ -100,7 +134,7 @@ defmodule ChainTest.Conformance.CaseTest do
                Case.judge(@t0, %{
                  rows: [],
                  report: report,
-                 requests: [],
+                 requests: served(["jason", "ash"]),
                  snapshot: snap(%{"jason" => 1}),
                  hits: [:jason]
                })
@@ -110,7 +144,7 @@ defmodule ChainTest.Conformance.CaseTest do
 
     test "a named row with its expected class passes, a failing unnamed row fails" do
       report = Synthetic.report([{"jason", "1.4.5", "miss", "manifest unavailable: Status 500"}])
-      requests = [%{method: "GET", path: "v2/manifests/jason.json", status: 500, mutated: true}]
+      requests = [get("batch.json"), get("v2/manifests/jason.json", 500, true)]
 
       input = %{
         rows: [row(:build, "hit:jason", :fail), row(:compiled, "compiled_here", :pass)],
@@ -142,7 +176,7 @@ defmodule ChainTest.Conformance.CaseTest do
                Case.judge(@t0, %{
                  rows: [row(:build, "hit:jason", :pass)],
                  report: report,
-                 requests: [],
+                 requests: served(["jason", "nerves_pack"]),
                  snapshot: snap(%{"jason" => 1, "nerves_pack" => 0}),
                  hits: [:jason]
                })
@@ -159,7 +193,7 @@ defmodule ChainTest.Conformance.CaseTest do
                      {"jason", "1.4.5", "hit", ""},
                      {"toolshed", "0.4.0", "hit", ""}
                    ]),
-                 requests: [],
+                 requests: served(["jason", "ash"]),
                  snapshot: snap(%{"jason" => 1}),
                  hits: [:jason]
                })
@@ -174,7 +208,7 @@ defmodule ChainTest.Conformance.CaseTest do
                Case.judge(@t0, %{
                  rows: [row(:build, "hit:ash", :pass)],
                  report: report,
-                 requests: [],
+                 requests: served(["jason", "ash"]),
                  snapshot: snap(%{"ash" => 0}),
                  hits: [:ash]
                })
@@ -185,7 +219,7 @@ defmodule ChainTest.Conformance.CaseTest do
     test "a hit where the case expects a miss or a refusal fails" do
       refusal = %{@status | client: %{default: :snapshot, deps: %{jason: {:miss, "batch stale"}}}}
       report = Synthetic.report([{"jason", "1.4.5", "hit", "0.3 MB"}])
-      requests = [%{method: "GET", path: "v2/manifests/jason.json", status: 500, mutated: true}]
+      requests = [get("batch.json"), get("v2/manifests/jason.json", 500, true)]
 
       input = %{
         rows: [row(:build, "hit:jason", :fail)],
@@ -211,12 +245,64 @@ defmodule ChainTest.Conformance.CaseTest do
                Case.judge(c, %{
                  rows: [row(:build, "hit:jason", :pass)],
                  report: report,
-                 requests: [],
+                 requests: served(["jason", "plug_crypto"]),
                  snapshot: snap(%{"jason" => 1, "plug_crypto" => 1}),
                  hits: [:jason]
                })
 
       assert detail =~ "plug_crypto"
+    end
+
+    test "an identity case without the client's use of the mirror is not exercised" do
+      report = Synthetic.report([{"jason", "1.4.5", "hit", "0.3 MB"}])
+
+      input = %{
+        rows: [row(:build, "hit:jason", :pass)],
+        report: report,
+        requests: [],
+        snapshot: snap(%{"jason" => 1}),
+        hits: [:jason]
+      }
+
+      assert %Result{class: :not_exercised, detail: detail} = Case.judge(@t0, input)
+      assert detail =~ "batch.json"
+
+      # The batch, but not the manifest of a reported hit.
+      assert %Result{class: :not_exercised, detail: detail} =
+               Case.judge(@t0, %{input | requests: [get("batch.json")]})
+
+      assert detail =~ "v2/manifests/jason.json"
+
+      assert %Result{class: :pass} = Case.judge(@t0, %{input | requests: served(["jason"])})
+    end
+
+    test "a transform case without the client's use of the mirror fails" do
+      report = Synthetic.report([{"jason", "1.4.5", "miss", "manifest unavailable: Status 500"}])
+
+      # The mutated manifest was served, but the batch never came from this mirror.
+      assert %Result{class: :fail, detail: detail} =
+               Case.judge(@status, %{
+                 rows: [row(:build, "hit:jason", :fail)],
+                 report: report,
+                 requests: [get("v2/manifests/jason.json", 500, true)],
+                 snapshot: snap(%{"jason" => 1}),
+                 hits: [:jason]
+               })
+
+      assert detail =~ "batch.json"
+    end
+
+    test "a rerun row is a difference: the snapshot never moves" do
+      assert %Result{class: :fail, detail: detail} =
+               Case.judge(@t0, %{
+                 rows: [row(:build, "hit:jason", :pass), row(:build, "sequence", :rerun)],
+                 report: Synthetic.report([{"jason", "1.4.5", "hit", ""}]),
+                 requests: served(["jason"]),
+                 snapshot: snap(%{"jason" => 1}),
+                 hits: [:jason]
+               })
+
+      assert detail =~ "build/sequence"
     end
 
     test "a transform the mirror never applied leaves the case not exercised" do

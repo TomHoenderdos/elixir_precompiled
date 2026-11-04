@@ -20,7 +20,8 @@ defmodule ChainTest.Conformance.Case do
     * `id` - unique; a letter or digit, then letters, digits, `.` or `-`
       (at most 32). Use the spec's case IDs.
     * `transform` - `{module, args}`: a `ChainTest.Mirror.Transform` and its
-      args map, applied to every response of the case's mirror.
+      args map (checked with the module's `valid_args?/1` when it has one),
+      applied to every response of the case's mirror.
     * `client` - what the client's `report.json` must say for each of the
       fixture's expected hits (`expected.exs`) and each dep named in
       `deps`: `deps[dep]`, else `default`.
@@ -28,17 +29,26 @@ defmodule ChainTest.Conformance.Case do
       with a detail prefix (`{:miss, "batch stale"}`), or `:snapshot`: a hit
       when the snapshot holds a build the client could select, else a miss.
     * `harness` - harness results by `"<step>/<check>"` (as the reports
-      print them) and the class each must have. Every result not named must
-      be `:pass`, `:miss` or `:rerun`.
+      print them; step `build`, `integrity` or `compiled`) and the class each
+      must have. Every result not named must be `:pass` or `:miss`. A
+      `:rerun` is a difference too: the snapshot never moves, so a rerun
+      means the client used a batch the mirror never served.
 
   Whatever the case expects, a report line that calls a dep a hit when the
   snapshot holds no build of it the client could select is a difference:
   the client installed something the portal never served it.
 
-  Verdict, one `conformance/<id>` result: `:not_exercised` when the
-  transform is not `ChainTest.Mirror.Identity` and the mirror served nothing
-  it changed; else `:pass` when the client and every harness result match,
-  `:fail` naming each difference.
+  The case's mirror must show that the client used it: a `GET batch.json`
+  and a `GET` of the snapshot's manifest path for every dep the report
+  calls a hit. Without that, the client may have read another source.
+
+  Verdict, one `conformance/<id>` result:
+
+    * `:not_exercised` when the transform is not `ChainTest.Mirror.Identity`
+      and the mirror served nothing it changed, or when the transform is
+      `ChainTest.Mirror.Identity` and the mirror shows no use by the client;
+    * else `:pass` when the client used the mirror and the client and every
+      harness result match, `:fail` naming each difference.
   """
 
   alias ChainTest.{Mirror, Result}
@@ -56,7 +66,8 @@ defmodule ChainTest.Conformance.Case do
 
   @keys [:client, :description, :harness, :id, :transform]
   @statuses [:hit, :miss, :fail]
-  @benign [:pass, :miss, :rerun]
+  @benign [:pass, :miss]
+  @identity ChainTest.Mirror.Identity
 
   @doc "Evaluates and validates a case file."
   @spec load(Path.t()) :: {:ok, [t()]} | {:error, String.t()}
@@ -70,6 +81,8 @@ defmodule ChainTest.Conformance.Case do
     end
   rescue
     e -> {:error, "#{path}: #{Exception.message(e)}"}
+  catch
+    kind, reason -> {:error, "#{path}: #{kind} #{inspect(reason)}"}
   end
 
   defp list(cases) when is_list(cases) and cases != [], do: :ok
@@ -97,7 +110,9 @@ defmodule ChainTest.Conformance.Case do
         {:error, "case #{id}: description must be a sentence"}
 
       not Transform.valid?(c.transform) ->
-        {:error, "case #{id}: transform #{inspect(c.transform)} is not {module, args}"}
+        {:error,
+         "case #{id}: transform #{inspect(c.transform)} is not {module, args} with " <>
+           "args the module accepts"}
 
       not client?(c.client) ->
         {:error, "case #{id}: client must be %{default: expect, deps: %{dep => expect}}"}
@@ -140,22 +155,55 @@ defmodule ChainTest.Conformance.Case do
           hits: [atom()]
         }) :: Result.t()
   def judge(c, %{rows: rows, report: report, requests: requests, snapshot: snap, hits: hits}) do
-    if exercised?(c, requests) do
-      problems =
-        client_problems(c, report, snap, hits) ++
-          unheld_hits(report, snap) ++ harness_problems(c, rows)
+    unused = unused_mirror(report, requests, snap)
+    identity? = match?({@identity, _}, c.transform)
 
-      case problems do
-        [] -> result(c, :pass, "as expected: #{c.description}")
-        problems -> result(c, :fail, Enum.join(problems, "; "))
-      end
-    else
-      result(c, :not_exercised, "the mirror never served anything the transform changed")
+    cond do
+      identity? and unused != [] ->
+        result(c, :not_exercised, Enum.join(unused, "; "))
+
+      not identity? and not Enum.any?(requests, & &1.mutated) ->
+        result(c, :not_exercised, "the mirror never served anything the transform changed")
+
+      true ->
+        problems =
+          unused ++
+            client_problems(c, report, snap, hits) ++
+            unheld_hits(report, snap) ++ harness_problems(c, rows)
+
+        case problems do
+          [] -> result(c, :pass, "as expected: #{c.description}")
+          problems -> result(c, :fail, Enum.join(problems, "; "))
+        end
     end
   end
 
-  defp exercised?(%{transform: {ChainTest.Mirror.Identity, _}}, _requests), do: true
-  defp exercised?(_c, requests), do: Enum.any?(requests, & &1.mutated)
+  # What the mirror's log lacks to show that the client read the batch and
+  # every manifest it reports a hit from through the case's mirror.
+  defp unused_mirror(report, requests, snap) do
+    asked = MapSet.new(for %{method: "GET", path: path} <- requests, do: path)
+
+    batch =
+      if MapSet.member?(asked, "batch.json"),
+        do: [],
+        else: ["mirror: the client never asked the case's mirror for batch.json"]
+
+    manifests =
+      for {name, %{"status" => "hit"}} <- Enum.sort(lines(report)),
+          path = manifest_path(snap, name),
+          is_binary(path),
+          not MapSet.member?(asked, path),
+          do: "mirror: the client reports #{name} a hit but never asked the mirror for #{path}"
+
+    batch ++ manifests
+  end
+
+  defp manifest_path(snap, name) do
+    case Map.get(snap.deps, name) do
+      %{manifest: path} -> path
+      _ -> nil
+    end
+  end
 
   defp lines(report) do
     for %{"name" => n} = l <- Map.get(report || %{}, "lines", []),

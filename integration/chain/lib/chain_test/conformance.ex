@@ -15,7 +15,10 @@ defmodule ChainTest.Conformance do
   the target, a fresh client home, the client's source at the case's
   mirror, an empty site config); step 3 (`ChainTest.Integrity`) against the
   snapshot's verified batch through the reference mirror, never the case's;
-  step 4 (`ChainTest.Compiled`); then the case's verdict.
+  step 4 (`ChainTest.Compiled`); then the case's verdict. A case that
+  raises is a `:fail` verdict; the other cases still run. The snapshot is
+  removed after the run unless it was taken into `--snapshot-dir`. A run
+  that selects no case is refused (`setup`, `:not_exercised`).
 
   Reports go to `report_dir`: per case `<target>-<id>-<stamp>.{md,json}`
   with every result as it came (their classes are what the case expects,
@@ -76,11 +79,16 @@ defmodule ChainTest.Conformance do
     unless target in Preflight.targets(),
       do: Mix.raise("unsupported target #{target}; supported: rpi4, rpi0_2\n" <> @usage)
 
+    only = opts[:only] && String.split(opts[:only], ",", trim: true)
+
+    if only == [],
+      do: Mix.raise("--only names no case\n" <> @usage)
+
     %{
       target: target,
       source: String.trim_trailing(opts[:source] || CLI.default_source(), "/"),
       cases: Path.expand(opts[:cases] || Path.join(CLI.root(), "conformance/cases.exs")),
-      only: opts[:only] && String.split(opts[:only], ",", trim: true),
+      only: only,
       snapshot_dir: opts[:snapshot_dir] && Path.expand(opts[:snapshot_dir]),
       report_dir: Path.expand(opts[:report_dir] || default_report_dir()),
       fixture_dir: Path.join(CLI.root(), "fixture")
@@ -106,7 +114,8 @@ defmodule ChainTest.Conformance do
           snapshot: &Snapshot.take/1,
           build: &Build.run/1,
           integrity: &Integrity.run/1,
-          compiled: &Compiled.run/1
+          compiled: &Compiled.run/1,
+          mirror: &Mirror.start/2
         },
         steps
       )
@@ -116,6 +125,7 @@ defmodule ChainTest.Conformance do
 
     with {:ok, cases} <- Case.load(opts.cases),
          {:ok, cases} <- only(cases, opts.only),
+         :ok <- selected(cases),
          {:ok, snap} <-
            s.snapshot.(%{
              source: opts.source,
@@ -125,7 +135,14 @@ defmodule ChainTest.Conformance do
            }) do
       IO.puts("snapshot: #{snap.dir} (batch #{snap.sequence})")
       meta = meta(opts, snap, started_at, versions)
-      {run_cases(cases, snap, opts, s, meta), meta}
+
+      try do
+        {run_cases(cases, snap, opts, s, meta), meta}
+      after
+        # A snapshot this run took for itself is not kept; one in a
+        # caller-given --snapshot-dir is.
+        if opts.snapshot_dir == nil, do: File.rm_rf(snap.dir)
+      end
     else
       {:error, why} -> {[setup(why)], meta(opts, nil, started_at, versions)}
     end
@@ -137,7 +154,12 @@ defmodule ChainTest.Conformance do
     setup
   end
 
+  # A run of no case proves nothing: it must not exit 0.
+  defp selected([_ | _]), do: :ok
+  defp selected(_), do: {:error, "no case selected"}
+
   defp only(cases, nil), do: {:ok, cases}
+  defp only(_cases, []), do: {:error, "--only names no case"}
 
   defp only(cases, ids) do
     case ids -- Enum.map(cases, & &1.id) do
@@ -158,7 +180,7 @@ defmodule ChainTest.Conformance do
       "# A conformance build only compiles: no network or ssh config.\nimport Config\n"
     )
 
-    case Mirror.start(snap.dir) do
+    case s.mirror.(snap.dir, []) do
       {:ok, ref} ->
         try do
           run = run_state(snap, ref, site, opts, s, meta)
@@ -186,9 +208,15 @@ defmodule ChainTest.Conformance do
 
   # The mirror is not linked to this process: it is always stopped here.
   defp run_case(c, run) do
-    case Mirror.start(run.snap.dir, transform: Transform.fun(c.transform)) do
+    case run.steps.mirror.(run.snap.dir, transform: Transform.fun(c.transform)) do
       {:ok, mirror} ->
-        judge_case(c, run, mirror)
+        try do
+          judge_case(c, run, mirror)
+        rescue
+          e -> crashed(c, Exception.format(:error, e, __STACKTRACE__))
+        catch
+          kind, reason -> crashed(c, Exception.format(kind, reason, __STACKTRACE__))
+        end
 
       {:error, why} ->
         verdict = %Result{
@@ -201,6 +229,22 @@ defmodule ChainTest.Conformance do
         CLI.print(verdict)
         verdict
     end
+  end
+
+  # A case that raised is a failure of that case; the other cases and the
+  # summary report still run.
+  defp crashed(c, why) do
+    lines = why |> String.split("\n", trim: true) |> Enum.take(6) |> Enum.join(" | ")
+
+    verdict = %Result{
+      step: :conformance,
+      check: c.id,
+      class: :fail,
+      detail: "the case crashed: " <> lines
+    }
+
+    CLI.print(verdict)
+    verdict
   end
 
   defp judge_case(c, run, mirror) do

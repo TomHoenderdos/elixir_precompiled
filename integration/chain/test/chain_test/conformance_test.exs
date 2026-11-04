@@ -68,7 +68,7 @@ defmodule ChainTest.ConformanceTest do
 
   defp cases!(opts, cases), do: File.write!(opts.cases, inspect(cases, limit: :infinity))
 
-  # A fake client: fetches jason's manifest through the case's mirror, as the
+  # A fake client: fetches the batch and jason's manifest through the case's mirror, as the
   # client does, and reports a hit on 200 or the client's miss detail.
   defp steps(test, snapshot) do
     %{
@@ -78,6 +78,7 @@ defmodule ChainTest.ConformanceTest do
       end,
       build: fn input ->
         send(test, {:build, input})
+        {:ok, _} = HTTP.get(input.source <> "/batch.json", 5_000)
 
         line =
           case HTTP.get(input.source <> "/v2/manifests/jason.json", 5_000) do
@@ -181,5 +182,92 @@ defmodule ChainTest.ConformanceTest do
     assert Conformance.parse!(["--only", "T0,N5-manifest-500"]).only == ["T0", "N5-manifest-500"]
     assert_raise Mix.Error, fn -> Conformance.parse!(["--target", "bbb"]) end
     assert_raise Mix.Error, fn -> Conformance.parse!(["extra"]) end
+    assert_raise Mix.Error, ~r/--only/, fn -> Conformance.parse!(["--only", ""]) end
+    assert_raise Mix.Error, ~r/--only/, fn -> Conformance.parse!(["--only", ","]) end
+  end
+
+  test "an empty --only list stops before the snapshot", ctx do
+    cases!(ctx.opts, [@t0])
+
+    assert {[%Result{check: "setup", class: :not_exercised}], _} =
+             Conformance.run(%{ctx.opts | only: []}, steps(self(), ctx.snapshot))
+
+    refute_received {:snapshot, _}
+  end
+
+  test "a snapshot the run took is removed afterwards; one in --snapshot-dir is kept", ctx do
+    cases!(ctx.opts, [@t0])
+    Conformance.run(ctx.opts, steps(self(), ctx.snapshot))
+    refute File.exists?(ctx.snapshot.dir)
+
+    File.mkdir_p!(Path.join(ctx.snapshot.dir, "v2/manifests"))
+    File.write!(Path.join(ctx.snapshot.dir, "batch.json"), "{}")
+    File.write!(Path.join(ctx.snapshot.dir, "v2/manifests/jason.json"), "{}")
+
+    {verdicts, _} =
+      Conformance.run(%{ctx.opts | snapshot_dir: ctx.snapshot.dir}, steps(self(), ctx.snapshot))
+
+    assert [%Result{class: :pass}] = verdicts
+    assert File.exists?(Path.join(ctx.snapshot.dir, "batch.json"))
+  end
+
+  test "a case that raises fails; the other cases still run", ctx do
+    cases!(ctx.opts, [@status, @t0])
+    s = steps(self(), ctx.snapshot)
+
+    build = fn input ->
+      if String.ends_with?(input.source, "/crash"), do: raise("boom"), else: s.build.(input)
+    end
+
+    # The first mirror the case runner starts is the reference mirror; the
+    # next is N5's, whose url this test marks so its build raises.
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+    mirror = fn dir, opts ->
+      {:ok, m} = ChainTest.Mirror.start(dir, opts)
+      n = Agent.get_and_update(counter, &{&1, &1 + 1})
+      if n == 1, do: {:ok, %{m | url: m.url <> "/crash"}}, else: {:ok, m}
+    end
+
+    {verdicts, _} = Conformance.run(ctx.opts, %{s | build: build} |> Map.put(:mirror, mirror))
+
+    assert [
+             %Result{check: "N5-manifest-500", class: :fail, detail: detail},
+             %Result{check: "T0", class: :pass}
+           ] = verdicts
+
+    assert detail =~ "boom"
+    assert Result.exit_code(verdicts) == 1
+  end
+
+  test "a reference mirror that cannot start stops the run", ctx do
+    cases!(ctx.opts, [@t0])
+    s = Map.put(steps(self(), ctx.snapshot), :mirror, fn _dir, _opts -> {:error, :eaddrinuse} end)
+
+    assert {[%Result{check: "setup", class: :not_exercised, detail: detail}], _} =
+             Conformance.run(ctx.opts, s)
+
+    assert detail =~ "eaddrinuse"
+    refute_received {:build, _}
+  end
+
+  test "a case mirror that cannot start leaves that case not exercised", ctx do
+    cases!(ctx.opts, [@t0, @status])
+
+    mirror = fn dir, opts ->
+      if Keyword.has_key?(opts, :transform),
+        do: {:error, :emfile},
+        else: ChainTest.Mirror.start(dir, opts)
+    end
+
+    s = Map.put(steps(self(), ctx.snapshot), :mirror, mirror)
+
+    assert {[
+              %Result{check: "T0", class: :not_exercised, detail: detail},
+              %Result{check: "N5-manifest-500", class: :not_exercised}
+            ], _} = Conformance.run(ctx.opts, s)
+
+    assert detail =~ "emfile"
+    refute_received {:build, _}
   end
 end
