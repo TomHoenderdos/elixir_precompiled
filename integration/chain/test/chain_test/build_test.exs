@@ -292,4 +292,63 @@ defmodule ChainTest.BuildTest do
       assert detail =~ ".fw"
     end)
   end
+
+  test "another command runs instead of firmware and needs no .fw", ctx do
+    FakeBin.with_stubs(%{"mix" => fake_mix(ctx, @hits, sequence: 7, fw: false)}, fn dir ->
+      {results, info} =
+        Build.run(%{
+          fixture_dir: ctx.fixture,
+          target: "rpi4",
+          source: "http://127.0.0.1:1",
+          home: ctx.home,
+          trust: Synthetic.info(7, %{}),
+          command: ["compile"]
+        })
+
+      assert FakeBin.argv(dir, "mix") == ["compile"]
+      assert %Result{class: :pass, detail: detail} = find(results, "compile")
+      assert detail =~ "mix compile exit 0"
+      assert find(results, "firmware") == nil
+      assert info.fw_path == nil
+      assert %Result{class: :pass} = find(results, "hit:jason")
+    end)
+  end
+
+  test "a failing other command fails its compile check", ctx do
+    FakeBin.with_stubs(%{"mix" => "echo 'compile error' ; exit 1"}, fn _ ->
+      {results, _} =
+        Build.run(%{
+          fixture_dir: ctx.fixture,
+          target: "rpi4",
+          source: "http://127.0.0.1:1",
+          home: ctx.home,
+          command: ["compile"]
+        })
+
+      assert %Result{class: :fail, detail: detail} = find(results, "compile")
+      assert detail =~ "mix compile exit 1"
+      assert detail =~ "compile error"
+    end)
+  end
+
+  test "a home that is not fresh names the other command's check", ctx do
+    File.mkdir_p!(Path.join(ctx.home, "stale"))
+
+    {results, _} =
+      Build.run(%{
+        fixture_dir: ctx.fixture,
+        target: "rpi4",
+        source: "http://127.0.0.1:1",
+        home: ctx.home,
+        command: ["compile"]
+      })
+
+    assert %Result{class: :not_exercised} = find(results, "compile")
+    assert find(results, "firmware") == nil
+  end
+
+  test "unset_env/0 names the variables the build unsets" do
+    assert "ELIXIR_PRECOMPILED" in Build.unset_env()
+    assert "MIX_BUILD_PATH" in Build.unset_env()
+  end
 end

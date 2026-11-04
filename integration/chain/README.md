@@ -111,3 +111,40 @@ A run whose report is all `pass`, `miss` and `rerun` exits 0. The report's
 heading is `PASS` only without a `rerun`; with one it is `RERUN`, and the run
 should be repeated before it counts. When step 1 could not verify any batch
 either, the client batch's failed checks stay failures.
+
+## Conformance
+
+`mix chain_conformance` runs the client against a mirror of the portal on
+127.0.0.1, one case at a time, and needs no device:
+
+    mix chain_conformance [--target rpi4] [--only T0] [--cases PATH]
+
+It takes a fresh snapshot of the portal first (`mix chain_snapshot` does
+only that): the root, the current batch, the fixture's manifests and the
+files of the builds the client could select, verified by the harness and
+kept in a directory under the system tmp dir. A snapshot is good for 24
+hours, the client's batch freshness bound, so every run takes a new one.
+That download is the only time a run contacts the portal.
+
+Each case gets a mirror over the snapshot that changes its responses as the
+case says, a fresh client home, a clean `_build` and `mix compile` of the
+fixture for the target. Steps 3 and 4 then check what the client installed
+against the unchanged snapshot.
+
+Cases are data, in `conformance/cases.exs`, one map per case:
+
+| Key | Meaning |
+| --- | --- |
+| `id` | Unique; a letter or digit, then letters, digits, `.` or `-`. |
+| `description` | One plain sentence. |
+| `transform` | `{module, args}`: a `ChainTest.Mirror.Transform` and its args. `ChainTest.Mirror.Identity` serves unchanged; `ChainTest.Mirror.Status` answers `status` for `paths`. A transform gets each response's path relative to the snapshot (`"v2/manifests/jason.json"`) and bytes, and returns `{status, bytes}`. |
+| `client` | `%{default: expect, deps: %{dep => expect}}`: what `report.json` must say for each expected hit and each dep in `deps`. `expect` is `:hit`, `:miss`, `:fail`, `{status, "detail prefix"}`, or `:snapshot` (a hit when the snapshot holds a build the client could select). |
+| `harness` | `%{"step/check" => class}`: harness results that must have that class. Every other result must be `pass`, `miss` or `rerun`. |
+
+A case passes when the client and the harness say what it expects. Whatever
+a case expects, a report line calling a dep a hit when the snapshot holds no
+build of it fails the case: the client installed something it was never
+served. A case whose transform changed nothing the client asked for is
+`not_exercised`.
+Each case's own results are in `<target>-<id>-<stamp>.md`; the verdicts in
+`<target>-conformance-<stamp>.md`.

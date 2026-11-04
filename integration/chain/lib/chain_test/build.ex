@@ -15,7 +15,9 @@ defmodule ChainTest.Build do
 
     * `home` - only when a caller-given home is not empty: `:fail`, and
       nothing is built.
-    * `firmware` - `mix firmware` exited 0 and left a `.fw` image.
+    * `firmware` - `mix firmware` exited 0 and left a `.fw` image (or
+      `compile`, when `:command` is not `["firmware"]`: that `mix` command
+      exited 0; no image needed).
     * `hit:<dep>` per expected hit (`expected.exs`): `:pass` on a hit,
       `:refused` when the client's detail starts with a refusal reason,
       `:miss` with the client's detail on a miss (`:fail` when the miss is
@@ -56,6 +58,7 @@ defmodule ChainTest.Build do
           optional(:trust) => ChainTest.Trust.info() | nil,
           optional(:expected) => %{hits: [atom()], never: [atom()]},
           optional(:target_config) => Path.t(),
+          optional(:command) => [String.t()],
           optional(:timeout_ms) => pos_integer()
         }
 
@@ -69,6 +72,10 @@ defmodule ChainTest.Build do
   @doc "The client's refusal reason prefixes."
   @spec refusals() :: [String.t()]
   def refusals(), do: @refusals
+
+  @doc "The variables the fixture build unsets."
+  @spec unset_env() :: [String.t()]
+  def unset_env(), do: @unset
 
   @doc "Whether a client detail is a refusal."
   @spec refusal?(String.t()) :: boolean()
@@ -104,7 +111,10 @@ defmodule ChainTest.Build do
         skipped = "the client home is not fresh"
 
         results =
-          [result("home", :fail, why), result("firmware", :not_exercised, skipped)] ++
+          [
+            result("home", :fail, why),
+            result(check_name(Map.get(input, :command, ["firmware"])), :not_exercised, skipped)
+          ] ++
             Enum.map(expected.hits, &result("hit:#{&1}", :not_exercised, skipped)) ++
             Enum.map(expected.never, &result("never:#{&1}", :not_exercised, skipped)) ++
             [result("sequence", :not_exercised, skipped)]
@@ -150,10 +160,11 @@ defmodule ChainTest.Build do
         target_config(Map.get(input, :target_config)) ++ Enum.map(@unset, &{&1, nil})
 
     timeout = Map.get(input, :timeout_ms, @timeout_ms)
+    command = Map.get(input, :command, ["firmware"])
 
     {{status, log}, ms} =
       Result.timed(fn ->
-        Cmd.run("mix", ["firmware"], cd: fixture, env: env, timeout_ms: timeout)
+        Cmd.run("mix", command, cd: fixture, env: env, timeout_ms: timeout)
       end)
 
     fw = fw_path(build_dir)
@@ -161,7 +172,7 @@ defmodule ChainTest.Build do
     sequence = client_sequence(home)
 
     results =
-      [firmware(status, fw, log, ms)] ++
+      [build_check(command, status, fw, log, ms)] ++
         hits(expected.hits, report, status) ++
         never(expected.never, report) ++
         [sequence_check(Map.get(input, :trust), sequence)]
@@ -226,6 +237,18 @@ defmodule ChainTest.Build do
         end
     end
   end
+
+  defp check_name(["firmware"]), do: "firmware"
+  defp check_name(_command), do: "compile"
+
+  defp build_check(["firmware"], status, fw, log, ms), do: firmware(status, fw, log, ms)
+
+  defp build_check(command, 0, _fw, _log, ms),
+    do: result("compile", :pass, "mix #{Enum.join(command, " ")} exit 0", ms)
+
+  defp build_check(command, status, _fw, log, ms),
+    do:
+      result("compile", :fail, "mix #{Enum.join(command, " ")} exit #{status}; " <> tail(log), ms)
 
   defp firmware(0, fw, _log, ms) when is_binary(fw),
     do: result("firmware", :pass, "mix firmware exit 0, #{fw}", ms)
