@@ -115,8 +115,49 @@ if Code.ensure_loaded?(Igniter) do
       assert count(text, ~s("deps.compile elixir_precompiled")) == 1
     end
 
+    # Igniter.Project.Deps.set_dep_option/4 (igniter 0.8.5) writes invalid
+    # `:runtime => false` into a bare `{name, "~> x"}` tuple when `deps` is
+    # the one-liner `defp deps, do: [...]`; the block form below is
+    # unaffected by that bug. Both forms must end up parseable with
+    # `runtime: false` added.
+    test "a block-form deps function also gains runtime: false" do
+      mix_exs = """
+      defmodule Test.MixProject do
+        use Mix.Project
+
+        def project do
+          [app: :test, version: "0.1.0", deps: deps()]
+        end
+
+        defp deps do
+          [{:elixir_precompiled, "~> 0.1"}]
+        end
+      end
+      """
+
+      igniter =
+        test_project(files: %{"mix.exs" => mix_exs})
+        |> install()
+        |> apply_igniter!()
+
+      assert content(igniter, "mix.exs") =~
+               ~s({:elixir_precompiled, "~> 0.1", runtime: false})
+    end
+
+    test "a one-liner deps function gains runtime: false" do
+      igniter =
+        project_with("[]", ~s({:elixir_precompiled, "~> 0.1"}))
+        |> install()
+        |> apply_igniter!()
+
+      assert content(igniter, "mix.exs") =~
+               ~s({:elixir_precompiled, "~> 0.1", runtime: false})
+    end
+
     test "the dep keeps its own options and gains runtime: false" do
       for {dep, want} <- [
+            {~s({:elixir_precompiled, "~> 0.1"}),
+             ~s({:elixir_precompiled, "~> 0.1", runtime: false})},
             {~s({:elixir_precompiled, "~> 0.1", only: :dev}),
              ~s({:elixir_precompiled, "~> 0.1", only: :dev, runtime: false})},
             {~s({:elixir_precompiled, github: "o/r"}),

@@ -64,8 +64,10 @@ if Code.ensure_loaded?(Igniter) do
     end
 
     # Igniter.Project.Deps.set_dep_option/4 writes `:runtime => false` into
-    # a `{name, "~> x"}` tuple (invalid Elixir), so that one shape gets its
-    # options list here; every other shape goes through set_dep_option/4.
+    # a `{name, "~> x"}` tuple (invalid Elixir) when `deps` is defined as a
+    # one-liner, `defp deps, do: [...]`; the standard `defp deps do [...]
+    # end` block form is unaffected. So that one shape gets its options
+    # list here; every other shape goes through set_dep_option/4.
     defp runtime_false(igniter) do
       igniter
       |> Igniter.update_elixir_file("mix.exs", fn zipper ->
