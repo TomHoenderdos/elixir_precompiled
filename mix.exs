@@ -75,6 +75,7 @@ defmodule ElixirPrecompiled.MixProject do
       files: [
         "CHANGELOG.md",
         "lib",
+        "LICENSE",
         "LICENSES/*",
         "mix.exs",
         "NOTICE",
