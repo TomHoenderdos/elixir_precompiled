@@ -116,6 +116,12 @@ defmodule ChainTest.Mirror.Layer1BytesTest do
       assert FileBytes.transform("batch.json", "b", %{change: :flip_byte}) == {200, "b"}
     end
 
+    test "short streams one byte less without a length, so the body arrives whole", ctx do
+      short = binary_part(ctx.f, 0, byte_size(ctx.f) - 1)
+      assert {:stream, 200, [^short], 0} = FileBytes.transform(ctx.path, ctx.f, %{change: :short})
+      assert FileBytes.transform("files/" <> sha(""), "", %{change: :short}) == {200, ""}
+    end
+
     test "truncate declares the whole file and sends one byte less", ctx do
       n = byte_size(ctx.f) - 1
       assert {:truncate, 200, f, ^n} = FileBytes.transform(ctx.path, ctx.f, %{change: :truncate})
@@ -134,7 +140,7 @@ defmodule ChainTest.Mirror.Layer1BytesTest do
     end
 
     test "args" do
-      for c <- [:flip_byte, :truncate, :larger, :endless],
+      for c <- [:flip_byte, :truncate, :short, :larger, :endless],
           do: assert(Transform.valid?({FileBytes, %{change: c}}))
 
       refute Transform.valid?({FileBytes, %{change: :other}})

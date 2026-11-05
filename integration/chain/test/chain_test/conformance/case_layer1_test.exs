@@ -328,7 +328,8 @@ defmodule ChainTest.Conformance.CaseLayer1Test do
     end
 
     test "every brief row has its case", %{by: by} do
-      for id <- ~w(M1 M2 M3 F1 F2-truncated F2-larger F2-endless N1 N1-manifest N1-batch N4
+      for id <-
+            ~w(M1 M2 M3 F1 F2-truncated F2-short F2-larger F2-endless N1 N1-manifest N1-batch N4
                    N5-batch C0 C1 C2-entry C2-dir R15-refused R15-unserved R16),
           do: assert(Map.has_key?(by, id), id)
 
@@ -379,7 +380,11 @@ defmodule ChainTest.Conformance.CaseLayer1Test do
       for id <- ~w(C2-entry C2-dir),
           do: assert(by[id].client.default == {:fail, "cache refused"}, id)
 
-      assert by["F2-truncated"].client.default == {:fail, "size mismatch"}
+      # A declared length cut short is a transport error to the client; a
+      # short body that arrives whole fails the manifest's size.
+      assert by["F2-truncated"].client.default == {:fail, "file not available:"}
+      assert by["F2-short"].client.default == {:fail, "size mismatch"}
+      assert by["F2-short"].transform == {ChainTest.Mirror.FileBytes, %{change: :short}}
 
       # An undelivered batch says why after the colon; N1-batch says it was
       # the redirect.

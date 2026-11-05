@@ -9,19 +9,21 @@ defmodule ChainTest.Mirror.FileBytes do
 
     * `change: :flip_byte` - one byte changed, the size kept (F1).
     * `change: :truncate` - declares the file's size, sends one byte less
-      and closes (F2).
+      and closes (F2): the client sees a transport error.
+    * `change: :short` - one byte less, streamed without a length, so the
+      body arrives whole and only the manifest's size tells (F2).
     * `change: :larger` - one byte more than the manifest's size (F2).
     * `change: :endless` - no `content-length`, 64 KiB chunks until the
       client hangs up or the mirror's cap (F2).
 
-  An empty file has no byte to change or leave out, so `:flip_byte` and
-  `:truncate` serve it as it is; every build's `.app` is not empty.
+  An empty file has no byte to change or leave out, so `:flip_byte`,
+  `:truncate` and `:short` serve it as it is; every build's `.app` is not empty.
   """
   @behaviour ChainTest.Mirror.Transform
 
   alias ChainTest.Mirror.Transform
 
-  @changes [:flip_byte, :truncate, :larger, :endless]
+  @changes [:flip_byte, :truncate, :short, :larger, :endless]
   @chunk :binary.copy(<<0>>, 65_536)
 
   @impl true
@@ -33,9 +35,10 @@ defmodule ChainTest.Mirror.FileBytes do
     if Transform.file_path?(path), do: change(change, bytes), else: {200, bytes}
   end
 
-  defp change(c, "") when c in [:flip_byte, :truncate], do: {200, ""}
+  defp change(c, "") when c in [:flip_byte, :truncate, :short], do: {200, ""}
   defp change(:flip_byte, bytes), do: {200, Transform.flip_byte(bytes)}
   defp change(:truncate, bytes), do: {:truncate, 200, bytes, byte_size(bytes) - 1}
+  defp change(:short, bytes), do: {:stream, 200, [binary_part(bytes, 0, byte_size(bytes) - 1)], 0}
   defp change(:larger, bytes), do: {200, bytes <> <<0>>}
   defp change(:endless, _bytes), do: {:endless, 200, @chunk, 0}
 end

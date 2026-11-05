@@ -197,8 +197,8 @@ batch naming another manifest, or none, for a held dep) and
 manifest one byte changed or served as another dep's), `ChainTest.Mirror.OlderManifest`
 (an older batch's real manifest served under `N`, M3: it needs those bytes,
 which the portal does not serve, so it is not testable here today),
-`ChainTest.Mirror.FileBytes` (`change: :flip_byte | :truncate | :larger |
-:endless` on every file), `ChainTest.Mirror.Redirect` (`paths: :batch |
+`ChainTest.Mirror.FileBytes` (`change: :flip_byte | :truncate | :short |
+:larger | :endless` on every file), `ChainTest.Mirror.Redirect` (`paths: :batch |
 :manifests | :files`, `mirrors: 2`: a 302 to the second mirror, another
 origin) and `ChainTest.Mirror.Drip` (`paths: :batch | :files`, one byte
 every 2 s, with `stream_max_ms`). M4 has no case of its own: with real bytes
@@ -311,7 +311,8 @@ an HTTP error, the deadline; N1-batch pins `batch unavailable: redirect to
 another host refused`), while a batch delivered and refused prints its own
 reason without that prefix; `redirect to another host refused` and
 `source must be https (http only on loopback), disabled`. The cache and
-file cases pin `cache refused` (C2), `size mismatch` (F2-truncated),
+file cases pin `cache refused` (C2), `file not available:` (F2-truncated: a declared
+length cut short is a transport error), `size mismatch` (F2-short),
 `file larger than declared size` and `sha256 mismatch`; the forged
 manifests `unsafe path or mode (...)`, `foreign path` and `path
 collision`. Each is a prefix of the client's reason (a substring for a
@@ -441,6 +442,7 @@ is its gate. P7, P5 for a git dep and the other "known, not testable" items are 
 | `M3` | M3 | 1 | A real manifest an older batch names, and the current one does not, served under the current batch: refused on the hash. |
 | `F1` | F1 | 1 | One byte of every file changed, its size kept: refused on the sha256, nothing installed or cached. |
 | `F2-truncated` | F2 | 1 | Every file cut one byte short of the length it declares: refused, nothing installed or cached. |
+| `F2-short` | F2 | 1 | Every file one byte short, sent whole without a declared length: refused on the manifest's size, nothing installed or cached. |
 | `F2-larger` | F2 | 1 | Every file one byte larger than the manifest's size: refused at the size cap, nothing installed or cached. |
 | `F2-endless` | F2 | 1 | Every file an endless stream without a length: refused at the size cap, nothing installed or cached. |
 | `N1` | N1 | 1 | Every file redirected to another origin, a second mirror with the right bytes: refused as cross-origin, never followed. |

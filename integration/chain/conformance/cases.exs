@@ -271,11 +271,19 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
       "One byte of every file changed, its size kept: refused on the sha256, nothing installed or cached.",
     transform: {ChainTest.Mirror.FileBytes, %{change: :flip_byte}}
   }),
-  Map.merge(none_installed.({:fail, "size mismatch"}), %{
+  # A declared length the body falls short of is a transport error to the
+  # client, before any size check; F2-short reaches the size check.
+  Map.merge(none_installed.({:fail, "file not available:"}), %{
     id: "F2-truncated",
     description:
       "Every file cut one byte short of the length it declares: refused, nothing installed or cached.",
     transform: {ChainTest.Mirror.FileBytes, %{change: :truncate}}
+  }),
+  Map.merge(none_installed.({:fail, "size mismatch"}), %{
+    id: "F2-short",
+    description:
+      "Every file one byte short, sent whole without a declared length: refused on the manifest's size, nothing installed or cached.",
+    transform: {ChainTest.Mirror.FileBytes, %{change: :short}}
   }),
   Map.merge(none_installed.({:fail, "file larger than declared size"}), %{
     id: "F2-larger",
