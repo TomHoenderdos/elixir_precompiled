@@ -89,7 +89,9 @@ Nothing CI-specific is needed; for speed:
 - a warm step asks the source one conditional question (`If-None-Match`
   on the batch) and downloads nothing else. Until the portal answers that
   question with `304 Not Modified`, the batch itself is downloaded again;
-  manifests and files still come from the cache;
+  manifests and files still come from the cache. While the question is
+  out, the dependencies are matched against the cached batch; the answer
+  still decides what is installed;
 - `ELIXIR_PRECOMPILED_SOURCE=<url>` turns it on without a config change.
 
 ```yaml
@@ -339,6 +341,15 @@ hold only `.beam` files, `<dep>.app` and `<dep>.appup` (anything else,
 such as another app's `.app`, is `foreign path: ...`); and the `.app` must
 list exactly the beams shipped. Cache entries are never
 followed through symlinks.
+
+A cached file is hashed again before each install unless it is exactly
+the file that was hashed before: same device, inode, size, mtime and
+ctime, read from the open file, recorded once its hash matched. Those
+records are kept and used only in a cache dir that only its owner can
+enter (mode `0700`). A cache dir this library creates is made that way;
+an existing one keeps its mode (`chmod 700` it to get the same). Any
+difference, including a file rewritten with its size and mtime put back,
+means a full hash, and a file that no longer matches is fetched again.
 
 Root rotation follows TUF: each adopted root must be signed by the
 previous root's root keys (to its threshold) and carry a higher version,

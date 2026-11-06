@@ -430,6 +430,46 @@ defmodule ElixirPrecompiled.Trust do
     _ -> {:error, "batch malformed"}
   end
 
+  @doc """
+  The cached batch, checked as `fetch_batch_cached/3` would check it
+  (except against the sequence floor), but without asking the source and
+  without recording anything. For work done while the source is asked; what
+  the run then uses is still `fetch_batch_cached/3`'s answer. Also returns
+  what was verified, which `fetch_batch_cached/3` takes as `:seen_batch` in
+  `config` so the same bytes under the same keys are not verified twice.
+  """
+  @spec peek_cached_batch(map(), root()) :: {:ok, batch(), map()} | :error
+  def peek_cached_batch(config, root) do
+    dir = state_dir(config)
+
+    with %{body: body} <- read_cached_batch(dir),
+         {:ok, decoded, seen} <- verify_signed(config, root, body),
+         {:ok, batch} <- check_batch(config, decoded, nil) do
+      {:ok, batch, seen}
+    else
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  @doc """
+  The URL `fetch_batch_cached/3` asks and the ETag it sends with it (nil
+  when there is no usable cached batch).
+  """
+  @spec batch_request(map()) :: {String.t(), String.t() | nil}
+  def batch_request(config) do
+    etag =
+      case read_cached_batch(state_dir(config)) do
+        %{etag: etag} -> etag
+        nil -> nil
+      end
+
+    {config.source <> "/batch.json", etag}
+  rescue
+    _ -> {config.source <> "/batch.json", nil}
+  end
+
   defp online_batch(config, root, fetch, cached, dir) do
     case fetch.(config.source <> "/batch.json", cached && cached.etag) do
       :not_modified when cached != nil ->
@@ -548,11 +588,37 @@ defmodule ElixirPrecompiled.Trust do
   end
 
   defp verify_batch(config, root, body, dir) do
+    with {:ok, decoded, _seen} <- verify_signed(config, root, body),
+         {:ok, batch} <- check_batch(config, decoded, dir),
+         :ok <- write_state(dir, batch.sequence) do
+      {:ok, batch}
+    end
+  end
+
+  # The signature and the JSON. Bytes that are exactly the ones
+  # peek_cached_batch/2 already verified under the same keys are not
+  # verified again: the outcome could only be the same.
+  defp verify_signed(config, root, body) do
     {keys, t} = root_keys(root, "batch")
 
-    with {:ok, payload} <- verify_envelope(body, keys, t) |> or_error("batch signature invalid"),
-         {:ok, decoded} <- safe_decode(payload) |> or_error("batch malformed"),
-         {:ok, seq, issued, exp, manifests, v2, content} <- batch_fields(decoded),
+    case Map.get(config, :seen_batch) do
+      %{body: ^body, keys: ^keys, threshold: ^t, decoded: decoded} = seen ->
+        {:ok, decoded, seen}
+
+      _ ->
+        with {:ok, payload} <-
+               verify_envelope(body, keys, t) |> or_error("batch signature invalid"),
+             {:ok, decoded} <- safe_decode(payload) |> or_error("batch malformed") do
+          {:ok, decoded, %{body: body, keys: keys, threshold: t, decoded: decoded}}
+        end
+    end
+  end
+
+  # Every check on a signed batch's fields, reading the sequence floor in
+  # `dir` but not raising it; nil skips the floor (a peek: the floor is
+  # checked when the batch is used).
+  defp check_batch(config, decoded, dir) do
+    with {:ok, seq, issued, exp, manifests, v2, content} <- batch_fields(decoded),
          now = now(config),
          :ok <- sane_clock(now),
          {:ok, issued_at} <- parse_instant(issued),
@@ -561,8 +627,7 @@ defmodule ElixirPrecompiled.Trust do
          :ok <- lifetime(issued_at, expires_at),
          :ok <- fresh(issued_at, now),
          :ok <- not_expired(expires_at, now),
-         :ok <- monotonic(dir, seq),
-         :ok <- write_state(dir, seq) do
+         :ok <- if(dir, do: monotonic(dir, seq), else: :ok) do
       {:ok, %{sequence: seq, manifests: manifests, manifests_v2: v2, content: content}}
     end
   end

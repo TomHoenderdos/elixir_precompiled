@@ -12,7 +12,7 @@ defmodule ElixirPrecompiled.Fetch do
   marker.
   """
 
-  alias ElixirPrecompiled.{FileUtil, Manifest}
+  alias ElixirPrecompiled.{FileStamp, FileUtil, Manifest}
 
   # 8 MiB: root, batch and any other document
   # httpc's request errors that mean the connection failed or broke.
@@ -35,6 +35,8 @@ defmodule ElixirPrecompiled.Fetch do
   @ok_modes [0o644, 0o755, 0o100644, 0o100755]
   @provenance_file "elixir_precompiled.json"
   @file_concurrency 8
+  # How often a cached file's last use is recorded (see file_used/5).
+  @used_every 86_400
 
   @spec get_body(String.t(), keyword()) :: {:ok, binary()} | {:error, String.t()}
   def get_body(url, opts \\ []) do
@@ -255,16 +257,30 @@ defmodule ElixirPrecompiled.Fetch do
   `{:unreachable, why}`: the manifest is not cached and the network could
   not deliver it (offline, a transport error, a 5xx, the run deadline), as
   opposed to a source that answered and refused.
+
+  With `cache_only: true` nothing is asked of the network: a manifest that
+  is not cached is `:not_cached`.
   """
-  @spec manifest(map(), String.t(), String.t(), String.t()) ::
-          {:ok, map()} | {:miss, String.t()} | {:fail, String.t()} | {:unreachable, String.t()}
-  def manifest(config, name, expected_sha, path \\ "manifests") do
+  @spec manifest(map(), String.t(), String.t(), String.t(), keyword()) ::
+          {:ok, map()}
+          | {:miss, String.t()}
+          | {:fail, String.t()}
+          | {:unreachable, String.t()}
+          | :not_cached
+  def manifest(config, name, expected_sha, path \\ "manifests", opts \\ []) do
     with true <- sha256?(expected_sha) || {:fail, "manifest hash malformed"},
          {:ok, _dir} <- cache_dir(config, "manifests") do
       case cached_manifest(config, expected_sha) do
-        {:ok, bytes} -> decode_manifest(bytes)
-        :absent -> uncached_manifest(config, name, expected_sha, path)
-        {:fail, _} = fail -> fail
+        {:ok, bytes} ->
+          decode_manifest(bytes)
+
+        :absent ->
+          if opts[:cache_only],
+            do: :not_cached,
+            else: uncached_manifest(config, name, expected_sha, path)
+
+        {:fail, _} = fail ->
+          fail
       end
     end
   end
@@ -364,6 +380,17 @@ defmodule ElixirPrecompiled.Fetch do
   # two is refused. The read stops at `max` + 1 bytes, whatever the file
   # has grown to since.
   defp read_cached(path, max) do
+    case read_cached_stat(path, max) do
+      {:ok, bytes, _stat} -> {:ok, bytes}
+      other -> other
+    end
+  end
+
+  # As read_cached/2, with what the open file's own stat said: taken through
+  # the same handle before and after the read, and only when the two agree
+  # on everything a stamp records; nil otherwise. A file renamed over or
+  # written to while it was read cannot pass for the one that was stat'ed.
+  defp read_cached_stat(path, max) do
     case File.lstat(path) do
       {:ok, %File.Stat{type: :regular, size: size}} when size > max -> :absent
       {:ok, %File.Stat{type: :regular} = stat} -> read_regular(path, stat, max)
@@ -396,13 +423,26 @@ defmodule ElixirPrecompiled.Fetch do
          %File.Stat{type: :regular} = stat <- File.Stat.from_record(info),
          true <- {stat.inode, stat.major_device} == {lstat.inode, lstat.major_device},
          {:ok, bytes} when byte_size(bytes) <= max <- read_capped(fd, max + 1, []) do
-      {:ok, bytes}
+      {:ok, bytes, same_stat(stat, fd)}
     else
       {:ok, _too_long} -> :absent
       {:error, _} -> :absent
       _ -> {:fail, "cache refused (#{path} changed while being read)"}
     end
   end
+
+  defp same_stat(before, fd) do
+    with {:ok, info} <- :file.read_file_info(fd, time: :posix),
+         %File.Stat{type: :regular} = later <- File.Stat.from_record(info),
+         true <- stamp_fields(later) == stamp_fields(before) do
+      later
+    else
+      _ -> nil
+    end
+  end
+
+  defp stamp_fields(%File.Stat{} = s),
+    do: {s.major_device, s.minor_device, s.inode, s.size, s.mtime, s.ctime}
 
   defp read_capped(fd, left, acc) when left > 0 do
     case :file.read(fd, left) do
@@ -791,17 +831,53 @@ defmodule ElixirPrecompiled.Fetch do
     end
   end
 
-  # The cached copy, re-hashed on every use; a wrong size or a wrong hash
-  # is no copy at all, and anything but a regular file refuses the dep.
+  # The cached copy, re-hashed on use unless the run's stamps
+  # (ElixirPrecompiled.FileStamp) say the open file is the very one that
+  # was hashed to `sha` before; a wrong size or a wrong hash is no copy at
+  # all, and anything but a regular file refuses the dep.
   defp cached_file(config, sha, size) do
     path = file_cache_path(config, sha)
+    stamps = Map.get(config, :stamps)
 
-    case read_cached(path, size) do
-      {:ok, bytes} ->
-        if check_bytes(bytes, sha, size) == :ok, do: used(path, {:ok, bytes}), else: :absent
+    case read_cached_stat(path, size) do
+      {:ok, bytes, stat} ->
+        cond do
+          byte_size(bytes) != size ->
+            FileStamp.drop(stamps, sha)
+            :absent
+
+          stat != nil and FileStamp.match?(FileStamp.lookup(stamps, sha), stat, sha) ->
+            file_used(path, stat, stamps, nil, {:ok, bytes})
+
+          check_bytes(bytes, sha, size) == :ok ->
+            file_used(path, stat, stamps, sha, {:ok, bytes})
+
+          true ->
+            FileStamp.drop(stamps, sha)
+            :absent
+        end
 
       other ->
         other
+    end
+  end
+
+  # A cached file is marked used (for the gc's least-recently-used order)
+  # once a day, not on every hit: the mark changes its ctime and so its
+  # stamp. Freshly hashed (`sha`) and left unmarked, it is stamped.
+  defp file_used(path, stat, stamps, sha, result) do
+    now = System.os_time(:second)
+
+    cond do
+      stat == nil or not is_integer(stat.mtime) or stat.mtime <= now - @used_every ->
+        used(path, result)
+
+      is_binary(sha) and FileStamp.settled?(stat, now) ->
+        FileStamp.put(stamps, FileStamp.new(stat, sha))
+        result
+
+      true ->
+        result
     end
   end
 

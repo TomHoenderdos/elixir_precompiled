@@ -180,11 +180,23 @@ defmodule ElixirPrecompiled.Config do
   # cache). Shared by the run (Check.with_home/2) and the Mix tasks, so
   # `precompiled.status` and `precompiled.clean --cache` name the same dir
   # a run writes. Probing creates the dir, as a run does.
+  #
+  # A home this creates is made owner-only (0700): only such a home holds
+  # the stamps that spare a run re-hashing its cached files
+  # (ElixirPrecompiled.FileStamp). An existing home keeps its mode.
   @spec run_home(Path.t() | nil, Path.t()) :: {:ok, Path.t()} | {:fallback, Path.t()}
   def run_home(home, build_lib) do
-    if is_binary(home) and ElixirPrecompiled.FileUtil.writable_dir?(home),
+    if is_binary(home) and writable_home?(home),
       do: {:ok, home},
       else: {:fallback, fallback_home(build_lib)}
+  end
+
+  defp writable_home?(home) do
+    new? = match?({:error, :enoent}, File.lstat(home))
+
+    writable? = ElixirPrecompiled.FileUtil.writable_dir?(home)
+    if writable? and new?, do: _ = File.chmod(home, 0o700)
+    writable?
   end
 
   @doc false
