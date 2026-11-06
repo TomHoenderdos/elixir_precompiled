@@ -103,7 +103,15 @@ defmodule ElixirPrecompiled.TestServer do
     serve_json(conn, ElixirPrecompiled.Fixture.get(:root))
   end
 
+  # `Fixture.delay_batch/1` holds the answer back, a slow round trip to the
+  # source; the moment it is sent is recorded for the test to compare with.
   get "/precompiled/batch.json" do
+    case ElixirPrecompiled.Fixture.get(:batch_delay_ms) do
+      ms when is_integer(ms) and ms > 0 -> Process.sleep(ms)
+      _ -> :ok
+    end
+
+    ElixirPrecompiled.Fixture.batch_answered(System.monotonic_time(:millisecond))
     serve_json(conn, ElixirPrecompiled.Fixture.get(:batch))
   end
 
