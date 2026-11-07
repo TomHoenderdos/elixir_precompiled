@@ -19,7 +19,23 @@ defmodule Mix.Tasks.Precompiled.CleanTest do
     end
     """)
 
-    Mix.Project.in_project(:clean_test_project, dir, fn _ -> fun.() end)
+    without_build_env(fn ->
+      Mix.Project.in_project(:clean_test_project, dir, fn _ -> fun.() end)
+    end)
+  end
+
+  # MIX_BUILD_ROOT or MIX_BUILD_PATH in the test VM's env would point the
+  # tmp project's build path at this checkout's own build, which clean
+  # then empties.
+  defp without_build_env(fun) do
+    saved = for var <- ~w(MIX_BUILD_ROOT MIX_BUILD_PATH), do: {var, System.get_env(var)}
+    Enum.each(saved, fn {var, _} -> System.delete_env(var) end)
+
+    try do
+      fun.()
+    after
+      for {var, value} <- saved, value != nil, do: System.put_env(var, value)
+    end
   end
 
   defp infos(acc \\ []) do

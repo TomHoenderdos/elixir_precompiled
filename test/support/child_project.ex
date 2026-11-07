@@ -182,6 +182,7 @@ defmodule ElixirPrecompiled.ChildProject do
         {"MIX_ENV", "dev"},
         {"MIX_TARGET", nil},
         {"MIX_BUILD_PATH", nil},
+        {"MIX_BUILD_ROOT", nil},
         {"MIX_DEPS_PATH", nil},
         {"MIX_EXS", nil},
         {"ELIXIR_PRECOMPILED_SOURCE", nil},
