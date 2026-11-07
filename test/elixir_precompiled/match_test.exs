@@ -447,7 +447,9 @@ defmodule ElixirPrecompiled.MatchTest do
       Base.url_encode64(bin, padding: false)
     end
 
-    test "a recorded value naming an atom this VM has never seen" do
+    # No config in this VM can hold an atom it has never seen, so the
+    # value differs from the project's, whatever the project sets.
+    test "a recorded value naming an atom this VM has never seen differs" do
       ce = [%{"app" => "ash", "path" => ["mode"], "value" => unknown_atom_value()}]
 
       m =
@@ -456,8 +458,12 @@ defmodule ElixirPrecompiled.MatchTest do
           entry(%{"build" => Map.put(entry()["build"], "compile_env", ce)})
         )
 
-      assert {:miss, "malformed entry"} = Match.select(m, ctx())
-      assert_raise ArgumentError, fn -> Match.compile_env_ok(ce, fn _, _ -> :error end) end
+      for config <- [fn _, _ -> :error end, fn "ash", ["mode"] -> {:ok, :fast} end] do
+        assert {:miss, "compile_env differs: ash [:mode]"} =
+                 Match.select(m, ctx(%{config: config}))
+
+        assert {:miss, "compile_env differs: ash [:mode]"} = Match.compile_env_ok(ce, config)
+      end
     end
   end
 

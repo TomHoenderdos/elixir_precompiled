@@ -375,12 +375,25 @@ defmodule ElixirPrecompiled.Match do
   def compile_env_ok(items, config) do
     mismatches =
       for %{"app" => app, "path" => path, "value" => value} <- items,
-          :erlang.binary_to_term(Base.url_decode64!(value, padding: false), [:safe]) !=
-            config.(app, path),
+          not recorded_equals?(value, config.(app, path)),
           do: "#{app} [:#{Enum.join(path, ", :")}]"
 
     if mismatches == [],
       do: :ok,
       else: {:miss, "compile_env differs: " <> Enum.join(mismatches, ", ")}
+  end
+
+  # A recorded value [:safe] refuses to decode names an atom this VM has
+  # never seen (or is no term at all): no config here can hold it, so it
+  # differs from the project's value. A value that is not base64 still
+  # raises, which select/2 reports as a malformed entry.
+  defp recorded_equals?(value, current) do
+    bin = Base.url_decode64!(value, padding: false)
+
+    try do
+      :erlang.binary_to_term(bin, [:safe]) == current
+    rescue
+      ArgumentError -> false
+    end
   end
 end
