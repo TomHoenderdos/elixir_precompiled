@@ -467,6 +467,30 @@ defmodule ElixirPrecompiled.MatchTest do
     end
   end
 
+  describe "compile_env_ok/2 on a value that is not base64" do
+    test "is a malformed entry, never a raise" do
+      for value <- ["!!", "a", nil, 1] do
+        ce = [%{"app" => "ash", "path" => ["mode"], "value" => value}]
+
+        assert {:miss, "malformed entry"} =
+                 Match.compile_env_ok(ce, fn _, _ -> :error end),
+               inspect(value)
+      end
+    end
+
+    test "an item missing a field is a malformed entry, not skipped" do
+      ok = Base.url_encode64(:erlang.term_to_binary(:error), padding: false)
+      item = %{"app" => "ash", "path" => ["mode"], "value" => ok}
+      assert :ok = Match.compile_env_ok([item], fn _, _ -> :error end)
+
+      for key <- ["app", "path", "value"] do
+        assert {:miss, "malformed entry"} =
+                 Match.compile_env_ok([Map.delete(item, key)], fn _, _ -> :error end),
+               key
+      end
+    end
+  end
+
   describe "deps the candidate declares" do
     @decimal {:hex, :decimal, "2.3.0", "i", [:mix], [], "hexpm", "DECOUTER"}
     @ash_opt {:hex, :ash, "3.5.2", "inner", [:mix],

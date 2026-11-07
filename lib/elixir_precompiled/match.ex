@@ -373,6 +373,19 @@ defmodule ElixirPrecompiled.Match do
   @spec compile_env_ok([map()], (String.t(), [String.t()] -> {:ok, term()} | :error)) ::
           :ok | {:miss, String.t()}
   def compile_env_ok(items, config) do
+    if is_list(items) and Enum.all?(items, &well_formed_item?/1),
+      do: compare_compile_env(items, config),
+      else: {:miss, "malformed entry"}
+  end
+
+  # An item missing a field would otherwise be skipped, never compared.
+  defp well_formed_item?(%{"app" => app, "path" => path, "value" => value})
+       when is_binary(app) and is_list(path) and is_binary(value),
+       do: Base.url_decode64(value, padding: false) != :error
+
+  defp well_formed_item?(_), do: false
+
+  defp compare_compile_env(items, config) do
     mismatches =
       for %{"app" => app, "path" => path, "value" => value} <- items,
           not recorded_equals?(value, config.(app, path)),
@@ -385,8 +398,7 @@ defmodule ElixirPrecompiled.Match do
 
   # A recorded value [:safe] refuses to decode names an atom this VM has
   # never seen (or is no term at all): no config here can hold it, so it
-  # differs from the project's value. A value that is not base64 still
-  # raises, which select/2 reports as a malformed entry.
+  # differs from the project's value.
   defp recorded_equals?(value, current) do
     bin = Base.url_decode64!(value, padding: false)
 
