@@ -437,6 +437,28 @@ defmodule ElixirPrecompiled.MatchTest do
                  ctx()
                )
     end
+
+    # {:ok, <an atom this VM has never seen>} in the external term format,
+    # built by hand so the test never creates the atom itself.
+    defp unknown_atom_value() do
+      name = "ep_never_an_atom_#{System.unique_integer([:positive])}"
+      bin = <<131, 104, 2, 119, 2, "ok", 119, byte_size(name), name::binary>>
+      assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+      Base.url_encode64(bin, padding: false)
+    end
+
+    test "a recorded value naming an atom this VM has never seen" do
+      ce = [%{"app" => "ash", "path" => ["mode"], "value" => unknown_atom_value()}]
+
+      m =
+        manifest(
+          "nerves_system_rpi4",
+          entry(%{"build" => Map.put(entry()["build"], "compile_env", ce)})
+        )
+
+      assert {:miss, "malformed entry"} = Match.select(m, ctx())
+      assert_raise ArgumentError, fn -> Match.compile_env_ok(ce, fn _, _ -> :error end) end
+    end
   end
 
   describe "deps the candidate declares" do
