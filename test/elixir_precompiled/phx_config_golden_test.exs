@@ -156,18 +156,27 @@ defmodule ElixirPrecompiled.PhxConfigGoldenTest do
     end
   end
 
-  # Config variants of one version side by side. The released client picks
-  # the one whose recorded values equal the project's config.
+  # Config variants of one version side by side, in either order. The
+  # released client picks the one whose recorded values equal the project's
+  # config, never just the first listed.
   test "with a phx_prod variant listed, each app takes its own build", %{tmp_dir: dir} do
-    builds = [build("default", default()), build("phx_prod", phx_prod())]
+    variants = [build("default", default()), build("phx_prod", phx_prod())]
 
-    for env <- [:test, :prod] do
-      assert {:ok, %{"build" => %{"run_id" => "phx_prod"}}, _} = select(dir, @phx, env, builds),
-             "#{env}"
+    for builds <- [variants, Enum.reverse(variants)] do
+      order = Enum.map_join(builds, ",", & &1["build"]["run_id"])
+
+      for env <- [:test, :prod] do
+        assert {:ok, %{"build" => %{"run_id" => "phx_prod"}}, _} =
+                 select(dir, @phx, env, builds),
+               "#{order} #{env}"
+      end
+
+      assert {:miss, "compile_env differs: " <> _} = select(dir, @phx, :dev, builds), order
+
+      assert {:ok, %{"build" => %{"run_id" => "default"}}, _} =
+               select(dir, @no_html, :prod, builds),
+             order
     end
-
-    assert {:miss, "compile_env differs: " <> _} = select(dir, @phx, :dev, builds)
-    assert {:ok, %{"build" => %{"run_id" => "default"}}, _} = select(dir, @no_html, :prod, builds)
   end
 
   test "a value the client cannot decode is a miss, never a hit", %{tmp_dir: dir} do
