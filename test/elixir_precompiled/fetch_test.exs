@@ -1298,6 +1298,66 @@ defmodule ElixirPrecompiled.FetchTest do
     assert {:unreachable, _} = Fetch.manifest(gone, "ash", sha, "v2/manifests")
   end
 
+  test "an undeclared priv is never part of a verified install", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    tmp_dir: dir
+  } do
+    deps = Path.join(dir, "deps")
+    File.mkdir_p!(deps)
+    e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+    assert {:ok, _} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+    installed = Path.join(lib, "ash")
+
+    # No priv in the entry and none in deps: the install makes no priv dir.
+    refute File.exists?(Path.join(installed, "priv"))
+    assert Fetch.installed_as?(lib, :ash, e)
+    assert Fetch.installed_at?(installed, :ash, e)
+
+    # An empty priv dir is already a miss.
+    File.mkdir_p!(Path.join(installed, "priv"))
+    refute Fetch.installed_as?(lib, :ash, e)
+    refute Fetch.installed_at?(installed, :ash, e)
+
+    # A planted library where :code.priv_dir points.
+    File.write!(Path.join(installed, "priv/evil.so"), "elf")
+    refute Fetch.installed_as?(lib, :ash, e)
+    refute Fetch.installed_at?(installed, :ash, e)
+    File.rm_rf!(Path.join(installed, "priv"))
+
+    # Mix's own link to deps/<dep>/priv is accepted on the host only.
+    File.mkdir_p!(Path.join(deps, "ash/priv"))
+
+    File.ln_s!(
+      Path.relative_to(Path.join(deps, "ash/priv"), installed, force: true),
+      Path.join(installed, "priv")
+    )
+
+    assert Fetch.installed_as?(lib, :ash, e)
+    refute Fetch.installed_at?(installed, :ash, e)
+    File.rm!(Path.join(installed, "priv"))
+
+    # A link anywhere else is not Mix's.
+    File.mkdir_p!(Path.join(dir, "evil"))
+    File.ln_s!(Path.join(dir, "evil"), Path.join(installed, "priv"))
+    refute Fetch.installed_as?(lib, :ash, e)
+  end
+
+  test "a host install that mirrors Mix's priv link still verifies", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    tmp_dir: dir
+  } do
+    deps = Path.join(dir, "deps")
+    File.mkdir_p!(Path.join(deps, "ash/priv"))
+    File.write!(Path.join(deps, "ash/priv/data.txt"), "data")
+    e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+    assert {:ok, _} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+    assert Fetch.installed_as?(lib, :ash, e)
+  end
+
   test "installed_at? checks a full entry directory against the real app name", %{
     f: f,
     config: config,

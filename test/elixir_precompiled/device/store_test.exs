@@ -59,6 +59,21 @@ defmodule ElixirPrecompiled.Device.StoreTest do
     {s, entry, prov}
   end
 
+  # A committed build that ships no priv.
+  defp put_ebin_only(dir, app, vsn) do
+    {s, entry, prov} = stage_entry(dir, app, vsn, "x", 0)
+    File.rm_rf!(Path.join(s, "priv"))
+    entry = Map.put(entry, "priv", [])
+
+    prov =
+      prov
+      |> Map.put("files_sha256", Match.files_hash(entry))
+      |> Map.put("files", entry["ebin"])
+
+    {:ok, path} = Store.commit(s, dir, app, vsn, prov, %{})
+    {path, entry}
+  end
+
   # A cache entry on disk plus the manifest entry that describes it.
   defp put_entry(dir, app, vsn, bytes \\ "beam-bytes", last_used \\ 0) do
     {s, entry, prov} = stage_entry(dir, app, vsn, bytes, last_used)
@@ -260,6 +275,29 @@ defmodule ElixirPrecompiled.Device.StoreTest do
   end
 
   describe "cached/4" do
+    test "an ebin-only build with an undeclared priv is a miss", %{tmp_dir: dir} do
+      {path, entry} = put_ebin_only(dir, :recon, "2.5.6")
+      assert {:hit, ^path} = Store.cached(dir, :recon, "2.5.6", entry)
+      File.mkdir_p!(Path.join(path, "priv"))
+      File.write!(Path.join(path, "priv/evil.so"), "elf")
+      assert :miss = Store.cached(dir, :recon, "2.5.6", entry)
+      refute File.exists?(path)
+
+      {path, entry} = put_ebin_only(dir, :recon, "2.5.6")
+      File.mkdir_p!(Path.join(path, "priv"))
+      assert :miss = Store.cached(dir, :recon, "2.5.6", entry)
+    end
+
+    test "a symlinked entry is a miss, and only the link is removed", %{tmp_dir: dir} do
+      {path, entry} = put_entry(dir, :recon, "2.5.6")
+      elsewhere = Path.join(dir, "elsewhere")
+      File.rename!(path, elsewhere)
+      File.ln_s!(elsewhere, path)
+      assert :miss = Store.cached(dir, :recon, "2.5.6", entry)
+      assert {:error, :enoent} = File.lstat(path)
+      assert File.dir?(elsewhere)
+    end
+
     test "a hit only when every file still has its signed hash", %{tmp_dir: dir} do
       {path, entry} = put_entry(dir, :recon, "2.5.6")
       assert {:hit, ^path} = Store.cached(dir, :recon, "2.5.6", entry)
@@ -311,14 +349,35 @@ defmodule ElixirPrecompiled.Device.StoreTest do
       refute File.exists?(Path.join(dir, "junk-1.0.0"))
     end
 
-    test "fresh staging, .trust and other names stay", %{tmp_dir: dir} do
+    test "fresh staging, .trust and the marker stay; unknown names go", %{tmp_dir: dir} do
+      {path, _} = put_entry(dir, :recon, "2.5.6")
       fresh = Store.staging(dir, :x, "1.0.0")
       File.mkdir_p!(Path.join(dir, ".trust"))
-      File.mkdir_p!(Path.join(dir, "notes"))
+      File.write!(Path.join(dir, ".trust/state"), "5")
+      File.mkdir_p!(Path.join(dir, "notes/deep"))
+      File.write!(Path.join(dir, "notes/deep/big"), :binary.copy("x", 1000))
+      File.write!(Path.join(dir, "junk.bin"), "x")
+      File.write!(Path.join(dir, "jason-1.4.5"), "a file named like an entry")
+      File.mkdir_p!(Path.join(dir, ".hidden"))
       :ok = Store.sweep(dir)
       assert File.dir?(fresh)
-      assert File.dir?(Path.join(dir, ".trust"))
-      assert File.dir?(Path.join(dir, "notes"))
+      assert File.regular?(Path.join(dir, ".trust/state"))
+      assert File.regular?(Path.join(dir, ".precompiled-store"))
+      assert File.dir?(path)
+
+      assert Enum.sort(File.ls!(dir)) ==
+               [".precompiled-store", ".staging", ".trust", "recon-2.5.6"]
+    end
+
+    test "a symlinked entry is removed, not what it points to", %{tmp_dir: dir} do
+      {path, _} = put_entry(dir, :recon, "2.5.6")
+      File.mkdir_p!(Path.join(dir, ".trust"))
+      elsewhere = Path.join(dir, ".trust/elsewhere")
+      File.rename!(path, elsewhere)
+      File.ln_s!(elsewhere, path)
+      :ok = Store.sweep(dir)
+      assert {:error, :enoent} = File.lstat(path)
+      assert File.regular?(Path.join(elsewhere, ".precompiled.json"))
     end
 
     test "does nothing in a directory that is not a store", %{tmp_dir: dir} do
