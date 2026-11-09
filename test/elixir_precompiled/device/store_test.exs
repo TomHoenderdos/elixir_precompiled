@@ -369,6 +369,27 @@ defmodule ElixirPrecompiled.Device.StoreTest do
                [".precompiled-store", ".staging", ".trust", "recon-2.5.6"]
     end
 
+    test "another call's ownership probe and lost+found stay; a stale probe goes", %{
+      tmp_dir: dir
+    } do
+      put_entry(dir, :recon, "2.5.6")
+      # A concurrent list/1 or uninstall/2 checks the store outside the
+      # lock, through a probe file it removes again a moment later.
+      probe = Path.join(dir, ".probe.123-45")
+      File.write!(probe, "")
+      stale = Path.join(dir, ".probe.123-46")
+      File.write!(stale, "")
+      File.touch!(stale, System.os_time(:second) - 7200)
+      # The store dir may be a mount of its own.
+      File.mkdir_p!(Path.join(dir, "lost+found"))
+
+      :ok = Store.sweep(dir)
+      assert File.regular?(probe)
+      refute File.exists?(stale)
+      assert File.dir?(Path.join(dir, "lost+found"))
+      assert [%{app: :recon}] = Store.list(dir)
+    end
+
     test "a symlinked entry is removed, not what it points to", %{tmp_dir: dir} do
       {path, _} = put_entry(dir, :recon, "2.5.6")
       File.mkdir_p!(Path.join(dir, ".trust"))

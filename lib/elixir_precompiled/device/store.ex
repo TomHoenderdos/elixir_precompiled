@@ -40,7 +40,9 @@ defmodule ElixirPrecompiled.Device.Store do
   # this: not a symlink, not writable by group or others, and owned by this
   # VM's uid (an existing 0755 dir passes). The window between a `.so`'s
   # hash check and its dlopen is then open only to code that already runs
-  # as that uid.
+  # as that uid. On Windows (win32) the mode and owner checks are skipped:
+  # its file modes and uids do not carry that meaning; the symlink and
+  # marker checks still apply.
   #
   # One VM per store. Calls that change the store run under with_lock/2,
   # which serializes this node's callers only. The lock is reentrant for
@@ -56,6 +58,8 @@ defmodule ElixirPrecompiled.Device.Store do
   @trust ".trust"
   @replaced ".replaced."
   @discard ".discard."
+  @probe ".probe."
+  @lost_found "lost+found"
   @tops MapSet.new([@provenance, "ebin", "priv"])
   @stale_after 3600
   @max_provenance 4 * 1024 * 1024
@@ -145,7 +149,7 @@ defmodule ElixirPrecompiled.Device.Store do
   # This VM's effective uid, read off a file it creates: no os command and
   # no /proc, so it works on any unix.
   defp euid(dir) do
-    probe = Path.join(dir, ".probe." <> unique())
+    probe = Path.join(dir, @probe <> unique())
 
     case File.write(probe, "", [:exclusive]) do
       :ok ->
@@ -566,8 +570,9 @@ defmodule ElixirPrecompiled.Device.Store do
   # Run at the start of every call, under the lock: puts back an entry a
   # crashed replace moved aside, removes what a crashed removal left,
   # staging dirs older than an hour, every entry dir without a readable
-  # provenance, and every other top-level name but .trust, .staging and the
-  # marker. A valid entry is never touched. Never raises.
+  # provenance, and every other top-level name but .trust, .staging, the
+  # marker, lost+found and a fresh ownership probe. A valid entry is never
+  # touched. Never raises.
   @spec sweep(Path.t()) :: :ok
   def sweep(dir) do
     dir = Path.expand(dir)
@@ -611,16 +616,22 @@ defmodule ElixirPrecompiled.Device.Store do
 
   # Anything at the top level but .trust, .staging, the marker and entry
   # directories is junk that would otherwise count against the cap forever:
-  # a file or symlink named like an entry included.
+  # a file or symlink named like an entry included. Two names are not junk:
+  # lost+found, when the store dir is a filesystem of its own, and the
+  # ownership probe of a check_root/1 running outside the lock (list/1,
+  # uninstall/2), which removes it itself; one older than an hour is a
+  # crashed check's and goes.
   defp sweep_entries(dir) do
     in_use = in_use()
+    cutoff = System.os_time(:second) - @stale_after
 
-    for name <- ls(dir), name not in [@trust, @staging, @marker] do
+    for name <- ls(dir), name not in [@trust, @staging, @marker, @lost_found] do
       path = Path.join(dir, name)
 
-      case {entry_dir_name?(name), File.lstat(path)} do
-        {true, {:ok, %File.Stat{type: :directory}}} -> sweep_entry(dir, path, in_use)
-        {_, {:ok, _}} -> discard(dir, path)
+      case {name, entry_dir_name?(name), File.lstat(path, time: :posix)} do
+        {@probe <> _, _, {:ok, %File.Stat{mtime: m}}} when m >= cutoff -> :ok
+        {_, true, {:ok, %File.Stat{type: :directory}}} -> sweep_entry(dir, path, in_use)
+        {_, _, {:ok, _}} -> discard(dir, path)
         _ -> :ok
       end
     end
