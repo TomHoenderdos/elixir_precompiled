@@ -20,9 +20,12 @@ defmodule Precompiled do
   version), verifies every byte through the signed root, batch, manifest
   and file hashes, stages the files under the store directory, and loads
   and starts them. Absent runtime dependencies are installed with it, as
-  one unit: anything that fails leaves the code path and the loaded apps
-  as they were. Nothing is compiled, nothing unsigned is loaded, and
-  nothing already present is replaced.
+  one unit for the running VM: anything that fails leaves the code path
+  and the loaded apps as they were. The store is a cache and may change
+  before a later step fails: least recently used entries can be evicted
+  for room, and builds that verified and were committed stay in it,
+  unloaded, for a later call. Nothing is compiled, nothing unsigned is
+  loaded, and nothing already present is replaced.
 
   It is available by default. Nothing runs on its own: only someone with a
   shell on the device calls it. The files stay in the store across reboots
@@ -39,7 +42,7 @@ defmodule Precompiled do
   | `:start` | `true` | Start the installed apps (`:temporary`) after loading them. |
   | `:closure` | `true` | Install absent runtime dependencies. `false` refuses with `{:needs, [...]}` instead. |
   | `:max_closure`, `:max_bytes` | 25, 64 MB | Bounds on the apps of one call and on the store's size. |
-  | `:dry_run` | `false` | Select and plan, verify the trust chain, fetch the manifests and `.app` files only, and write nothing outside `DIR/.trust`. Returns the plan. |
+  | `:dry_run` | `false` | Select and plan, verify the trust chain, fetch the manifests and `.app` files only. Returns the plan. It writes no entry, staging dir or eviction: only the trust state in `DIR/.trust`, and the store dir and its marker when they do not exist yet. |
   | `:report` | none | With `dry_run: true`, write the device facts and the plan as JSON to this path (for `mix precompiled.bundle --device-report`). |
   | `:quiet` | `false` | Print nothing. |
   | `:env` | read from the device | For tests: the device facts (`ElixirPrecompiled.Device.Env`) to use. |
@@ -48,7 +51,8 @@ defmodule Precompiled do
 
   `config :elixir_precompiled, :device, enabled: false` in the firmware
   turns the whole API off (`{:error, :disabled}`); `allow: [app]` limits
-  it to those apps, closure members included. The same config may set
+  it to those apps, closure members included. Both are read from the
+  firmware's config only: a call can neither pass, widen nor clear them. The same config may set
   `source`, `dir`, `max_bytes` and `cacerts_path`.
 
   An online call needs a synchronized clock: on an unsynchronized one it
@@ -115,6 +119,24 @@ defmodule Precompiled do
     lock_retries: 60
   ]
   @not_options [:persist, :deps_identity]
+  @common_keys [:dir, :quiet, :lock_retries]
+  @install_keys @common_keys ++
+                  [
+                    :source,
+                    :content,
+                    :root,
+                    :cacerts_path,
+                    :deadline_seconds,
+                    :start,
+                    :closure,
+                    :max_closure,
+                    :max_bytes,
+                    :dry_run,
+                    :report,
+                    :env,
+                    :clock_synchronized?
+                  ]
+  @uninstall_keys @common_keys ++ [:force, :cascade, :remove]
   @network_apps [:ssl, :inets, :public_key]
 
   @type request :: atom() | {atom(), String.t()}
@@ -128,7 +150,7 @@ defmodule Precompiled do
   def install(request, opts \\ []) do
     with {:ok, requests} <- normalize(request),
          :ok <- enabled(),
-         {:ok, opts} <- normalize_opts(opts),
+         {:ok, opts} <- normalize_opts(opts, @install_keys),
          {:ok, config} <- Source.config(opts),
          :ok <- network_apps(config),
          :ok <- clock(config, opts) do
@@ -148,13 +170,17 @@ defmodule Precompiled do
   """
   @spec list(keyword()) :: [Precompiled.Installed.t()]
   def list(opts \\ []) do
-    case normalize_opts(opts) do
-      {:ok, opts} ->
-        items = opts[:dir] |> Store.list() |> Enum.map(&installed/1)
-        for i <- items, do: say(opts, list_line(i))
-        items
+    with {:ok, opts} <- normalize_opts(opts, @common_keys),
+         :ok <- Store.check_root(opts[:dir]) do
+      items = opts[:dir] |> Store.list() |> Enum.map(&installed/1)
+      for i <- items, do: say(opts, list_line(i))
+      items
+    else
+      {:error, reason} ->
+        said({:error, reason}, opts)
+        []
 
-      {:error, _} ->
+      :absent ->
         []
     end
   rescue
@@ -174,9 +200,19 @@ defmodule Precompiled do
   @spec uninstall(atom(), keyword()) :: :ok | {:error, term()}
   def uninstall(app, opts \\ []) do
     with :ok <- app_request(app),
-         {:ok, opts} <- normalize_opts(opts) do
+         {:ok, opts} <- normalize_opts(opts, @uninstall_keys) do
       dir = Path.expand(opts[:dir])
-      Store.with_lock(fn -> locked_uninstall(app, dir, opts, [app]) end, opts[:lock_retries])
+
+      Store.with_lock(
+        fn ->
+          case Store.check_root(dir) do
+            :ok -> locked_uninstall(app, dir, opts, [app])
+            :absent -> {:error, {:not_installed, app}}
+            error -> error
+          end
+        end,
+        opts[:lock_retries]
+      )
     end
   rescue
     e -> {:error, {:internal, Exception.message(e)}}
@@ -227,9 +263,13 @@ defmodule Precompiled do
     end
   end
 
-  defp normalize_opts(opts) when is_list(opts) do
+  # Only the keys `known` documents: a misspelt one (dry_rn: true) is
+  # refused rather than ignored, and :allow and :enabled are the
+  # firmware's config alone.
+  defp normalize_opts(opts, known) when is_list(opts) do
     with true <- Keyword.keyword?(opts) || {:error, {:bad_option, opts}},
-         nil <- Enum.find(@not_options, &Keyword.has_key?(opts, &1)) do
+         nil <- Enum.find(@not_options, &Keyword.has_key?(opts, &1)),
+         nil <- Enum.find(Keyword.keys(opts), &(&1 not in known)) do
       merged =
         @defaults
         |> Keyword.merge(dir: Source.default_dir())
@@ -243,7 +283,7 @@ defmodule Precompiled do
     end
   end
 
-  defp normalize_opts(other), do: {:error, {:bad_option, other}}
+  defp normalize_opts(other, _known), do: {:error, {:bad_option, other}}
 
   @required [:dir, :start, :closure, :dry_run, :quiet, :max_closure, :max_bytes, :lock_retries]
   @optional [:report, :clock_synchronized?, :allow, :env]
@@ -340,7 +380,7 @@ defmodule Precompiled do
         manifest: Source.manifest_fun(config, batch),
         closure: opts[:closure],
         max_closure: opts[:max_closure],
-        allow: opts[:allow]
+        allow: Keyword.get(device_config(), :allow)
       ]
 
       with {:ok, plan} <- Plan.build(requests, ctx, plan_opts) do

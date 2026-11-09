@@ -86,6 +86,19 @@ defmodule ElixirPrecompiled.Device.Store do
     end
   end
 
+  @doc false
+  # ensure_root/1 without creating anything: :absent when there is no
+  # store yet, else the same ownership, mode and marker checks.
+  @spec check_root(Path.t()) :: :ok | :absent | {:error, {:unsafe_store, term()}}
+  def check_root(dir) do
+    dir = Path.expand(dir)
+
+    case File.lstat(dir) do
+      {:error, :enoent} -> :absent
+      _ -> with :ok <- safe_dir(dir), do: marked(dir)
+    end
+  end
+
   defp create(dir) do
     with {:error, :enoent} <- File.lstat(dir),
          :ok <- File.mkdir_p(Path.dirname(dir)),

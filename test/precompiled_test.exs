@@ -37,9 +37,11 @@ defmodule PrecompiledTest do
   end
 
   defp unload_all(opts) do
-    for %{loaded?: true, app: app} <- Precompiled.list(opts),
-        do: Precompiled.uninstall(app, opts ++ [force: true, cascade: true])
+    for %{loaded?: true, app: app} <- Precompiled.list(store(opts)),
+        do: Precompiled.uninstall(app, store(opts) ++ [force: true, cascade: true])
   end
+
+  defp store(opts), do: Keyword.take(opts, [:dir, :quiet])
 
   defp files_requested() do
     for %{path: "/precompiled/files/" <> sha} <- Fixture.requests(), do: sha
@@ -162,6 +164,62 @@ defmodule PrecompiledTest do
       assert Fixture.requests() == []
     end
 
+    test "an unknown option is refused, never ignored", %{opts: opts} do
+      assert Precompiled.install(:demo_a, opts ++ [dry_rn: true]) ==
+               {:error, {:bad_option, :dry_rn}}
+
+      assert Precompiled.uninstall(:demo_a, store(opts) ++ [cascde: true]) ==
+               {:error, {:bad_option, :cascde}}
+
+      assert Precompiled.uninstall(:demo_a, opts) == {:error, {:bad_option, :source}}
+      assert Precompiled.list(store(opts) ++ [force: true]) == []
+      assert Fixture.requests() == []
+    end
+
+    test "the firmware's allowlist cannot be widened or cleared by a call", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      a = publish_app(f, dir, :demo_al, "1.0.0")
+      Fixture.publish(f, %{"demo_al" => manifest(%{"1.0.0" => [a]})})
+      put_device_env(allow: [:other])
+
+      assert Precompiled.install(:demo_al, opts ++ [allow: nil]) ==
+               {:error, {:bad_option, :allow}}
+
+      assert Precompiled.install(:demo_al, opts ++ [allow: [:demo_al]]) ==
+               {:error, {:bad_option, :allow}}
+
+      assert Precompiled.install(:demo_al, opts ++ [enabled: true]) ==
+               {:error, {:bad_option, :enabled}}
+
+      assert {:error, {:not_allowed, :demo_al}} = Precompiled.install(:demo_al, opts)
+    end
+
+    test "uninstall and list check the store like install does", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_us, "1.0.0")
+      Fixture.publish(f, %{"demo_us" => manifest(%{"1.0.0" => [build]})})
+      assert {:ok, [_]} = Precompiled.install(:demo_us, opts ++ [start: false])
+      File.chmod!(opts[:dir], 0o777)
+
+      assert Precompiled.uninstall(:demo_us, store(opts)) ==
+               {:error, {:unsafe_store, :writable_by_others}}
+
+      assert Precompiled.list(store(opts)) == []
+      File.chmod!(opts[:dir], 0o700)
+      assert [%{app: :demo_us}] = Precompiled.list(store(opts))
+
+      assert Precompiled.uninstall(:demo_us, dir: Path.join(dir, "none")) ==
+               {:error, {:not_installed, :demo_us}}
+
+      refute File.exists?(Path.join(dir, "none"))
+    end
+
     test "a busy store answers :busy after bounded retries", %{opts: opts} do
       test = self()
 
@@ -175,7 +233,7 @@ defmodule PrecompiledTest do
 
       assert_receive :held
       assert Precompiled.install(:demo_a, opts ++ [lock_retries: 0]) == {:error, :busy}
-      assert Precompiled.uninstall(:demo_a, opts ++ [lock_retries: 0]) == {:error, :busy}
+      assert Precompiled.uninstall(:demo_a, store(opts) ++ [lock_retries: 0]) == {:error, :busy}
       send(holder, :release)
     end
   end
@@ -213,7 +271,7 @@ defmodule PrecompiledTest do
                  batch_sequence: 1
                }
              ] =
-               Precompiled.list(opts)
+               Precompiled.list(store(opts))
 
       Fixture.clear_requests()
 
@@ -224,10 +282,10 @@ defmodule PrecompiledTest do
 
       assert {:ok, []} = Precompiled.install(:demo_a, Keyword.put(opts, :env, loaded))
       refute Enum.any?(Fixture.requests(), &String.contains?(&1.path, "/files/"))
-      assert :ok = Precompiled.uninstall(:demo_a, opts)
+      assert :ok = Precompiled.uninstall(:demo_a, store(opts))
       assert :code.is_loaded(DemoA) == false
       refute List.keymember?(Application.loaded_applications(), :demo_a, 0)
-      assert [%{app: :demo_a, loaded?: false}] = Precompiled.list(opts)
+      assert [%{app: :demo_a, loaded?: false}] = Precompiled.list(store(opts))
     end
 
     test "an app the firmware has is already_present, before any request", %{opts: opts} do
@@ -292,9 +350,9 @@ defmodule PrecompiledTest do
       assert {:ok, [%{app: :demo_dep, role: :dependency}, %{app: :demo_top, role: :requested}]} =
                Precompiled.install(:demo_top, opts)
 
-      assert {:error, {:in_use_by, [:demo_top]}} = Precompiled.uninstall(:demo_dep, opts)
+      assert {:error, {:in_use_by, [:demo_top]}} = Precompiled.uninstall(:demo_dep, store(opts))
       assert :code.is_loaded(DemoDep) != false
-      assert :ok = Precompiled.uninstall(:demo_dep, opts ++ [cascade: true])
+      assert :ok = Precompiled.uninstall(:demo_dep, store(opts) ++ [cascade: true])
       assert :code.is_loaded(DemoDep) == false
       assert :code.is_loaded(DemoTop) == false
     end
@@ -320,7 +378,7 @@ defmodule PrecompiledTest do
         ExUnit.CaptureIO.capture_io(fn ->
           send(
             self(),
-            {:result, Precompiled.uninstall(:demo_busy, Keyword.put(opts, :quiet, false))}
+            {:result, Precompiled.uninstall(:demo_busy, Keyword.put(store(opts), :quiet, false))}
           )
         end)
 
@@ -328,11 +386,11 @@ defmodule PrecompiledTest do
       assert out =~ "unchanged; retry with force: true"
       assert List.keymember?(Application.started_applications(), :demo_busy, 0)
       send(pid, :stop)
-      assert :ok = Precompiled.uninstall(:demo_busy, opts ++ [force: true])
+      assert :ok = Precompiled.uninstall(:demo_busy, store(opts) ++ [force: true])
     end
 
     test "uninstall of an app that is not ours", %{opts: opts} do
-      assert {:error, {:not_installed, :logger}} = Precompiled.uninstall(:logger, opts)
+      assert {:error, {:not_installed, :logger}} = Precompiled.uninstall(:logger, store(opts))
     end
 
     test "uninstall remove: true also drops the cache entry", %{
@@ -343,9 +401,9 @@ defmodule PrecompiledTest do
       build = publish_app(f, dir, :demo_rm, "1.0.0")
       Fixture.publish(f, %{"demo_rm" => manifest(%{"1.0.0" => [build]})})
       assert {:ok, [_]} = Precompiled.install(:demo_rm, opts)
-      assert :ok = Precompiled.uninstall(:demo_rm, opts ++ [remove: true])
+      assert :ok = Precompiled.uninstall(:demo_rm, store(opts) ++ [remove: true])
       refute File.exists?(Path.join(opts[:dir], "demo_rm-1.0.0"))
-      assert Precompiled.list(opts) == []
+      assert Precompiled.list(store(opts)) == []
     end
 
     test "an on_load failure of the second app removes the first too", %{
@@ -367,7 +425,7 @@ defmodule PrecompiledTest do
       assert {:error, {:on_load_failed, DemoFail.Nif, _}} = Precompiled.install(:demo_fail, opts)
       assert :code.is_loaded(DemoOk) == false
       assert :code.is_loaded(DemoFail) == false
-      assert Enum.all?(Precompiled.list(opts), &(not &1.loaded?))
+      assert Enum.all?(Precompiled.list(store(opts)), &(not &1.loaded?))
       assert :code.get_path() == path
       assert Enum.sort(Application.loaded_applications()) == Enum.sort(loaded)
     end
@@ -489,7 +547,7 @@ defmodule PrecompiledTest do
       })
 
       assert {:ok, [_]} = Precompiled.install(:demo_old, opts)
-      assert :ok = Precompiled.uninstall(:demo_old, opts)
+      assert :ok = Precompiled.uninstall(:demo_old, store(opts))
       used = Store.used_bytes(opts[:dir])
       max = used + 2 * Enum.sum(for e <- new["ebin"], do: e["size"]) - 1
       Fixture.put_in_map(:files, beam["sha256"], "tampered")
@@ -557,7 +615,7 @@ defmodule PrecompiledTest do
 
       assert Enum.sort(Enum.map(results, &elem(&1, 0))) == [:ok, :ok]
       assert [[], [%{app: :demo_cc}]] = results |> Enum.map(&elem(&1, 1)) |> Enum.sort()
-      assert [%{app: :demo_cc, loaded?: true}] = Precompiled.list(opts)
+      assert [%{app: :demo_cc, loaded?: true}] = Precompiled.list(store(opts))
     end
 
     test "a store dir spelled another way still finds what it loaded", %{
@@ -571,7 +629,7 @@ defmodule PrecompiledTest do
       File.mkdir_p!(Path.join(dir, "x"))
 
       assert {:ok, [_]} = Precompiled.install(:demo_m2, odd)
-      assert [%{loaded?: true}] = Precompiled.list(opts)
+      assert [%{loaded?: true}] = Precompiled.list(store(opts))
       assert {:ok, []} = Precompiled.install(:demo_m2, opts)
       assert Store.remove(opts[:dir], :demo_m2) == {:error, {:in_use, :demo_m2}}
     end
@@ -653,7 +711,7 @@ defmodule PrecompiledTest do
                Precompiled.install(:demo_off, opts)
 
       assert Fixture.requests() == []
-      assert [%{app: :demo_off, batch_sequence: nil}] = Precompiled.list(opts)
+      assert [%{app: :demo_off, batch_sequence: nil}] = Precompiled.list(store(opts))
 
       prov =
         Path.join([opts[:dir], "demo_off-1.0.0", ".precompiled.json"])
