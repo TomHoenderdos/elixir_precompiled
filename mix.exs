@@ -5,7 +5,7 @@
 defmodule ElixirPrecompiled.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.2.0"
   @source_url "https://github.com/TomHoenderdos/elixir_precompiled"
 
   @otp_release :erlang.system_info(:otp_release) |> List.to_integer()
@@ -30,8 +30,19 @@ defmodule ElixirPrecompiled.MixProject do
     ]
   end
 
+  # crypto checks every signature and hash; the network stack is optional so
+  # a firmware that only installs from a bundle can leave it out. A network
+  # call without it returns {:error, {:missing_app, app}} (Precompiled).
   def application do
-    [extra_applications: [:logger, :inets, :ssl, :crypto, :public_key]]
+    [
+      extra_applications: [
+        :logger,
+        :crypto,
+        inets: :optional,
+        ssl: :optional,
+        public_key: :optional
+      ]
+    ]
   end
 
   def cli do
