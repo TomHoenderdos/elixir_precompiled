@@ -2,10 +2,50 @@
 
 ## v0.2.0 - unreleased
 
-* `Precompiled.install/1,2` installs signed precompiled builds on a running
-  Nerves device, without Mix: see the README's "On a device" section.
+* `Precompiled.install/1,2` installs signed precompiled builds into a
+  running Nerves device from an IEx shell, with no Mix, Hex or compiler on
+  the device: it selects the build for the device's system, OTP, Elixir,
+  CPU and present apps (by name and exact version), verifies every byte,
+  loads and starts it with its absent runtime dependencies, and rolls the
+  whole call back on any failure. Nothing present is ever replaced.
+  `Precompiled.list/1`, `Precompiled.uninstall/2` and `dry_run: true`
+  (with `report:` for a bundle) come with it. See the README's "On a
+  device".
+* On by default, with the official signed source
+  (`https://compatibility.nerves-project.org/api/precompiled`) as the
+  default source; it only acts when called. `config :elixir_precompiled,
+  :device` sets `enabled: false` (off), `allow: [...]` (an allowlist),
+  another `source`, `dir`, `max_bytes` and `cacerts_path`; `enabled` and
+  `allow` cannot be overridden by a call.
+* Installs are kept as a cache on `/data` across reboots, never loaded at
+  boot; installing again loads from the cache after re-verifying every
+  file. The cache is bounded by `max_bytes` with least recently used
+  eviction, and `Precompiled.clean/0` empties it.
+* `file://` sources: a bundle directory with the API's layout, read from
+  local storage only, with no network and no network apps.
+* Offline bundles: a bundle's `offline.json`, signed by the root's
+  `offline` role, has no expiry and needs no clock; a device honours it
+  only from a `file://` source, under a root with an `offline` role, and
+  never below the highest offline sequence it has seen. A device adopts a
+  newer root from a bundle when it chains. The shipped root has no
+  `offline` role yet, so a bundle is valid for its batch's 24 hours.
+* `mix precompiled.bundle PKG[@REQ]... --out DIR` writes a bundle on a
+  host with network, planned from the device's facts (flags, or a dry
+  run's `--device-report`), with every byte checked before it is written.
+* `mix igniter.install elixir_precompiled --device` keeps the dependency
+  at runtime so it ships in the firmware, and adds `castore` unless the
+  project already depends on it.
 * `:inets`, `:ssl` and `:public_key` are optional applications; `:crypto`
-  stays required.
+  stays required. A firmware without them installs from bundles only (an
+  online call returns `{:error, {:missing_app, app}}`).
+* `cacerts_path:` (an option of `Precompiled.install/2` and a `:device`
+  config key) names a PEM CA bundle for a device install. Without one (and
+  without `ELIXIR_PRECOMPILED_CACERTS_PATH`/`HEX_CACERTS_PATH`),
+  an empty or missing OS certificate store now falls back to the `castore`
+  package's bundle when that is loaded. With no certificates at all the
+  error now reads `no CA certificates` (before: `no CA certificate store on
+  this system`), and an empty store is that error too, never a TLS attempt
+  with no CAs.
 
 ## v0.1.0 - unreleased
 

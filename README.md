@@ -7,7 +7,8 @@ which builds selected Hex packages for the host (`pure_elixir`) and for
 Nerves systems, signs a batch index every 15 minutes, and serves files by
 SHA-256. A dependency is installed only when a build matches the project on
 every rule in [What matches](#what-matches); everything else compiles as
-before, and nothing this library does can fail your build.
+before, and nothing this library does can fail your build. It can also
+install into a running Nerves device: see [On a device](#on-a-device).
 
 Status: pre-release. Not on Hex yet: use a git dependency, or the archive
 for `Mix.install`. This library was called `nerves_precompiled` until
@@ -148,26 +149,242 @@ have. With released nerves the alias still works, but only `pure_elixir`
 builds match (rule 1 below; rule 8 still applies) and every other
 dependency compiles from source.
 
-On a device, `ElixirPrecompiled.install/2` above works with the running
-Nerves system, read from `/usr/lib/os-release` (written by every Nerves
-system's `nerves_system_br` post-build script). It needs:
+All of the above runs on the build host. To install on the running
+device itself, from an IEx shell on it, see [On a device](#on-a-device).
 
-- `:mix` in `extra_applications` (the library's own `.app` starts
-  `:inets`, `:ssl`, `:crypto` and `:public_key`);
-- a writable `MIX_INSTALL_DIR` (for example `/data/mix-installs`);
-- Hex;
-- for packages that MISS and have rebar3 dependencies, an `escript`
-  executable (Nerves releases ship none); some dependencies also need
-  `:eex` or `:ex_unit` in the release. A HIT needs none of that.
+## On a device
 
-The install project under `MIX_INSTALL_DIR` persists across boots: a
-dependency this library installed there is rechecked against the current
-batch on every boot, as in a Mix project's `_build`. A boot with no network
-keeps the installed builds and still starts.
+`Precompiled.install/1` installs a signed precompiled library into a
+running Nerves device, from an IEx shell on it (over ssh or the console),
+with no Mix, no Hex and no compiler on the device. Something goes wrong in
+the field and you need `recon` or another diagnostic tool: install it on
+that device instead of shipping a debug firmware. It picks the build made
+for the device's own Nerves system and versions, checks every byte through
+the signed chain, loads it and starts it. It never replaces anything the
+firmware has, and nothing it installs is loaded at boot.
 
-A device whose clock is not yet set (no RTC, before NTP) refuses every
-batch ("clock is before ...") and compiles; call it after
-`NervesTime.synchronized?/0` is true.
+### Setup
+
+    mix igniter.install elixir_precompiled --device
+
+(which also sets up the build-time step of [Setup](#setup)), or by hand,
+in the firmware's `mix.exs`: the dependency without `runtime: false`, so
+the library ships in the firmware, and `castore` when the system has no
+CA certificates of its own (see [CA certificates](#ca-certificates)):
+
+```elixir
+{:elixir_precompiled, "~> 0.2", targets: @all_targets},
+{:castore, "~> 1.0", targets: @all_targets}
+```
+
+Nothing else. It is on by default and uses the official signed source,
+`https://compatibility.nerves-project.org/api/precompiled`, checked
+against the root this library ships. Nothing runs on its own: it only
+ever acts when someone with a shell on the device calls it.
+
+To limit it, turn it off, or point it elsewhere, set
+`config :elixir_precompiled, :device` in the firmware's config
+(`config/target.exs`, say):
+
+```elixir
+config :elixir_precompiled, :device,
+  allow: [:recon, :circuits_gpio]
+
+# or, to turn it off in this firmware:
+config :elixir_precompiled, :device, enabled: false
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | `false` turns the whole API off: every call returns `{:error, :disabled}`. |
+| `allow` | any app | A list of apps: only those may be installed, closure members included. |
+| `source` | the official API | Another source: an `https://` API root, or a `file://` bundle dir. |
+| `dir` | `/data/precompiled` | Where installs are stored. |
+| `max_bytes` | 64 MB | The size bound of that store. |
+| `cacerts_path` | none | A PEM CA bundle to verify the source with. |
+
+`enabled` and `allow` are read from the firmware's config only: a call can
+neither pass, widen nor clear them.
+
+Online installs need `:inets`, `:ssl` and `:public_key` in the release
+(Nerves firmware with networking usually has them). A firmware that only
+installs from bundles can leave them out; an online call then returns
+`{:error, {:missing_app, app}}`.
+
+### Usage
+
+```elixir
+Precompiled.install(:recon)
+Precompiled.install({:circuits_gpio, "2.3.1"})
+Precompiled.install([:recon, {:circuits_gpio, "~> 2.3"}])
+Precompiled.install(:recon, dry_run: true)
+Precompiled.install(:recon, source: "file:///media/usb/precompiled")
+Precompiled.list()
+Precompiled.uninstall(:recon)
+Precompiled.clean()
+```
+
+A bare name takes the newest version with a build that matches; a version
+or a requirement narrows it. Absent runtime dependencies are installed with
+the package, as one unit: anything that fails takes the code path and the
+loaded apps back to how they were. Each step prints one line:
+
+```
+precompiled: system nerves_system_rpi4 2.2.1, OTP 29, Elixir 1.20.3, aarch64
+precompiled: circuits_gpio 2.3.1   PLAN  nerves_system_rpi4, 198 KB
+precompiled: circuits_gpio 2.3.1   OK    /data/precompiled/circuits_gpio-2.3.1
+precompiled: 1 installed, 198 KB, 2.1 s
+{:ok, [%Precompiled.Installed{app: :circuits_gpio, ...}]}
+```
+
+- `install/2` returns `{:ok, [%Precompiled.Installed{}]}` with the apps it
+  installed (`[]` when everything was already there), or
+  `{:error, reason}`. It never raises on the network or on bad input.
+- `dry_run: true` plans, checks the trust chain and fetches only the
+  manifests and `.app` files, and returns `{:ok, %Precompiled.Plan{}}`.
+- `list/1` prints and returns what is in the store, each with its size,
+  the batch it was checked against, and whether it is loaded.
+- `uninstall/2` stops the app, unloads it, purges its modules and takes it
+  off the code path. Its files stay in the store as a cache
+  (`remove: true` drops them). It refuses while other installed apps need
+  it (`cascade: true` uninstalls those first) or while other processes run
+  its code (`force: true`).
+- `clean/1` empties the store, but keeps what is loaded.
+
+The options of `install/2`:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `:source` | the `:device` config, else the official API | `https://...` (`http://` on loopback only), or `file://DIR` for a bundle. |
+| `:root` | the shipped `root.json` | Another trust anchor. |
+| `:content`, `:deadline_seconds` | as on the host | See [Configuration](#configuration). |
+| `:cacerts_path` | none | A PEM CA bundle (see [CA certificates](#ca-certificates)). |
+| `:dir` | `/data/precompiled` | The store. Its trust state lives in `DIR/.trust`. |
+| `:start` | `true` | Start the installed apps (`:temporary`). `false` only loads them. |
+| `:closure` | `true` | Install absent runtime dependencies. `false` refuses with `{:needs, [{app, vsn}]}` instead. |
+| `:max_closure` | 25 | The most apps one call installs. |
+| `:max_bytes` | 64 MB | The size bound of the store. |
+| `:dry_run` | `false` | Plan only, as above. |
+| `:report` | none | With `dry_run: true`, also write the device facts and the plan as JSON to this path, for `mix precompiled.bundle --device-report`. |
+| `:quiet` | `false` | Print nothing. |
+
+An unknown option is refused (`{:bad_option, key}`), never ignored.
+`Precompiled`'s module documentation lists every error reason.
+
+### What it refuses
+
+- **Anything the device already has.** An app the firmware has, loaded or
+  only shipped in the release, is never replaced: `install(:logger)`
+  returns `{:error, {:already_present, :logger, vsn}}`. Apps are matched by
+  name and exact version: a build made against `nerves_ssh` 1.3.3 is
+  refused on a device with 1.3.2 (`NO  built against nerves_ssh 1.3.3,
+  device has 1.3.2`).
+- **Conflicts.** A module that is already loaded, or that the code path
+  already finds, refuses the install (`{:module_loaded, mod, path}`,
+  `{:module_conflict, mod, path}`), and so do two versions of one app in
+  one call (`{:conflict, app, vsns}`).
+- **Other systems.** A system build serves only the Nerves system it was
+  made for, matched by name and exact version (read from
+  `/usr/lib/os-release`); builds are made for official Nerves systems. A
+  `pure_elixir` build serves any device, and a device whose system is not
+  known takes `pure_elixir` builds only. When both kinds match, the system
+  build wins. A native library made for another CPU is refused
+  (`{:elf, why}`).
+- **noexec.** A build with native code is refused when the store is on a
+  `noexec` mount (`{:noexec, mount}`).
+- **An unset clock.** An online call refuses before any request until the
+  clock is synchronized (`NervesTime.synchronized?/0` when `nerves_time` is
+  in the firmware): `{:error, {:clock_unsynchronized, now}}`. Set the
+  clock or wait for NTP, then retry.
+
+### The cache
+
+Installs stay in the store on `/data` across reboots, but nothing is
+loaded at boot: after a reboot `list/0` shows them as cached, not loaded.
+Installing the same build again loads it from the store with no download,
+after checking every cached file against the signed hashes of the current
+batch; a cached build the batch no longer names, or one whose files
+changed, is downloaded again and never loaded. The store is bounded by
+`max_bytes`, and the least recently used builds that are not loaded are
+evicted to make room. `Precompiled.clean/0` empties it.
+
+The store dir is created `0700`, and must not be writable by group or
+others and must be owned by the VM's user. One call at a time changes it.
+
+### Bundles: installing with no network
+
+A bundle is a directory with the API's own layout, holding exactly what a
+device needs, written on a host with network:
+
+    mix precompiled.bundle recon circuits_gpio@2.3.1 --out bundle \
+      --system nerves_system_rpi4@2.2.1 --otp 29 --elixir 1.20.3
+
+It plans on the host as the device would, from the device's facts: the
+flags (`--pure` for a device with no Nerves system, `--cpu` for another
+CPU than `aarch64-unknown-linux-gnu`), or the JSON a dry run wrote on the
+device itself (`Precompiled.install(:recon, dry_run: true, report:
+"/data/report.json")`, then `--device-report report.json`). Every byte is
+checked against its signed hash before it is written. `mix help
+precompiled.bundle` has the details.
+
+Copy the directory to the device (a USB stick, or `sftp` to `/data`) and
+install from it:
+
+```elixir
+Precompiled.install([:recon, :circuits_gpio], source: "file:///data/bundle")
+```
+
+A `file://` install opens no connection and needs no network apps. The
+device checks everything again, exactly as over https. A bundle's
+`batch.json` is the online batch, so it is valid for 24 hours after the
+portal issued it. For a device that stays offline longer, the bundle
+carries an `offline.json`, signed by the root's `offline` role with
+`mix portal.precompiled.sign_offline` from the portal's repository (see
+its `PRECOMPILED_API.md`, "Offline bundles"), within a day of the batch's
+issue. An offline document has no expiry and needs no clock. The device
+honours it only from a `file://` source, only when its root has an
+`offline` role (a device can adopt a newer root from the bundle's
+`root.json`, when that root chains from the one it trusts), and never with
+a sequence below the highest it has seen. The root this library ships has
+no `offline` role yet, so for now a bundle is valid for its batch's 24
+hours.
+
+### Trust on the device
+
+The device checks the same chain as the host: the root this library ships
+(or `:root`), the signed batch, each manifest by the hash the batch names,
+and each file by the hash its manifest names, size included. A file is
+staged, verified and only then moved into the store; the loader hashes the
+`.app`, every beam and every `priv` file once more just before anything
+loads, and loads the beams from those verified bytes. Nothing unsigned is
+ever loaded, nothing is compiled, and there is no fallback that skips a
+check. An online batch must pass the freshness checks in [Trust](#trust),
+which is why the clock must be set.
+
+### CA certificates
+
+An `https` source is verified with, in this order: `cacerts_path`, the
+`ELIXIR_PRECOMPILED_CACERTS_PATH` or `HEX_CACERTS_PATH` file, the system's
+own store (`:public_key.cacerts_get/0`), then the `castore` package's
+bundle when it is in the firmware. With none of them, the call fails
+(`no CA certificates`). Many Nerves systems ship a store of their own
+(`nerves_system_qemu_aarch64` does); add `castore` for one whose store is
+empty, or to be independent of it.
+`mix igniter.install elixir_precompiled --device` adds `castore` unless the
+project already depends on it.
+
+### Not supported
+
+- **Hot upgrades.** An app that is present is refused, never replaced:
+  no appups and no `code_change`.
+- **Surviving a firmware update.** Nothing is loaded at boot anyway. After
+  an update a cached build is used only when it still matches the new
+  firmware; the firmware itself should include what it needs.
+- **Git, path or private packages**, and anything that is not in the
+  signed batch.
+- **Protocol consolidation.** An installed protocol implementation for a
+  protocol the release consolidated is not dispatched; the install says so
+  with a `WARN` line.
 
 ## Seeing what happened
 
