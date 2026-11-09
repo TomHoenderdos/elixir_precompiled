@@ -1,0 +1,60 @@
+name: device (qemu_aarch64)
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+permissions:
+  contents: read
+jobs:
+  qemu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20.3"
+          otp-version: "29.0.5"
+          version-type: strict
+      # qemu_aarch64's own host-fwup is not bundled in the system artifact
+      # (only its fwup.conf include files), so rel2fw.sh falls back to the
+      # one on PATH; qemu-system-arm on Ubuntu provides qemu-system-aarch64.
+      - name: tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm squashfs-tools
+          curl -fsSL -o fwup.deb https://github.com/fwup-home/fwup/releases/download/v1.17.1/fwup_1.17.1_amd64.deb
+          echo "b73ca78effe61e4c8cedcff567ca137b6bdaa1772b84f9e4d88913f192c09bf2  fwup.deb" | sha256sum -c -
+          sudo dpkg -i fwup.deb
+          mix archive.install hex nerves_bootstrap --force
+      # The harness's offline-bundle scenario runs `mix precompiled.bundle`
+      # at the repository root as the top-level project (not as the
+      # fixture's path dependency), which in :dev needs credo and dialyxir
+      # fetched; a fresh checkout has no deps/ yet.
+      - name: deps (root)
+        run: mix deps.get
+      - name: test key
+        run: |
+          ssh-keygen -t ed25519 -N "" -f "$RUNNER_TEMP/device-test-key"
+          echo "DEVICE_TEST_KEY=$RUNNER_TEMP/device-test-key" >> "$GITHUB_ENV"
+          echo "DEVICE_TEST_PUBKEY=$(cat "$RUNNER_TEMP/device-test-key.pub")" >> "$GITHUB_ENV"
+      # On CI the firmware is built with the runner's own Elixir and OTP,
+      # not the worker image: ncc-worker:local is not public and the
+      # runner has neither it nor hvf/kvm. build_firmware.sh stays the
+      # local (Docker) path; this calls `mix firmware` directly instead.
+      - name: firmware
+        working-directory: integration/device/fixture
+        env:
+          MIX_TARGET: qemu_aarch64
+        run: |
+          mix deps.get
+          mix firmware
+      # No macOS-only qemu flags here: run_qemu.sh already falls back to
+      # TCG (cortex-a53) off Darwin/arm64 and Linux/aarch64+kvm, which is
+      # what an x86_64 runner takes. DeviceQemu's ssh/clock waits are
+      # already sized for a slow TCG boot (10 / 5 minutes).
+      - name: qemu test (TCG)
+        working-directory: integration/device
+        run: |
+          mix deps.get
+          mix test --only qemu
