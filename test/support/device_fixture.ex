@@ -239,6 +239,8 @@ defmodule ElixirPrecompiled.DeviceFixture do
     * `:mod` - the `.app`'s `mod`, with `:source` replacing the default
       module source;
     * `:description` - the `.app`'s description (to get distinct bytes).
+    * `:included` - dependency apps listed as `included_applications`
+      rather than `applications`.
   """
   @spec publish_app(map(), Path.t(), atom(), String.t(), keyword()) :: map()
   def publish_app(fixture, dir, app, vsn, opts \\ []) do
@@ -256,6 +258,14 @@ defmodule ElixirPrecompiled.DeviceFixture do
 
     if opts[:description],
       do: rewrite_app(root, app, &Keyword.put(&1, :description, opts[:description]))
+
+    if included = opts[:included] do
+      rewrite_app(root, app, fn props ->
+        props
+        |> Keyword.update!(:applications, &(&1 -- included))
+        |> Keyword.put(:included_applications, included)
+      end)
+    end
 
     for {path, bytes} <- Keyword.get(opts, :priv, []) do
       target = Path.join(root, path)

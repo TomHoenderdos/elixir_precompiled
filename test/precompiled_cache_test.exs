@@ -10,6 +10,8 @@ defmodule PrecompiledCacheTest do
   @moduletag :tmp_dir
 
   setup %{tmp_dir: dir} do
+    # Other suites reset this app's env; the seams (env:, ...) need it.
+    Application.put_env(:elixir_precompiled, :test_seams, true)
     start_supervised!(ElixirPrecompiled.TestServer)
     f = Fixture.new(dir)
 

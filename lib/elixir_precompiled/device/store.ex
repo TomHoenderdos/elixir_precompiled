@@ -52,6 +52,8 @@ defmodule ElixirPrecompiled.Device.Store do
   alias ElixirPrecompiled.Fetch
   alias ElixirPrecompiled.Match
 
+  require Logger
+
   @marker ".precompiled-store"
   @provenance ".precompiled.json"
   @staging ".staging"
@@ -268,8 +270,23 @@ defmodule ElixirPrecompiled.Device.Store do
         :ok
 
       {:error, reason} ->
-        if aside, do: File.rename(aside, dest)
+        if aside, do: restore(aside, dest)
         {:error, {:rename, reason}}
+    end
+  end
+
+  # Puts the old entry back after the new one failed to go in. A failure
+  # here leaves no entry until the next call's sweep restores it: logged.
+  defp restore(aside, dest) do
+    case File.rename(aside, dest) do
+      :ok ->
+        :ok
+
+      {:error, why} ->
+        Logger.error(
+          "precompiled: could not restore #{dest} from #{aside} (#{inspect(why)}); " <>
+            "the next call puts it back"
+        )
     end
   end
 

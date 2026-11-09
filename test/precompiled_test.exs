@@ -13,6 +13,8 @@ defmodule PrecompiledTest do
   @moduletag :tmp_dir
 
   setup %{tmp_dir: dir} do
+    # Other suites reset this app's env; the seams (env:, ...) need it.
+    Application.put_env(:elixir_precompiled, :test_seams, true)
     start_supervised!(ElixirPrecompiled.TestServer)
     fixture = Fixture.new(dir, offline_key: true)
 
@@ -182,6 +184,53 @@ defmodule PrecompiledTest do
       File.chmod!(opts[:dir], 0o777)
       assert {:error, {:unsafe_store, :writable_by_others}} = Precompiled.install(:demo_a, opts)
       assert Fixture.requests() == []
+    end
+
+    test "the test seams are refused per call unless the test env enables them", %{opts: opts} do
+      Application.delete_env(:elixir_precompiled, :test_seams)
+      on_exit(fn -> Application.put_env(:elixir_precompiled, :test_seams, true) end)
+      plain = Keyword.drop(opts, [:env])
+
+      assert Precompiled.install(:demo_a, opts) == {:error, {:bad_option, :env}}
+
+      assert Precompiled.install(:demo_a, plain ++ [clock_synchronized?: fn -> true end]) ==
+               {:error, {:bad_option, :clock_synchronized?}}
+
+      # Nor through the firmware's config: those keys are not read from it.
+      put_device_env(env: opts[:env], clock_synchronized?: fn -> true end, home: "/tmp/x")
+      assert Source.device_config() == []
+      assert Fixture.requests() == []
+    end
+
+    test "a cacerts_path that is not a path is refused", %{opts: opts} do
+      assert Precompiled.install(:demo_a, opts ++ [cacerts_path: :system]) ==
+               {:error, {:bad_option, :cacerts_path}}
+
+      assert Fixture.requests() == []
+    end
+
+    test "a signed priv entry with no mode is a fetch error", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_nm, "1.0.0", priv: [{"priv/data.bin", "x"}])
+      build = %{build | "priv" => Enum.map(build["priv"], &Map.delete(&1, "mode"))}
+      Fixture.publish(f, %{"demo_nm" => manifest(%{"1.0.0" => [build]})})
+
+      assert {:error, {:fetch, "demo_nm", "unsafe path or mode" <> _}} =
+               Precompiled.install(:demo_nm, opts)
+    end
+
+    test "a full disk while staging is enospc, not an internal error" do
+      assert Precompiled.stage_reason("x", %File.Error{reason: :enospc, action: "write"}, "/d") ==
+               {:enospc, "/d"}
+
+      assert Precompiled.stage_reason("x", "install failed: no space left on device", "/d") ==
+               {:enospc, "/d"}
+
+      assert Precompiled.stage_reason("x", "size mismatch", "/d") ==
+               {:fetch, "x", "size mismatch"}
     end
 
     test "an unknown option is refused, never ignored", %{opts: opts} do
@@ -375,6 +424,29 @@ defmodule PrecompiledTest do
       assert :ok = Precompiled.uninstall(:demo_dep, store(opts) ++ [cascade: true])
       assert :code.is_loaded(DemoDep) == false
       assert :code.is_loaded(DemoTop) == false
+    end
+
+    test "uninstall counts an app that only includes it as a dependant", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      dep = publish_app(f, dir, :demo_inc, "1.0.0")
+      top = publish_app(f, dir, :demo_incl, "1.0.0", deps: [demo_inc: dep], included: [:demo_inc])
+
+      Fixture.publish(f, %{
+        "demo_inc" => manifest(%{"1.0.0" => [dep]}),
+        "demo_incl" => manifest(%{"1.0.0" => [top]})
+      })
+
+      assert {:ok, [%{app: :demo_inc}, %{app: :demo_incl}]} =
+               Precompiled.install(:demo_incl, opts)
+
+      assert Application.spec(:demo_incl, :included_applications) == [:demo_inc]
+      assert {:error, {:in_use_by, [:demo_incl]}} = Precompiled.uninstall(:demo_inc, store(opts))
+      assert :code.is_loaded(DemoInc) != false
+      assert :ok = Precompiled.uninstall(:demo_inc, store(opts) ++ [cascade: true])
+      assert :code.is_loaded(DemoIncl) == false
     end
 
     test "uninstall refuses while another process runs the app's code, and says what changed", %{

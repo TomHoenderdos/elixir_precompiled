@@ -72,8 +72,15 @@ defmodule DeviceQemuTest do
       dev(":os.cmd(~c\"mount -o remount,exec /root\")")
     end
 
+    # The clock seam is refused unless test_seams is set on the guest.
     assert dev("IO.inspect(Precompiled.install(:recon, clock_synchronized?: fn -> false end))") =~
-             "{:error, {:clock_unsynchronized,"
+             "{:error, {:bad_option, :clock_synchronized?}}"
+
+    assert dev(
+             "Application.put_env(:elixir_precompiled, :test_seams, true); " <>
+               "r = Precompiled.install(:recon, clock_synchronized?: fn -> false end); " <>
+               "Application.delete_env(:elixir_precompiled, :test_seams); IO.inspect(r)"
+           ) =~ "{:error, {:clock_unsynchronized,"
 
     # Back on an exec mount, the same install goes through.
     DeviceQemu.wait_online!()
