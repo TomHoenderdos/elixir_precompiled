@@ -173,9 +173,12 @@ the library ships in the firmware, and `castore` when the system has no
 CA certificates of its own (see [CA certificates](#ca-certificates)):
 
 ```elixir
-{:elixir_precompiled, "~> 0.2", targets: @all_targets},
+{:elixir_precompiled, github: "TomHoenderdos/elixir_precompiled", targets: @all_targets},
 {:castore, "~> 1.0", targets: @all_targets}
 ```
+
+The git dependency stands in until the library is on Hex; after the
+release, use `"~> 0.2"` instead.
 
 Nothing else. It is on by default and uses the official signed source,
 `https://compatibility.nerves-project.org/api/precompiled`, checked
@@ -196,15 +199,17 @@ config :elixir_precompiled, :device, enabled: false
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `true` | `false` turns the whole API off: every call returns `{:error, :disabled}`. |
+| `enabled` | `true` | `false` disables installing: `install/2` returns `{:error, :disabled}`. `list/1`, `uninstall/2` and `clean/1` keep working, so what is installed can still be removed. |
 | `allow` | any app | A list of apps: only those may be installed, closure members included. |
 | `source` | the official API | Another source: an `https://` API root, or a `file://` bundle dir. |
 | `dir` | `/data/precompiled` | Where installs are stored. |
 | `max_bytes` | 64 MB | The size bound of that store. |
 | `cacerts_path` | none | A PEM CA bundle to verify the source with. |
+| `content`, `root`, `deadline_seconds`, `max_closure`, `start`, `closure`, `quiet` | as in the options below | Firmware-wide defaults for those `install/2` options. |
 
 `enabled` and `allow` are read from the firmware's config only: a call can
-neither pass, widen nor clear them.
+neither pass, widen nor clear them. Any other key under `:device` is
+ignored.
 
 Online installs need `:inets`, `:ssl` and `:public_key` in the release
 (Nerves firmware with networking usually has them). A firmware that only
@@ -272,6 +277,9 @@ The options of `install/2`:
 | `:quiet` | `false` | Print nothing. |
 
 An unknown option is refused (`{:bad_option, key}`), never ignored.
+`list/1` and `clean/1` take `dir` and `quiet`; they also accept the other
+options of `install/2` and `uninstall/2`, so one options list serves all
+calls, and ignore them.
 `Precompiled`'s module documentation lists every error reason.
 
 ### What it refuses

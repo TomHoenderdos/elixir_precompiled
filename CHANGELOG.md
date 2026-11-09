@@ -14,7 +14,7 @@
 * On by default, with the official signed source
   (`https://compatibility.nerves-project.org/api/precompiled`) as the
   default source; it only acts when called. `config :elixir_precompiled,
-  :device` sets `enabled: false` (off), `allow: [...]` (an allowlist),
+  :device` sets `enabled: false` (no installs), `allow: [...]` (an allowlist),
   another `source`, `dir`, `max_bytes` and `cacerts_path`; `enabled` and
   `allow` cannot be overridden by a call.
 * Installs are kept as a cache on `/data` across reboots, never loaded at
@@ -46,6 +46,13 @@
   error now reads `no CA certificates` (before: `no CA certificate store on
   this system`), and an empty store is that error too, never a TLS attempt
   with no CAs.
+
+* The host's check that an installed build is still intact is stricter
+  about `priv`: a `priv` that is a copy rather than Mix's link to the
+  dependency's sources (as on Windows, where links may be refused) no
+  longer counts as intact, so such a build is installed once more.
+* `enabled: false` disables `install/2` only: `list/1`, `uninstall/2`
+  and `clean/1` keep working, so what is installed can still be removed.
 
 ## v0.1.0 - unreleased
 
