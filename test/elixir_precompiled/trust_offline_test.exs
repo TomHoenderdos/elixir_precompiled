@@ -403,6 +403,34 @@ defmodule ElixirPrecompiled.TrustOfflineTest do
     end
   end
 
+  describe "the source an offline document is read from" do
+    test "an https source is refused and the floor is not written",
+         %{fixture: f, config: c, root: root} do
+      body = Fixture.offline_document(f, %{"recon" => @sha}, sequence: 10)
+      https = Map.put(c, :source, "https://example.com")
+
+      assert {:error, "offline documents are only read from a file:// source"} =
+               Trust.verify_offline(https, root, body)
+
+      refute File.exists?(Path.join(Trust.state_dir(c, root), "offline_state"))
+    end
+
+    test "a file:// source is accepted", %{fixture: f, config: c, root: root} do
+      body = Fixture.offline_document(f, %{"recon" => @sha}, sequence: 1)
+      assert {:ok, %{sequence: 1}} = Trust.verify_offline(c, root, body)
+    end
+  end
+
+  describe "a trusted root that cannot be read" do
+    test "is reported distinctly from a malformed document",
+         %{fixture: f, config: c, root: root} do
+      body = Fixture.offline_document(f, %{"recon" => @sha}, sequence: 10)
+      unreadable = Map.put(c, :root_path, Path.join(c.home, "no-such-root.json"))
+
+      assert {:error, "cannot read trusted root"} = Trust.verify_offline(unreadable, root, body)
+    end
+  end
+
   describe "the bundle's root on the offline path" do
     setup %{fixture: f} do
       next = key()
