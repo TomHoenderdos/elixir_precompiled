@@ -10,4 +10,11 @@ ExUnit.start()
 # them with `mix test --only integration`. The one test that needs the
 # public portal is tagged :production alone, so `--only integration` never
 # reaches it: run it with `mix test --only production`.
-ExUnit.configure(exclude: [integration: true, production: true])
+# Tests tagged :linux need a Linux device file (/dev/full).
+ExUnit.configure(
+  exclude: [
+    integration: true,
+    production: true,
+    linux: not match?({:unix, :linux}, :os.type())
+  ]
+)
