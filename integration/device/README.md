@@ -89,3 +89,27 @@ For the embedded-mode run, build with `EMBEDDED=1` and test with
 EMBEDDED=1 DEVICE_TEST_PUBKEY="$(cat "$TMPDIR/device-test-key.pub")" ./build_firmware.sh
 DEVICE_TEST_MODE=embedded DEVICE_TEST_KEY="$TMPDIR/device-test-key" mix test --only qemu
 ```
+
+## A real device
+
+The same firmware builds for a Raspberry Pi (`MIX_TARGET=rpi4` or
+`MIX_TARGET=rpi0_2`), but its config only brings up `eth0` over DHCP, as
+qemu needs. A Pi reached over USB gadget or wlan needs a network config of
+its own, and that does not belong in this repository. Put it in an
+operator file outside it, for example `~/.config/device_test/target.exs`,
+and name it in `DEVICE_TEST_TARGET_CONFIG`:
+
+```bash
+MIX_TARGET=rpi4 DEVICE_TEST_TARGET_CONFIG="$HOME/.config/device_test/target.exs" \
+  DEVICE_TEST_PUBKEY="$(cat "$TMPDIR/device-test-key.pub")" ./build_firmware.sh
+```
+
+It is an ordinary config file (`import Config` first), mounted read-only
+into the build and imported last by `fixture/config/target.exs`, so it
+overrides the fixture's own target config: typically
+`config :vintage_net, config: [...]` for `usb0` or `wlan0`, and
+`config :mdns_lite, ...`. `build_firmware.sh` refuses a path inside the
+repository, so an operator file is never committed. Without the variable
+the build is the qemu firmware, unchanged. The qemu suite itself
+(`mix test --only qemu`) drives qemu only; on a Pi the same commands run
+by hand over ssh.
