@@ -181,6 +181,38 @@ defmodule ElixirPrecompiled.Device.LoaderTest do
       assert rpc(peer, Application, :get_env, [:demo_env, :mode]) == :fast
     end
 
+    test "deferred compile_env of a release app not loaded yet: loaded, not started, checked", %{
+      peer: peer,
+      tmp_dir: dir
+    } do
+      refute app_loaded?(peer, :os_mon)
+      path = compile_app(dir, :demo_rel_env, "1.0.0", ["defmodule DemoRelEnv do\nend"], [])
+
+      item = fn value ->
+        %{
+          "app" => "os_mon",
+          "path" => ["start_os_sup"],
+          "value" => Base.url_encode64(:erlang.term_to_binary(value), padding: false)
+        }
+      end
+
+      cfg = &ElixirPrecompiled.CompileEnv.lookup/2
+
+      # A mismatch refuses and unloads os_mon again.
+      assert {:error, {:no_build, "demo_rel_env", "compile_env differs: os_mon [:start_os_sup]"}} =
+               activate(peer, :demo_rel_env, path, deferred: [item.({:ok, true})], config: cfg)
+
+      gone!(peer, :demo_rel_env, path, [DemoRelEnv])
+      refute app_loaded?(peer, :os_mon)
+
+      # The value os_mon's own .app sets passes.
+      assert {:ok, []} =
+               activate(peer, :demo_rel_env, path, deferred: [item.({:ok, false})], config: cfg)
+
+      assert app_loaded?(peer, :os_mon)
+      refute started?(peer, :os_mon)
+    end
+
     test "a beam that differs from the file list is refused before anything changes", %{
       peer: peer,
       tmp_dir: dir

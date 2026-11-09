@@ -66,7 +66,8 @@ defmodule ElixirPrecompiled.Device.Loader do
            ebin: Path.t(),
            app?: boolean(),
            modules: [module()],
-           started: [atom()]
+           started: [atom()],
+           env_loaded: [atom()]
          }
 
   @doc "The config function for an install whose builds record no compile_env."
@@ -125,6 +126,7 @@ defmodule ElixirPrecompiled.Device.Loader do
          :ok <- add_path(app, ebin, props[:modules], opts) do
       guarded(app, fn ->
         with :ok <- load_app(app, props),
+             :ok <- load_env_apps(app, deferred),
              :ok <- deferred_env(app, deferred, config_fun),
              :ok <- load_modules(beams, ebin),
              :ok <- start(app, opts) do
@@ -177,6 +179,7 @@ defmodule ElixirPrecompiled.Device.Loader do
       rec = record(app)
       _ = teardown(app, rec, true)
       _ = rec && stop_started(rec.started)
+      _ = rec && unload_env_loaded(rec)
       result
     end
   end
@@ -313,7 +316,9 @@ defmodule ElixirPrecompiled.Device.Loader do
     if dir in :code.get_path() do
       {:error, {:code_path, ebin, :already_present}}
     else
-      :ok = put_record(app, %{ebin: ebin, app?: false, modules: modules, started: []})
+      :ok =
+        put_record(app, %{ebin: ebin, app?: false, modules: modules, started: [], env_loaded: []})
+
       :ok = hook(opts, :recorded)
 
       if :code.add_pathz(dir) == true do
@@ -330,6 +335,57 @@ defmodule ElixirPrecompiled.Device.Loader do
       :ok -> put_record(app, %{record(app) | app?: true})
       {:error, {:already_loaded, _}} -> {:error, {:already_present, app, present_vsn(app, "")}}
       {:error, why} -> {:error, {:app_load_failed, app, why}}
+    end
+  end
+
+  # A compile_env item may name an app the release ships but has not
+  # loaded yet (Rules defers it): its .app defaults are only in the
+  # application env once it is loaded. Such an app is loaded here from its
+  # own lib/<app>-<vsn>/ebin/<app>.app in the release (which an embedded
+  # release need not have on the code path), never started, and the code
+  # path is left alone. The record keeps them so a failed activation
+  # unloads them again.
+  defp load_env_apps(app, deferred) do
+    own = Atom.to_string(app)
+    lib = Path.join(to_string(:code.root_dir()), "lib")
+    names = MapSet.new(for %{"app" => name} <- deferred, name != own, do: name)
+
+    loaded =
+      for {name, dir} <- release_dirs(names, lib),
+          {:ok, other, props} <- [release_app(name, dir)],
+          not List.keymember?(Application.loaded_applications(), other, 0),
+          :application.load({:application, other, props}) == :ok,
+          do: other
+
+    put_record(app, %{record(app) | env_loaded: loaded})
+  end
+
+  # The `<name>-<vsn>` dirs in the release's lib dir of the apps `names`.
+  defp release_dirs(names, lib) do
+    for entry <- ls(lib),
+        [name, vsn] <- [String.split(entry, "-", parts: 2)],
+        MapSet.member?(names, name),
+        String.match?(vsn, ~r/\A\d/),
+        uniq: true,
+        do: {name, Path.join(lib, entry)}
+  end
+
+  # The atom is made only for a name the release itself ships, whose .app
+  # names it.
+  defp release_app(name, dir) do
+    with {:ok, [{:application, app, props}]} <-
+           :file.consult(Path.join([dir, "ebin", name <> ".app"])),
+         true <- is_atom(app) and Atom.to_string(app) == name and Keyword.keyword?(props) do
+      {:ok, app, props}
+    else
+      _ -> :error
+    end
+  end
+
+  defp ls(dir) do
+    case File.ls(dir) do
+      {:ok, names} -> Enum.sort(names)
+      _ -> []
     end
   end
 
@@ -410,7 +466,8 @@ defmodule ElixirPrecompiled.Device.Loader do
 
   ## Deactivation
 
-  @spec deactivate(atom(), Path.t(), boolean()) :: :ok | {:error, {:in_use, module(), [pid()]}}
+  @spec deactivate(atom(), Path.t(), boolean()) ::
+          :ok | {:error, {:in_use, module(), [pid()]} | {:stop_failed, atom(), term()}}
   def deactivate(app, path, force) do
     ebin = Path.join(path, "ebin")
 
@@ -427,7 +484,10 @@ defmodule ElixirPrecompiled.Device.Loader do
 
       case record(app) do
         %{ebin: ^ebin, started: started} = rec ->
-          with :ok <- teardown(app, rec, true), do: stop_started(started)
+          with :ok <- teardown(app, rec, true) do
+            stop_started(started)
+            unload_env_loaded(rec)
+          end
 
         _ ->
           :ok
@@ -445,6 +505,14 @@ defmodule ElixirPrecompiled.Device.Loader do
       _ = Application.stop(a)
     end
 
+    :ok
+  end
+
+  # The release apps load_env_apps/2 loaded, unless something started one
+  # since.
+  defp unload_env_loaded(rec) do
+    running = for {a, _, _} <- Application.started_applications(), do: a
+    for a <- Map.get(rec, :env_loaded, []), a not in running, do: _ = Application.unload(a)
     :ok
   end
 
