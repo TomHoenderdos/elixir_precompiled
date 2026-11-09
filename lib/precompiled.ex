@@ -205,6 +205,13 @@ defmodule Precompiled do
   need it, unless `cascade: true` (which unloads them first). Refuses
   `{:in_use, mod, pids}` while other processes run its code, unless
   `force: true`.
+
+  "In use" means code: processes running the app's modules, as
+  `:code.soft_purge/1` sees them. Data is not detected: an open NIF
+  resource or a reference into the app (a GPIO handle from
+  `Circuits.GPIO.open/2`, say) held by a shell or another process does not
+  stop the uninstall. Close such handles (`Circuits.GPIO.close/1`) before
+  uninstalling.
   """
   @spec uninstall(atom(), keyword()) :: :ok | {:error, term()}
   def uninstall(app, opts \\ []) do
