@@ -32,3 +32,13 @@ config :mdns_lite,
     %{protocol: "ssh", transport: "tcp", port: 22},
     %{protocol: "sftp-ssh", transport: "tcp", port: 22}
   ]
+
+# A real device (a Raspberry Pi over USB gadget or wlan) needs a network
+# config of its own, which does not belong in this repository. An operator
+# file outside it, named by DEVICE_TEST_TARGET_CONFIG, is imported last so
+# it overrides everything above (README.md, "A real device"). Without the
+# variable the firmware is the qemu one: eth0 over DHCP.
+case System.get_env("DEVICE_TEST_TARGET_CONFIG", "") do
+  "" -> :ok
+  site -> import_config(site)
+end
