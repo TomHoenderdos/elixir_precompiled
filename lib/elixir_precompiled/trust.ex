@@ -15,7 +15,9 @@ defmodule ElixirPrecompiled.Trust do
   line of defense.
 
   A batch read from a bundle (`bundle: true`) is bounded by its own expiry
-  instead of the 24 h staleness rule.
+  instead of the 24 h staleness rule. A bundle's `offline.json`
+  (`verify_offline/3`) has no expiry at all, and on that path the root's
+  expiry is not checked either (`offline: true`).
   """
 
   alias ElixirPrecompiled.Output
@@ -144,19 +146,24 @@ defmodule ElixirPrecompiled.Trust do
   intermediate root does not end the chain, and a release keeps working
   past its shipped root's expiry once a newer root has been adopted.
 
+  With `offline: true`, for verifying a bundle's `offline.json` and nothing
+  else, the root in use is returned even when it has expired: an offline
+  document is valid indefinitely, so the clock must not end it. The chain
+  and every signature are checked as always.
+
   The version this ends on can never drop below one `update_root/3` already
   recorded: a stored `root_version` higher than the folded root's version
   means `roots.json` lost the entries that led there (deleted, truncated, or
   rolled back), and that is reported rather than silently accepted.
   """
-  @spec load_root(map()) :: {:ok, root()} | {:error, String.t()}
-  def load_root(config) do
+  @spec load_root(map(), keyword()) :: {:ok, root()} | {:error, String.t()}
+  def load_root(config, opts \\ []) do
     with {:ok, shipped} <- read_shipped(config.root_path) do
       dir = state_dir(config, shipped)
       {root, adopted} = fold_chain(shipped, read_chain(dir))
 
       case version_regression(dir, root) do
-        :ok -> expiry_outcome(config, root, adopted)
+        :ok -> if offline?(opts), do: {:ok, root}, else: expiry_outcome(config, root, adopted)
         error -> error
       end
     end
@@ -242,13 +249,16 @@ defmodule ElixirPrecompiled.Trust do
     end
   end
 
-  # A served root becomes the root in use, so it must also be unexpired.
-  defp adopt(env, current) do
+  # A served root becomes the root in use, so it must also be unexpired,
+  # except on the offline path, where root expiry plays no part.
+  defp adopt(env, current, offline?) do
     with {:ok, root} <- chain_step(env, current),
-         :ok <- check_expiry(expires_of(root)) do
+         :ok <- if(offline?, do: :ok, else: check_expiry(expires_of(root))) do
       {:ok, root}
     end
   end
+
+  defp offline?(opts), do: Keyword.get(opts, :offline, false) == true
 
   defp self_verify(env) do
     with {:ok, payload} <- decode_payload(env),
@@ -286,10 +296,19 @@ defmodule ElixirPrecompiled.Trust do
   Adopt the source's served root when it chains from `root` (the root in
   use), appending it to `roots.json` and recording its version as the
   floor `load_root/1` will not go back below. Anything else keeps `root`.
+
+  With `offline: true`, for a bundle's `root.json` read to verify its
+  `offline.json`, a root that chains is adopted even when it has expired
+  (see `load_root/2`). Such a root ends the online path until a newer one
+  is adopted, as any expired root in use does.
   """
-  @spec update_root(map(), root(), (String.t() -> {:ok, binary()} | {:error, term()})) ::
-          {:ok, root()}
-  def update_root(config, root, fetch) do
+  @spec update_root(
+          map(),
+          root(),
+          (String.t() -> {:ok, binary()} | {:error, term()}),
+          keyword()
+        ) :: {:ok, root()}
+  def update_root(config, root, fetch, opts \\ []) do
     case fetch.(config.source <> "/root.json") do
       {:ok, body} ->
         # Fetched is checked, adopted or not: the next check is due an
@@ -298,7 +317,7 @@ defmodule ElixirPrecompiled.Trust do
         # signed under a root this client has not adopted fails its
         # signature, and Check then fetches the root again regardless.
         _ = write_atomic(state_dir(config), "root_checked", Integer.to_string(unix_now(config)))
-        adopt_served(config, root, body)
+        adopt_served(config, root, body, offline?(opts))
 
       _ ->
         {:ok, root}
@@ -307,9 +326,9 @@ defmodule ElixirPrecompiled.Trust do
     _ -> {:ok, root}
   end
 
-  defp adopt_served(config, root, body) do
+  defp adopt_served(config, root, body, offline?) do
     with {:ok, env} when is_map(env) <- safe_decode(body),
-         {:ok, candidate} <- adopt(env, root),
+         {:ok, candidate} <- adopt(env, root, offline?),
          shipped = shipped_root(config),
          dir = state_dir(config, shipped),
          {_, adopted} = fold_chain(shipped, read_chain(dir)),
@@ -390,6 +409,7 @@ defmodule ElixirPrecompiled.Trust do
   # this is the cached batch.
   @type batch :: %{
           optional(:source_unreachable) => true,
+          optional(:offline) => true,
           required(:sequence) => integer(),
           required(:manifests) => %{String.t() => String.t()},
           required(:manifests_v2) => %{String.t() => String.t()} | nil,
@@ -667,6 +687,102 @@ defmodule ElixirPrecompiled.Trust do
   end
 
   defp https_origin?(_), do: false
+
+  @doc """
+  A bundle's offline document (`offline.json`): manifest maps signed by the
+  root's `offline` role, with no expiry, for a device that stays offline
+  (`PRECOMPILED_API.md`, "Offline bundles"). The caller reads it only from
+  a `file://` source the user named.
+
+  Its keys come from the `offline` role of `root` alone, with a threshold
+  above zero and each keyid counted once. A key that any other role of the
+  root also names (the online root and batch key) never counts for it, so
+  a batch signature can never pass as an offline one. No clock is read: not
+  for the document, which has no expiry, and not for the root. The document
+  is held to its own sequence floor, `offline_state` in the state dir, apart
+  from the batch sequence, and the floor is raised to its sequence.
+
+  Returns the batch shape, with `content: nil` and `offline: true`.
+  """
+  @spec verify_offline(map(), root(), binary()) :: {:ok, batch()} | {:error, String.t()}
+  def verify_offline(config, root, body) do
+    case offline_keys(root) do
+      {keys, t} when map_size(keys) > 0 and is_integer(t) -> offline_doc(config, keys, t, body)
+      _ -> {:error, "root has no offline role"}
+    end
+  rescue
+    _ -> {:error, "offline document malformed"}
+  end
+
+  defp offline_keys(root) do
+    case root_keys(root, "offline") do
+      {keys, t} when is_integer(t) -> {Map.drop(keys, other_role_keyids(root)), t}
+      none -> none
+    end
+  end
+
+  # Every keyid a role other than `offline` names, whatever its shape.
+  defp other_role_keyids(%{"roles" => roles}) when is_map(roles) do
+    for {name, %{"keyids" => ids}} when name != "offline" and is_list(ids) <- roles,
+        id <- ids,
+        do: id
+  end
+
+  defp other_role_keyids(_root), do: []
+
+  defp offline_doc(config, keys, t, body) do
+    with {:ok, payload} <-
+           verify_envelope(body, keys, t) |> or_error("offline document signature invalid"),
+         {:ok, seq, manifests, v2} <- offline_fields(safe_decode(payload)),
+         :ok <- offline_floor(state_dir(config), seq) do
+      {:ok, %{sequence: seq, manifests: manifests, manifests_v2: v2, content: nil, offline: true}}
+    end
+  end
+
+  defp offline_fields(
+         {:ok,
+          %{
+            "version" => 1,
+            "kind" => "offline",
+            "sequence" => seq,
+            "manifests" => manifests,
+            "manifests_v2" => v2
+          }}
+       )
+       when is_integer(seq) and seq > 0 and is_map(manifests) and is_map(v2) do
+    if plain_entries?(manifests) and plain_entries?(v2),
+      do: {:ok, seq, manifests, v2},
+      else: {:error, "offline document malformed"}
+  end
+
+  defp offline_fields(_), do: {:error, "offline document malformed"}
+
+  # A Hex package name and a lowercase sha256, as the signer writes them:
+  # nothing else is ever turned into a path or a lookup.
+  defp plain_entries?(map) do
+    Enum.all?(map, fn {name, sha} ->
+      is_binary(name) and is_binary(sha) and name =~ ~r/\A[a-z][a-z0-9_]*\z/ and
+        sha =~ ~r/\A[0-9a-f]{64}\z/
+    end)
+  end
+
+  # Checked against the floor, then the floor is raised; like write_state/2
+  # it is re-read right before the write and never lowered.
+  defp offline_floor(dir, seq) do
+    path = Path.join(dir, "offline_state")
+    floor = read_counter(path, "offline sequence")
+
+    if seq < floor do
+      {:error, "offline sequence #{seq} is below #{floor}"}
+    else
+      stored = read_counter(path, "offline sequence")
+
+      case write_atomic(dir, "offline_state", Integer.to_string(max(stored, seq))) do
+        :ok -> :ok
+        {:error, reason} -> {:error, "state dir unwritable: #{inspect(reason)}"}
+      end
+    end
+  end
 
   defp or_error({:ok, _} = ok, _), do: ok
   defp or_error(_, msg), do: {:error, msg}
