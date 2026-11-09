@@ -653,4 +653,30 @@ defmodule ElixirPrecompiled.MatchTest do
                )
     end
   end
+
+  describe "exposed rules (shared with the device)" do
+    test "texts are the host's" do
+      assert Match.target_ok("pure_elixir", nil, {"nerves_system_rpi4", "2.2.1"}) == :ok
+
+      assert Match.target_ok("nerves_system_rpi4", "2.2.0", {"nerves_system_rpi4", "2.2.1"}) ==
+               {:miss, "built for nerves_system_rpi4 2.2.0, project has 2.2.1"}
+
+      assert Match.target_ok("nerves_system_rpi0_2", "2.2.1", {"nerves_system_rpi4", "2.2.1"}) ==
+               {:miss, "not built for this system (nerves_system_rpi0_2)"}
+
+      assert Match.elixir_ok("1.20.3", "1.20.2") ==
+               {:miss, "built with Elixir 1.20.3, running 1.20.2"}
+
+      assert Match.elixir_ok("1.20.3", "1.20.4") == :ok
+      assert Match.otp_ok("29", "28") == {:miss, "built on OTP 29, running 28"}
+
+      assert Match.dep_env_ok("dev", "prod") ==
+               {:miss, "built with env dev, dependency compiles as prod"}
+
+      assert Match.toolchain_present(%{}) == {:miss, "build predates toolchain"}
+      assert Match.present(%{}, "package_checksum") == {:miss, "build predates package_checksum"}
+      assert Match.parse3("1.20.3") == {1, 20, 3}
+      assert Match.inverted("b") < Match.inverted("a")
+    end
+  end
 end

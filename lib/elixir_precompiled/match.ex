@@ -136,8 +136,10 @@ defmodule ElixirPrecompiled.Match do
   # Negated bytes plus a trailing 1 make a larger id compare smaller,
   # including an id that extends another ("ab" < "abc" gives abc first).
   # A missing run id ranks after every real one.
-  defp inverted(id) when is_binary(id), do: for(<<c <- id>>, do: -c) ++ [1]
-  defp inverted(_), do: [2]
+  @doc false
+  @spec inverted(term()) :: [integer()]
+  def inverted(id) when is_binary(id), do: for(<<c <- id>>, do: -c) ++ [1]
+  def inverted(_), do: [2]
 
   # When every build missed on its target and none is pure_elixir or for
   # this system, the version simply was not built here; otherwise the
@@ -199,13 +201,16 @@ defmodule ElixirPrecompiled.Match do
     ]
   end
 
-  defp target_ok("pure_elixir", _, _), do: :ok
-  defp target_ok(t, built, {t, project}) when built == project, do: :ok
+  # Rules 1 to 5 are shared with the device layer (ElixirPrecompiled.Device.Rules), so both print the same text.
+  @doc false
+  @spec target_ok(String.t(), term(), {String.t(), term()}) :: :ok | {:miss, String.t()}
+  def target_ok("pure_elixir", _, _), do: :ok
+  def target_ok(t, built, {t, project}) when built == project, do: :ok
 
-  defp target_ok(t, built, {t, project}),
+  def target_ok(t, built, {t, project}),
     do: {:miss, "built for #{t} #{built}, project has #{project}"}
 
-  defp target_ok(t, _, _), do: {:miss, "not built for this system (#{t})"}
+  def target_ok(t, _, _), do: {:miss, "not built for this system (#{t})"}
 
   # What the build key does not record (G6): a dep whose own sources read
   # an env var at module level could have been compiled with any value of
@@ -240,10 +245,12 @@ defmodule ElixirPrecompiled.Match do
   defp conventional_target("nerves_system_" <> name), do: name
   defp conventional_target(other), do: to_string(other)
 
-  defp toolchain_present(%{"elixir" => e, "otp" => o}) when is_binary(e) and is_binary(o),
+  @doc false
+  @spec toolchain_present(map()) :: :ok | {:miss, String.t()}
+  def toolchain_present(%{"elixir" => e, "otp" => o}) when is_binary(e) and is_binary(o),
     do: :ok
 
-  defp toolchain_present(_), do: {:miss, "build predates toolchain"}
+  def toolchain_present(_), do: {:miss, "build predates toolchain"}
 
   # Elixir's promise is backward within a minor: code compiled on x.y.N runs
   # on x.y.M for M >= N. Hex builds its own archive on x.y.0 for the same
@@ -251,7 +258,9 @@ defmodule ElixirPrecompiled.Match do
   # Compared as versions, not patch integers, so a pre-release runtime
   # (1.21.0-rc.0) is older than the final build (1.21.0) and refused, while
   # a pre-release build is still served to the final release.
-  defp elixir_ok(built, running) do
+  @doc false
+  @spec elixir_ok(term(), term()) :: :ok | {:miss, String.t()}
+  def elixir_ok(built, running) do
     with {:ok, b} <- parse_version(built),
          {:ok, r} <- parse_version(running),
          true <- b.major > 0 and {b.major, b.minor} == {r.major, r.minor},
@@ -268,26 +277,32 @@ defmodule ElixirPrecompiled.Match do
   # OTP's forward guarantee covers bytecode, not what compile time inlines:
   # Record.extract from OTP headers bakes in layouts that change between
   # majors (public_key.hrl between 27 and 28), so majors must match.
-  defp otp_ok(built, running) when built == running, do: :ok
-  defp otp_ok(built, running), do: {:miss, "built on OTP #{built}, running #{running}"}
+  @doc false
+  @spec otp_ok(term(), term()) :: :ok | {:miss, String.t()}
+  def otp_ok(built, running) when built == running, do: :ok
+  def otp_ok(built, running), do: {:miss, "built on OTP #{built}, running #{running}"}
 
   # A build made before dep_env was recorded has nothing to compare, so the
   # rule that follows (eq/3) would otherwise read `#{nil}` as an empty env.
-  defp dep_env_ok(nil, _running), do: {:miss, "build predates dep_env"}
+  @doc false
+  @spec dep_env_ok(term(), term()) :: :ok | {:miss, String.t()}
+  def dep_env_ok(nil, _running), do: {:miss, "build predates dep_env"}
 
-  defp dep_env_ok(built, running),
+  def dep_env_ok(built, running),
     do: eq(built, running, &"built with env #{&1}, dependency compiles as #{&2}")
 
   # {0, 0, 0} for a value that does not parse; only rank/2 uses it, on
   # builds elixir_ok/2 already accepted.
-  defp parse3(v) when is_binary(v) do
+  @doc false
+  @spec parse3(term()) :: {integer(), integer(), integer()}
+  def parse3(v) when is_binary(v) do
     case Version.parse(v) do
       {:ok, %Version{major: maj, minor: min, patch: patch}} -> {maj, min, patch}
       :error -> {0, 0, 0}
     end
   end
 
-  defp parse3(_), do: {0, 0, 0}
+  def parse3(_), do: {0, 0, 0}
 
   defp eq(a, b, _fmt) when a == b, do: :ok
   defp eq(a, b, fmt), do: {:miss, fmt.(a, b)}
@@ -298,7 +313,9 @@ defmodule ElixirPrecompiled.Match do
     "compile_env" => "compile_env"
   }
 
-  defp present(build, key) do
+  @doc false
+  @spec present(map(), String.t()) :: :ok | {:miss, String.t()}
+  def present(build, key) do
     case Map.fetch(build, key) do
       {:ok, v} when not is_nil(v) -> :ok
       _ -> {:miss, "build predates #{@field_names[key]}"}
