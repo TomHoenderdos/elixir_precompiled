@@ -150,6 +150,14 @@ defmodule Mix.Tasks.Precompiled.BundleTest do
                  "sign it: mix portal.precompiled.sign_offline --bundle #{out} --key <offline key>")
            )
 
+    %{"payload" => p} = Fixture.get(:batch)
+    issued = :json.decode(Base.url_decode64!(p, padding: false))["issued"]
+
+    assert Enum.any?(
+             lines,
+             &(&1 =~ "issued #{issued}: sign within 24 h of issued")
+           )
+
     Fixture.clear_requests()
 
     assert {:ok, [%{app: :bun_a}]} =
@@ -404,6 +412,100 @@ defmodule Mix.Tasks.Precompiled.BundleTest do
     File.rm!(Path.join(out, "offline.json"))
     Bundle.run(["bun_full" | pure_args(f, out)])
     assert bundle_files(out) == shas([a])
+  end
+
+  test "a symlink at --out is refused, even to an empty directory", %{tmp_dir: dir} do
+    f = Fixture.new(dir)
+    a = publish_app(f, dir, :bun_link, "1.0.0")
+    Fixture.publish(f, %{"bun_link" => manifest(%{"1.0.0" => [a]})})
+    target = Path.join(dir, "elsewhere")
+    File.mkdir_p!(target)
+    out = Path.join(dir, "bundle")
+    File.ln_s!(target, out)
+    Fixture.clear_requests()
+
+    assert_raise Mix.Error, ~r/is a symlink/, fn ->
+      Bundle.run(["bun_link" | pure_args(f, out)])
+    end
+
+    assert File.ls!(target) == []
+    assert Fixture.requests() == []
+
+    # A dangling one too.
+    File.rm!(out)
+    File.ln_s!(Path.join(dir, "nowhere"), out)
+
+    assert_raise Mix.Error, ~r/is a symlink/, fn ->
+      Bundle.run(["bun_link" | pure_args(f, out)])
+    end
+
+    refute File.exists?(Path.join(dir, "nowhere"))
+  end
+
+  test "a temp or staging name that already exists is never reused", %{tmp_dir: dir} do
+    target = Path.join(dir, "victim")
+    File.mkdir_p!(target)
+    # Another user's link and directory at the first two names.
+    File.ln_s!(target, Path.join(dir, "precompiled-bundle-aaaa"))
+    File.mkdir_p!(Path.join(dir, "precompiled-bundle-bbbb"))
+    names = :counters.new(1, [])
+
+    random = fn ->
+      :counters.add(names, 1, 1)
+      Enum.at(["aaaa", "bbbb", "cccc"], :counters.get(names, 1) - 1)
+    end
+
+    made = Bundle.exclusive_dir!(dir, "precompiled-bundle-", random)
+    assert made == Path.join(dir, "precompiled-bundle-cccc")
+    assert {:ok, %File.Stat{type: :directory}} = File.lstat(made)
+    assert Bitwise.band(File.stat!(made).mode, 0o777) == 0o700
+    assert File.ls!(target) == []
+    assert File.ls!(Path.join(dir, "precompiled-bundle-bbbb")) == []
+
+    # Every name taken: refused, never reused.
+    taken = fn -> "aaaa" end
+
+    assert_raise Mix.Error, ~r/no free directory name/, fn ->
+      Bundle.exclusive_dir!(dir, "precompiled-bundle-", taken)
+    end
+
+    # The real names are random and differ each call.
+    one = Bundle.exclusive_dir!(dir, "x-")
+    two = Bundle.exclusive_dir!(dir, "x-")
+    assert one != two
+    assert String.length(Path.basename(one)) == String.length("x-") + 24
+  end
+
+  test "a device report of an unknown format is refused", %{tmp_dir: dir} do
+    f = Fixture.new(dir)
+    report = Path.join(dir, "report.json")
+
+    env = %{
+      "otp" => "29",
+      "elixir" => "1.20.3",
+      "cpu" => "aarch64-unknown-linux-gnu",
+      "present" => %{}
+    }
+
+    for format <- [2, nil, "1"] do
+      body = if format, do: %{"format" => format, "env" => env}, else: %{"env" => env}
+      File.write!(report, :json.encode(body))
+      out = Path.join(dir, "bundle")
+
+      assert_raise Mix.Error, ~r/unknown report format/, fn ->
+        Bundle.run([
+          "bun_fmt",
+          "--out",
+          out,
+          "--device-report",
+          report,
+          "--source",
+          Fixture.base_url(),
+          "--root",
+          f.root_path
+        ])
+      end
+    end
   end
 
   test "no private key ever lands in a bundle", %{tmp_dir: dir} do

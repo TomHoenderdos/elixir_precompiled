@@ -80,6 +80,8 @@ defmodule Mix.Tasks.Precompiled.Bundle do
   @max_manifest_bytes 67_108_864
   @max_report_bytes 1_048_576
   @max_closure 25
+  @report_format 1
+  @dir_attempts 16
 
   @impl Mix.Task
   @spec run([String.t()]) :: :ok
@@ -92,8 +94,8 @@ defmodule Mix.Tasks.Precompiled.Bundle do
     tmp = tmp_dir!()
 
     try do
-      config = config!(opts, tmp)
-      %{root: root_bytes, batch: batch_bytes, batch_map: batch} = trust!(config)
+      {config, trusted_bytes} = config!(opts, tmp)
+      %{root: root_bytes, batch: batch_bytes, batch_map: batch} = trust!(config, trusted_bytes)
       config = Source.with_batch(config, batch)
       plan = plan!(requests, env, report_present, config, batch)
       written = write_bundle!(out, root_bytes, batch_bytes, plan, config)
@@ -140,7 +142,13 @@ defmodule Mix.Tasks.Precompiled.Bundle do
   defp requirement?(req),
     do: match?({:ok, _}, Version.parse(req)) or match?({:ok, _}, Version.parse_requirement(req))
 
+  # A link at --out would put the bundle wherever it points: refused, as
+  # anything but a missing or empty directory is.
   defp check_out!(out) do
+    with {:ok, %File.Stat{type: :symlink}} <- File.lstat(out) do
+      Mix.raise("precompiled.bundle: #{out} is a symlink; give a real directory")
+    end
+
     case File.ls(out) do
       {:ok, []} -> :ok
       {:ok, _} -> Mix.raise("precompiled.bundle: #{out} is not empty; give a new directory")
@@ -208,7 +216,8 @@ defmodule Mix.Tasks.Precompiled.Bundle do
     end
 
     with {:ok, body} <- read_report(path),
-         {:ok, %{"env" => env}} <- decode(body),
+         {:ok, %{"env" => env} = report} <- decode(body),
+         :ok <- report_format(report["format"]),
          {:ok, %Env{} = parsed} <- report_fields(env) do
       {%Env{parsed | present: present_atoms(parsed.present)}, parsed.present}
     else
@@ -216,6 +225,9 @@ defmodule Mix.Tasks.Precompiled.Bundle do
       _ -> Mix.raise("precompiled.bundle: device report #{path}: not a device report")
     end
   end
+
+  defp report_format(@report_format), do: :ok
+  defp report_format(other), do: {:error, "unknown report format #{inspect(other)}"}
 
   defp read_report(path) do
     case File.stat(path) do
@@ -283,34 +295,72 @@ defmodule Mix.Tasks.Precompiled.Bundle do
 
   ## Trust: the root and the batch, recorded byte for byte
 
-  defp tmp_dir!() do
-    dir = Path.join(System.tmp_dir!(), "precompiled-bundle-#{System.unique_integer([:positive])}")
-    File.mkdir_p!(dir)
-    dir
+  defp tmp_dir!(), do: exclusive_dir!(System.tmp_dir!(), "precompiled-bundle-")
+
+  @doc false
+  # A new directory `<parent>/<prefix><random>`, mode 0700, that this call
+  # created itself: a name that already exists (another user's directory
+  # or link in a shared /tmp) is never reused, only skipped for another
+  # random name. `random` is for tests.
+  @spec exclusive_dir!(Path.t(), String.t(), (-> String.t())) :: Path.t()
+  def exclusive_dir!(parent, prefix, random \\ &random_suffix/0) do
+    Enum.reduce_while(1..@dir_attempts, nil, fn _, _ ->
+      dir = Path.join(parent, prefix <> random.())
+
+      case File.mkdir(dir) do
+        :ok ->
+          File.chmod!(dir, 0o700)
+          {:halt, dir}
+
+        {:error, :eexist} ->
+          {:cont, nil}
+
+        {:error, why} ->
+          Mix.raise("precompiled.bundle: cannot create #{dir}: #{:file.format_error(why)}")
+      end
+    end) || Mix.raise("precompiled.bundle: no free directory name under #{parent}")
   end
+
+  defp random_suffix(), do: Base.encode16(:crypto.strong_rand_bytes(12), case: :lower)
 
   # No device store and no /data on a host: the trust state of this one
   # run lives in a temp dir, so nothing earlier can stand in for the source.
-  # A bundle may be large, so the run gets half an hour.
+  # A bundle may be large, so the run gets half an hour. The trusted root
+  # is read once: Trust verifies a private copy of those bytes, and the
+  # bundle holds the same bytes when no newer root was adopted.
   defp config!(opts, tmp) do
     source_opts =
       [home: Path.join(tmp, "trust"), dir: Path.join(tmp, "store"), deadline_seconds: 1800] ++
         Keyword.take(opts, [:source, :root])
 
     case Source.config(source_opts) do
-      {:ok, config} -> config
+      {:ok, config} -> pin_root!(config, tmp)
       {:error, why} -> Mix.raise("precompiled.bundle: #{inspect(why)}")
     end
   end
 
-  defp trust!(config) do
+  defp pin_root!(config, tmp) do
+    case File.read(config.root_path) do
+      {:ok, bytes} ->
+        copy = Path.join(tmp, "root.json")
+        File.write!(copy, bytes)
+        {%{config | root_path: copy}, bytes}
+
+      {:error, why} ->
+        Mix.raise(
+          "precompiled.bundle: cannot read #{config.root_path}: #{:file.format_error(why)}"
+        )
+    end
+  end
+
+  defp trust!(config, trusted_bytes) do
     with {:ok, root} <- Trust.load_root(config),
          served = record(:root, &Fetch.get_body(&1, Fetch.metadata_opts(config))),
          {:ok, root_in_use} <- Trust.update_root(config, root, served),
          fetch = record(:batch, &Fetch.get_conditional(config, &1, &2)),
          {:ok, batch} <- Trust.fetch_batch_cached(config, root_in_use, fetch),
          {:ok, batch_bytes} <- recorded(:batch) do
-      %{root: root_bytes!(config, root, root_in_use), batch: batch_bytes, batch_map: batch}
+      %{root: root_bytes(trusted_bytes, root, root_in_use), batch: batch_bytes, batch_map: batch}
     else
       {:error, why} -> Mix.raise("precompiled.bundle: batch: #{why}")
     end
@@ -342,13 +392,10 @@ defmodule Mix.Tasks.Precompiled.Bundle do
   end
 
   # The served root when Trust adopted it (newer, chained); else the trusted
-  # root file itself, which the batch then verified under.
-  defp root_bytes!(config, trusted, in_use) do
+  # root's own bytes, which the batch then verified under.
+  defp root_bytes(trusted_bytes, trusted, in_use) do
     served = recorded(:root)
-
-    if in_use != trusted,
-      do: elem(served, 1),
-      else: File.read!(config.root_path)
+    if in_use != trusted, do: elem(served, 1), else: trusted_bytes
   end
 
   ## The plan
@@ -414,8 +461,9 @@ defmodule Mix.Tasks.Precompiled.Bundle do
   ## Writing
 
   defp write_bundle!(out, root_bytes, batch_bytes, plan, config) do
-    staging = "#{out}.partial-#{System.unique_integer([:positive])}"
-    File.mkdir_p!(Path.join(staging, "files"))
+    File.mkdir_p!(Path.dirname(out))
+    staging = exclusive_dir!(Path.dirname(out), Path.basename(out) <> ".partial-")
+    File.mkdir!(Path.join(staging, "files"))
 
     try do
       write!(staging, "root.json", root_bytes)
@@ -509,7 +557,6 @@ defmodule Mix.Tasks.Precompiled.Bundle do
   defp move!(staging, out) do
     # check_out!/1 allowed only a missing or empty out.
     _ = File.rmdir(out)
-    File.mkdir_p!(Path.dirname(out))
 
     case File.rename(staging, out) do
       :ok -> :ok
@@ -527,25 +574,35 @@ defmodule Mix.Tasks.Precompiled.Bundle do
         "#{Output.kb(bytes)} in #{out}"
     )
 
+    batch = batch_payload(batch_bytes)
+
     Mix.shell().info(
-      "To use it beyond the batch's expiry (#{expires(batch_bytes)}), sign it: " <>
+      "To use it beyond the batch's expiry (#{batch["expires"]}), sign it: " <>
         "mix portal.precompiled.sign_offline --bundle #{out} --key <offline key> " <>
         "--root <current root.json>"
+    )
+
+    Mix.shell().info(
+      "The batch was issued #{batch["issued"]}: sign within 24 h of issued, " <>
+        "or the signer refuses it."
     )
 
     :ok
   end
 
-  # From the batch Trust already verified.
-  defp expires(batch_bytes) do
+  # Its expires and issued times, from the batch Trust already verified.
+  defp batch_payload(batch_bytes) do
     with {:ok, %{"payload" => p}} <- decode(batch_bytes),
          {:ok, payload} <- b64(p),
-         {:ok, %{"expires" => e}} when is_binary(e) <- decode(payload) do
-      e
+         {:ok, %{} = batch} <- decode(payload) do
+      Map.new(["expires", "issued"], &{&1, time(batch[&1])})
     else
-      _ -> "unknown"
+      _ -> %{"expires" => "unknown", "issued" => "unknown"}
     end
   end
+
+  defp time(t) when is_binary(t), do: t
+  defp time(_), do: "unknown"
 
   defp b64(p) when is_binary(p) do
     Enum.find_value(
