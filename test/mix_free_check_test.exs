@@ -178,11 +178,14 @@ defmodule MixFreeCheckTest do
     fixture_only = Path.join(dir, "fixture_only")
     File.mkdir_p!(fixture_only)
 
-    compile_into(fixture_only, """
-    defmodule ElixirPrecompiled.DeviceFixture do
-      def go, do: Mix.env()
-    end
-    """)
+    # The real DeviceFixture is test support loaded in this VM: compiled
+    # without touching the code server, so async tests that use it keep it.
+    compile_colliding_into(fixture_only, ElixirPrecompiled.DeviceFixture, [
+      {:attribute, 1, :module, ElixirPrecompiled.DeviceFixture},
+      {:attribute, 1, :export, [go: 0]},
+      {:function, 1, :go, 0,
+       [{:clause, 1, [], [], [{:call, 1, {:remote, 1, {:atom, 1, Mix}, {:atom, 1, :env}}, []}]}]}
+    ])
 
     assert {:error, ["no device-layer modules in " <> _]} = MixFreeCheck.run(fixture_only)
 
@@ -203,5 +206,6 @@ defmodule MixFreeCheckTest do
     ebin = Path.join([Mix.Project.build_path(), "lib", "elixir_precompiled", "ebin"])
     assert {:ok, mods} = MixFreeCheck.run(ebin)
     assert ElixirPrecompiled.Device.Env in mods
+    assert ElixirPrecompiled.Device.Rules in mods
   end
 end
