@@ -46,6 +46,24 @@ if Code.ensure_loaded?(Igniter) do
       test_project(files: %{"mix.exs" => mix_exs})
     end
 
+    defp nerves_mix_exs() do
+      """
+      defmodule Test.MixProject do
+        use Mix.Project
+
+        def project do
+          [app: :test, version: "0.1.0", deps: deps()]
+        end
+
+        defp deps do
+          [
+            {:elixir_precompiled, "~> 0.2", runtime: false}
+          ]
+        end
+      end
+      """
+    end
+
     test "a new project gets the dep option, the source and the alias" do
       igniter =
         test_project()
@@ -168,6 +186,31 @@ if Code.ensure_loaded?(Igniter) do
         igniter = project_with("[]", dep) |> install() |> apply_igniter!()
         assert content(igniter, "mix.exs") =~ want, dep
       end
+    end
+
+    test "--device keeps the dependency at runtime and adds castore" do
+      test_project(files: %{"mix.exs" => nerves_mix_exs()})
+      |> Igniter.compose_task("elixir_precompiled.install", ["--device"])
+      |> assert_has_patch("mix.exs", """
+      + |      {:castore, "~> 1.0"}
+      """)
+      |> assert_has_notice(&String.contains?(&1, "Precompiled.install(:recon)"))
+      |> then(fn igniter ->
+        mix_exs = Rewrite.source!(igniter.rewrite, "mix.exs") |> Rewrite.Source.get(:content)
+        refute mix_exs =~ "runtime: false"
+        igniter
+      end)
+    end
+
+    test "--device writes no device_install switch and no release step" do
+      igniter =
+        test_project(files: %{"mix.exs" => nerves_mix_exs()})
+        |> Igniter.compose_task("elixir_precompiled.install", ["--device"])
+
+      refute Enum.any?(
+               Rewrite.sources(igniter.rewrite),
+               &(Rewrite.Source.get(&1, :content) =~ ~r/device_install|record_lock/)
+             )
     end
   end
 end
