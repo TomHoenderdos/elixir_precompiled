@@ -52,6 +52,17 @@ credo_default_checks =
       },
       strict: true,
       checks: Keyword.merge(credo_default_checks, checks)
+    },
+    # The qemu device test harness and its firmware fixture
+    # (integration/device/README.md).
+    %{
+      name: "device",
+      files: %{
+        included: ["integration/device/test/", "integration/device/fixture/lib/"],
+        excluded: []
+      },
+      strict: true,
+      checks: Keyword.merge(credo_default_checks, checks)
     }
   ]
 }
