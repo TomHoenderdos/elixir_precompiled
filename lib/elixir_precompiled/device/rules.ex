@@ -118,8 +118,11 @@ defmodule ElixirPrecompiled.Device.Rules do
   defp pinned(_sum, nil), do: :ok
   defp pinned(sum, %{checksum: sum}) when is_binary(sum), do: :ok
 
-  defp pinned(_sum, _pin),
-    do: {:miss, "package checksum differs from the lock of the build that needs it"}
+  defp pinned(_sum, _pin), do: {:miss, checksum_differs()}
+
+  @doc false
+  @spec checksum_differs() :: String.t()
+  def checksum_differs(), do: "package checksum differs from the lock of the build that needs it"
 
   # Rule 7. The runtime closure comes from the build's own .app; a build-time
   # tool in deps that the .app does not name is already baked into the files.
