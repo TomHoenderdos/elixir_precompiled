@@ -58,9 +58,15 @@ defmodule ElixirPrecompiled.Device.Rules do
     ]
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, acc}, fn {rule, n}, {:ok, acc} ->
-      case rule.(acc) do
-        {:ok, acc} -> {:cont, {:ok, acc}}
-        {:miss, why} -> {:halt, {:miss, why, n}}
+      try do
+        case rule.(acc) do
+          {:ok, acc} -> {:cont, {:ok, acc}}
+          {:miss, why} -> {:halt, {:miss, why, n}}
+        end
+      rescue
+        _ -> {:halt, {:miss, "check raised", n}}
+      catch
+        _, _ -> {:halt, {:miss, "check raised", n}}
       end
     end)
   catch
@@ -78,13 +84,17 @@ defmodule ElixirPrecompiled.Device.Rules do
   defp target("pure_elixir", _b, _env), do: :ok
   defp target(t, _b, _env) when not is_binary(t), do: @malformed
 
-  defp target(t, %{"system_version" => v}, _env) when not is_binary(v),
-    do: {:miss, "built for #{t} (no system version)"}
-
-  defp target(t, _b, %{system: nil}), do: {:miss, "not built for this system (#{t})"}
-
   defp target(t, b, env) do
-    case Match.target_ok(t, b["system_version"], env.system) do
+    case b["system_version"] do
+      v when not is_binary(v) -> {:miss, "build has no system version"}
+      v -> target_known(t, v, env)
+    end
+  end
+
+  defp target_known(t, _v, %{system: nil}), do: {:miss, "not built for this system (#{t})"}
+
+  defp target_known(t, v, env) do
+    case Match.target_ok(t, v, env.system) do
       :ok -> platform_note(t, env)
       miss -> miss
     end
@@ -202,8 +212,16 @@ defmodule ElixirPrecompiled.Device.Rules do
 
   defp declared(%{"declared" => d}, _ctx, _acc) when not is_nil(d), do: @malformed
 
-  defp declared(_b, _ctx, acc),
-    do: {:ok, warn(acc, "build predates declared: optional integrations not checked")}
+  defp declared(b, _ctx, acc) do
+    if empty_deps?(b["deps"]),
+      do: {:ok, acc},
+      else: {:ok, warn(acc, "build predates declared: optional integrations not checked")}
+  end
+
+  # A zero-dependency build has no optional integration to miss (the portal
+  # stores an empty deps lock as nil, same as "deps" never recorded).
+  defp empty_deps?(deps) when deps in [nil, %{}], do: true
+  defp empty_deps?(_), do: false
 
   defp declared_item?(%{"app" => app}) when is_binary(app), do: true
   defp declared_item?(_), do: false
@@ -231,7 +249,7 @@ defmodule ElixirPrecompiled.Device.Rules do
 
       {deferred, now} =
         Enum.split_with(b["compile_env"], fn %{"app" => app} ->
-          MapSet.member?(later, app) or not MapSet.member?(loaded, existing_atom(app))
+          MapSet.member?(later, app) or waiting_to_load?(app, loaded, ctx)
         end)
 
       case Match.compile_env_ok(now, ctx.config) do
@@ -256,6 +274,15 @@ defmodule ElixirPrecompiled.Device.Rules do
   defp loaded_apps(ctx) do
     loaded = Map.get_lazy(ctx, :loaded, &Application.loaded_applications/0)
     MapSet.new(loaded, &elem(&1, 0))
+  end
+
+  # An app the device already has on disk, but has not yet loaded, is
+  # checked once application:load/1 has run; an app that is not present,
+  # not loaded and not planned is never going to be loaded, so there is
+  # nothing to wait for and its item is checked now instead.
+  defp waiting_to_load?(app, loaded, ctx) do
+    atom = existing_atom(app)
+    not MapSet.member?(loaded, atom) and device_vsn(atom, ctx) != nil
   end
 
   defp existing_atom(s) do
@@ -285,24 +312,27 @@ defmodule ElixirPrecompiled.Device.Rules do
 
   defp match_req?(v, req) when is_binary(v) do
     case Version.parse(v) do
-      {:ok, _} -> req_match?(v, req)
+      {:ok, parsed} -> req_match?(v, parsed, req)
       :error -> false
     end
   end
 
   defp match_req?(_, _), do: false
 
-  defp req_match?(_v, nil), do: true
+  # No requirement at all cannot name a pre-release, so a pre-release never
+  # beats a final release (Hex and Mix both exclude it this way).
+  defp req_match?(_v, %Version{pre: []}, nil), do: true
+  defp req_match?(_v, %Version{pre: pre}, nil) when pre != [], do: false
 
-  defp req_match?(v, req) when is_binary(req) do
+  defp req_match?(v, _parsed, req) when is_binary(req) do
     case {Version.parse(req), Version.parse_requirement(req)} do
       {{:ok, _}, _} -> v == req
-      {:error, {:ok, r}} -> Version.match?(v, r)
+      {:error, {:ok, r}} -> Version.match?(v, r, allow_pre: false)
       _ -> false
     end
   end
 
-  defp req_match?(_, _), do: false
+  defp req_match?(_, _, _), do: false
 
   defp first_passing(versions, manifest, name, ctx) do
     Enum.reduce_while(versions, nil, fn v, first_miss ->

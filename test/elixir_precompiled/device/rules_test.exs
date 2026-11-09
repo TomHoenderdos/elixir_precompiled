@@ -28,8 +28,14 @@ defmodule ElixirPrecompiled.Device.RulesTest do
     test "a null system_version never passes" do
       b = build(target: "nerves_system_rpi4", system_version: nil)
 
-      assert {:miss, "built for nerves_system_rpi4 (no system version)", 0} =
-               Rules.check(b, "x", ctx())
+      assert {:miss, "build has no system version", 0} = Rules.check(b, "x", ctx())
+    end
+
+    test "a missing system_version key gives the same clean message, not an empty interpolation" do
+      b = build(target: "nerves_system_rpi4", system_version: "2.2.1")
+      b = update_in(b["build"], &Map.delete(&1, "system_version"))
+
+      assert {:miss, "build has no system version", 0} = Rules.check(b, "x", ctx())
     end
 
     test "a forked system gets pure_elixir only (Q4: no mapping)" do
@@ -183,6 +189,12 @@ defmodule ElixirPrecompiled.Device.RulesTest do
                Rules.check(build(), "x", ctx(app_spec: spec))
     end
 
+    test "a crashing app_spec callback refuses, keeping the rule index it happened in" do
+      spec = fn _ -> raise "boom" end
+
+      assert {:miss, "check raised", 6} = Rules.check(build(), "x", ctx(app_spec: spec))
+    end
+
     test "a build without a deps lock cannot be checked and is refused" do
       b = update_in(build()["build"], &Map.delete(&1, "deps"))
       assert {:miss, "build predates deps lock", 6} = Rules.check(b, "x", ctx())
@@ -212,9 +224,15 @@ defmodule ElixirPrecompiled.Device.RulesTest do
       assert w == "built without jason (present here): its jason integration is off"
     end
 
-    test "no declared field: rule 8 is skipped, and the line says so" do
+    test "no declared field but a non-empty deps lock: rule 8 is skipped, and the line says so" do
+      b = build(declared: nil, deps: @tel)
+
       assert {:ok, %{warnings: ["build predates declared: optional integrations not checked"]}} =
-               Rules.check(build(declared: nil), "x", ctx())
+               Rules.check(b, "x", ctx())
+    end
+
+    test "no declared field and an empty deps lock: nothing to declare, no warning" do
+      assert {:ok, %{warnings: []}} = Rules.check(build(declared: nil), "x", ctx())
     end
 
     test "a malformed declared field is refused" do
@@ -237,12 +255,32 @@ defmodule ElixirPrecompiled.Device.RulesTest do
                Rules.check(build(compile_env: [present_item]), "x", bad)
     end
 
-    test "items for an app that is not loaded, or is still to be installed, wait" do
+    test "a key that is not set on a loaded app refuses against a recorded value" do
+      item = %{"app" => "logger", "path" => ["nope"], "value" => enc({:ok, :info})}
+      ctx = ctx(config: fn "logger", ["nope"] -> :error end)
+
+      assert {:miss, "compile_env differs: logger [:nope]", 8} =
+               Rules.check(build(compile_env: [item]), "x", ctx)
+    end
+
+    test "an app still to be installed waits; an app absent everywhere does not" do
       tel = %{"app" => "telemetry", "path" => ["k"], "value" => enc(:error)}
       ghost = %{"app" => "no_such_app_anywhere", "path" => ["k"], "value" => enc(:error)}
       b = build(deps: @tel, compile_env: [tel, ghost])
       ctx = ctx(app_spec: app_spec([:kernel, :telemetry]), loaded: [{:kernel, ~c"", ~c"10.4"}])
-      assert {:ok, %{deferred_env: [^tel, ^ghost]}} = Rules.check(b, "x", ctx)
+
+      # telemetry is being installed (it is in `needs`), so it still waits for
+      # application:load/1; "no_such_app_anywhere" is not present, not loaded
+      # and not planned, so there is nothing left to wait for and it is
+      # checked right away, against the ctx().config default of :error.
+      assert {:ok, %{deferred_env: [^tel]}} = Rules.check(b, "x", ctx)
+    end
+
+    test "an app absent everywhere is checked now, against :error, and can refuse" do
+      ghost = %{"app" => "no_such_app_anywhere", "path" => ["k"], "value" => enc({:ok, :info})}
+
+      assert {:miss, "compile_env differs: no_such_app_anywhere [:k]", 8} =
+               Rules.check(build(compile_env: [ghost]), "x", ctx())
     end
 
     test "a missing or malformed compile_env is refused" do
@@ -316,6 +354,18 @@ defmodule ElixirPrecompiled.Device.RulesTest do
 
       assert {:ok, _, %{"build" => %{"run_id" => "p"}}, _} =
                Rules.select(m2, "x", nil, ctx(app_spec: spec))
+    end
+
+    test "a pre-release never beats a final release when no requirement names it" do
+      m = manifest(%{"2.5.6" => [build()], "3.0.0-rc.0" => [build()]})
+      assert {:ok, "2.5.6", _, _} = Rules.select(m, "recon", nil, ctx())
+      assert {:ok, "2.5.6", _, _} = Rules.select(m, "recon", ">= 2.0.0", ctx())
+    end
+
+    test "a requirement that names a pre-release can still select it" do
+      m = manifest(%{"2.5.6" => [build()], "3.0.0-rc.0" => [build()]})
+      assert {:ok, "3.0.0-rc.0", _, _} = Rules.select(m, "recon", "3.0.0-rc.0", ctx())
+      assert {:ok, "3.0.0-rc.0", _, _} = Rules.select(m, "recon", ">= 3.0.0-rc.0", ctx())
     end
 
     test "the installed build ranks first among passing ones" do
