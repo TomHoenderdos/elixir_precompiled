@@ -48,14 +48,40 @@ defmodule MixFreeCheck do
       # :allow_missing_chunks, because a module with no complex literal
       # terms carries no "LitT" chunk at all, and chunks/3 otherwise errors
       # out the whole call rather than just that one key.
-      {:ok, {mod, chunks}} =
-        :beam_lib.chunks(String.to_charlist(beam), [:imports, :atoms, :literals], [
-          :allow_missing_chunks
-        ])
-
+      {:ok, {mod, chunks}} = chunks(String.to_charlist(beam))
       {mod, Map.new(chunks, fn {k, v} -> {k, present(v)} end)}
     end
   end
+
+  # beam_lib names the literals chunk only from OTP 28 on. On OTP 27 the
+  # raw "LitT" chunk is read and decoded the same way: a zlib-compressed
+  # count and size-prefixed external terms, as [{index, term}].
+  defp chunks(beam) do
+    case :beam_lib.chunks(beam, [:imports, :atoms, :literals], [:allow_missing_chunks]) do
+      {:error, :beam_lib, {:unknown_chunk, _, :literals}} ->
+        {:ok, {mod, chunks}} =
+          :beam_lib.chunks(beam, [:imports, :atoms, ~c"LitT"], [:allow_missing_chunks])
+
+        {:ok, {mod, Enum.map(chunks, &lit_t/1)}}
+
+      result ->
+        result
+    end
+  end
+
+  defp lit_t({~c"LitT", :missing_chunk}), do: {:literals, :missing_chunk}
+
+  defp lit_t({~c"LitT", <<_size::32, compressed::binary>>}) do
+    <<_count::32, terms::binary>> = :zlib.uncompress(compressed)
+    {:literals, terms |> literal_terms() |> Enum.with_index(fn t, i -> {i, t} end)}
+  end
+
+  defp lit_t(other), do: other
+
+  defp literal_terms(<<>>), do: []
+
+  defp literal_terms(<<size::32, term::binary-size(size), rest::binary>>),
+    do: [:erlang.binary_to_term(term) | literal_terms(rest)]
 
   defp present(:missing_chunk), do: []
   defp present(list), do: list
