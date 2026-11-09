@@ -117,6 +117,113 @@ defmodule ElixirPrecompiled.DeviceFixture do
     )
   end
 
+  @doc """
+  Writes a real app into `<dir>/<app>-<vsn>`: one beam per module the
+  sources define and an `ebin/<app>.app`. Returns the app dir.
+
+  Each source is compiled with `Code.compile_string/1` and its modules are
+  purged from this VM again. A source that defines a module this VM
+  already has (or could load, such as `Logger`) is never compiled here:
+  that would replace and then purge the VM's own module. Its modules are
+  built as empty Erlang modules with `:compile.forms/2`, which loads
+  nothing.
+
+  Options: `:deps` (extra `applications`), `:env`, `:mod`.
+  """
+  @spec compile_app(Path.t(), atom(), String.t(), [String.t()], keyword()) :: Path.t()
+  def compile_app(dir, app, vsn, sources, opts \\ []) do
+    root = Path.join(dir, "#{app}-#{vsn}")
+    ebin = Path.join(root, "ebin")
+    File.mkdir_p!(ebin)
+
+    modules =
+      for source <- sources, {mod, bin} <- compile_source(source) do
+        File.write!(Path.join(ebin, "#{mod}.beam"), bin)
+        mod
+      end
+
+    props =
+      [
+        description: String.to_charlist("#{app}"),
+        vsn: String.to_charlist(vsn),
+        modules: modules,
+        registered: [],
+        applications: [:kernel, :stdlib, :elixir] ++ Keyword.get(opts, :deps, []),
+        env: Keyword.get(opts, :env, [])
+      ] ++ if(opts[:mod], do: [mod: opts[:mod]], else: [])
+
+    File.write!(
+      Path.join(ebin, "#{app}.app"),
+      :io_lib.format(~c"~p.~n", [{:application, app, props}])
+    )
+
+    root
+  end
+
+  defp compile_source(source) do
+    names = source |> Code.string_to_quoted!() |> defined_modules()
+
+    if Enum.any?(names, &known_module?/1) do
+      Enum.map(names, &empty_module/1)
+    else
+      fresh_compile(source)
+    end
+  end
+
+  defp defined_modules({:__block__, _, forms}), do: Enum.flat_map(forms, &defined_modules/1)
+  defp defined_modules({:defmodule, _, [name | _]}), do: [module_name(name)]
+  defp defined_modules(_), do: []
+
+  defp module_name({:__aliases__, _, parts}), do: Module.concat(parts)
+  defp module_name(atom) when is_atom(atom), do: atom
+
+  defp known_module?(mod), do: :code.is_loaded(mod) != false or :code.which(mod) != :non_existing
+
+  defp empty_module(mod) do
+    forms = [{:attribute, 1, :module, mod}, {:attribute, 1, :export, []}]
+    {:ok, ^mod, bin} = :compile.forms(forms, [:binary])
+    {mod, bin}
+  end
+
+  defp fresh_compile(source) do
+    # A test impl of a protocol this VM consolidated would warn here.
+    previous = Code.get_compiler_option(:ignore_already_consolidated)
+    Code.put_compiler_option(:ignore_already_consolidated, true)
+
+    try do
+      compiled = Code.compile_string(source)
+      for {mod, _} <- compiled, do: purge(mod)
+      compiled
+    after
+      Code.put_compiler_option(:ignore_already_consolidated, previous)
+    end
+  end
+
+  defp purge(mod) do
+    :code.purge(mod)
+    :code.delete(mod)
+    :code.purge(mod)
+  end
+
+  @doc """
+  The file list of an app dir in manifest form (`path`, `sha256`, `size`,
+  `mode`), as the loader's `files:` option takes it.
+  """
+  @spec files(Path.t()) :: [map()]
+  def files(root) do
+    for file <- Path.wildcard(Path.join(root, "{ebin,priv}/**"), match_dot: true),
+        File.regular?(file) do
+      bytes = File.read!(file)
+
+      %{
+        "path" => Path.relative_to(file, root),
+        "sha256" => Base.encode16(:crypto.hash(:sha256, bytes), case: :lower),
+        "size" => byte_size(bytes),
+        "mode" => File.stat!(file).mode
+      }
+    end
+  end
+
   @spec elf_header(32 | 64, atom()) :: binary()
   def elf_header(class, machine) do
     {em, ^machine} = Enum.find(ElixirPrecompiled.Device.Elf.machines(), &(elem(&1, 1) == machine))
