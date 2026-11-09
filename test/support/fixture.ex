@@ -16,27 +16,67 @@ defmodule ElixirPrecompiled.Fixture do
     keyid = Base.encode16(:crypto.hash(:sha256, public), case: :lower)
     key = %{keyid: keyid, public: public, private: private}
     expires = Keyword.get(opts, :root_expires, "2030-01-01T00:00:00Z")
-    root = root_payload(keyid, public, expires, Keyword.get(opts, :root_version, 1))
+    offline_key = if Keyword.get(opts, :offline_key, false), do: generate_key()
+    version = Keyword.get(opts, :root_version, 1)
+    root = root_payload(keyid, public, expires, version, offline_key)
     root_env = sign(root, [key])
     root_path = Path.join(tmp_dir, "root.json")
     File.write!(root_path, :json.encode(root_env))
     reset()
     put(:root, root_env)
-    %{key: key, root_env: root_env, root_path: root_path}
+    %{key: key, root_env: root_env, root_path: root_path, offline_key: offline_key}
   end
 
-  @spec root_payload(String.t(), binary(), String.t(), pos_integer()) :: iodata()
-  def root_payload(keyid, public, expires, version) do
+  @spec root_payload(String.t(), binary(), String.t(), pos_integer()) :: binary()
+  def root_payload(keyid, public, expires, version),
+    do: root_payload(keyid, public, expires, version, nil)
+
+  # `offline_key`, when given, joins `keys` and is the one key of an
+  # `offline` role.
+  @spec root_payload(String.t(), binary(), String.t(), pos_integer(), map() | nil) :: binary()
+  def root_payload(keyid, public, expires, version, offline_key) do
+    keys = %{keyid => %{"type" => "ed25519", "public" => b64(public)}}
+
+    roles = %{
+      "root" => %{"keyids" => [keyid], "threshold" => 1},
+      "batch" => %{"keyids" => [keyid], "threshold" => 1}
+    }
+
+    {keys, roles} =
+      case offline_key do
+        nil ->
+          {keys, roles}
+
+        k ->
+          {Map.put(keys, k.keyid, %{"type" => "ed25519", "public" => b64(k.public)}),
+           Map.put(roles, "offline", %{"keyids" => [k.keyid], "threshold" => 1})}
+      end
+
+    :json.encode(%{"version" => version, "expires" => expires, "keys" => keys, "roles" => roles})
+    |> IO.iodata_to_binary()
+  end
+
+  # A bundle's offline.json: `packages_v2` (name => manifest sha) signed by
+  # `opts[:signers]`, the fixture's offline key by default.
+  @spec offline_document(map(), map(), keyword()) :: binary()
+  def offline_document(fixture, packages_v2, opts \\ []) do
     :json.encode(%{
-      "version" => version,
-      "expires" => expires,
-      "keys" => %{keyid => %{"type" => "ed25519", "public" => b64(public)}},
-      "roles" => %{
-        "root" => %{"keyids" => [keyid], "threshold" => 1},
-        "batch" => %{"keyids" => [keyid], "threshold" => 1}
-      }
+      "version" => 1,
+      "kind" => "offline",
+      "sequence" => Keyword.get(opts, :sequence, 1),
+      "issued" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "manifests" => %{},
+      "manifests_v2" => packages_v2
     })
     |> IO.iodata_to_binary()
+    |> sign(Keyword.get(opts, :signers) || [fixture.offline_key])
+    |> :json.encode()
+    |> IO.iodata_to_binary()
+  end
+
+  defp generate_key() do
+    {public, private} = :crypto.generate_key(:eddsa, :ed25519)
+    %{keyid: sha(public), public: public, private: private}
   end
 
   @spec serve_root(map(), map()) :: map()
