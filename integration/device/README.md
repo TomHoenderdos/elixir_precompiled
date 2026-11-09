@@ -45,7 +45,7 @@ The tests run in file order: the cache tests build on the earlier installs.
 
 - `qemu-system-aarch64` (on macOS, `brew install qemu`; Apple silicon runs
   it with `hvf`, Linux on aarch64 with `kvm`, anything else under TCG,
-  which takes minutes per boot), `fwup`, `ssh` and `scp`.
+  which takes minutes per boot), `fwup`, `ssh` and `sftp`.
 - Docker and the worker image `ncc-worker:local` (Elixir 1.20.3, OTP 29,
   `nerves_bootstrap`, `fwup`). It is built locally from the portal
   repository and not published; `DEVICE_TEST_IMAGE` names another image

@@ -53,14 +53,15 @@ defmodule DeviceQemu do
     script = Path.join(@here, "run_qemu.sh")
 
     cmd =
-      ~s|exec 3<&0; "$0" "$@" >>'#{log}' 2>&1 3<&- & q=$!; echo "$q"; | <>
+      ~s|log="$0"; script="$1"; shift; exec 3<&0; | <>
+        ~s|"$script" "$@" >>"$log" 2>&1 3<&- & q=$!; echo "$q"; | <>
         ~s|(cat <&3 >/dev/null; kill "$q" 2>/dev/null) >/dev/null 2>&1 & wait "$q"|
 
     port =
       Port.open({:spawn_executable, "/bin/sh"}, [
         :binary,
         :exit_status,
-        args: ["-c", cmd, script | args]
+        args: ["-c", cmd, log, script | args]
       ])
 
     receive do
@@ -174,6 +175,24 @@ defmodule DeviceQemu do
     end
   end
 
+  @doc """
+  Evaluates `expr` on the guest and returns its inspected value on one
+  line, without the `precompiled:` lines or the echoed result around it.
+  """
+  @spec value!(String.t()) :: String.t()
+  def value!(expr) do
+    out =
+      dev!(
+        "IO.puts(\"\\nvalue: \" <> inspect((#{expr}), " <>
+          "limit: :infinity, printable_limit: :infinity, width: :infinity)); :done"
+      )
+
+    case Regex.run(~r/^value: (.*)$/m, out) do
+      [_, value] -> String.trim(value)
+      nil -> raise "no value for #{inspect(expr)} in:\n#{out}"
+    end
+  end
+
   defp ssh_opts() do
     key = System.fetch_env!("DEVICE_TEST_KEY")
 
@@ -188,15 +207,17 @@ defmodule DeviceQemu do
 
   @doc """
   Waits up to 5 minutes for `NervesTime.synchronized?/0` and for the
-  guest to resolve the portal's host name: Erlang's resolver rereads
-  `/etc/resolv.conf` only every few seconds, so right after DHCP a lookup
-  can still fail with `nxdomain` on a synchronized clock.
+  guest to resolve the host of the library's default source: Erlang's
+  resolver rereads `/etc/resolv.conf` only every few seconds, so right
+  after DHCP a lookup can still fail with `nxdomain` on a synchronized
+  clock.
   """
-  @spec wait_clock!() :: :ok
-  def wait_clock!() do
+  @spec wait_online!() :: :ok
+  def wait_online!() do
     probe =
-      ~s|IO.inspect({NervesTime.synchronized?(), | <>
-        ~s|match?({:ok, _}, :inet.gethostbyname(~c"compatibility.nerves-project.org"))})|
+      ~s|host = URI.parse(ElixirPrecompiled.Device.Source.official()).host; | <>
+        ~s|IO.inspect({NervesTime.synchronized?(), | <>
+        ~s|match?({:ok, _}, :inet.gethostbyname(String.to_charlist(host)))})|
 
     synced? = fn -> match?({"{true, true}" <> _, 0}, ssh(probe, 20_000)) end
 
@@ -234,7 +255,9 @@ defmodule DeviceQemu do
   """
   @spec make_bundle!([String.t()]) :: Path.t()
   def make_bundle!(packages) do
-    out = Path.join(@here, "_qemu/bundle-#{System.unique_integer([:positive])}")
+    # A new directory every run: the task refuses one that is not empty.
+    out = Path.join(@here, "_qemu/bundle")
+    File.rm_rf!(out)
 
     args =
       ["precompiled.bundle" | packages] ++
