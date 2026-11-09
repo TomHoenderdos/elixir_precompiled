@@ -86,8 +86,11 @@ defmodule ElixirPrecompiled.Device.Env do
   # "<app>-<vsn>": the version starts at the first "-" followed by a digit,
   # so a pre-release (foo-1.0.0-rc.1) keeps its whole version and a dashed
   # name (my-app-1.0.0) keeps its whole name. The version must parse, and
-  # the app must already be an atom.
-  defp split(name) do
+  # the app must already be an atom. Device.Store names its entries the
+  # same way.
+  @doc false
+  @spec split(String.t()) :: {:ok, atom(), String.t()} | :error
+  def split(name) do
     case Regex.run(~r/\A(.+?)-(\d.*)\z/, name, capture: :all_but_first) do
       [app, vsn] -> app_vsn(app, vsn)
       _ -> :error
