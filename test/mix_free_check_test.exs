@@ -46,6 +46,20 @@ defmodule MixFreeCheckTest do
     assert line == "Elixir.ElixirPrecompiled.FakeHelper calls Elixir.Mix.env/0"
   end
 
+  test "a helper reached only through a captured fun is walked too", %{tmp_dir: dir} do
+    compile_into(dir, """
+    defmodule ElixirPrecompiled.Device.FakeCapture do
+      def go, do: &ElixirPrecompiled.FakeCaptured.go/0
+    end
+    defmodule ElixirPrecompiled.FakeCaptured do
+      def go, do: Mix.env()
+    end
+    """)
+
+    assert {:error, [line]} = MixFreeCheck.run(dir)
+    assert line == "Elixir.ElixirPrecompiled.FakeCaptured calls Elixir.Mix.env/0"
+  end
+
   test "a host-only module that calls Mix is fine when the device layer does not reach it", %{
     tmp_dir: dir
   } do
