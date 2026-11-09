@@ -269,9 +269,7 @@ defmodule ElixirPrecompiled.HTTPTest do
 
   @tag :tmp_dir
   test "a CA bundle file replaces the OS store", %{tmp_dir: dir} do
-    # OTP 25+ answers combined {:cert, der, decoded} records.
-    {:ok, [cert | _]} = HTTP.cacerts()
-    der = with {:cert, der, _} <- cert, do: der
+    der = test_der()
     path = Path.join(dir, "ca.pem")
     File.write!(path, :public_key.pem_encode([{:Certificate, der, :not_encrypted}]))
     assert HTTP.pem_cacerts(path) == [der]
@@ -298,10 +296,11 @@ defmodule ElixirPrecompiled.HTTPTest do
     def file_path(), do: Process.get(:fake_ca_path)
   end
 
+  # A certificate made here, so no test depends on this machine's own
+  # CA store (a CI runner or a container may have none).
   defp test_der() do
-    # OTP 25+ answers combined {:cert, der, decoded} records.
-    {:ok, [cert | _]} = HTTP.cacerts()
-    with {:cert, der, _} <- cert, do: der
+    %{cert: der} = :public_key.pkix_test_root_cert(~c"elixir_precompiled test CA", [])
+    der
   end
 
   defp write_pem(dir, name, der) do
