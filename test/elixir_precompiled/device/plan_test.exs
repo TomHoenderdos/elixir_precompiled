@@ -257,8 +257,42 @@ defmodule ElixirPrecompiled.Device.PlanTest do
   end
 
   test "build warnings are carried, named by the package" do
-    m = manifests(%{"recon" => manifest(%{"2.5.6" => [build()]})})
+    # A non-empty lock without declared: optional integrations go unchecked.
+    m = manifests(%{"recon" => manifest(%{"2.5.6" => [build(deps: @tel)]})})
     assert {:ok, %{warnings: [warning]}} = Plan.build([{:recon, nil}], ctx(), manifest: m)
     assert warning =~ "recon 2.5.6: build predates declared"
+  end
+
+  @tag timeout: 5_000
+  test "two packages that need each other are both planned, each once" do
+    m =
+      manifests(%{
+        "ping" =>
+          manifest(%{
+            "1.0.0" => [
+              build(
+                run_id: "ping",
+                checksum: "pingsum",
+                deps: %{"pong" => %{"version" => "2.0.0", "checksum" => "pongsum"}}
+              )
+            ]
+          }),
+        "pong" =>
+          manifest(%{
+            "2.0.0" => [
+              build(
+                run_id: "pong",
+                checksum: "pongsum",
+                deps: %{"ping" => %{"version" => "1.0.0", "checksum" => "pingsum"}}
+              )
+            ]
+          })
+      })
+
+    ctx = ctx(app_spec: spec(%{"ping" => [:kernel, :pong], "pong" => [:kernel, :ping]}))
+    assert {:ok, plan} = Plan.build([{:ping, nil}], ctx, manifest: m)
+
+    assert [{:pong, :dependency}, {:ping, :requested}] =
+             Enum.map(plan.installs, &{&1.app, &1.role})
   end
 end

@@ -20,8 +20,6 @@ defmodule ElixirPrecompiled.Device.Plan do
              | {:miss, String.t()}
              | {:fail, String.t()})
 
-  @checksum_differs "package checksum differs from the lock of the build that needs it"
-
   @spec build([request()], Rules.ctx(), keyword()) ::
           {:ok, Precompiled.Plan.t()} | {:error, term()}
   def build(requests, ctx, opts) do
@@ -104,7 +102,7 @@ defmodule ElixirPrecompiled.Device.Plan do
             {:error, {:conflict, app, Enum.sort([install.version, want])}}
 
           pin && pin.checksum != install.build["build"]["package_checksum"] ->
-            {:error, {:no_build, Atom.to_string(app), @checksum_differs}}
+            {:error, {:no_build, Atom.to_string(app), Rules.checksum_differs()}}
 
           true ->
             {:chosen, promote(state, app, role)}
