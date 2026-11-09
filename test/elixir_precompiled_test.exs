@@ -278,4 +278,15 @@ defmodule ElixirPrecompiledTest do
     assert out =~ "removed 1 installed build"
     refute File.exists?(Path.join(lib, "jason"))
   end
+
+  describe "the application" do
+    test "is 0.2.0 and needs only crypto and logger to start" do
+      Application.load(:elixir_precompiled)
+      assert Application.spec(:elixir_precompiled, :vsn) == ~c"0.2.0"
+      apps = Application.spec(:elixir_precompiled, :applications)
+      assert :crypto in apps and :logger in apps
+      optional = Application.spec(:elixir_precompiled, :optional_applications)
+      assert Enum.sort(optional) == [:inets, :public_key, :ssl]
+    end
+  end
 end

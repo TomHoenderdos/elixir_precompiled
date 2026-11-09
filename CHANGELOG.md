@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.0 - unreleased
+
+* `Precompiled.install/1,2` installs signed precompiled builds on a running
+  Nerves device, without Mix: see the README's "On a device" section.
+* `:inets`, `:ssl` and `:public_key` are optional applications; `:crypto`
+  stays required.
+
 ## v0.1.0 - unreleased
 
 * Any Mix project can use it: `mix precompiled.install`, reached through a
