@@ -1,0 +1,142 @@
+# SPDX-FileCopyrightText: 2026 Tom Hoenderdos
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+defmodule DeviceQemuTest do
+  use ExUnit.Case, async: false
+  @moduletag :qemu
+  @moduletag timeout: 1_800_000
+
+  # ssh -p 10022 to the qemu guest; nerves_ssh evaluates the command as Elixir.
+  defp dev(expr), do: DeviceQemu.dev!(expr)
+
+  setup_all do
+    DeviceQemu.boot!(offline: false, fresh: true)
+    on_exit(&DeviceQemu.stop!/0)
+    :ok
+  end
+
+  test "the release has no Mix, and the device layer is on it" do
+    assert dev("IO.inspect(:code.which(Mix))") =~ ":non_existing"
+    assert dev("IO.inspect(Code.ensure_loaded?(Precompiled))") =~ "true"
+    assert dev("IO.inspect(Application.get_all_env(:elixir_precompiled))") =~ "[]"
+    # DEVICE_TEST_MODE=embedded for a firmware built with EMBEDDED=1.
+    mode = System.get_env("DEVICE_TEST_MODE", "interactive")
+    assert dev("IO.inspect(:code.get_mode())") =~ ":#{mode}"
+  end
+
+  test "recon (pure_elixir) installs and runs" do
+    DeviceQemu.wait_clock!()
+
+    assert dev("IO.inspect(Precompiled.install(:recon))") =~
+             "{:ok, [%Precompiled.Installed{app: :recon"
+
+    assert dev("IO.inspect(:recon.info(self(), :memory))") =~ "{:memory,"
+  end
+
+  test "circuits_gpio (NIF, system build) installs and its NIF is loaded" do
+    DeviceQemu.wait_clock!()
+    out = dev("IO.inspect(Precompiled.install({:circuits_gpio, \"2.3.1\"}))")
+    assert out =~ "target: \"nerves_system_qemu_aarch64\""
+    assert dev("IO.inspect(Circuits.GPIO.backend_info())") =~ "name: Circuits.GPIO.CDev"
+  end
+
+  test "dry run against production writes a report and installs nothing (production smoke)" do
+    DeviceQemu.wait_clock!()
+
+    assert dev(
+             "IO.inspect(Precompiled.install(:telemetry, dry_run: true, report: \"/data/report.json\"))"
+           ) =~ "%Precompiled.Plan{"
+
+    assert dev("IO.inspect(File.exists?(\"/data/report.json\"))") =~ "true"
+    assert dev("IO.inspect(File.exists?(\"/data/precompiled/telemetry-1.3.0\"))") =~ "false"
+  end
+
+  test "negatives: already present, noexec /data, clock unsynchronized" do
+    assert dev("IO.inspect(Precompiled.install(:nerves_runtime))") =~
+             "{:error, {:already_present, :nerves_runtime,"
+
+    # Active and cached apps never reach the noexec check: take circuits_gpio
+    # out of the VM and the store first.
+    assert dev("IO.inspect(Precompiled.uninstall(:circuits_gpio, force: true, remove: true))") =~
+             ":ok"
+
+    dev(":os.cmd(~c\"mount -o remount,noexec /root\")")
+
+    try do
+      assert dev("IO.inspect(Precompiled.install({:circuits_gpio, \"2.3.1\"}))") =~
+               "{:error, {:noexec, \"/root\"}}"
+    after
+      dev(":os.cmd(~c\"mount -o remount,exec /root\")")
+    end
+
+    assert dev("IO.inspect(Precompiled.install(:recon, clock_synchronized?: fn -> false end))") =~
+             "{:error, {:clock_unsynchronized,"
+
+    # Back on an exec mount, the same install goes through.
+    DeviceQemu.wait_clock!()
+
+    assert dev("IO.inspect(Precompiled.install({:circuits_gpio, \"2.3.1\"}))") =~
+             "{:ok, [%Precompiled.Installed{app: :circuits_gpio"
+  end
+
+  test "reboot: nothing loads at boot; installing again loads from the cache without downloading" do
+    DeviceQemu.wait_clock!()
+    dev("Precompiled.install(:recon)")
+    assert dev("IO.inspect(Precompiled.uninstall(:circuits_gpio, force: true))") =~ ":ok"
+    DeviceQemu.reboot!()
+    assert dev("IO.inspect(:code.which(:recon))") =~ ":non_existing"
+
+    assert dev("IO.inspect(Enum.map(Precompiled.list(), &{&1.app, &1.loaded?}))") =~
+             "recon: false"
+
+    DeviceQemu.wait_clock!()
+    assert dev("IO.inspect(Precompiled.install(:recon))") =~ "from_cache?: true"
+    assert dev("IO.inspect(:recon.info(self(), :memory))") =~ "{:memory,"
+  end
+
+  test "a cached file changed on /data is replaced by a fresh download" do
+    DeviceQemu.wait_clock!()
+    DeviceQemu.reboot!()
+
+    dev(
+      ~s|[b \| _] = Path.wildcard("/data/precompiled/recon-*/ebin/*.beam"); File.write!(b, "evil")|
+    )
+
+    DeviceQemu.wait_clock!()
+    assert dev("IO.inspect(Precompiled.install(:recon))") =~ "from_cache?: false"
+    assert dev("IO.inspect(:recon.info(self(), :memory))") =~ "{:memory,"
+  end
+
+  test "clean/0 empties the cache except what is loaded" do
+    assert dev("IO.inspect(Precompiled.clean())") =~ "{:ok, %{"
+
+    assert dev("IO.inspect(Enum.map(Precompiled.list(), &{&1.app, &1.loaded?}))") =~
+             "recon: true"
+  end
+
+  test "offline: a bundle on /data with the network down, and a tampered file" do
+    bundle = DeviceQemu.make_bundle!(["recon"])
+    DeviceQemu.reboot!(offline: true)
+    # Nothing is loaded after the reboot: clean/0 empties the cache, so the
+    # bundle install below cannot be a cache hit.
+    dev("Precompiled.clean()")
+    DeviceQemu.copy_dir!(bundle, "/data/bundle")
+
+    # Restarted without a network, the guest restores its clock from a file
+    # but NTP never confirms it: an online install refuses before any request.
+    assert dev("IO.inspect(Precompiled.install(:recon))") =~ "{:error, {:clock_unsynchronized"
+
+    out = dev("IO.inspect(Precompiled.install(:recon, source: \"file:///data/bundle\"))")
+    assert out =~ "{:ok, [%Precompiled.Installed{app: :recon"
+    assert out =~ "from_cache?: false"
+
+    # remove: true, or the next install is a cache hit that never reads the
+    # tampered file.
+    dev("Precompiled.uninstall(:recon, force: true, remove: true)")
+    DeviceQemu.tamper_one_file!("/data/bundle")
+
+    assert dev("IO.inspect(Precompiled.install(:recon, source: \"file:///data/bundle\"))") =~
+             "{:error, {:fetch, \"recon\", \"sha256 mismatch"
+  end
+end

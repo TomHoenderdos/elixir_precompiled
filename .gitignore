@@ -7,3 +7,8 @@
 erl_crash.dump
 *.ez
 nerves_precompiled-*.tar
+/integration/device/_build/
+/integration/device/deps/
+/integration/device/_qemu/
+/integration/device/fixture/_build/
+/integration/device/fixture/deps/
