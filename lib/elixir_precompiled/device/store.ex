@@ -404,14 +404,14 @@ defmodule ElixirPrecompiled.Device.Store do
   end
 
   @doc false
-  # Everything under the store but .trust.
+  # Everything under the store but .trust and the marker.
   @spec used_bytes(Path.t()) :: non_neg_integer()
   def used_bytes(dir) do
     dir = Path.expand(dir)
 
     dir
     |> ls()
-    |> Enum.reject(&(&1 == @trust))
+    |> Enum.reject(&(&1 in [@trust, @marker]))
     |> Enum.reduce(0, &(&2 + bytes(Path.join(dir, &1))))
   end
 
@@ -437,6 +437,18 @@ defmodule ElixirPrecompiled.Device.Store do
   @spec make_room(Path.t(), non_neg_integer(), non_neg_integer(), map(), [atom()]) ::
           :ok | {:error, {:too_big, non_neg_integer(), non_neg_integer()}}
   def make_room(dir, plan_bytes, max_bytes, active, keep) do
+    with {:ok, victims} <- room(dir, plan_bytes, max_bytes, active, keep) do
+      evict(dir, victims)
+    end
+  end
+
+  @doc false
+  # make_room/5 without the eviction: the entries it would evict, least
+  # recently used first, so a caller can evict them only once everything
+  # else it needs has verified (evict/2).
+  @spec room(Path.t(), non_neg_integer(), non_neg_integer(), map(), [atom()]) ::
+          {:ok, [Path.t()]} | {:error, {:too_big, non_neg_integer(), non_neg_integer()}}
+  def room(dir, plan_bytes, max_bytes, active, keep) do
     dir = Path.expand(dir)
     needed = 2 * plan_bytes
     free = max_bytes - used_bytes(dir)
@@ -452,15 +464,30 @@ defmodule ElixirPrecompiled.Device.Store do
         []
       end
 
-    evict(dir, candidates, free, needed)
+    victims(candidates, free, needed, [])
   end
 
-  defp evict(_dir, _candidates, free, needed) when free >= needed, do: :ok
-  defp evict(_dir, [], free, needed), do: {:error, {:too_big, needed, max(free, 0)}}
+  defp victims(_candidates, free, needed, acc) when free >= needed, do: {:ok, Enum.reverse(acc)}
+  defp victims([], free, needed, _acc), do: {:error, {:too_big, needed, max(free, 0)}}
 
-  defp evict(dir, [e | rest], free, needed) do
-    discard(dir, e.path)
-    evict(dir, rest, free + e.bytes, needed)
+  defp victims([e | rest], free, needed, acc),
+    do: victims(rest, free + e.bytes, needed, [e.path | acc])
+
+  @doc false
+  # Discards each entry room/5 chose, unless it has come into use since.
+  @spec evict(Path.t(), [Path.t()]) :: :ok
+  def evict(dir, paths) do
+    dir = Path.expand(dir)
+    in_use = in_use()
+
+    if store?(dir) do
+      for path <- paths,
+          Path.dirname(path) == dir,
+          not in_use?(path, in_use),
+          do: discard(dir, path)
+    end
+
+    :ok
   end
 
   defp last_used(%{provenance: %{"last_used" => t}}) when is_integer(t), do: t
@@ -603,9 +630,11 @@ defmodule ElixirPrecompiled.Device.Store do
   defp under?(path, mountpoint),
     do: path == mountpoint or String.starts_with?(path, mountpoint <> "/")
 
+  @doc false
   # Resolves symlinks one component at a time; a missing component and
   # everything after it are kept as written.
-  defp realpath(path), do: resolve(Path.split(path), "/", 0)
+  @spec realpath(Path.t()) :: Path.t()
+  def realpath(path), do: resolve(Path.split(path), "/", 0)
 
   defp resolve([], acc, _n), do: acc
   defp resolve(parts, acc, n) when n > 40, do: Path.join([acc | parts])

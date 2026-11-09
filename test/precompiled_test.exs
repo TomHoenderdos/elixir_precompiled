@@ -1,0 +1,852 @@
+# SPDX-FileCopyrightText: 2026 Tom Hoenderdos
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+defmodule PrecompiledTest do
+  # Installs load into this VM, so every test removes what it loaded on exit.
+  use ExUnit.Case, async: false
+  import ElixirPrecompiled.DeviceFixture
+  alias ElixirPrecompiled.Device.Source
+  alias ElixirPrecompiled.Device.Store
+  alias ElixirPrecompiled.Fixture
+
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: dir} do
+    start_supervised!(ElixirPrecompiled.TestServer)
+    fixture = Fixture.new(dir, offline_key: true)
+
+    host_env =
+      env(
+        system: nil,
+        otp: System.otp_release(),
+        elixir: System.version(),
+        cpu: to_string(:erlang.system_info(:system_architecture))
+      )
+
+    opts = [
+      source: Fixture.base_url(),
+      root: fixture.root_path,
+      dir: Path.join(dir, "store"),
+      env: host_env,
+      quiet: true
+    ]
+
+    on_exit(fn -> unload_all(opts) end)
+    %{fixture: fixture, opts: opts}
+  end
+
+  defp unload_all(opts) do
+    for %{loaded?: true, app: app} <- Precompiled.list(opts),
+        do: Precompiled.uninstall(app, opts ++ [force: true, cascade: true])
+  end
+
+  defp files_requested() do
+    for %{path: "/precompiled/files/" <> sha} <- Fixture.requests(), do: sha
+  end
+
+  defp app_sha(build),
+    do: Enum.find(build["ebin"], &String.ends_with?(&1["path"], ".app"))["sha256"]
+
+  # The code path, the loaded apps and every name in the store but the
+  # trust state and the (empty) staging dir.
+  defp snapshot(opts) do
+    dir = opts[:dir]
+
+    tree =
+      for p <- Path.wildcard(Path.join(dir, "**"), match_dot: true),
+          rel = Path.relative_to(p, dir),
+          not String.starts_with?(rel, ".trust"),
+          rel != ".staging",
+          do: rel
+
+    {:code.get_path(), Enum.sort(for({a, _, _} <- Application.loaded_applications(), do: a)),
+     Enum.sort(tree)}
+  end
+
+  defp put_device_env(kw) do
+    Application.put_env(:elixir_precompiled, :device, kw)
+    on_exit(fn -> Application.delete_env(:elixir_precompiled, :device) end)
+  end
+
+  defp new_key() do
+    {public, private} = :crypto.generate_key(:eddsa, :ed25519)
+    %{keyid: Fixture.sha(public), public: public, private: private}
+  end
+
+  describe "switches and sources" do
+    test "available by default; only the firmware's kill switch turns it off", %{opts: opts} do
+      put_device_env(enabled: false)
+      assert Precompiled.install(:demo_a, opts) == {:error, :disabled}
+      assert Fixture.requests() == []
+    end
+
+    test "the default source is the official API, checked against the shipped root" do
+      assert {:ok,
+              %{
+                source: "https://compatibility.nerves-project.org/api/precompiled",
+                root_path: root
+              }} =
+               Source.config(dir: System.tmp_dir!())
+
+      assert root == Path.join(ElixirPrecompiled.Config.priv_dir(), "precompiled/root.json")
+    end
+
+    test "another source must be named: config or option, never guessed", %{opts: opts} do
+      put_device_env(source: "https://mirror.example/api/precompiled")
+
+      assert {:ok, %{source: "https://mirror.example/api/precompiled"}} =
+               Source.config(dir: opts[:dir])
+
+      assert {:error, {:bad_source, "ftp://x"}} =
+               Source.config(source: "ftp://x", dir: opts[:dir])
+
+      assert {:error, {:bad_source, "http://example.com"}} =
+               Source.config(source: "http://example.com")
+
+      assert {:error, {:bad_source, "file://relative"}} = Source.config(source: "file://relative")
+    end
+
+    test "a file:// source reads the disk only: never offline-gated, no content origins", %{
+      tmp_dir: dir
+    } do
+      bundle = Path.join(dir, "b")
+      File.mkdir_p!(bundle)
+      File.ln_s!(bundle, Path.join(dir, "link"))
+
+      assert {:ok, config} =
+               Source.config(source: "file://" <> Path.join(dir, "link") <> "/", dir: dir)
+
+      assert config.source == "file://" <> bundle
+      assert %{bundle: true, offline: false, cache: false, content: [], by_sha: false} = config
+      assert config.state_key == "device"
+      assert config.home == Path.join(dir, ".trust")
+      assert is_integer(config.deadline_at)
+    end
+
+    test "persist: and deps_identity: are not options", %{opts: opts} do
+      assert Precompiled.install(:demo_a, opts ++ [persist: true]) ==
+               {:error, {:bad_option, :persist}}
+
+      assert Precompiled.install(:demo_a, opts ++ [deps_identity: :version]) ==
+               {:error, {:bad_option, :deps_identity}}
+
+      assert Fixture.requests() == []
+    end
+
+    test "bad input never raises" do
+      assert {:error, {:bad_request, "nope"}} = Precompiled.install("nope", [])
+      assert {:error, {:bad_request, {:recon, :x}}} = Precompiled.install({:recon, :x}, [])
+      assert {:error, {:bad_request, [1]}} = Precompiled.install([1], [])
+      assert {:error, {:bad_request, "x"}} = Precompiled.uninstall("x", [])
+    end
+
+    test "a missing network app is named before any request" do
+      assert Precompiled.missing_app([:crypto, :no_such_app_here]) ==
+               {:error, {:missing_app, :no_such_app_here}}
+
+      assert Precompiled.missing_app([:crypto]) == :ok
+    end
+
+    test "an unsynchronized clock refuses an online install before any request", %{opts: opts} do
+      assert {:error, {:clock_unsynchronized, %DateTime{}}} =
+               Precompiled.install(:demo_a, opts ++ [clock_synchronized?: fn -> false end])
+
+      assert Fixture.requests() == []
+    end
+
+    test "an unsafe store is refused before any request", %{opts: opts} do
+      File.mkdir_p!(opts[:dir])
+      File.chmod!(opts[:dir], 0o777)
+      assert {:error, {:unsafe_store, :writable_by_others}} = Precompiled.install(:demo_a, opts)
+      assert Fixture.requests() == []
+    end
+
+    test "a busy store answers :busy after bounded retries", %{opts: opts} do
+      test = self()
+
+      holder =
+        spawn(fn ->
+          Store.with_lock(fn ->
+            send(test, :held)
+            receive do: (:release -> :ok)
+          end)
+        end)
+
+      assert_receive :held
+      assert Precompiled.install(:demo_a, opts ++ [lock_retries: 0]) == {:error, :busy}
+      assert Precompiled.uninstall(:demo_a, opts ++ [lock_retries: 0]) == {:error, :busy}
+      send(holder, :release)
+    end
+  end
+
+  describe "online installs" do
+    test "installs, loads and starts a pure app; a second call is idempotent", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_a, "1.0.0")
+      Fixture.publish(f, %{"demo_a" => manifest(%{"1.0.0" => [build]})})
+
+      assert {:ok,
+              [
+                %Precompiled.Installed{
+                  app: :demo_a,
+                  version: "1.0.0",
+                  role: :requested,
+                  from_cache?: false
+                } = i
+              ]} =
+               Precompiled.install(:demo_a, opts)
+
+      assert i.loaded? and i.batch_sequence == 1 and i.target == "pure_elixir"
+      assert i.path == Path.join(opts[:dir], "demo_a-1.0.0")
+      assert apply(DemoA, :hello, []) == :hello
+      assert {:demo_a, _, _} = List.keyfind(Application.started_applications(), :demo_a, 0)
+
+      assert [
+               %Precompiled.Installed{
+                 app: :demo_a,
+                 loaded?: true,
+                 role: :requested,
+                 batch_sequence: 1
+               }
+             ] =
+               Precompiled.list(opts)
+
+      Fixture.clear_requests()
+
+      loaded = %{
+        opts[:env]
+        | present: Map.put(opts[:env].present, :demo_a, %{vsn: "1.0.0", loaded?: true})
+      }
+
+      assert {:ok, []} = Precompiled.install(:demo_a, Keyword.put(opts, :env, loaded))
+      refute Enum.any?(Fixture.requests(), &String.contains?(&1.path, "/files/"))
+      assert :ok = Precompiled.uninstall(:demo_a, opts)
+      assert :code.is_loaded(DemoA) == false
+      refute List.keymember?(Application.loaded_applications(), :demo_a, 0)
+      assert [%{app: :demo_a, loaded?: false}] = Precompiled.list(opts)
+    end
+
+    test "an app the firmware has is already_present, before any request", %{opts: opts} do
+      assert {:error, {:already_present, :logger, _}} = Precompiled.install(:logger, opts)
+      assert Fixture.requests() == []
+    end
+
+    test "dry_run fetches manifests and .app files only, writes the report, installs nothing", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_b, "1.0.0")
+      Fixture.publish(f, %{"demo_b" => manifest(%{"1.0.0" => [build]})})
+      report = Path.join(dir, "report.json")
+      File.mkdir_p!(Path.join(opts[:dir], "junk-1.0.0"))
+      :ok = Store.ensure_root(opts[:dir])
+      before = snapshot(opts)
+
+      assert {:ok, %Precompiled.Plan{installs: [%{app: :demo_b}]}} =
+               Precompiled.install(:demo_b, opts ++ [dry_run: true, report: report])
+
+      assert files_requested() == [app_sha(build)]
+
+      assert %{
+               "format" => 1,
+               "env" => %{"otp" => _},
+               "plan" => %{"installs" => [%{"app" => "demo_b"}]}
+             } =
+               report |> File.read!() |> :json.decode()
+
+      refute File.exists?(Path.join([opts[:dir], "demo_b-1.0.0"]))
+      # No sweep on a dry run: the stray dir is still there.
+      assert snapshot(opts) == before
+    end
+
+    test "a real call sweeps the store under the lock", %{fixture: f, opts: opts, tmp_dir: dir} do
+      build = publish_app(f, dir, :demo_sw, "1.0.0")
+      Fixture.publish(f, %{"demo_sw" => manifest(%{"1.0.0" => [build]})})
+      :ok = Store.ensure_root(opts[:dir])
+      File.mkdir_p!(Path.join(opts[:dir], "junk-1.0.0"))
+      assert {:ok, [_]} = Precompiled.install(:demo_sw, opts)
+      refute File.exists?(Path.join(opts[:dir], "junk-1.0.0"))
+    end
+
+    test "a closure: the absent dependency is installed first; uninstall respects dependants", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      dep = publish_app(f, dir, :demo_dep, "1.0.0")
+      top = publish_app(f, dir, :demo_top, "1.0.0", deps: [demo_dep: dep])
+
+      Fixture.publish(f, %{
+        "demo_dep" => manifest(%{"1.0.0" => [dep]}),
+        "demo_top" => manifest(%{"1.0.0" => [top]})
+      })
+
+      assert {:error, {:needs, [{:demo_dep, "1.0.0"}]}} =
+               Precompiled.install(:demo_top, opts ++ [closure: false])
+
+      assert {:ok, [%{app: :demo_dep, role: :dependency}, %{app: :demo_top, role: :requested}]} =
+               Precompiled.install(:demo_top, opts)
+
+      assert {:error, {:in_use_by, [:demo_top]}} = Precompiled.uninstall(:demo_dep, opts)
+      assert :code.is_loaded(DemoDep) != false
+      assert :ok = Precompiled.uninstall(:demo_dep, opts ++ [cascade: true])
+      assert :code.is_loaded(DemoDep) == false
+      assert :code.is_loaded(DemoTop) == false
+    end
+
+    test "uninstall refuses while another process runs the app's code, and says what changed", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      source = """
+      defmodule DemoBusy do
+        def wait, do: receive(do: (:stop -> :ok))
+      end
+      """
+
+      build = publish_app(f, dir, :demo_busy, "1.0.0", source: source)
+      Fixture.publish(f, %{"demo_busy" => manifest(%{"1.0.0" => [build]})})
+      assert {:ok, [_]} = Precompiled.install(:demo_busy, opts)
+      pid = spawn(fn -> apply(DemoBusy, :wait, []) end)
+      Process.sleep(50)
+
+      out =
+        ExUnit.CaptureIO.capture_io(fn ->
+          send(
+            self(),
+            {:result, Precompiled.uninstall(:demo_busy, Keyword.put(opts, :quiet, false))}
+          )
+        end)
+
+      assert_received {:result, {:error, {:in_use, DemoBusy, [^pid]}}}
+      assert out =~ "unchanged; retry with force: true"
+      assert List.keymember?(Application.started_applications(), :demo_busy, 0)
+      send(pid, :stop)
+      assert :ok = Precompiled.uninstall(:demo_busy, opts ++ [force: true])
+    end
+
+    test "uninstall of an app that is not ours", %{opts: opts} do
+      assert {:error, {:not_installed, :logger}} = Precompiled.uninstall(:logger, opts)
+    end
+
+    test "uninstall remove: true also drops the cache entry", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_rm, "1.0.0")
+      Fixture.publish(f, %{"demo_rm" => manifest(%{"1.0.0" => [build]})})
+      assert {:ok, [_]} = Precompiled.install(:demo_rm, opts)
+      assert :ok = Precompiled.uninstall(:demo_rm, opts ++ [remove: true])
+      refute File.exists?(Path.join(opts[:dir], "demo_rm-1.0.0"))
+      assert Precompiled.list(opts) == []
+    end
+
+    test "an on_load failure of the second app removes the first too", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      dep = publish_app(f, dir, :demo_ok, "1.0.0")
+      bad = publish_app(f, dir, :demo_fail, "1.0.0", deps: [demo_ok: dep], on_load_fails: true)
+
+      Fixture.publish(f, %{
+        "demo_ok" => manifest(%{"1.0.0" => [dep]}),
+        "demo_fail" => manifest(%{"1.0.0" => [bad]})
+      })
+
+      path = :code.get_path()
+      loaded = Application.loaded_applications()
+
+      assert {:error, {:on_load_failed, DemoFail.Nif, _}} = Precompiled.install(:demo_fail, opts)
+      assert :code.is_loaded(DemoOk) == false
+      assert :code.is_loaded(DemoFail) == false
+      assert Enum.all?(Precompiled.list(opts), &(not &1.loaded?))
+      assert :code.get_path() == path
+      assert Enum.sort(Application.loaded_applications()) == Enum.sort(loaded)
+    end
+
+    test "a start failure rolls the whole call back", %{fixture: f, opts: opts, tmp_dir: dir} do
+      source = """
+      defmodule DemoSf do
+        use Application
+        def start(_type, _args), do: {:error, :nope}
+      end
+      """
+
+      build = publish_app(f, dir, :demo_sf, "1.0.0", source: source, mod: {DemoSf, []})
+      Fixture.publish(f, %{"demo_sf" => manifest(%{"1.0.0" => [build]})})
+      path = :code.get_path()
+
+      assert {:error, {:start_failed, :demo_sf, _}} = Precompiled.install(:demo_sf, opts)
+      assert :code.is_loaded(DemoSf) == false
+      assert :code.get_path() == path
+      refute List.keymember?(Application.loaded_applications(), :demo_sf, 0)
+    end
+
+    test "a file with the wrong bytes fails the install and leaves the device as it was", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_c, "1.0.0")
+      [beam | _] = Enum.filter(build["ebin"], &String.ends_with?(&1["path"], ".beam"))
+      Fixture.put_in_map(:files, beam["sha256"], "tampered")
+      Fixture.publish(f, %{"demo_c" => manifest(%{"1.0.0" => [build]})})
+      :ok = Store.ensure_root(opts[:dir])
+      before = snapshot(opts)
+
+      assert {:error, {:fetch, "demo_c", "size mismatch" <> _}} =
+               Precompiled.install(:demo_c, opts)
+
+      assert File.ls!(Path.join(opts[:dir], ".staging")) == []
+      assert snapshot(opts) == before
+    end
+
+    test "every install stages into a fresh dir, never one left behind", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_l2, "1.0.0")
+      Fixture.publish(f, %{"demo_l2" => manifest(%{"1.0.0" => [build]})})
+      :ok = Store.ensure_root(opts[:dir])
+      planted = Path.join([opts[:dir], ".staging", "demo_l2-1.0.0"])
+      File.mkdir_p!(Path.join(planted, "ebin"))
+      File.write!(Path.join([planted, "ebin", "Elixir.Evil.beam"]), "x")
+
+      assert {:ok, [_]} = Precompiled.install(:demo_l2, opts)
+      on_disk = File.ls!(Path.join([opts[:dir], "demo_l2-1.0.0", "ebin"])) |> Enum.sort()
+      assert on_disk == Enum.sort(for e <- build["ebin"], do: Path.basename(e["path"]))
+    end
+
+    test "an ELF built for another CPU is refused before the rename", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      wrong = if String.starts_with?(opts[:env].cpu, "aarch64"), do: :x86_64, else: :aarch64
+
+      build =
+        publish_app(f, dir, :demo_so, "1.0.0", priv: [{"priv/demo.so", elf_header(64, wrong)}])
+
+      Fixture.publish(f, %{"demo_so" => manifest(%{"1.0.0" => [build]})})
+      :ok = Store.ensure_root(opts[:dir])
+      before = snapshot(opts)
+
+      assert {:error, {:elf, "priv/demo.so is " <> _}} = Precompiled.install(:demo_so, opts)
+      assert snapshot(opts) == before
+    end
+
+    test "a noexec store refuses a plan with a .so before any download", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build =
+        publish_app(f, dir, :demo_so2, "1.0.0",
+          priv: [{"priv/demo.so", elf_header(64, :aarch64)}]
+        )
+
+      Fixture.publish(f, %{"demo_so2" => manifest(%{"1.0.0" => [build]})})
+      env = %{opts[:env] | mounts: [{"/", ["rw", "noexec"]}]}
+
+      assert {:error, {:noexec, "/"}} =
+               Precompiled.install(:demo_so2, Keyword.put(opts, :env, env))
+
+      assert files_requested() == [app_sha(build)]
+    end
+
+    test "too big for max_bytes is refused before any download", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_d, "1.0.0")
+      Fixture.publish(f, %{"demo_d" => manifest(%{"1.0.0" => [build]})})
+      assert {:error, {:too_big, _, 10}} = Precompiled.install(:demo_d, opts ++ [max_bytes: 10])
+      assert files_requested() == [app_sha(build)]
+    end
+
+    test "eviction for room waits until everything verified", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      old = publish_app(f, dir, :demo_old, "1.0.0")
+      new = publish_app(f, dir, :demo_new, "1.0.0")
+      [beam | _] = Enum.filter(new["ebin"], &String.ends_with?(&1["path"], ".beam"))
+
+      Fixture.publish(f, %{
+        "demo_old" => manifest(%{"1.0.0" => [old]}),
+        "demo_new" => manifest(%{"1.0.0" => [new]})
+      })
+
+      assert {:ok, [_]} = Precompiled.install(:demo_old, opts)
+      assert :ok = Precompiled.uninstall(:demo_old, opts)
+      used = Store.used_bytes(opts[:dir])
+      max = used + 2 * Enum.sum(for e <- new["ebin"], do: e["size"]) - 1
+      Fixture.put_in_map(:files, beam["sha256"], "tampered")
+      before = snapshot(opts)
+
+      assert {:error, {:fetch, "demo_new", _}} =
+               Precompiled.install(:demo_new, opts ++ [max_bytes: max])
+
+      assert snapshot(opts) == before
+      assert File.dir?(Path.join(opts[:dir], "demo_old-1.0.0"))
+    end
+
+    test "allowlist covers closure members", %{fixture: f, opts: opts, tmp_dir: dir} do
+      dep = publish_app(f, dir, :demo_x, "1.0.0")
+      top = publish_app(f, dir, :demo_y, "1.0.0", deps: [demo_x: dep])
+
+      Fixture.publish(f, %{
+        "demo_x" => manifest(%{"1.0.0" => [dep]}),
+        "demo_y" => manifest(%{"1.0.0" => [top]})
+      })
+
+      put_device_env(allow: [:demo_y])
+      assert {:error, {:not_allowed, :demo_x}} = Precompiled.install(:demo_y, opts)
+    end
+
+    test "the .app files read while planning are bounded and fetched once each", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      builds =
+        for n <- 1..20 do
+          publish_app(f, dir, :demo_many, "1.0.0",
+            apps: [:not_in_this_firmware],
+            description: ~c"d#{n}"
+          )
+        end
+
+      Fixture.publish(f, %{"demo_many" => manifest(%{"1.0.0" => builds ++ builds})})
+
+      assert {:error, {:no_build, "demo_many", _}} =
+               Precompiled.install(:demo_many, opts ++ [max_closure: 2])
+
+      requested = files_requested()
+      assert length(requested) <= 8
+      assert requested == Enum.uniq(requested)
+    end
+
+    test "idempotence and concurrency: two concurrent calls serialize", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_cc, "1.0.0")
+      Fixture.publish(f, %{"demo_cc" => manifest(%{"1.0.0" => [build]})})
+
+      results =
+        Task.await_many(
+          [
+            Task.async(fn -> Precompiled.install(:demo_cc, opts) end),
+            Task.async(fn -> Precompiled.install(:demo_cc, opts) end)
+          ],
+          30_000
+        )
+
+      assert Enum.sort(Enum.map(results, &elem(&1, 0))) == [:ok, :ok]
+      assert [[], [%{app: :demo_cc}]] = results |> Enum.map(&elem(&1, 1)) |> Enum.sort()
+      assert [%{app: :demo_cc, loaded?: true}] = Precompiled.list(opts)
+    end
+
+    test "a store dir spelled another way still finds what it loaded", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_m2, "1.0.0")
+      Fixture.publish(f, %{"demo_m2" => manifest(%{"1.0.0" => [build]})})
+      odd = Keyword.put(opts, :dir, Path.join([dir, "x", "..", "store"]) <> "/")
+      File.mkdir_p!(Path.join(dir, "x"))
+
+      assert {:ok, [_]} = Precompiled.install(:demo_m2, odd)
+      assert [%{loaded?: true}] = Precompiled.list(opts)
+      assert {:ok, []} = Precompiled.install(:demo_m2, opts)
+      assert Store.remove(opts[:dir], :demo_m2) == {:error, {:in_use, :demo_m2}}
+    end
+  end
+
+  describe "the activation reasons" do
+    test "map to the documented reasons" do
+      assert Precompiled.reason({:app_load_failed, :a, :bad}) ==
+               {:start_failed, :a, {:load, :bad}}
+
+      assert Precompiled.reason({:fetch, :a, "sha256 mismatch"}) ==
+               {:fetch, "a", "sha256 mismatch"}
+
+      assert {:internal, "code path " <> _} =
+               Precompiled.reason({:code_path, "/x/ebin", :bad_directory})
+
+      assert {:internal, _} = Precompiled.reason({:bad_option, :files})
+
+      assert Precompiled.reason({:already_present, :a, "1.0.0"}) ==
+               {:already_present, :a, "1.0.0"}
+
+      assert Precompiled.reason({:internal, "boom"}) == {:internal, "boom"}
+    end
+  end
+
+  describe "app_spec_fun" do
+    test "a cached .app is used only when its bytes match the build", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_ap, "1.0.0")
+      Fixture.publish(f, %{"demo_ap" => manifest(%{"1.0.0" => [build]})})
+      assert {:ok, [_]} = Precompiled.install(:demo_ap, opts ++ [start: false])
+      {:ok, config} = Source.config(opts)
+      Fixture.clear_requests()
+
+      assert {:ok, props} = Source.app_spec_fun(config).(build)
+      assert props[:vsn] == ~c"1.0.0"
+      assert files_requested() == []
+
+      app = Path.join([opts[:dir], "demo_ap-1.0.0", "ebin", "demo_ap.app"])
+      tampered = String.replace(File.read!(app), "kernel", "kernal")
+      File.write!(app, tampered)
+
+      assert {:ok, props} = Source.app_spec_fun(config).(build)
+      assert :kernel in props[:applications]
+      assert files_requested() == [app_sha(build)]
+    end
+
+    test "an .app whose bytes are not the build's is refused", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_bad_app, "1.0.0")
+      Fixture.put_in_map(:files, app_sha(build), "{application, demo_bad_app, []}.")
+      {:ok, config} = Source.config(opts)
+      assert {:fail, why} = Source.app_spec_fun(config).(build)
+      assert why =~ "mismatch"
+    end
+  end
+
+  describe "file:// bundles" do
+    test "a bundle with offline.json installs with no clock and no network", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_off, "1.0.0")
+
+      bundle =
+        write_bundle!(f, dir, %{"demo_off" => manifest(%{"1.0.0" => [build]})}, offline: true)
+
+      opts =
+        Keyword.merge(opts, source: "file://" <> bundle, clock_synchronized?: fn -> false end)
+
+      assert {:ok, [%{app: :demo_off, batch_sequence: nil}]} =
+               Precompiled.install(:demo_off, opts)
+
+      assert Fixture.requests() == []
+      assert [%{app: :demo_off, batch_sequence: nil}] = Precompiled.list(opts)
+
+      prov =
+        Path.join([opts[:dir], "demo_off-1.0.0", ".precompiled.json"])
+        |> File.read!()
+        |> :json.decode()
+
+      assert prov["trust"] == "offline" and prov["offline_sequence"] == 1
+      refute Map.has_key?(prov, "batch_sequence")
+    end
+
+    test "content origins in the bundle's batch are never asked", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_cdn, "1.0.0")
+
+      bundle =
+        write_bundle!(f, dir, %{"demo_cdn" => manifest(%{"1.0.0" => [build]})},
+          batch_extra: %{"content" => [Fixture.base_url()]}
+        )
+
+      assert {:ok, [_]} =
+               Precompiled.install(:demo_cdn, Keyword.put(opts, :source, "file://" <> bundle))
+
+      assert Fixture.requests() == []
+
+      batch = %{sequence: 1, manifests: %{}, manifests_v2: %{}, content: ["https://cdn.invalid"]}
+      {:ok, file} = Source.config(Keyword.put(opts, :source, "file://" <> bundle))
+      assert %{content: [], by_sha: false} = Source.with_batch(file, batch)
+      {:ok, net} = Source.config(opts)
+      assert %{content: ["https://cdn.invalid"], by_sha: true} = Source.with_batch(net, batch)
+    end
+
+    test "the offline sequence never reaches the batch floor", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      online = publish_app(f, dir, :demo_on1, "1.0.0")
+      Fixture.publish(f, %{"demo_on1" => manifest(%{"1.0.0" => [online]})}, sequence: 3)
+      assert {:ok, [%{batch_sequence: 3}]} = Precompiled.install(:demo_on1, opts)
+      [state] = Path.wildcard(Path.join([opts[:dir], ".trust", "*", "state"]))
+      assert File.read!(state) == "3"
+      cached = File.read!(Path.join(Path.dirname(state), "batch.json"))
+
+      build = publish_app(f, dir, :demo_off2, "1.0.0")
+
+      bundle =
+        write_bundle!(f, dir, %{"demo_off2" => manifest(%{"1.0.0" => [build]})},
+          offline: true,
+          offline_sequence: 1_900_000_000,
+          sequence: 4
+        )
+
+      assert {:ok, [_]} =
+               Precompiled.install(:demo_off2, Keyword.put(opts, :source, "file://" <> bundle))
+
+      assert File.read!(state) == "3"
+      assert File.read!(Path.join(Path.dirname(state), "offline_state")) == "1900000000"
+      assert File.read!(Path.join(Path.dirname(state), "batch.json")) == cached
+    end
+
+    test "a manifest the offline document does not name is refused", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      a = publish_app(f, dir, :demo_in, "1.0.0")
+      b = publish_app(f, dir, :demo_out, "1.0.0")
+
+      bundle =
+        write_bundle!(
+          f,
+          dir,
+          %{"demo_in" => manifest(%{"1.0.0" => [a]}), "demo_out" => manifest(%{"1.0.0" => [b]})},
+          offline: true,
+          offline_packages: ["demo_in"]
+        )
+
+      opts = Keyword.put(opts, :source, "file://" <> bundle)
+      assert {:error, {:no_build, "demo_out", _}} = Precompiled.install(:demo_out, opts)
+      assert {:ok, [_]} = Precompiled.install(:demo_in, opts)
+    end
+
+    test "a bundle manifest whose bytes changed is refused", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      a = publish_app(f, dir, :demo_tm, "1.0.0")
+      bundle = write_bundle!(f, dir, %{"demo_tm" => manifest(%{"1.0.0" => [a]})}, offline: true)
+      path = Path.join([bundle, "v2", "manifests", "demo_tm.json"])
+      File.write!(path, File.read!(path) <> " ")
+
+      assert {:error, {:no_build, "demo_tm", "manifest hash differs from batch"}} =
+               Precompiled.install(:demo_tm, Keyword.put(opts, :source, "file://" <> bundle))
+    end
+
+    test "an expired shipped root still verifies an offline bundle, never an online batch", %{
+      opts: opts,
+      tmp_dir: dir
+    } do
+      f = Fixture.new(dir, offline_key: true, root_expires: "2020-01-01T00:00:00Z")
+      build = publish_app(f, dir, :demo_exp, "1.0.0")
+      packages = %{"demo_exp" => manifest(%{"1.0.0" => [build]})}
+      opts = Keyword.put(opts, :root, f.root_path)
+
+      assert {:error, {:batch, "root document at " <> _}} = Precompiled.install(:demo_exp, opts)
+
+      bundle = write_bundle!(f, dir, packages, offline: true)
+
+      assert {:ok, [_]} =
+               Precompiled.install(:demo_exp, Keyword.put(opts, :source, "file://" <> bundle))
+    end
+
+    test "a bundle's newer root brings the offline role to firmware that shipped without it",
+         %{tmp_dir: dir} = ctx do
+      f = Fixture.new(dir)
+      assert f.offline_key == nil
+      k2 = new_key()
+      offline = new_key()
+      root2 = Fixture.root_payload(k2.keyid, k2.public, "2031-01-01T00:00:00Z", 2, offline)
+      root2_env = Fixture.sign(root2, [f.key, k2])
+      build = publish_app(f, dir, :demo_rot, "1.0.0")
+
+      bundle =
+        write_bundle!(f, dir, %{"demo_rot" => manifest(%{"1.0.0" => [build]})},
+          offline: true,
+          offline_signers: [offline],
+          root_env: root2_env
+        )
+
+      opts = Keyword.merge(ctx.opts, source: "file://" <> bundle, root: f.root_path)
+      assert {:ok, [%{app: :demo_rot}]} = Precompiled.install(:demo_rot, opts)
+    end
+
+    test "offline.json is read only as a plain file of the bundle", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_ln, "1.0.0")
+
+      bundle =
+        write_bundle!(f, dir, %{"demo_ln" => manifest(%{"1.0.0" => [build]})}, offline: true)
+
+      real = Path.join(dir, "elsewhere.json")
+      File.rename!(Path.join(bundle, "offline.json"), real)
+      File.ln_s!(real, Path.join(bundle, "offline.json"))
+
+      assert {:error, {:batch, "unsafe file URL"}} =
+               Precompiled.install(:demo_ln, Keyword.put(opts, :source, "file://" <> bundle))
+    end
+
+    test "a bundle without offline.json is its online batch, expiry and all", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_nooff, "1.0.0")
+      past = DateTime.utc_now() |> DateTime.add(-3600, :second) |> DateTime.to_iso8601()
+      issued = DateTime.utc_now() |> DateTime.add(-7200, :second) |> DateTime.to_iso8601()
+
+      bundle =
+        write_bundle!(f, dir, %{"demo_nooff" => manifest(%{"1.0.0" => [build]})},
+          expires: past,
+          issued: issued
+        )
+
+      assert {:error, {:batch, why}} =
+               Precompiled.install(:demo_nooff, Keyword.put(opts, :source, "file://" <> bundle))
+
+      assert why =~ "expired"
+    end
+  end
+
+  describe "output" do
+    alias ElixirPrecompiled.Device.Output
+
+    test "the env line" do
+      assert Output.env_line(env()) ==
+               "precompiled: system nerves_system_rpi4 2.2.1, OTP 29, Elixir 1.20.3, aarch64"
+
+      assert Output.env_line(env(system: nil)) ==
+               "precompiled: system none (pure_elixir builds only), OTP 29, Elixir 1.20.3, aarch64"
+    end
+
+    test "lines and the summary" do
+      assert Output.line("circuits_gpio 2.3.1", "PLAN", "nerves_system_rpi4 2.2.1, 198 KB") ==
+               "precompiled: circuits_gpio 2.3.1   PLAN  nerves_system_rpi4 2.2.1, 198 KB"
+
+      assert Output.summary(1, 202_752, 2100) == "precompiled: 1 installed, 198 KB, 2.1 s"
+    end
+  end
+end
