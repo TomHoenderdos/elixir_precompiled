@@ -248,7 +248,10 @@ precompiled: 1 installed, 198 KB, 2.1 s
   off the code path. Its files stay in the store as a cache
   (`remove: true` drops them). It refuses while other installed apps need
   it (`cascade: true` uninstalls those first) or while other processes run
-  its code (`force: true`).
+  its code (`force: true`). Only running code counts: open resources are
+  not detected, so an uninstall goes ahead while a shell still holds, say,
+  a GPIO handle from `Circuits.GPIO.open/2`. Close such handles
+  (`Circuits.GPIO.close/1`) first.
 - `clean/1` empties the store, but keeps what is loaded.
 
 The options of `install/2`:
