@@ -289,4 +289,73 @@ defmodule ElixirPrecompiled.HTTPTest do
     on_exit(fn -> System.delete_env("ELIXIR_PRECOMPILED_CACERTS_PATH") end)
     assert {:error, _} = HTTP.cacerts()
   end
+
+  # A CAStore stand-in: file_path/0 names whatever the test put in the
+  # process dictionary.
+  defmodule FakeCAStore do
+    @moduledoc false
+    @spec file_path() :: Path.t() | nil
+    def file_path(), do: Process.get(:fake_ca_path)
+  end
+
+  defp test_der() do
+    # OTP 25+ answers combined {:cert, der, decoded} records.
+    {:ok, [cert | _]} = HTTP.cacerts()
+    with {:cert, der, _} <- cert, do: der
+  end
+
+  defp write_pem(dir, name, der) do
+    path = Path.join(dir, name)
+    File.write!(path, :public_key.pem_encode([{:Certificate, der, :not_encrypted}]))
+    path
+  end
+
+  @tag :tmp_dir
+  test "cacerts: the explicit path wins; an empty OS store falls through to CAStore, then fails",
+       %{tmp_dir: dir} do
+    assert {:error, "no CA certificates"} = HTTP.cacerts(fn -> [] end)
+
+    der = test_der()
+    pem = write_pem(dir, "ca.pem", der)
+    assert {:ok, [^der]} = HTTP.cacerts_for(cacerts_path: pem)
+
+    # The explicit path wins over the environment's file.
+    File.write!(Path.join(dir, "empty.pem"), "")
+    System.put_env("ELIXIR_PRECOMPILED_CACERTS_PATH", Path.join(dir, "empty.pem"))
+    on_exit(fn -> System.delete_env("ELIXIR_PRECOMPILED_CACERTS_PATH") end)
+    assert {:ok, [^der]} = HTTP.cacerts_for(cacerts_path: pem)
+    assert {:error, "CA certificate file " <> _} = HTTP.cacerts_for([])
+
+    # A path that is named but unusable is an error, never a quiet fallback.
+    assert {:error, "CA certificate file " <> _} =
+             HTTP.cacerts_for(cacerts_path: Path.join(dir, "missing.pem"))
+  end
+
+  @tag :tmp_dir
+  test "the store order: the OS store, then CAStore when loaded, then an error", %{tmp_dir: dir} do
+    der = test_der()
+    Process.put(:fake_ca_path, write_pem(dir, "castore.pem", der))
+
+    assert HTTP.store_cacerts(fn -> [:os] end, FakeCAStore) == [:os]
+    assert HTTP.store_cacerts(fn -> [] end, FakeCAStore) == [der]
+    assert HTTP.store_cacerts(fn -> raise "no store" end, FakeCAStore) == [der]
+
+    assert HTTP.store_cacerts(fn -> [] end, ElixirPrecompiled.NoSuchCAStore) ==
+             {:error, "no CA certificates"}
+
+    assert HTTP.store_cacerts(fn -> raise "no store" end, ElixirPrecompiled.NoSuchCAStore) ==
+             {:error, "no CA certificates"}
+
+    Process.put(:fake_ca_path, Path.join(dir, "missing.pem"))
+    assert {:error, "CA certificate file " <> _} = HTTP.store_cacerts(fn -> [] end, FakeCAStore)
+  end
+
+  @tag :tmp_dir
+  test "request takes :cacerts_path", %{tmp_dir: dir} do
+    pem = write_pem(dir, "ca.pem", test_der())
+    assert {:ok, "hello nerves"} = HTTP.get(url("/text"), cacerts_path: pem)
+
+    assert {:error, "CA certificate file " <> _} =
+             HTTP.get(url("/text"), cacerts_path: Path.join(dir, "missing.pem"))
+  end
 end

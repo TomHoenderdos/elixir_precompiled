@@ -1027,4 +1027,81 @@ defmodule ElixirPrecompiled.TrustTest do
     assert {:ok, %{content: ["https://cdn.example.test"]}} =
              Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
+
+  # The batch the fixture serves, as the bytes a bundle holds.
+  defp bundle_with_batch(dir) do
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "batch.json"), :json.encode(F.get(:batch)))
+    "file://" <> dir
+  end
+
+  defp file_fetch(config), do: &ElixirPrecompiled.Fetch.get_conditional(config, &1, &2)
+
+  test "state_key shares one sequence floor between two sources", %{
+    config: config,
+    f: f,
+    tmp_dir: dir
+  } do
+    online = Map.put(config, :state_key, "device")
+    F.publish(f, %{}, sequence: 5)
+    {:ok, root} = Trust.load_root(online)
+    assert {:ok, %{sequence: 5}} = Trust.fetch_batch_cached(online, root, &cond_fetch/2)
+
+    F.publish(f, %{}, sequence: 4)
+    bundle = %{online | source: bundle_with_batch(Path.join(dir, "bundle"))}
+
+    assert {:error, "batch sequence 4 is older than 5"} =
+             Trust.fetch_batch_cached(bundle, root, file_fetch(bundle))
+
+    # Without the shared key the bundle is a source of its own, with its own floor.
+    alone = Map.delete(bundle, :state_key)
+    assert {:ok, %{sequence: 4}} = Trust.fetch_batch_cached(alone, root, file_fetch(alone))
+  end
+
+  test "a bundle batch older than 24 h but unexpired passes; expired still fails", %{
+    config: config,
+    f: f,
+    tmp_dir: dir
+  } do
+    issued = DateTime.utc_now() |> DateTime.add(-3 * 86_400) |> DateTime.to_iso8601()
+    F.publish(f, %{}, issued: issued)
+    source = bundle_with_batch(Path.join(dir, "b1"))
+    bundle = %{config | source: source} |> Map.put(:bundle, true)
+    {:ok, root} = Trust.load_root(bundle)
+
+    assert {:ok, %{sequence: 1}} = Trust.fetch_batch_cached(bundle, root, file_fetch(bundle))
+
+    not_bundle = %{bundle | bundle: false, home: Path.join(dir, "h2")}
+
+    assert {:error, "batch stale: issued " <> _} =
+             Trust.fetch_batch_cached(not_bundle, root, file_fetch(not_bundle))
+
+    expired = DateTime.utc_now() |> DateTime.add(-1) |> DateTime.to_iso8601()
+    F.publish(f, %{}, issued: issued, expires: expired, sequence: 2)
+    source = bundle_with_batch(Path.join(dir, "b2"))
+    bundle = %{bundle | source: source}
+
+    assert {:error, "batch expired at " <> _} =
+             Trust.fetch_batch_cached(bundle, root, file_fetch(bundle))
+
+    # The other checks still hold for a bundle: a lifetime over 30 days.
+    long = DateTime.utc_now() |> DateTime.add(40 * 86_400) |> DateTime.to_iso8601()
+    F.publish(f, %{}, issued: issued, expires: long, sequence: 3)
+    bundle = %{bundle | source: bundle_with_batch(Path.join(dir, "b3"))}
+
+    assert {:error, "batch lifetime over 30 days" <> _} =
+             Trust.fetch_batch_cached(bundle, root, file_fetch(bundle))
+  end
+
+  test "Check.fetch_batch/1 is the run's batch fetch, with the run's deadline", %{
+    config: config,
+    f: f
+  } do
+    F.publish(f, %{}, sequence: 7)
+
+    assert {:ok, %{sequence: 7}} =
+             config
+             |> ElixirPrecompiled.Check.with_deadline()
+             |> ElixirPrecompiled.Check.fetch_batch()
+  end
 end

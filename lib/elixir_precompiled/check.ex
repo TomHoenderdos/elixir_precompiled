@@ -159,9 +159,11 @@ defmodule ElixirPrecompiled.Check do
     )
   end
 
+  @doc false
   # The whole run, every request in it, ends at :deadline_at; whatever is
   # still waiting then compiles from source.
-  defp with_deadline(config) do
+  @spec with_deadline(map()) :: map()
+  def with_deadline(config) do
     Map.put_new_lazy(config, :deadline_at, fn ->
       System.monotonic_time(:millisecond) + Map.get(config, :deadline_ms, 300_000)
     end)
@@ -171,7 +173,7 @@ defmodule ElixirPrecompiled.Check do
   defp lines_for([], [], _config, _env, _config_fun), do: []
 
   defp lines_for(candidates, installed, config, env, config_fun) do
-    case batch(config) do
+    case fetch_batch(config) do
       {:ok, batch} ->
         # Files may come from the project's own :content origins; by-sha
         # manifest paths are used only where the signed batch says they exist.
@@ -393,7 +395,9 @@ defmodule ElixirPrecompiled.Check do
   # when its check is due (hourly) or when the batch stops verifying under
   # the root in use (a rotation since the last check); never offline. Root
   # and batch together get :metadata_timeout_ms of the run's deadline.
-  defp batch(config) do
+  @doc false
+  @spec fetch_batch(map()) :: {:ok, Trust.batch()} | {:error, String.t()}
+  def fetch_batch(config) do
     meta =
       Map.update!(
         config,

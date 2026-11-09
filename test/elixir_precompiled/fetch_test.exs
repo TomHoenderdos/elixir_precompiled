@@ -1199,4 +1199,230 @@ defmodule ElixirPrecompiled.FetchTest do
       assert [%{path: "/precompiled/v2/manifests/ash.json"}] = F.requests()
     end
   end
+
+  describe "stage_verified/5" do
+    test "stages and verifies without Mix's marker, links or a rename", %{
+      f: f,
+      config: config,
+      tmp_dir: dir
+    } do
+      e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+      staging = Path.join(dir, "stage")
+      config = Map.put(config, :cache, false)
+
+      assert {:ok, %{files: 2, cached: 0}} = Fetch.stage_verified(config, :ash, e, staging, [])
+      assert File.regular?(Path.join([staging, "ebin", "ash.app"]))
+      assert File.read!(Path.join([staging, "ebin", "Elixir.Ash.beam"])) == "b"
+      refute File.exists?(Path.join(staging, ".mix"))
+      refute File.exists?(Path.join(config.home, "files"))
+      refute File.exists?(Path.join(config.home, "manifests"))
+    end
+
+    test "runs the .app check and the module check, and removes staging on a failure", %{
+      f: f,
+      config: config,
+      tmp_dir: dir
+    } do
+      e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+      staging = Path.join(dir, "stage")
+
+      assert {:fail, "no"} =
+               Fetch.stage_verified(config, :ash, e, staging,
+                 verify_app: fn _ -> {:fail, "no"} end
+               )
+
+      refute File.exists?(staging)
+
+      extra = file_entry(F.file(f, "x"), 1, "ebin/Elixir.Other.beam")
+      bad = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]) ++ [extra])
+      # with_app lists every beam; drop Other from the .app so it is foreign.
+      app = "{application, ash, [{modules, ['Elixir.Ash']}]}.\n"
+      bad = %{bad | "ebin" => replace_app(bad["ebin"], f, app)}
+
+      assert {:fail, "Elixir.Other.beam is not a module of ash"} =
+               Fetch.stage_verified(config, :ash, bad, staging, [])
+
+      refute File.exists?(staging)
+    end
+
+    test "with the cache off, a cached file is neither read nor written", %{
+      f: f,
+      config: config,
+      tmp_dir: dir
+    } do
+      e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+      assert {:ok, %{cached: 0}} = Fetch.stage_verified(config, :ash, e, Path.join(dir, "s1"), [])
+      assert {:ok, %{cached: 2}} = Fetch.stage_verified(config, :ash, e, Path.join(dir, "s2"), [])
+
+      # The same files, cached and valid, but the cache is off and the
+      # source is gone: the install fails rather than read the cache.
+      off = %{config | source: "http://127.0.0.1:#{free_port()}/x"} |> Map.put(:cache, false)
+
+      assert {:fail, "file not available: " <> _} =
+               Fetch.stage_verified(off, :ash, e, Path.join(dir, "s3"), [])
+
+      # And a fresh home stays empty after a successful install.
+      fresh = config |> Map.put(:cache, false) |> Map.put(:home, Path.join(dir, "fresh"))
+      assert {:ok, %{cached: 0}} = Fetch.stage_verified(fresh, :ash, e, Path.join(dir, "s4"), [])
+      refute File.exists?(fresh.home)
+    end
+
+    test "install/6 still writes the marker after staging", %{
+      f: f,
+      config: config,
+      build_lib: lib,
+      deps: deps
+    } do
+      e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+      assert {:ok, _} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+      assert File.regular?(Path.join([lib, "ash", ".mix", "compile.elixir_scm"]))
+    end
+  end
+
+  test "manifest/4 with the cache off neither reads nor writes the cache", %{
+    f: f,
+    config: config
+  } do
+    F.publish(f, %{"ash" => %{"versions" => %{}}})
+    sha = batch_sha("ash")
+    off = Map.put(config, :cache, false)
+
+    assert {:ok, %{}} = Fetch.manifest(off, "ash", sha, "v2/manifests")
+    refute File.exists?(Path.join(config.home, "manifests"))
+
+    assert {:ok, %{}} = Fetch.manifest(config, "ash", sha, "v2/manifests")
+    assert File.exists?(Path.join([config.home, "manifests", sha <> ".json"]))
+
+    # Cached and valid, but the cache is off: the gone source decides.
+    gone = %{off | source: "http://127.0.0.1:#{free_port()}/x"}
+    assert {:unreachable, _} = Fetch.manifest(gone, "ash", sha, "v2/manifests")
+  end
+
+  test "installed_at? checks a full entry directory against the real app name", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps,
+    tmp_dir: dir
+  } do
+    e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+    assert {:ok, _} = Fetch.install(config, :ash, e, @lock_entry, lib, deps_path: deps)
+
+    versioned = Path.join([dir, "store", "ash-3.5.2"])
+    File.mkdir_p!(Path.dirname(versioned))
+    File.cp_r!(Path.join(lib, "ash"), versioned)
+
+    assert Fetch.installed_at?(versioned, :ash, e)
+    assert Fetch.installed_at?(Path.join(lib, "ash"), :ash, e)
+    refute Fetch.installed_at?(Path.join(dir, "store/nope"), :ash, e)
+    File.write!(Path.join(versioned, "ebin/Elixir.Ash.beam"), "c")
+    refute Fetch.installed_at?(versioned, :ash, e)
+  end
+
+  describe "file:// sources" do
+    test "reads a file under the bundle, capped, and refuses .. and symlinks", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "batch.json"), "abc")
+      assert {:ok, "abc"} = Fetch.get_body("file://" <> Path.join(dir, "batch.json"))
+
+      assert {:error, "response larger than 2 bytes"} =
+               Fetch.get_body("file://" <> Path.join(dir, "batch.json"), max_bytes: 2)
+
+      assert {:error, "not found: " <> _} = Fetch.get_body("file://" <> Path.join(dir, "nope"))
+      assert {:error, "unsafe file URL"} = Fetch.get_body("file://" <> dir <> "/a/../batch.json")
+      File.ln_s!(Path.join(dir, "batch.json"), Path.join(dir, "link.json"))
+
+      assert {:error, "unsafe file URL"} =
+               Fetch.get_body("file://" <> Path.join(dir, "link.json"))
+    end
+
+    test "refuses a symlinked directory anywhere above the file", %{tmp_dir: dir} do
+      real = Path.join(dir, "real")
+      File.mkdir_p!(Path.join(real, "files"))
+      File.write!(Path.join([real, "files", "x"]), "abc")
+      File.ln_s!(real, Path.join(dir, "bundle"))
+
+      assert {:ok, "abc"} = Fetch.get_body("file://" <> Path.join([real, "files", "x"]))
+
+      assert {:error, "unsafe file URL"} =
+               Fetch.get_body("file://" <> Path.join([dir, "bundle", "files", "x"]))
+    end
+
+    test "refuses relative, non-canonical and NUL paths, and non-regular files", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "batch.json"), "abc")
+      File.mkdir_p!(Path.join(dir, "sub"))
+
+      for url <- [
+            "file://batch.json",
+            "file://host" <> dir <> "/batch.json",
+            "file://" <> dir <> "//batch.json",
+            "file://" <> dir <> "/./batch.json",
+            "file://" <> dir <> "/sub/",
+            "file://" <> dir <> "/batch.json" <> <<0>>
+          ] do
+        assert {:error, "unsafe file URL"} = Fetch.get_body(url), url
+      end
+
+      assert {:error, "not a regular file: " <> _} =
+               Fetch.get_body("file://" <> Path.join(dir, "sub"))
+
+      assert {:error, "not found: " <> _} =
+               Fetch.get_body("file://" <> Path.join([dir, "batch.json", "x"]))
+    end
+
+    test "never goes through HTTP: an offline run still reads it", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "batch.json"), "abc")
+
+      assert {:ok, "abc"} =
+               Fetch.get_body("file://" <> Path.join(dir, "batch.json"), offline: true)
+    end
+
+    test "conditional fetch of a file:// batch never answers :not_modified", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "batch.json"), "abc")
+      config = %{source: "file://" <> dir}
+
+      assert {:ok, "abc", nil} =
+               Fetch.get_conditional(config, "file://" <> Path.join(dir, "batch.json"), "etag")
+
+      # A missing file is a refusal, not an unreachable source.
+      assert {:error, "not found: " <> _} =
+               Fetch.get_conditional(config, "file://" <> Path.join(dir, "nope"), nil)
+    end
+
+    test "a bundle directory serves manifests and files", %{f: f, config: config, tmp_dir: dir} do
+      F.publish(f, %{"ash" => %{"versions" => %{}}})
+      sha = batch_sha("ash")
+      bundle = Path.join(dir, "bundle")
+      File.mkdir_p!(Path.join(bundle, "v2/manifests"))
+      File.mkdir_p!(Path.join(bundle, "files"))
+      {:ok, bytes} = Fetch.get_body(config.source <> "/v2/manifests/ash.json")
+      File.write!(Path.join([bundle, "v2/manifests", "ash.json"]), bytes)
+
+      e = entry(with_app(f, [file_entry(F.file(f, "b"), 1)]))
+
+      for file <- e["ebin"] do
+        {:ok, body} = Fetch.get_body(config.source <> "/files/" <> file["sha256"])
+        File.write!(Path.join([bundle, "files", file["sha256"]]), body)
+      end
+
+      local = %{config | source: "file://" <> bundle} |> Map.put(:cache, false)
+      assert {:ok, %{}} = Fetch.manifest(local, "ash", sha, "v2/manifests")
+
+      assert {:ok, %{files: 2}} =
+               Fetch.stage_verified(local, :ash, e, Path.join(dir, "stage"), [])
+
+      # A file larger than the manifest says is refused at the cap.
+      [first | _] = e["ebin"]
+      File.write!(Path.join([bundle, "files", first["sha256"]]), "too long")
+
+      assert {:fail, "file larger than declared size"} =
+               Fetch.stage_verified(local, :ash, e, Path.join(dir, "stage2"), [])
+    end
+  end
+
+  defp replace_app(ebin, f, app) do
+    Enum.map(ebin, fn
+      %{"path" => "ebin/ash.app"} -> file_entry(F.file(f, app), byte_size(app), "ebin/ash.app")
+      other -> other
+    end)
+  end
 end

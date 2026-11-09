@@ -36,6 +36,12 @@ defmodule ElixirPrecompiled.Fetch do
   @provenance_file "elixir_precompiled.json"
   @file_concurrency 8
 
+  @doc """
+  GET `url`'s body, capped at `:max_bytes`. A `file://` URL is read from
+  the local disk instead: an absolute, canonical path with no symlink on
+  it (else `{:error, "unsafe file URL"}`), and a missing file is
+  `{:error, "not found: <path>"}`.
+  """
   @spec get_body(String.t(), keyword()) :: {:ok, binary()} | {:error, String.t()}
   def get_body(url, opts \\ []) do
     case raw_get(url, opts) do
@@ -43,6 +49,9 @@ defmodule ElixirPrecompiled.Fetch do
       {:error, reason} -> {:error, describe_error(reason)}
     end
   end
+
+  defp raw_get("file://" <> path, opts),
+    do: file_get(path, Keyword.get(opts, :max_bytes, @max_body_bytes))
 
   defp raw_get(url, opts) do
     http_opts =
@@ -52,11 +61,65 @@ defmodule ElixirPrecompiled.Fetch do
           :connect_timeout_ms,
           :deadline_ms,
           :allowed_origins,
-          :offline
+          :offline,
+          :cacerts_path
         ])
 
     guarded(opts, url, fn -> ElixirPrecompiled.HTTP.get(url, http_opts) end)
   end
+
+  # A `file://` URL: a bundle on local storage (a USB stick, an SD card,
+  # /data), read from the disk with no :inets, :ssl or network at all. The
+  # path must be absolute and already canonical (Path.expand/1 leaves it as
+  # it is: no "..", ".", empty component or trailing slash), and nothing on
+  # it may be a symlink, from "/" down to the file itself: a bundle is read
+  # where it is, never wherever a link someone left on the stick points.
+  # A caller whose storage sits under a symlink (Nerves' /data) resolves it
+  # once and passes the real path. The read is capped at `max` bytes, like
+  # a response body.
+  defp file_get(path, max) do
+    with :ok <- canonical_file_path(path),
+         {:ok, stat} <- unlinked(path) do
+      read_file(path, stat, max)
+    end
+  end
+
+  defp canonical_file_path(path) do
+    if String.valid?(path) and not String.contains?(path, <<0>>) and
+         Path.type(path) == :absolute and Path.expand(path) == path and
+         ".." not in Path.split(path),
+       do: :ok,
+       else: {:error, "unsafe file URL"}
+  end
+
+  # lstat of every prefix of `path`, from the top: a symlink anywhere is
+  # refused, a missing component is "not found".
+  defp unlinked(path) do
+    [root | parts] = Path.split(path)
+
+    [root | Enum.scan(parts, root, &Path.join(&2, &1))]
+    |> Enum.reduce_while(nil, fn prefix, _ ->
+      case File.lstat(prefix) do
+        {:ok, %File.Stat{type: :symlink}} -> {:halt, {:error, "unsafe file URL"}}
+        {:ok, stat} -> {:cont, {:ok, stat}}
+        {:error, _} -> {:halt, {:error, "not found: #{path}"}}
+      end
+    end)
+  end
+
+  defp read_file(_path, %File.Stat{type: :regular, size: size}, max) when size > max,
+    do: {:error, {:too_large, max}}
+
+  defp read_file(path, %File.Stat{type: :regular} = stat, max) do
+    case read_regular(path, stat, max) do
+      {:ok, bytes} -> {:ok, bytes}
+      # Unreadable, or grown past the cap since the lstat.
+      :absent -> {:error, "cannot read #{path}"}
+      {:fail, _} -> {:error, "#{path} changed while being read"}
+    end
+  end
+
+  defp read_file(path, %File.Stat{}, _max), do: {:error, "not a regular file: #{path}"}
 
   @doc false
   # The origins that failed to connect so far in one run (Check makes one
@@ -155,11 +218,21 @@ defmodule ElixirPrecompiled.Fetch do
   offline) is `{:error, {:unreachable, reason}}`; anything the source
   actually answered (a 4xx, an oversized or refused redirect) is
   `{:error, reason}`.
+
+  A `file://` URL (a bundle on local storage) is read from the disk, never
+  over HTTP, and never answers `:not_modified`: see `get_body/2`.
   """
   @spec get_conditional(map(), String.t(), String.t() | nil) ::
           {:ok, binary(), String.t() | nil}
           | :not_modified
           | {:error, String.t() | {:unreachable, String.t()}}
+  def get_conditional(_config, "file://" <> path, _etag) do
+    case file_get(path, @max_body_bytes) do
+      {:ok, body} -> {:ok, body, nil}
+      {:error, reason} -> {:error, classify(reason)}
+    end
+  end
+
   def get_conditional(config, url, etag) do
     headers = if is_binary(etag), do: [{"if-none-match", etag}], else: []
 
@@ -212,12 +285,20 @@ defmodule ElixirPrecompiled.Fetch do
       [allowed_origins: Map.get(config, :content) || []] ++
         common_opts(config) ++ deadline_opt(config)
 
-  defp common_opts(config),
-    do: [
+  defp common_opts(config) do
+    [
       connect_timeout_ms: Map.get(config, :connect_timeout_ms, 5_000),
       offline: Map.get(config, :offline, false),
       dead_origins: dead_origins(config)
-    ]
+    ] ++ cacerts_opt(config)
+  end
+
+  defp cacerts_opt(config) do
+    case Map.get(config, :cacerts_path) do
+      path when is_binary(path) -> [cacerts_path: path]
+      _ -> []
+    end
+  end
 
   defp deadline_opt(config) do
     case Map.get(config, :deadline_at) do
@@ -330,6 +411,10 @@ defmodule ElixirPrecompiled.Fetch do
   defp decode_manifest(bytes), do: with({:ok, map} <- decode(bytes), do: Manifest.normalize(map))
 
   defp cached_manifest(config, sha) do
+    if cache?(config), do: read_cached_manifest(config, sha), else: :absent
+  end
+
+  defp read_cached_manifest(config, sha) do
     path = manifest_cache_path(config, sha)
 
     case read_cached(path, @max_manifest_bytes) do
@@ -347,8 +432,15 @@ defmodule ElixirPrecompiled.Fetch do
   end
 
   # A cache write that fails costs only the next run a download.
-  defp cache_manifest(config, sha, bytes),
-    do: ElixirPrecompiled.FileUtil.write_atomic(manifest_cache_path(config, sha), bytes)
+  defp cache_manifest(config, sha, bytes) do
+    if cache?(config),
+      do: ElixirPrecompiled.FileUtil.write_atomic(manifest_cache_path(config, sha), bytes),
+      else: :ok
+  end
+
+  # `cache: false` (a device, which keeps verified files in its own store):
+  # the home's files and manifests are neither read, written nor created.
+  defp cache?(config), do: Map.get(config, :cache, true) != false
 
   defp manifest_cache_path(config, sha), do: Path.join([config.home, "manifests", sha <> ".json"])
 
@@ -419,6 +511,10 @@ defmodule ElixirPrecompiled.Fetch do
   # never followed) or anything else, and never written through. A plain
   # directory in the home holds whatever is under it inside the home.
   defp cache_dir(config, name) do
+    if cache?(config), do: plain_cache_dir(config, name), else: {:ok, nil}
+  end
+
+  defp plain_cache_dir(config, name) do
     dir = Path.join(config.home, name)
 
     case File.lstat(dir) do
@@ -496,7 +592,6 @@ defmodule ElixirPrecompiled.Fetch do
           {:ok, %{files: non_neg_integer(), bytes: non_neg_integer(), cached: non_neg_integer()}}
           | {:fail, String.t()}
   def install(config, dep, entry, lock_entry, build_lib, opts \\ []) do
-    files = (entry["ebin"] || []) ++ (entry["priv"] || [])
     staging = staging_path(build_lib, dep)
     dest = Path.join(build_lib, Atom.to_string(dep))
     verify_app = Keyword.get(opts, :verify_app, fn _ -> :ok end)
@@ -506,20 +601,18 @@ defmodule ElixirPrecompiled.Fetch do
       # What a killed run left staged.
       for stale <- staging_dirs(build_lib, dep, :stale), do: File.rm_rf(stale)
 
-      with :ok <- validate(files, dep),
-           {:ok, stats} <- stage(config, files, staging),
-           :ok <- verify_app.(Path.join([staging, "ebin", "#{dep}.app"])),
-           :ok <- modules_ok(staging, dep) do
-        write_marker(staging, lock_entry)
-        write_provenance(staging, Keyword.get(opts, :provenance))
-        :ok = link.(dep, entry, staging, dest, Keyword.fetch!(opts, :deps_path))
-        # Everything is in staging before _build changes: a failure up to
-        # here leaves the old dep dir as it was.
-        File.rm_rf!(dest)
-        File.mkdir_p!(build_lib)
-        File.rename!(staging, dest)
-        {:ok, stats}
-      else
+      case stage_verified(config, dep, entry, staging, verify_app: verify_app) do
+        {:ok, stats} ->
+          write_marker(staging, lock_entry)
+          write_provenance(staging, Keyword.get(opts, :provenance))
+          :ok = link.(dep, entry, staging, dest, Keyword.fetch!(opts, :deps_path))
+          # Everything is in staging before _build changes: a failure up to
+          # here leaves the old dep dir as it was.
+          File.rm_rf!(dest)
+          File.mkdir_p!(build_lib)
+          File.rename!(staging, dest)
+          {:ok, stats}
+
         {:fail, _} = fail ->
           File.rm_rf!(staging)
           fail
@@ -529,6 +622,37 @@ defmodule ElixirPrecompiled.Fetch do
         File.rm_rf!(staging)
         {:fail, "install failed: #{Exception.message(e)}"}
     end
+  end
+
+  @doc """
+  Fetches `entry`'s files into `staging` and verifies them: the entry's
+  paths and modes, each file's size and sha256, `opts[:verify_app]` (a
+  check on the staged `.app`, `fn path -> :ok | {:fail, why} end`), and
+  the `.app` owning exactly the staged beams. Nothing else: no Mix marker,
+  no provenance, no links, no rename, so it serves an install outside a
+  Mix project too. On a failure `staging` is removed.
+  """
+  @spec stage_verified(map(), atom(), map(), Path.t(), keyword()) ::
+          {:ok, %{files: non_neg_integer(), bytes: non_neg_integer(), cached: non_neg_integer()}}
+          | {:fail, String.t()}
+  def stage_verified(config, dep, entry, staging, opts) do
+    files = (entry["ebin"] || []) ++ (entry["priv"] || [])
+    verify_app = Keyword.get(opts, :verify_app, fn _ -> :ok end)
+
+    with :ok <- validate(files, dep),
+         {:ok, stats} <- stage(config, files, staging),
+         :ok <- verify_app.(Path.join([staging, "ebin", "#{dep}.app"])),
+         :ok <- modules_ok(staging, dep) do
+      {:ok, stats}
+    else
+      {:fail, _} = fail ->
+        File.rm_rf!(staging)
+        fail
+    end
+  rescue
+    e ->
+      File.rm_rf(staging)
+      {:fail, "install failed: #{Exception.message(e)}"}
   end
 
   @doc false
@@ -794,6 +918,10 @@ defmodule ElixirPrecompiled.Fetch do
   # The cached copy, re-hashed on every use; a wrong size or a wrong hash
   # is no copy at all, and anything but a regular file refuses the dep.
   defp cached_file(config, sha, size) do
+    if cache?(config), do: read_cached_file(config, sha, size), else: :absent
+  end
+
+  defp read_cached_file(config, sha, size) do
     path = file_cache_path(config, sha)
 
     case read_cached(path, size) do
@@ -830,10 +958,16 @@ defmodule ElixirPrecompiled.Fetch do
     with {:ok, body} <-
            get_body(url, [max_bytes: size] ++ content_opts(config)) |> file_error(sha),
          :ok <- check_bytes(body, sha, size) |> name_path(path) do
-      # A cache write that fails costs only the next run a download.
-      _ = ElixirPrecompiled.FileUtil.write_atomic(file_cache_path(config, sha), body)
+      cache_file(config, sha, body)
       {:ok, body, false}
     end
+  end
+
+  # A cache write that fails costs only the next run a download.
+  defp cache_file(config, sha, body) do
+    if cache?(config),
+      do: ElixirPrecompiled.FileUtil.write_atomic(file_cache_path(config, sha), body),
+      else: :ok
   end
 
   defp file_cache_path(config, sha), do: Path.join([config.home, "files", sha])
@@ -926,9 +1060,17 @@ defmodule ElixirPrecompiled.Fetch do
   writes them, and none of them is code the build's .app loads.
   """
   @spec installed_as?(Path.t(), atom(), map()) :: boolean()
-  def installed_as?(build_lib, dep, entry) do
+  def installed_as?(build_lib, dep, entry),
+    do: installed_at?(Path.join(build_lib, Atom.to_string(dep)), dep, entry)
+
+  @doc """
+  `installed_as?/3` for a directory named anything (`<app>-<vsn>` in a
+  store, say): `dir` is the entry's own directory and `dep` the app whose
+  `.app` it must hold.
+  """
+  @spec installed_at?(Path.t(), atom(), map()) :: boolean()
+  def installed_at?(dir, dep, entry) do
     files = (entry["ebin"] || []) ++ (entry["priv"] || [])
-    dir = Path.join(build_lib, Atom.to_string(dep))
     tops = if (entry["priv"] || []) == [], do: ["ebin"], else: ["ebin", "priv"]
 
     validate(files, dep) == :ok and real_dir?(dir) and
