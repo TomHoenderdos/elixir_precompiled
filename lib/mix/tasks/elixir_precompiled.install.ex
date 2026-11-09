@@ -24,7 +24,7 @@ if Code.ensure_loaded?(Igniter) do
       %Igniter.Mix.Task.Info{
         group: :elixir_precompiled,
         example: "mix igniter.install elixir_precompiled",
-        schema: [source: :string],
+        schema: [source: :string, device: :boolean],
         defaults: [source: @source]
       }
     end
@@ -32,6 +32,7 @@ if Code.ensure_loaded?(Igniter) do
     @impl Igniter.Mix.Task
     def igniter(igniter) do
       source = igniter.args.options[:source]
+      device? = igniter.args.options[:device]
 
       # The two add_alias calls compose. With no alias the first writes the
       # whole list and the second finds its entry present. With an alias of
@@ -39,7 +40,8 @@ if Code.ensure_loaded?(Igniter) do
       # "precompiled.install" and the second "deps.compile elixir_precompiled"
       # before it. Neither adds an entry already in the list.
       igniter
-      |> runtime_false()
+      |> keep_runtime(device?)
+      |> add_castore(device?)
       |> Igniter.Project.Config.configure_new(
         "config.exs",
         :elixir_precompiled,
@@ -61,7 +63,37 @@ if Code.ensure_loaded?(Igniter) do
       installed instead of compiled. `mix precompiled.status` lists them;
       ELIXIR_PRECOMPILED=0 turns it off (and removes them).
       """)
+      |> add_device_notice(device?)
     end
+
+    # Without --device the dependency only runs at build time, as it does
+    # today. With --device it stays at runtime: the library ships in the
+    # firmware so a shell on the device can call `Precompiled.install/1`.
+    defp keep_runtime(igniter, true),
+      do: Igniter.Project.Deps.set_dep_option(igniter, :elixir_precompiled, :runtime, true)
+
+    defp keep_runtime(igniter, _device?), do: runtime_false(igniter)
+
+    # A Nerves system's CA store may be empty, so a device install needs its
+    # own certificates unless the project already has `castore` or configures
+    # `cacerts_path:` for the device itself.
+    defp add_castore(igniter, true) do
+      if Igniter.Project.Deps.has_dep?(igniter, :castore) do
+        igniter
+      else
+        Igniter.Project.Deps.add_dep(igniter, {:castore, "~> 1.0"})
+      end
+    end
+
+    defp add_castore(igniter, _device?), do: igniter
+
+    defp add_device_notice(igniter, true) do
+      Igniter.add_notice(igniter, """
+      On the device: Precompiled.install(:recon). See the README, "On a device".
+      """)
+    end
+
+    defp add_device_notice(igniter, _device?), do: igniter
 
     # Igniter.Project.Deps.set_dep_option/4 writes `:runtime => false` into
     # a `{name, "~> x"}` tuple (invalid Elixir) when `deps` is defined as a
