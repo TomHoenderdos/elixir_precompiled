@@ -89,58 +89,9 @@ defmodule ElixirPrecompiled.Env.MixInstall do
         os_release_paths \\ @default_os_release_paths,
         loaded \\ Application.loaded_applications()
       ) do
-    case os_release_system(os_release_paths) do
+    case ElixirPrecompiled.OsRelease.system(os_release_paths) do
       nil -> system_from_loaded(loaded)
       system -> system
-    end
-  end
-
-  defp os_release_system(paths) do
-    Enum.find_value(paths, &os_release_system_at/1)
-  end
-
-  defp os_release_system_at(path) do
-    case File.read(path) do
-      {:ok, contents} -> nerves_system_from_os_release(contents)
-      {:error, _reason} -> nil
-    end
-  end
-
-  defp nerves_system_from_os_release(contents) do
-    kv = parse_os_release(contents)
-    name = Map.get(kv, "NERVES_SYSTEM_NAME", "")
-    version = Map.get(kv, "NERVES_SYSTEM_VERSION", "")
-
-    if name != "" and version != "" and String.starts_with?(name, "nerves_system_") do
-      {name, version}
-    end
-  end
-
-  defp parse_os_release(contents) do
-    contents
-    |> String.split("\n")
-    |> Enum.reduce(%{}, &parse_os_release_line/2)
-  end
-
-  defp parse_os_release_line(line, acc) do
-    line = String.trim(line)
-
-    if line == "" or String.starts_with?(line, "#") do
-      acc
-    else
-      case String.split(line, "=", parts: 2) do
-        [key, value] -> Map.put(acc, String.trim(key), strip_quotes(String.trim(value)))
-        _other -> acc
-      end
-    end
-  end
-
-  defp strip_quotes(value) do
-    if String.starts_with?(value, "\"") and String.ends_with?(value, "\"") and
-         byte_size(value) >= 2 do
-      binary_part(value, 1, byte_size(value) - 2)
-    else
-      value
     end
   end
 
