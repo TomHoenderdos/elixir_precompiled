@@ -44,17 +44,47 @@ defmodule ElixirPrecompiled.Device.Source do
   @spec default_dir() :: String.t()
   def default_dir(), do: @default_dir
 
+  # The keys `config :elixir_precompiled, :device` may set (the README
+  # lists them). Any other key there is ignored: the test seams (:env,
+  # :clock_synchronized?) and :home in particular are never read from it.
+  @device_keys [
+    :enabled,
+    :allow,
+    :source,
+    :content,
+    :root,
+    :cacerts_path,
+    :deadline_seconds,
+    :dir,
+    :max_bytes,
+    :max_closure,
+    :start,
+    :closure,
+    :quiet
+  ]
+
+  @doc false
+  # The firmware's :device config, only the keys it may set.
+  @spec device_config() :: keyword()
+  def device_config() do
+    case Application.get_env(:elixir_precompiled, :device, []) do
+      kw when is_list(kw) -> if Keyword.keyword?(kw), do: Keyword.take(kw, @device_keys), else: []
+      _ -> []
+    end
+  end
+
   @doc false
   # The config map Trust and Fetch take. `opts` are the call's options; the
   # :device application config fills what they leave out.
   @spec config(keyword()) :: {:ok, map()} | {:error, term()}
   def config(opts) do
-    opts = Keyword.merge(Application.get_env(:elixir_precompiled, :device, []), opts)
+    opts = Keyword.merge(device_config(), opts)
     dir = Path.expand(opts[:dir] || @default_dir)
 
     with {:ok, source, bundle?} <- source(opts[:source] || @official),
          {:ok, content} <- content(opts[:content]),
-         {:ok, deadline_s} <- deadline(opts[:deadline_seconds]) do
+         {:ok, deadline_s} <- deadline(opts[:deadline_seconds]),
+         :ok <- cacerts_path(opts[:cacerts_path]) do
       {:ok,
        Check.with_deadline(%{
          source: source,
@@ -104,6 +134,10 @@ defmodule ElixirPrecompiled.Device.Source do
   end
 
   defp content(_), do: {:error, {:bad_option, :content}}
+
+  defp cacerts_path(nil), do: :ok
+  defp cacerts_path(path) when is_binary(path) and path != "", do: :ok
+  defp cacerts_path(_), do: {:error, {:bad_option, :cacerts_path}}
 
   defp deadline(nil), do: {:ok, 300}
   defp deadline(n) when is_integer(n) and n > 0, do: {:ok, n}

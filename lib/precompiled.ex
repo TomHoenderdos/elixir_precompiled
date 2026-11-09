@@ -46,7 +46,8 @@ defmodule Precompiled do
   | --- | --- | --- |
   | `:source` | `config :elixir_precompiled, :device, source:`, else the official API | The API root (`https://...`, or `http://` on loopback only), or `file://DIR` for a bundle. The default is `https://compatibility.nerves-project.org/api/precompiled`, checked against the root this library ships. Any other source must be configured or passed. |
   | `:root` | the shipped `priv/precompiled/root.json` | A trust anchor that overrides the shipped one, as on the host. |
-  | `:content`, `:cacerts_path`, `:deadline_seconds` | as on the host | Same meaning as the host config keys. |
+  | `:content`, `:deadline_seconds` | as on the host | Same meaning as the host config keys. |
+  | `:cacerts_path` | none | A PEM CA bundle to verify an `https` source with (a path). |
   | `:dir` | `/data/precompiled` | The store. Its trust state lives in `DIR/.trust`, so a call with another `:dir` keeps its own sequence floors. |
   | `:start` | `true` | Start the installed apps (`:temporary`) after loading them. |
   | `:closure` | `true` | Install absent runtime dependencies. `false` refuses with `{:needs, [...]}` instead. |
@@ -54,15 +55,23 @@ defmodule Precompiled do
   | `:dry_run` | `false` | Select and plan, verify the trust chain, fetch the manifests and `.app` files only. Returns the plan. It writes no entry, staging dir or eviction: only the trust state in `DIR/.trust`, and the store dir and its marker when they do not exist yet. |
   | `:report` | none | With `dry_run: true`, write the device facts and the plan as JSON to this path (for `mix precompiled.bundle --device-report`). |
   | `:quiet` | `false` | Print nothing. |
-  | `:env` | read from the device | For tests: the device facts (`ElixirPrecompiled.Device.Env`) to use. |
-  | `:clock_synchronized?` | `NervesTime.synchronized?/0` when loaded | For tests: a 0-arity function that says whether the clock is set. |
   | `:lock_retries` | 60 | For tests: how often to retry a store another call holds. |
 
+  The device facts and the clock check have test seams (`:env`,
+  `:clock_synchronized?`). A call may pass them only while this library's
+  application env has `test_seams: true`, as its own test suite sets;
+  otherwise they are refused as unknown options, and the firmware's
+  `:device` config never sets them.
+
   `config :elixir_precompiled, :device, enabled: false` in the firmware
-  turns the whole API off (`{:error, :disabled}`); `allow: [app]` limits
-  it to those apps, closure members included. Both are read from the
-  firmware's config only: a call can neither pass, widen nor clear them. The same config may set
-  `source`, `dir`, `max_bytes` and `cacerts_path`.
+  disables `install/2` (`{:error, :disabled}`); `list/1`, `uninstall/2`
+  and `clean/1` keep working, so what is installed can still be removed.
+  `allow: [app]` limits installs to those apps, closure members included.
+  Both are read from the firmware's config only: a call can neither pass,
+  widen nor clear them. The same config may set the defaults of `source`,
+  `content`, `root`, `cacerts_path`, `deadline_seconds`, `dir`,
+  `max_bytes`, `max_closure`, `start`, `closure` and `quiet`; any other key
+  there is ignored.
 
   An online call needs a synchronized clock: on an unsynchronized one it
   refuses before any request. A `file://` bundle with a signed
@@ -89,12 +98,18 @@ defmodule Precompiled do
       * `{:noexec, mount}`;
       * `{:conflict, app, [vsn]}`, two versions of one app in one call;
       * `{:too_big, needed, free}`, `{:too_many, n, max}`;
-      * `{:enospc, path}`, `{:unsafe_store, why}`;
+      * `{:enospc, path}`, a full disk while staging or committing;
+      * `{:unsafe_store, why}`;
+      * `{:rename, posix}`, `{:bad_staging, path}`, or a posix atom such
+        as `:eacces`, when the store refuses a commit;
       * `{:fetch, pkg, why}`, a file that did not verify;
       * `{:elf, why}`, a native library built for another CPU;
       * `{:on_load_failed, mod, reason}`;
       * `{:start_failed, app, reason}`;
       * `{:in_use, mod, pids}`, `{:in_use_by, [app]}`, `{:not_installed, app}`;
+      * from `uninstall/2`: `{:stop_failed, app, why}`, the app would not
+        stop or unload, and `{:in_use, app}`, with `remove: true`, when
+        its files are still in use;
       * `{:report, path, why}`, the dry run's report could not be written;
       * `:busy`, another call holds the store;
       * `:disabled`;
@@ -107,6 +122,7 @@ defmodule Precompiled do
   `{:error, :busy}`.
   """
 
+  alias ElixirPrecompiled.Check
   alias ElixirPrecompiled.CompileEnv
   alias ElixirPrecompiled.Device.Elf
   alias ElixirPrecompiled.Device.Env
@@ -141,10 +157,13 @@ defmodule Precompiled do
                     :max_closure,
                     :max_bytes,
                     :dry_run,
-                    :report,
-                    :env,
-                    :clock_synchronized?
+                    :report
                   ]
+  # Test seams: they replace the device facts and the clock check, so a
+  # call may pass them only while `:test_seams` is set in this library's
+  # application env (its own test suite, the qemu test). Otherwise they
+  # are unknown options.
+  @seam_keys [:env, :clock_synchronized?]
   @uninstall_keys @common_keys ++ [:force, :cascade, :remove]
   @network_apps [:ssl, :inets, :public_key]
 
@@ -159,7 +178,7 @@ defmodule Precompiled do
   def install(request, opts \\ []) do
     with {:ok, requests} <- normalize(request),
          :ok <- enabled(),
-         {:ok, opts} <- normalize_opts(opts, @install_keys),
+         {:ok, opts} <- normalize_opts(opts, install_keys()),
          {:ok, config} <- Source.config(opts),
          :ok <- network_apps(config),
          :ok <- clock(config, opts) do
@@ -316,11 +335,12 @@ defmodule Precompiled do
     if Keyword.get(device_config(), :enabled) == false, do: {:error, :disabled}, else: :ok
   end
 
-  defp device_config() do
-    case Application.get_env(:elixir_precompiled, :device, []) do
-      kw when is_list(kw) -> kw
-      _ -> []
-    end
+  defp device_config(), do: Source.device_config()
+
+  defp install_keys() do
+    if Application.get_env(:elixir_precompiled, :test_seams) == true,
+      do: @install_keys ++ @seam_keys,
+      else: @install_keys
   end
 
   # Only the keys `known` documents: a misspelt one (dry_rn: true) is
@@ -349,7 +369,7 @@ defmodule Precompiled do
   # list as install/2 or uninstall/2 without refusing it: a true unknown
   # key (a typo) is still refused, everything else is just unused.
   defp common_opts(opts) do
-    with {:ok, opts} <- normalize_opts(opts, @install_keys ++ @uninstall_keys) do
+    with {:ok, opts} <- normalize_opts(opts, install_keys() ++ @uninstall_keys) do
       {:ok, Keyword.take(opts, @common_keys)}
     end
   end
@@ -419,6 +439,10 @@ defmodule Precompiled do
   ## Install, under the store's lock
 
   defp locked_install(requests, config, opts) do
+    # The run's network deadline counts from here, not from before a wait
+    # for the lock.
+    config = config |> Map.delete(:deadline_at) |> Check.with_deadline()
+
     with :ok <- Store.ensure_root(config.dir) do
       if not opts[:dry_run], do: Store.sweep(config.dir)
       env = Keyword.get_lazy(opts, :env, &Env.load/0)
@@ -595,11 +619,13 @@ defmodule Precompiled do
   end
 
   defp native?(install) do
+    # A malformed entry is not native here; staging refuses it later as a
+    # fetch error ("unsafe path or mode").
     Enum.any?(install.build["priv"] || [], fn f ->
-      name = Path.basename(f["path"])
+      name = if is_map(f) and is_binary(f["path"]), do: Path.basename(f["path"]), else: ""
 
       String.ends_with?(name, ".so") or String.contains?(name, ".so.") or
-        Bitwise.band(f["mode"], 0o111) != 0
+        (is_map(f) and is_integer(f["mode"]) and Bitwise.band(f["mode"], 0o111) != 0)
     end)
   end
 
@@ -627,8 +653,23 @@ defmodule Precompiled do
 
     case Fetch.stage_verified(config, install.app, install.build, staging, verify_app: verify_app) do
       {:ok, _stats} -> {:ok, staging}
-      {:fail, why} -> {:error, {:fetch, name, why}}
+      {:fail, why} -> {:error, stage_reason(name, why, staging)}
     end
+  rescue
+    e in File.Error -> {:error, stage_reason(Atom.to_string(install.app), e, config.dir)}
+  end
+
+  @doc false
+  # A full disk while staging is {:enospc, path}, as on commit; anything
+  # else is the fetch failure it was.
+  @spec stage_reason(String.t(), String.t() | Exception.t(), Path.t()) :: term()
+  def stage_reason(_name, %File.Error{reason: :enospc}, path), do: {:enospc, path}
+  def stage_reason(name, %File.Error{} = e, _path), do: {:fetch, name, Exception.message(e)}
+
+  def stage_reason(name, why, path) when is_binary(why) do
+    if String.contains?(why, "no space left on device"),
+      do: {:enospc, path},
+      else: {:fetch, name, why}
   end
 
   # The staged .app must be the planned app at the planned version.
@@ -842,7 +883,7 @@ defmodule Precompiled do
       for e <- entries,
           e.app != app,
           loaded?(e),
-          app in (Application.spec(e.app, :applications) || []),
+          app in needed_apps(e.app),
           uniq: true,
           do: e.app
 
@@ -851,6 +892,14 @@ defmodule Precompiled do
       opts[:cascade] != true -> {:error, {:in_use_by, Enum.sort(users)}}
       true -> cascade(users -- seen, dir, opts, seen ++ users)
     end
+  end
+
+  # Every app another loaded app's .app names, as the planner reads it:
+  # applications, included and optional applications.
+  defp needed_apps(app) do
+    for key <- [:applications, :included_applications, :optional_applications],
+        dep <- Application.spec(app, key) || [],
+        do: dep
   end
 
   defp cascade(users, dir, opts, seen) do
