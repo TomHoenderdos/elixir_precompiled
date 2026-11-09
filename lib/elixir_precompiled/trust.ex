@@ -703,16 +703,30 @@ defmodule ElixirPrecompiled.Trust do
   from the batch sequence, and the floor is raised to its sequence.
 
   Returns the batch shape, with `content: nil` and `offline: true`.
+
+  Refused outright when `config.source` is not a `file://` URL: a bundle's
+  `offline.json` is honoured only from a source the user named as a bundle,
+  never from a network server that could otherwise use it to dodge the 24 h
+  batch staleness check.
   """
   @spec verify_offline(map(), root(), binary()) :: {:ok, batch()} | {:error, String.t()}
   def verify_offline(config, root, body) do
-    case offline_keys(root) do
-      {keys, t} when map_size(keys) > 0 and is_integer(t) -> offline_doc(config, keys, t, body)
-      _ -> {:error, "root has no offline role"}
+    if file_source?(config) do
+      case offline_keys(root) do
+        {keys, t} when map_size(keys) > 0 and is_integer(t) -> offline_doc(config, keys, t, body)
+        _ -> {:error, "root has no offline role"}
+      end
+    else
+      {:error, "offline documents are only read from a file:// source"}
     end
   rescue
     _ -> {:error, "offline document malformed"}
   end
+
+  defp file_source?(%{source: source}) when is_binary(source),
+    do: String.starts_with?(source, "file://")
+
+  defp file_source?(_config), do: false
 
   defp offline_keys(root) do
     case root_keys(root, "offline") do
@@ -734,9 +748,21 @@ defmodule ElixirPrecompiled.Trust do
     with {:ok, payload} <-
            verify_envelope(body, keys, t) |> or_error("offline document signature invalid"),
          {:ok, seq, manifests, v2} <- offline_fields(safe_decode(payload)),
-         :ok <- offline_floor(state_dir(config), seq) do
+         {:ok, dir} <- trusted_dir(config),
+         :ok <- offline_floor(dir, seq) do
       {:ok, %{sequence: seq, manifests: manifests, manifests_v2: v2, content: nil, offline: true}}
     end
+  end
+
+  # `state_dir/1` reads the shipped root off disk to seed the state dir's
+  # name; an unreadable `root_path` raises there (a bad match on
+  # `File.read/1`) rather than returning an error tuple, so it is reported
+  # under its own message instead of falling into the function-level
+  # `rescue`'s generic "offline document malformed".
+  defp trusted_dir(config) do
+    {:ok, state_dir(config)}
+  rescue
+    _ -> {:error, "cannot read trusted root"}
   end
 
   defp offline_fields(
