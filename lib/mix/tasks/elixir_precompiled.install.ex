@@ -14,6 +14,16 @@ if Code.ensure_loaded?(Igniter) do
     the project's `deps.loadpaths` alias, before any steps already there.
     Running it again changes nothing. Not for umbrellas: add the alias to
     the umbrella root by hand (see `mix help precompiled.install`).
+
+    `--device` is for a Nerves firmware that should be able to install on
+    the device itself (`Precompiled.install/1`, see the README's "On a
+    device"). It keeps the dependency at runtime, so the library ships in
+    the firmware, and adds `{:castore, "~> 1.0"}` unless the project already
+    depends on `castore`. That check looks at the dependencies only: a
+    firmware that sets `cacerts_path:` under `config :elixir_precompiled,
+    :device` still gets `castore` added, and can drop it again. Nothing
+    else is written for the device: it is on by default and uses the
+    official signed source.
     """
     use Igniter.Mix.Task
 
@@ -75,8 +85,8 @@ if Code.ensure_loaded?(Igniter) do
     defp keep_runtime(igniter, _device?), do: runtime_false(igniter)
 
     # A Nerves system's CA store may be empty, so a device install needs its
-    # own certificates unless the project already has `castore` or configures
-    # `cacerts_path:` for the device itself.
+    # own certificates. Only the deps are checked: a `cacerts_path:` in the
+    # device config is not looked for (see the moduledoc).
     defp add_castore(igniter, true) do
       if Igniter.Project.Deps.has_dep?(igniter, :castore) do
         igniter
