@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# Proves the device layer never calls Mix or Hex: walks the local calls
-# reachable from every Precompiled*/ElixirPrecompiled.Device* module through
-# this library's own modules, and fails on any reference to Mix* or Hex*,
+# Proves the device layer never calls Mix or Hex: walks the local calls and
+# captured funs reachable from every Precompiled*/ElixirPrecompiled.Device*
+# module through this library's own modules, and fails on any reference to Mix* or Hex*,
 # found through any of three beam chunks:
 #
 #   - :imports, for a plain remote call (Mix.env()) — gives the precise
@@ -100,9 +100,17 @@ defmodule MixFreeCheck do
     if MapSet.member?(seen, m) or not Map.has_key?(modules, m) do
       reach(rest, modules, seen)
     else
-      next = for {mod, _, _} <- modules[m].imports, Map.has_key?(modules, mod), do: mod
+      next = for mod <- callees(modules[m]), Map.has_key?(modules, mod), do: mod
       reach(next ++ rest, modules, MapSet.put(seen, m))
     end
+  end
+
+  # The project modules a module calls: remote calls (:imports) and
+  # captured external funs (&Mod.fun/n, stored as :literals), so a helper
+  # reached only through a capture is walked like a called one.
+  defp callees(%{imports: imports, literals: literals}) do
+    Enum.map(imports, fn {mod, _, _} -> mod end) ++
+      Enum.flat_map(literals, fn {_i, v} -> for {mod, _, _} <- fun_targets(v), do: mod end)
   end
 
   defp offenses(m, %{imports: imports, atoms: atoms, literals: literals}) do
