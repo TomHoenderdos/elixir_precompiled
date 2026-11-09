@@ -202,6 +202,21 @@ if Code.ensure_loaded?(Igniter) do
       end)
     end
 
+    test "--device twice changes nothing" do
+      igniter =
+        test_project(files: %{"mix.exs" => nerves_mix_exs()})
+        |> install(["--device"])
+        |> apply_igniter!()
+
+      mix_exs = content(igniter, "mix.exs")
+      assert count(mix_exs, "{:castore") == 1
+      refute mix_exs =~ "runtime: false"
+
+      igniter
+      |> install(["--device"])
+      |> assert_unchanged()
+    end
+
     test "--device writes no device_install switch and no release step" do
       igniter =
         test_project(files: %{"mix.exs" => nerves_mix_exs()})
