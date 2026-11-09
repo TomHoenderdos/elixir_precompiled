@@ -66,6 +66,26 @@ defmodule PrecompiledTest do
      Enum.sort(tree)}
   end
 
+  # A group leader whose writes fail for the OK line of `name_vsn` and
+  # succeed (discarded) for everything else.
+  defp failing_io(name_vsn) do
+    spawn_link(fn -> io_loop(name_vsn) end)
+  end
+
+  defp io_loop(name_vsn) do
+    receive do
+      {:io_request, from, ref, {:put_chars, _encoding, chars}} ->
+        line = IO.chardata_to_string(chars)
+        ok_line? = String.contains?(line, name_vsn) and String.contains?(line, " OK ")
+        send(from, {:io_reply, ref, if(ok_line?, do: {:error, :closed}, else: :ok)})
+        io_loop(name_vsn)
+
+      {:io_request, from, ref, _request} ->
+        send(from, {:io_reply, ref, {:error, :request}})
+        io_loop(name_vsn)
+    end
+  end
+
   defp put_device_env(kw) do
     Application.put_env(:elixir_precompiled, :device, kw)
     on_exit(fn -> Application.delete_env(:elixir_precompiled, :device) end)
@@ -446,6 +466,92 @@ defmodule PrecompiledTest do
       assert :code.is_loaded(DemoSf) == false
       assert :code.get_path() == path
       refute List.keymember?(Application.loaded_applications(), :demo_sf, 0)
+    end
+
+    test "a failure after an app activated rolls that app back too", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_late, "1.0.0")
+      Fixture.publish(f, %{"demo_late" => manifest(%{"1.0.0" => [build]})})
+      path = :code.get_path()
+      loaded = Application.loaded_applications()
+
+      # The loader activated the app; printing its OK line then fails.
+      io = failing_io("demo_late 1.0.0")
+      gl = Process.group_leader()
+      Process.group_leader(self(), io)
+
+      result =
+        try do
+          Precompiled.install(:demo_late, Keyword.put(opts, :quiet, false))
+        after
+          Process.group_leader(self(), gl)
+        end
+
+      assert {:error, {:internal, _}} = result
+      assert :code.is_loaded(DemoLate) == false
+      assert :code.get_path() == path
+      assert Enum.sort(Application.loaded_applications()) == Enum.sort(loaded)
+      assert [%{app: :demo_late, loaded?: false}] = Precompiled.list(store(opts))
+    end
+
+    test "a call killed mid-activation: the next call copes and uninstall recovers", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      test = self()
+      :persistent_term.put(:demo_km_test, test)
+      on_exit(fn -> :persistent_term.erase(:demo_km_test) end)
+
+      # start/2 waits for the test while the first call is killed.
+      source = """
+      defmodule DemoKm do
+        use Application
+
+        def start(_type, _args) do
+          case :persistent_term.get(:demo_km_test, nil) do
+            pid when is_pid(pid) ->
+              send(pid, {:starting, self()})
+              receive do: (:go -> :ok)
+
+            nil ->
+              :ok
+          end
+
+          Supervisor.start_link([], strategy: :one_for_one)
+        end
+      end
+      """
+
+      build = publish_app(f, dir, :demo_km, "1.0.0", source: source, mod: {DemoKm, []})
+      Fixture.publish(f, %{"demo_km" => manifest(%{"1.0.0" => [build]})})
+      ebin = String.to_charlist(Path.join([opts[:dir], "demo_km-1.0.0", "ebin"]))
+
+      {caller, ref} = spawn_monitor(fn -> Precompiled.install(:demo_km, opts) end)
+      assert_receive {:starting, starter}, 10_000
+      Process.exit(caller, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^caller, :killed}
+      :persistent_term.erase(:demo_km_test)
+      send(starter, :go)
+      assert ebin in :code.get_path()
+
+      # The lock died with the caller. The start finished on its own, from
+      # the committed entry: the next call finds the app there.
+      assert {:ok, []} = Precompiled.install(:demo_km, opts)
+      assert [%{app: :demo_km, loaded?: true}] = Precompiled.list(store(opts))
+
+      assert :ok = Precompiled.uninstall(:demo_km, store(opts) ++ [force: true])
+      refute ebin in :code.get_path()
+      assert :code.is_loaded(DemoKm) == false
+      refute List.keymember?(Application.loaded_applications(), :demo_km, 0)
+
+      assert {:ok, [%Precompiled.Installed{app: :demo_km, from_cache?: true}]} =
+               Precompiled.install(:demo_km, opts)
+
+      assert {:demo_km, _, _} = List.keyfind(Application.started_applications(), :demo_km, 0)
     end
 
     test "a file with the wrong bytes fails the install and leaves the device as it was", %{

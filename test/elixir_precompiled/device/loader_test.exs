@@ -607,6 +607,38 @@ defmodule ElixirPrecompiled.Device.LoaderTest do
       assert started?(peer, :logger)
     end
 
+    test "a start failure leaves no dependency the failed start brought up", %{
+      peer: peer,
+      tmp_dir: dir
+    } do
+      # ensure_all_started starts :crypto, then demo_up, then fails on
+      # demo_down: OTP (27 and later) stops what it started itself, and the
+      # loader's own teardown covers the rest.
+      refute started?(peer, :crypto)
+
+      up =
+        compile_app(dir, :demo_up, "1.0.0", ["defmodule DemoUp do\nend"], deps: [:crypto])
+
+      {:ok, []} = activate(peer, :demo_up, up, start: false)
+
+      src = """
+      defmodule DemoDown do
+        use Application
+        def start(_type, _args), do: {:error, :nope}
+      end
+      """
+
+      down =
+        compile_app(dir, :demo_down, "1.0.0", [src], mod: {DemoDown, []}, deps: [:demo_up])
+
+      assert {:error, {:start_failed, :demo_down, _}} = activate(peer, :demo_down, down)
+      gone!(peer, :demo_down, down, [DemoDown])
+      refute started?(peer, :demo_up)
+      refute started?(peer, :crypto)
+      # Loaded by its own activation, which this failure leaves alone.
+      assert app_loaded?(peer, :demo_up)
+    end
+
     test "an uninstall leaves the dependencies it started running", %{peer: peer, tmp_dir: dir} do
       path =
         compile_app(dir, :demo_dep3, "1.0.0", ["defmodule DemoDep3 do\nend"], deps: [:crypto])
