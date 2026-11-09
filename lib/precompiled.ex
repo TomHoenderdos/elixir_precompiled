@@ -31,6 +31,15 @@ defmodule Precompiled do
   shell on the device calls it. The files stay in the store across reboots
   as a cache, but nothing is loaded at boot.
 
+  ## Cache
+
+  Installed builds stay in `dir` across reboots, but nothing is loaded at
+  boot. Installing the same build again loads it from there without
+  downloading, after checking every cached file against the signed hashes
+  of the current batch. The cache is bounded by `max_bytes` and evicts the
+  least recently used builds that are not loaded. `Precompiled.clean/0`
+  empties it.
+
   ## Options
 
   | Option | Default | Meaning |
@@ -170,7 +179,7 @@ defmodule Precompiled do
   """
   @spec list(keyword()) :: [Precompiled.Installed.t()]
   def list(opts \\ []) do
-    with {:ok, opts} <- normalize_opts(opts, @common_keys),
+    with {:ok, opts} <- normalize_opts(Keyword.take(opts, @common_keys), @common_keys),
          :ok <- Store.check_root(opts[:dir]) do
       items = opts[:dir] |> Store.list() |> Enum.map(&installed/1)
       for i <- items, do: say(opts, list_line(i))
@@ -219,6 +228,50 @@ defmodule Precompiled do
   catch
     kind, reason when kind in [:exit, :throw] ->
       {:error, {:internal, inspect({kind, reason})}}
+  end
+
+  @doc """
+  Empties the cache: removes every store entry that is not loaded in this
+  VM. Keeps `.trust` and whatever this VM is running from. Runs under the
+  store's lock. Prints one summary line unless `quiet: true`.
+  """
+  @spec clean(keyword()) ::
+          {:ok, %{removed: [atom()], bytes: non_neg_integer(), kept: [atom()]}} | {:error, term()}
+  def clean(opts \\ []) do
+    with {:ok, opts} <- normalize_opts(Keyword.take(opts, @common_keys), @common_keys) do
+      dir = Path.expand(opts[:dir])
+
+      Store.with_lock(
+        fn ->
+          case Store.check_root(dir) do
+            :ok -> locked_clean(dir, opts)
+            :absent -> {:ok, %{removed: [], bytes: 0, kept: []}}
+            error -> error
+          end
+        end,
+        opts[:lock_retries]
+      )
+    end
+  rescue
+    e -> {:error, {:internal, Exception.message(e)}}
+  catch
+    kind, reason when kind in [:exit, :throw] ->
+      {:error, {:internal, inspect({kind, reason})}}
+  end
+
+  defp locked_clean(dir, opts) do
+    active = active(Store.list(dir))
+    result = Store.clean(dir, active)
+    say(opts, clean_line(result))
+    {:ok, result}
+  end
+
+  defp clean_line(%{removed: removed, bytes: bytes, kept: []}),
+    do: "precompiled: cache cleaned, #{length(removed)} removed (#{Output.kb(bytes)})"
+
+  defp clean_line(%{removed: removed, bytes: bytes, kept: kept}) do
+    "precompiled: cache cleaned, #{length(removed)} removed (#{Output.kb(bytes)}), " <>
+      "kept loaded: #{Enum.join(kept, ", ")}"
   end
 
   ## Requests and options
@@ -478,20 +531,31 @@ defmodule Precompiled do
   defp apply_plan(plan, state) do
     t0 = System.monotonic_time(:millisecond)
     %{config: config, opts: opts} = state
+    checked = check_cache(plan.installs, config.dir)
+    plan_bytes = Enum.sum(for {install, :miss} <- checked, do: install.bytes)
+    keep = for {install, {:hit, _path}} <- checked, do: install.app
 
     with {:ok, victims} <-
-           Store.room(config.dir, plan.bytes, opts[:max_bytes], state.active, []),
+           Store.room(config.dir, plan_bytes, opts[:max_bytes], state.active, keep),
          :ok <- noexec(plan.installs, state),
-         {:ok, staged} <- stage_all(plan.installs, state),
-         :ok <- verify_staged(staged, state),
+         {:ok, placed} <- place_all(checked, state),
+         :ok <- verify_placed(placed, state),
          :ok <- Store.evict(config.dir, victims),
-         {:ok, committed} <- commit_all(staged, state),
+         {:ok, committed} <- commit_all(placed, state),
          {:ok, installed} <- activate_all(committed, state) do
       for i <- installed, do: Store.touch(config.dir, i.app, i.version)
       ms = System.monotonic_time(:millisecond) - t0
       say(opts, Output.summary(length(installed), plan.bytes, ms))
       {:ok, installed}
     end
+  end
+
+  # Whether each planned install already has an exact, verified copy on
+  # disk. Checked once, before room is computed, so a hit never counts
+  # toward the bytes a miss needs and is never itself a candidate for
+  # eviction (`keep`, below).
+  defp check_cache(installs, dir) do
+    for i <- installs, do: {i, Store.cached(dir, i.app, i.version, i.build)}
   end
 
   defp noexec(installs, state) do
@@ -514,12 +578,19 @@ defmodule Precompiled do
     end)
   end
 
-  defp stage_all(installs, state) do
-    Enum.reduce_while(installs, {:ok, []}, fn i, {:ok, acc} ->
-      case stage(i, state) do
-        {:ok, staging} -> {:cont, {:ok, acc ++ [{i, staging}]}}
-        error -> {:halt, error}
-      end
+  # {:cached, path} for a hit (nothing downloaded), {:staged, path} for a
+  # miss staged under .staging. Either way `path` has a readable `ebin`
+  # (and `priv`) to run the checks below against.
+  defp place_all(checked, state) do
+    Enum.reduce_while(checked, {:ok, []}, fn
+      {install, {:hit, path}}, {:ok, acc} ->
+        {:cont, {:ok, acc ++ [{install, {:cached, path}}]}}
+
+      {install, :miss}, {:ok, acc} ->
+        case stage(install, state) do
+          {:ok, staging} -> {:cont, {:ok, acc ++ [{install, {:staged, staging}}]}}
+          error -> {:halt, error}
+        end
     end)
   end
 
@@ -547,10 +618,10 @@ defmodule Precompiled do
     end
   end
 
-  defp verify_staged(staged, state) do
-    Enum.find_value(staged, :ok, fn {install, staging} ->
-      with :ok <- elf(install, staging, state.env.cpu),
-           :ok <- conflicts(install, staging) do
+  defp verify_placed(placed, state) do
+    Enum.find_value(placed, :ok, fn {install, {_kind, path}} ->
+      with :ok <- elf(install, path, state.env.cpu),
+           :ok <- conflicts(install, path) do
         nil
       end
     end)
@@ -579,21 +650,27 @@ defmodule Precompiled do
     end
   end
 
-  defp commit_all(staged, state) do
-    Enum.reduce_while(staged, {:ok, []}, fn {install, staging}, {:ok, acc} ->
-      prov = provenance(install, state.batch)
+  # A cached hit is already the store's own entry; only a staged (just
+  # downloaded) install still needs committing.
+  defp commit_all(placed, state) do
+    Enum.reduce_while(placed, {:ok, []}, fn
+      {install, {:cached, path}}, {:ok, acc} ->
+        {:cont, {:ok, acc ++ [{install, path, true}]}}
 
-      case Store.commit(
-             staging,
-             state.config.dir,
-             install.app,
-             install.version,
-             prov,
-             state.active
-           ) do
-        {:ok, path} -> {:cont, {:ok, acc ++ [{install, path}]}}
-        error -> {:halt, error}
-      end
+      {install, {:staged, staging}}, {:ok, acc} ->
+        prov = provenance(install, state.batch)
+
+        case Store.commit(
+               staging,
+               state.config.dir,
+               install.app,
+               install.version,
+               prov,
+               state.active
+             ) do
+          {:ok, path} -> {:cont, {:ok, acc ++ [{install, path, false}]}}
+          error -> {:halt, error}
+        end
     end)
   end
 
@@ -616,13 +693,15 @@ defmodule Precompiled do
 
   # Each app goes on the rollback list before its activation starts, so a
   # half-done one is torn down with the rest (a deactivate with nothing
-  # recorded does nothing).
+  # recorded does nothing). A rolled-back hit is only unloaded: its store
+  # entry, verified before this call, is left as it was.
   defp activate_all(committed, state) do
     result =
-      Enum.reduce_while(committed, {:ok, [], []}, fn {install, path}, {:ok, done, out} ->
+      Enum.reduce_while(committed, {:ok, [], []}, fn {install, path, from_cache?},
+                                                     {:ok, done, out} ->
         done = done ++ [{install.app, path}]
 
-        case guarded(fn -> activate(install, path, state) end) do
+        case guarded(fn -> activate(install, path, from_cache?, state) end) do
           {:ok, item} -> {:cont, {:ok, done, out ++ [item]}}
           {:error, why} -> {:halt, {:error, done, reason(why)}}
         end
@@ -646,7 +725,7 @@ defmodule Precompiled do
     kind, why -> {:error, {:internal, Exception.format_banner(kind, why)}}
   end
 
-  defp activate(install, path, state) do
+  defp activate(install, path, from_cache?, state) do
     # The priv files too: the loader re-hashes each one (a NIF's .so) just
     # before anything loads.
     files = (install.build["ebin"] || []) ++ (install.build["priv"] || [])
@@ -672,7 +751,7 @@ defmodule Precompiled do
          path: path,
          role: install.role,
          bytes: install.bytes,
-         from_cache?: false,
+         from_cache?: from_cache?,
          loaded?: true,
          batch_sequence: if(state.batch[:offline], do: nil, else: state.batch.sequence)
        }}
