@@ -108,11 +108,113 @@ defmodule PrecompiledCacheTest do
     refute :demo_old in apps
   end
 
+  test "LRU eviction evicts the least recently used unloaded entry first, regardless of install order",
+       %{f: f, opts: opts, tmp_dir: dir} do
+    # demo_cache was installed first (in setup) but is given the newer
+    # last_used; demo_other is installed second but given the older one.
+    # Only `last_used` should decide which goes.
+    other = publish_app(f, dir, :demo_other, "1.0.0")
+    Fixture.publish(f, %{"demo_other" => manifest(%{"1.0.0" => [other]})}, sequence: 2)
+    {:ok, _} = Precompiled.install(:demo_other, opts ++ [start: false])
+    :ok = Loader.deactivate(:demo_other, Path.join(opts[:dir], "demo_other-1.0.0"), true)
+
+    set_last_used(opts[:dir], :demo_other, "1.0.0", 1_000)
+    set_last_used(opts[:dir], :demo_cache, "1.0.0", 1_000_000)
+
+    newer = publish_app(f, dir, :demo_new, "1.0.0")
+
+    Fixture.publish(
+      f,
+      %{
+        "demo_other" => manifest(%{"1.0.0" => [other]}),
+        "demo_new" => manifest(%{"1.0.0" => [newer]})
+      },
+      sequence: 3
+    )
+
+    used = ElixirPrecompiled.Device.Store.used_bytes(opts[:dir])
+    plan = Enum.sum(for e <- newer["ebin"] ++ newer["priv"], do: e["size"])
+
+    assert {:ok, [%{app: :demo_new}]} =
+             Precompiled.install(
+               :demo_new,
+               opts ++ [start: false, max_bytes: used + 2 * plan - 1]
+             )
+
+    apps = Precompiled.list(opts) |> Enum.map(& &1.app) |> Enum.sort()
+    assert :demo_cache in apps
+    refute :demo_other in apps
+  end
+
   test "clean/1 removes the cache but not what is loaded", %{opts: opts} do
     {:ok, _} = Precompiled.install(:demo_cache, opts)
     assert {:ok, %{kept: [:demo_cache], removed: []}} = Precompiled.clean(opts)
     :ok = Loader.deactivate(:demo_cache, Path.join(opts[:dir], "demo_cache-1.0.0"), true)
     assert {:ok, %{removed: [:demo_cache]}} = Precompiled.clean(opts)
     assert Precompiled.list(opts) == []
+  end
+
+  test "clean/1 refuses an unknown option and removes nothing", %{opts: opts} do
+    assert {:error, {:bad_option, :bogus}} = Precompiled.clean(Keyword.put(opts, :bogus, 1))
+    # demo_cache (unloaded since setup) is still there: the bad call never
+    # reached the store, neither the real one nor a silently wrong default.
+    assert {:ok, %{removed: [:demo_cache]}} = Precompiled.clean(opts)
+  end
+
+  test "list/1 refuses an unknown option instead of silently listing the wrong store", %{
+    opts: opts
+  } do
+    loud = Keyword.put(opts, :quiet, false)
+
+    out =
+      ExUnit.CaptureIO.capture_io(fn ->
+        send(self(), {:result, Precompiled.list(Keyword.put(loud, :bogus, 1))})
+      end)
+
+    assert_received {:result, []}
+    assert out =~ "bad_option"
+    assert out =~ "bogus"
+  end
+
+  test "a failed activation of a cache hit leaves last_used unchanged", %{
+    f: f,
+    opts: opts,
+    tmp_dir: dir
+  } do
+    source = """
+    defmodule DemoCacheFail do
+      use Application
+      def start(_type, _args), do: {:error, :nope}
+    end
+    """
+
+    build =
+      publish_app(f, dir, :demo_cache_fail, "1.0.0", source: source, mod: {DemoCacheFail, []})
+
+    Fixture.publish(f, %{"demo_cache_fail" => manifest(%{"1.0.0" => [build]})}, sequence: 2)
+
+    # First attempt: a real miss, downloaded and committed, but activation
+    # fails, so it is now a cache entry nothing has ever touched.
+    assert {:error, {:start_failed, :demo_cache_fail, _}} =
+             Precompiled.install(:demo_cache_fail, opts)
+
+    set_last_used(opts[:dir], :demo_cache_fail, "1.0.0", 12_345)
+
+    # Second attempt: a cache hit (no download), still fails to start.
+    assert {:error, {:start_failed, :demo_cache_fail, _}} =
+             Precompiled.install(:demo_cache_fail, opts)
+
+    assert last_used(opts[:dir], :demo_cache_fail, "1.0.0") == 12_345
+  end
+
+  defp set_last_used(dir, app, vsn, t) do
+    path = Path.join([dir, "#{app}-#{vsn}", ".precompiled.json"])
+    prov = path |> File.read!() |> :json.decode() |> Map.put("last_used", t)
+    File.write!(path, :json.encode(prov))
+  end
+
+  defp last_used(dir, app, vsn) do
+    path = Path.join([dir, "#{app}-#{vsn}", ".precompiled.json"])
+    path |> File.read!() |> :json.decode() |> Map.fetch!("last_used")
   end
 end

@@ -179,7 +179,7 @@ defmodule Precompiled do
   """
   @spec list(keyword()) :: [Precompiled.Installed.t()]
   def list(opts \\ []) do
-    with {:ok, opts} <- normalize_opts(Keyword.take(opts, @common_keys), @common_keys),
+    with {:ok, opts} <- common_opts(opts),
          :ok <- Store.check_root(opts[:dir]) do
       items = opts[:dir] |> Store.list() |> Enum.map(&installed/1)
       for i <- items, do: say(opts, list_line(i))
@@ -238,7 +238,7 @@ defmodule Precompiled do
   @spec clean(keyword()) ::
           {:ok, %{removed: [atom()], bytes: non_neg_integer(), kept: [atom()]}} | {:error, term()}
   def clean(opts \\ []) do
-    with {:ok, opts} <- normalize_opts(Keyword.take(opts, @common_keys), @common_keys) do
+    with {:ok, opts} <- common_opts(opts) do
       dir = Path.expand(opts[:dir])
 
       Store.with_lock(
@@ -337,6 +337,15 @@ defmodule Precompiled do
   end
 
   defp normalize_opts(other, _known), do: {:error, {:bad_option, other}}
+
+  # list/1 and clean/1 take only @common_keys, but accept the same opts
+  # list as install/2 or uninstall/2 without refusing it: a true unknown
+  # key (a typo) is still refused, everything else is just unused.
+  defp common_opts(opts) do
+    with {:ok, opts} <- normalize_opts(opts, @install_keys ++ @uninstall_keys) do
+      {:ok, Keyword.take(opts, @common_keys)}
+    end
+  end
 
   @required [:dir, :start, :closure, :dry_run, :quiet, :max_closure, :max_bytes, :lock_retries]
   @optional [:report, :clock_synchronized?, :allow, :env]
@@ -545,9 +554,18 @@ defmodule Precompiled do
          {:ok, installed} <- activate_all(committed, state) do
       for i <- installed, do: Store.touch(config.dir, i.app, i.version)
       ms = System.monotonic_time(:millisecond) - t0
-      say(opts, Output.summary(length(installed), plan.bytes, ms))
+      say(opts, summary_line(installed, ms))
       {:ok, installed}
     end
+  end
+
+  # Only a miss downloaded anything: the summary counts those bytes, and
+  # names how many of the rest came from the cache instead.
+  defp summary_line(installed, ms) do
+    {hits, misses} = Enum.split_with(installed, & &1.from_cache?)
+    miss_bytes = Enum.sum(for i <- misses, do: i.bytes)
+    line = Output.summary(length(installed), miss_bytes, ms)
+    if hits == [], do: line, else: "#{line} (#{length(hits)} from cache)"
   end
 
   # Whether each planned install already has an exact, verified copy on
@@ -741,7 +759,8 @@ defmodule Precompiled do
              start: state.opts[:start]
            ) do
       for w <- warnings, do: say(state.opts, Output.line(name_vsn(install), "WARN", w))
-      say(state.opts, Output.line(name_vsn(install), "OK", path))
+      detail = if from_cache?, do: "#{path} (cached)", else: path
+      say(state.opts, Output.line(name_vsn(install), "OK", detail))
 
       {:ok,
        %Precompiled.Installed{
