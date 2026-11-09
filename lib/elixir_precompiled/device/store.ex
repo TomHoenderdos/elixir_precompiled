@@ -47,7 +47,6 @@ defmodule ElixirPrecompiled.Device.Store do
   # one pid; an installed app whose start/2 calls install again waits out
   # the retries and gets {:error, :busy}. No Mix, no Hex.
 
-  alias ElixirPrecompiled.Device.Env
   alias ElixirPrecompiled.Fetch
   alias ElixirPrecompiled.Match
 
@@ -384,14 +383,15 @@ defmodule ElixirPrecompiled.Device.Store do
   @doc false
   @spec list(Path.t()) :: [entry_info()]
   def list(dir) do
-    for %{app: app, provenance: prov} = e <- entries(Path.expand(dir)),
-        app != nil and is_map(prov),
-        do: %{app: app, version: e.version, path: e.path, provenance: prov, bytes: e.bytes}
+    for %{provenance: prov} = e <- entries(Path.expand(dir)),
+        is_map(prov),
+        do: %{app: app(e), version: e.version, path: e.path, provenance: prov, bytes: e.bytes}
   end
 
   # Every directory named like an entry, with its provenance (nil when it
-  # has none readable) and its app (nil when no such atom exists: such an
-  # app was never loaded here).
+  # has none readable). The app stays the string from the name: after a
+  # reboot no atom exists yet for a cached app this VM has not named, and
+  # the entry is still a valid cache entry.
   defp entries(dir) do
     for name <- Enum.sort(ls(dir)),
         entry_dir_name?(name),
@@ -409,12 +409,21 @@ defmodule ElixirPrecompiled.Device.Store do
     end
   end
 
+  # Only for a name entry_dir_name?/1 accepted: the app ([a-z][a-z0-9_]*)
+  # has no "-", so the version starts after the first one.
   defp app_vsn(name) do
-    case Env.split(name) do
-      {:ok, app, vsn} -> {app, vsn}
-      :error -> {nil, nil}
-    end
+    [app, vsn] = String.split(name, "-", parts: 2)
+    {app, vsn}
   end
+
+  # The atom for an entry's app, made only here, at the public boundary
+  # (list/1, clean/2), and only for an entry with a readable provenance
+  # whose name passed @entry_re. That is bounded: only this VM's uid can
+  # create an entry (ensure_root/1 refuses a store others can write), the
+  # store is size-capped, and sweep/1 removes entries without provenance.
+  defp app(%{app: app}), do: String.to_atom(app)
+
+  defp named?(app, atoms), do: Enum.any?(atoms, &(Atom.to_string(&1) == app))
 
   @doc false
   # Everything under the store but .trust and the marker.
@@ -471,7 +480,7 @@ defmodule ElixirPrecompiled.Device.Store do
       if store?(dir) do
         dir
         |> entries()
-        |> Enum.reject(&(kept?(&1, active, in_use) or &1.app in keep))
+        |> Enum.reject(&(kept?(&1, active, in_use) or named?(&1.app, keep)))
         |> Enum.sort_by(&{last_used(&1), &1.name})
       else
         []
@@ -507,7 +516,7 @@ defmodule ElixirPrecompiled.Device.Store do
   defp last_used(_), do: 0
 
   defp kept?(%{app: app, path: path}, active, in_use),
-    do: (app != nil and Map.has_key?(active, app)) or in_use?(path, in_use)
+    do: named?(app, Map.keys(active)) or in_use?(path, in_use)
 
   @doc false
   # Removes every entry that is not active or in use, and .staging. .trust
@@ -534,7 +543,7 @@ defmodule ElixirPrecompiled.Device.Store do
   end
 
   defp apps(entries),
-    do: Enum.sort(for(%{app: app} <- entries, app != nil, uniq: true, do: app))
+    do: Enum.sort(for(%{provenance: %{}} = e <- entries, uniq: true, do: app(e)))
 
   @doc false
   # Removes every cached version of `app`; refuses, removing nothing, when
@@ -543,7 +552,8 @@ defmodule ElixirPrecompiled.Device.Store do
   def remove(dir, app) do
     dir = Path.expand(dir)
     in_use = in_use()
-    mine = if store?(dir), do: Enum.filter(entries(dir), &(&1.app == app)), else: []
+    name = Atom.to_string(app)
+    mine = if store?(dir), do: Enum.filter(entries(dir), &(&1.app == name)), else: []
 
     if Enum.any?(mine, &in_use?(&1.path, in_use)) do
       {:error, {:in_use, app}}

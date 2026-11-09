@@ -87,7 +87,8 @@ defmodule ElixirPrecompiled.Device.Env do
   # so a pre-release (foo-1.0.0-rc.1) keeps its whole version and a dashed
   # name (my-app-1.0.0) keeps its whole name. The version must parse, and
   # the app must already be an atom. Device.Store names its entries the
-  # same way.
+  # same way but parses them itself, without the atom rule: a cached app
+  # need not be named in this VM yet.
   @doc false
   @spec split(String.t()) :: {:ok, atom(), String.t()} | :error
   def split(name) do
