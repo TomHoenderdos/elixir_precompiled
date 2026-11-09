@@ -90,11 +90,11 @@ defmodule DeviceQemuTest do
     assert value(":code.which(:recon)") == ":non_existing"
     assert value(":code.which(Circuits.GPIO)") == ":non_existing"
 
+    # circuits_gpio stays cached on /data, unloaded, although nothing in
+    # this VM has named the app since the reboot.
     assert value("Enum.sort(Enum.map(Precompiled.list(), &{&1.app, &1.loaded?}))") ==
-             "[recon: false]"
+             "[circuits_gpio: false, recon: false]"
 
-    # circuits_gpio stays cached on /data, unloaded. list/0 leaves it out
-    # after a reboot: it names only apps whose atom exists in this VM.
     assert value(~s|File.dir?("/data/precompiled/circuits_gpio-2.3.1")|) == "true"
 
     DeviceQemu.wait_online!()
@@ -121,7 +121,8 @@ defmodule DeviceQemuTest do
     # circuits_gpio is cached and not loaded since the reboot; recon is loaded.
     assert value(~s|File.dir?("/data/precompiled/circuits_gpio-2.3.1")|) == "true"
 
-    assert value("Precompiled.clean()") =~ "{:ok, %{"
+    assert value("with {:ok, r} <- Precompiled.clean(), do: {r.removed, r.kept}") ==
+             "{[:circuits_gpio], [:recon]}"
 
     assert value("Enum.sort(Enum.map(Precompiled.list(), &{&1.app, &1.loaded?}))") ==
              "[recon: true]"

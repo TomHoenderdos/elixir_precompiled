@@ -154,6 +154,26 @@ defmodule PrecompiledCacheTest do
     assert Precompiled.list(opts) == []
   end
 
+  test "after a reboot list/1 and clean/1 name a cached app this VM never named",
+       %{opts: opts} do
+    # Written the way a previous boot left it: no atom for the app exists.
+    name = "zzfresh#{System.unique_integer([:positive])}"
+    assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+    path = Path.join(opts[:dir], "#{name}-1.0.0")
+    File.mkdir_p!(Path.join(path, "ebin"))
+    File.write!(Path.join([path, "ebin", "#{name}.app"]), "{application,x,[]}.\n")
+    prov = %{"package" => name, "version" => "1.0.0", "last_used" => 0}
+    File.write!(Path.join(path, ".precompiled.json"), :json.encode(prov))
+
+    listed = for i <- Precompiled.list(opts), do: {Atom.to_string(i.app), i.loaded?}
+    assert {name, false} in listed
+    assert {"demo_cache", false} in listed
+
+    assert {:ok, %{removed: removed, kept: []}} = Precompiled.clean(opts)
+    assert Enum.map(removed, &Atom.to_string/1) == Enum.sort(["demo_cache", name])
+    refute File.exists?(path)
+  end
+
   test "clean/1 refuses an unknown option and removes nothing", %{opts: opts} do
     assert {:error, {:bad_option, :bogus}} = Precompiled.clean(Keyword.put(opts, :bogus, 1))
     # demo_cache (unloaded since setup) is still there: the bad call never

@@ -549,11 +549,9 @@ defmodule ElixirPrecompiled.Device.StoreTest do
       assert [%{app: :jason}] = Store.list(dir)
     end
 
-    test "list skips apps with no atom and gives each entry's bytes", %{tmp_dir: dir} do
+    test "list gives each entry's bytes and skips one without provenance", %{tmp_dir: dir} do
       put_entry(dir, :recon, "2.5.6")
-      unknown = Path.join(dir, "zzq_never_an_atom_store-1.0.0")
-      File.mkdir_p!(unknown)
-      File.write!(Path.join(unknown, ".precompiled.json"), "{}")
+      File.mkdir_p!(Path.join(dir, "#{fresh_name()}-1.0.0/ebin"))
       assert [%{app: :recon, path: path, bytes: bytes}] = Store.list(dir)
       assert path == Path.join(dir, "recon-2.5.6")
       assert bytes > 0
@@ -574,6 +572,70 @@ defmodule ElixirPrecompiled.Device.StoreTest do
       [%{provenance: %{"last_used" => t}}] = Store.list(dir)
       assert t >= System.os_time(:second) - 5
     end
+  end
+
+  # A fresh VM after a reboot: an entry on disk whose app name has never
+  # been an atom in this VM.
+  describe "entries whose app is not an atom yet" do
+    test "list/1 includes it", %{tmp_dir: dir} do
+      {name, path} = put_fresh(dir, 100)
+      assert [%{app: app, version: "1.0.0", path: ^path}] = Store.list(dir)
+      assert Atom.to_string(app) == name
+    end
+
+    test "sweep keeps it", %{tmp_dir: dir} do
+      {name, path} = put_fresh(dir, 100)
+      :ok = Store.sweep(dir)
+      assert File.regular?(Path.join(path, ".precompiled.json"))
+      assert [%{app: app}] = Store.list(dir)
+      assert Atom.to_string(app) == name
+    end
+
+    test "clean removes it and reports it", %{tmp_dir: dir} do
+      {name, path} = put_fresh(dir, 100)
+      assert %{removed: [app], kept: [], bytes: bytes} = Store.clean(dir, %{})
+      assert Atom.to_string(app) == name
+      assert bytes > 400
+      refute File.exists?(path)
+    end
+
+    test "eviction counts it", %{tmp_dir: dir} do
+      {_name, fresh} = put_fresh(dir, 100)
+      put_entry(dir, :jason, "1.4.5", :binary.copy("b", 400), 200)
+      used = Store.used_bytes(dir)
+      assert {:ok, [^fresh]} = Store.room(dir, 250, used + 100, %{}, [])
+      assert :ok = Store.make_room(dir, 250, used + 100, %{}, [])
+      assert [%{app: :jason}] = Store.list(dir)
+      refute File.exists?(fresh)
+    end
+
+    test "remove takes it by name", %{tmp_dir: dir} do
+      {name, path} = put_fresh(dir, 100)
+      [%{app: app}] = Store.list(dir)
+      assert Atom.to_string(app) == name
+      assert :ok = Store.remove(dir, app)
+      refute File.exists?(path)
+    end
+  end
+
+  defp fresh_name() do
+    name = "zzfresh#{System.unique_integer([:positive])}"
+    assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+    name
+  end
+
+  # Written straight to disk, the way a previous boot left it: nothing in
+  # this VM names the app.
+  defp put_fresh(dir, last_used) do
+    name = fresh_name()
+    path = Path.join(dir, "#{name}-1.0.0")
+    File.mkdir_p!(Path.join(path, "ebin"))
+    File.mkdir_p!(Path.join(path, "priv"))
+    File.write!(Path.join([path, "ebin", "#{name}.app"]), "{application,x,[]}.\n")
+    File.write!(Path.join([path, "priv", "data.bin"]), :binary.copy("a", 400))
+    prov = %{"package" => name, "version" => "1.0.0", "last_used" => last_used}
+    File.write!(Path.join(path, ".precompiled.json"), :json.encode(prov))
+    {name, path}
   end
 
   describe "noexec/2" do
