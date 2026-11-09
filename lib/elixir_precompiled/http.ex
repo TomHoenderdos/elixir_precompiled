@@ -57,7 +57,8 @@ defmodule ElixirPrecompiled.HTTP do
           connect_timeout_ms: pos_integer(),
           headers: [{String.t(), String.t()}],
           allowed_origins: [String.t()],
-          offline: boolean()
+          offline: boolean(),
+          cacerts_path: Path.t()
         ]
   @type error ::
           String.t()
@@ -75,7 +76,8 @@ defmodule ElixirPrecompiled.HTTP do
     :connect_timeout_ms,
     :headers,
     :allowed_origins,
-    :offline
+    :offline,
+    :cacerts_path
   ]
 
   @spec get(String.t(), opts()) :: {:ok, binary()} | {:error, error()}
@@ -103,7 +105,7 @@ defmodule ElixirPrecompiled.HTTP do
     with :ok <- online(opts),
          :ok <- before(deadline, now),
          :ok <- start_httpc(),
-         {:ok, cacerts} <- cacerts() do
+         {:ok, cacerts} <- cacerts_for(opts) do
       url
       |> start_request(opts, cacerts, 0, {deadline, deadline - now}, origins(url, opts))
       |> await_response()
@@ -143,12 +145,28 @@ defmodule ElixirPrecompiled.HTTP do
   defp origin(%URI{scheme: s, host: h, port: p}), do: {s, h && String.downcase(h), p}
 
   @doc false
+  # The CA certificates a request verifies the server with, in this order:
+  # the :cacerts_path option, the environment's file (below), the OS store
+  # (:public_key.cacerts_get/0), then CAStore's bundle when the CAStore
+  # package is loaded. A file that is named but unusable is an error, never
+  # a quiet fallback to another set.
+  @spec cacerts_for(keyword()) :: {:ok, [term()]} | {:error, String.t()}
+  def cacerts_for(opts) do
+    case Keyword.get(opts, :cacerts_path) do
+      path when is_binary(path) -> cacerts(fn -> file_cacerts(path) end)
+      _ -> cacerts()
+    end
+  end
+
+  @doc false
   # :public_key.cacerts_get/0 raises when the OS has no certificate store; a
-  # device without one must get a readable error line, not an exception.
+  # device without one must get a readable error line, not an exception. No
+  # certificates at all is an error too: TLS is never tried without any.
   @spec cacerts((-> [term()] | {:error, String.t()})) :: {:ok, [term()]} | {:error, String.t()}
   def cacerts(loader \\ &default_cacerts/0) do
     case loader.() do
       {:error, _} = error -> error
+      [] -> {:error, "no CA certificates"}
       certs -> {:ok, certs}
     end
   rescue
@@ -160,16 +178,40 @@ defmodule ElixirPrecompiled.HTTP do
   # as Hex's does; verification itself is never turned off.
   defp default_cacerts() do
     case System.get_env("ELIXIR_PRECOMPILED_CACERTS_PATH") || System.get_env("HEX_CACERTS_PATH") do
-      nil ->
-        :public_key.cacerts_get()
-
-      path ->
-        try do
-          pem_cacerts(path)
-        rescue
-          e -> {:error, "CA certificate file #{path}: #{Exception.message(e)}"}
-        end
+      nil -> store_cacerts(&:public_key.cacerts_get/0, CAStore)
+      path -> file_cacerts(path)
     end
+  end
+
+  @doc false
+  # The OS store, else (when it is empty or there is none) the bundle of
+  # `castore`, the CAStore package, when that is loaded: a firmware has no
+  # OS store but may carry CAStore. Called through apply/3, so this library
+  # does not depend on it.
+  @spec store_cacerts((-> [term()]), module()) :: [term()] | {:error, String.t()}
+  def store_cacerts(os_loader, castore) do
+    case os_store(os_loader) do
+      [_ | _] = certs -> certs
+      _ -> castore_cacerts(castore)
+    end
+  end
+
+  defp os_store(loader) do
+    loader.()
+  rescue
+    _ -> []
+  end
+
+  defp castore_cacerts(castore) do
+    if Code.ensure_loaded?(castore),
+      do: file_cacerts(apply(castore, :file_path, [])),
+      else: {:error, "no CA certificates"}
+  end
+
+  defp file_cacerts(path) do
+    pem_cacerts(path)
+  rescue
+    e -> {:error, "CA certificate file #{path}: #{Exception.message(e)}"}
   end
 
   @doc false

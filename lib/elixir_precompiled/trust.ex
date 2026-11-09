@@ -13,6 +13,9 @@ defmodule ElixirPrecompiled.Trust do
   to return an error tuple instead of raising, and the public functions that
   touch the network or disk also carry a function-level `rescue` as a second
   line of defense.
+
+  A batch read from a bundle (`bundle: true`) is bounded by its own expiry
+  instead of the 24 h staleness rule.
   """
 
   alias ElixirPrecompiled.Output
@@ -102,10 +105,14 @@ defmodule ElixirPrecompiled.Trust do
   `config.home`, named by the source URL and the shipped root's first root
   key, so two sources (or two trust anchors) never share replay state.
   Always keyed by the SHIPPED root, so a rotation keeps the same dir.
+  `config[:state_key]`, when set, names it instead of the source URL: the
+  sources that share one key (a device's network source and its bundles)
+  share one sequence floor.
   """
   @spec state_dir(map(), root()) :: Path.t()
   def state_dir(config, shipped_root) do
-    hash = sha256_hex(config.source <> "|" <> first_root_keyid(shipped_root))
+    key = Map.get(config, :state_key) || config.source
+    hash = sha256_hex(key <> "|" <> first_root_keyid(shipped_root))
     Path.join(config.home, binary_part(hash, 0, 16))
   end
 
@@ -559,7 +566,7 @@ defmodule ElixirPrecompiled.Trust do
          {:ok, expires_at} <- parse_instant(exp),
          :ok <- not_from_future(issued_at, now),
          :ok <- lifetime(issued_at, expires_at),
-         :ok <- fresh(issued_at, now),
+         :ok <- fresh(issued_at, now, Map.get(config, :bundle, false)),
          :ok <- not_expired(expires_at, now),
          :ok <- monotonic(dir, seq),
          :ok <- write_state(dir, seq) do
@@ -596,7 +603,11 @@ defmodule ElixirPrecompiled.Trust do
       else: :ok
   end
 
-  defp fresh(issued, now) do
+  # A bundle's batch is bounded by its own expiry (checked next), not by
+  # the 24 h rule: a bundle on a USB stick must outlive its first day.
+  defp fresh(_issued, _now, true), do: :ok
+
+  defp fresh(issued, now, _bundle?) do
     if DateTime.diff(now, issued, :second) > @max_age_seconds,
       do: {:error, "batch stale: issued #{DateTime.to_iso8601(issued)}, more than 24 h ago"},
       else: :ok
