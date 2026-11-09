@@ -1053,31 +1053,63 @@ defmodule ElixirPrecompiled.Fetch do
   plain directories holding only regular files, exactly the entry's paths;
   each has the entry's mode and size, and its bytes hash to the entry's
   sha256; and the .app owns exactly the beams. A priv the entry does not
-  ship is Mix's link to deps/<dep>/priv and is not looked at: Mix makes and
-  remakes that link itself from the sources deps.get verified, so it holds
-  nothing an install placed. Other top-level entries (`.mix`, a
-  `consolidated` dir, Mix's `include` link) are not looked at either: Mix
+  ship must be absent, or Mix's symlink to deps/<dep>/priv, which is not
+  followed: Mix makes and remakes that link itself from the sources
+  deps.get verified, so it holds nothing an install placed. A real priv
+  dir, even an empty one, is refused. Other top-level entries (`.mix`, a
+  `consolidated` dir, Mix's `include` link) are not looked at: Mix
   writes them, and none of them is code the build's .app loads.
   """
   @spec installed_as?(Path.t(), atom(), map()) :: boolean()
   def installed_as?(build_lib, dep, entry),
-    do: installed_at?(Path.join(build_lib, Atom.to_string(dep)), dep, entry)
+    do: installed_at?(Path.join(build_lib, Atom.to_string(dep)), dep, entry, mix_priv_link: true)
 
   @doc """
   `installed_as?/3` for a directory named anything (`<app>-<vsn>` in a
   store, say): `dir` is the entry's own directory and `dep` the app whose
-  `.app` it must hold.
+  `.app` it must hold. A `priv` the entry does not ship must be absent:
+  even an empty one is refused, since `:code.priv_dir/1` points there.
+  Only with `mix_priv_link: true` (a Mix project's `_build`) may it be a
+  symlink to `.../<dep>/priv`, Mix's link to the dep's sources.
   """
-  @spec installed_at?(Path.t(), atom(), map()) :: boolean()
-  def installed_at?(dir, dep, entry) do
+  @spec installed_at?(Path.t(), atom(), map(), keyword()) :: boolean()
+  def installed_at?(dir, dep, entry, opts \\ []) do
     files = (entry["ebin"] || []) ++ (entry["priv"] || [])
-    tops = if (entry["priv"] || []) == [], do: ["ebin"], else: ["ebin", "priv"]
 
     validate(files, dep) == :ok and real_dir?(dir) and
-      on_disk(dir, tops) == {:ok, MapSet.new(files, & &1["path"])} and
+      priv_ok?(dir, dep, entry, opts) and
+      on_disk(dir, tops(entry)) == {:ok, MapSet.new(files, & &1["path"])} and
       Enum.all?(files, &same_file?(dir, &1)) and modules_ok(dir, dep) == :ok
   rescue
     _ -> false
+  end
+
+  defp ships_priv?(entry), do: (entry["priv"] || []) != []
+
+  defp tops(entry), do: if(ships_priv?(entry), do: ["ebin", "priv"], else: ["ebin"])
+
+  defp priv_ok?(dir, dep, entry, opts),
+    do: ships_priv?(entry) or undeclared_priv_ok?(dir, dep, opts)
+
+  defp undeclared_priv_ok?(dir, dep, opts) do
+    priv = Path.join(dir, "priv")
+
+    case File.lstat(priv) do
+      {:error, :enoent} -> true
+      {:ok, %File.Stat{type: :symlink}} -> opts[:mix_priv_link] == true and mix_link?(priv, dep)
+      _ -> false
+    end
+  end
+
+  # Mix links _build/<env>/lib/<dep>/priv to deps/<dep>/priv.
+  defp mix_link?(priv, dep) do
+    case :file.read_link_all(String.to_charlist(priv)) do
+      {:ok, target} ->
+        Enum.take(Path.split(to_string(target)), -2) == [Atom.to_string(dep), "priv"]
+
+      _ ->
+        false
+    end
   end
 
   # Relative paths of every regular file under `tops`, walked by lstat: a

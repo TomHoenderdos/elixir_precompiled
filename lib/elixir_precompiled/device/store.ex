@@ -35,10 +35,12 @@ defmodule ElixirPrecompiled.Device.Store do
   # cached/4 never remove an entry whose app the caller names as active, or
   # whose ebin is on the code path, or that a loaded module was loaded from.
   #
-  # Ownership. ensure_root/1 creates the store 0700 with its marker and
-  # refuses a store that is a symlink, is writable by group or others, or is
-  # not owned by this VM's uid: the window between a `.so`'s hash check and
-  # its dlopen is then open only to code that already runs as that uid.
+  # Ownership. ensure_root/1 creates a missing store dir with mode 0700 and
+  # writes its marker. For any store dir, new or existing, it enforces only
+  # this: not a symlink, not writable by group or others, and owned by this
+  # VM's uid (an existing 0755 dir passes). The window between a `.so`'s
+  # hash check and its dlopen is then open only to code that already runs
+  # as that uid.
   #
   # One VM per store. Calls that change the store run under with_lock/2,
   # which serializes this node's callers only. The lock is reentrant for
@@ -513,8 +515,9 @@ defmodule ElixirPrecompiled.Device.Store do
   @doc false
   # Run at the start of every call, under the lock: puts back an entry a
   # crashed replace moved aside, removes what a crashed removal left,
-  # staging dirs older than an hour, and every entry dir without a readable
-  # provenance. A valid entry is never touched. Never raises.
+  # staging dirs older than an hour, every entry dir without a readable
+  # provenance, and every other top-level name but .trust, .staging and the
+  # marker. A valid entry is never touched. Never raises.
   @spec sweep(Path.t()) :: :ok
   def sweep(dir) do
     dir = Path.expand(dir)
@@ -556,13 +559,18 @@ defmodule ElixirPrecompiled.Device.Store do
     end
   end
 
+  # Anything at the top level but .trust, .staging, the marker and entry
+  # directories is junk that would otherwise count against the cap forever:
+  # a file or symlink named like an entry included.
   defp sweep_entries(dir) do
     in_use = in_use()
 
-    for name <- ls(dir), entry_dir_name?(name), path = Path.join(dir, name) do
-      case File.lstat(path) do
-        {:ok, %File.Stat{type: :symlink}} -> File.rm(path)
-        {:ok, %File.Stat{type: :directory}} -> sweep_entry(dir, path, in_use)
+    for name <- ls(dir), name not in [@trust, @staging, @marker] do
+      path = Path.join(dir, name)
+
+      case {entry_dir_name?(name), File.lstat(path)} do
+        {true, {:ok, %File.Stat{type: :directory}}} -> sweep_entry(dir, path, in_use)
+        {_, {:ok, _}} -> discard(dir, path)
         _ -> :ok
       end
     end
