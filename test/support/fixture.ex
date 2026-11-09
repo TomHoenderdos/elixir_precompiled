@@ -223,7 +223,7 @@ defmodule ElixirPrecompiled.Fixture do
   defp put(k, v), do: Agent.update(__MODULE__, &Map.put(&1, k, v))
 
   @spec put_in_map(atom(), term(), term()) :: :ok
-  defp put_in_map(k, key, v), do: Agent.update(__MODULE__, &put_in(&1, [k, key], v))
+  def put_in_map(k, key, v), do: Agent.update(__MODULE__, &put_in(&1, [k, key], v))
 
   defp batch_maps(:manifests_v2, hashes, merge?),
     do: %{"manifests" => other_hashes(:manifests, merge?), "manifests_v2" => hashes}

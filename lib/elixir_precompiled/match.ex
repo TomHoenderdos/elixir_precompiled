@@ -373,17 +373,21 @@ defmodule ElixirPrecompiled.Match do
   @spec compile_env_from_app(Path.t()) :: [map()] | nil
   def compile_env_from_app(app_path) do
     case :file.consult(String.to_charlist(app_path)) do
-      {:ok, [{:application, _app, props}]} ->
-        for {app, path, value} <- Keyword.get(props, :compile_env, []) do
-          %{
-            "app" => Atom.to_string(app),
-            "path" => Enum.map(List.wrap(path), &to_string/1),
-            "value" => Base.url_encode64(:erlang.term_to_binary(value), padding: false)
-          }
-        end
+      {:ok, [{:application, _app, props}]} -> compile_env_items(props)
+      _ -> nil
+    end
+  end
 
-      _ ->
-        nil
+  @doc false
+  # The compile_env items of a parsed .app's properties, in manifest form.
+  @spec compile_env_items(keyword()) :: [map()]
+  def compile_env_items(props) do
+    for {app, path, value} <- Keyword.get(props, :compile_env, []) do
+      %{
+        "app" => Atom.to_string(app),
+        "path" => Enum.map(List.wrap(path), &to_string/1),
+        "value" => Base.url_encode64(:erlang.term_to_binary(value), padding: false)
+      }
     end
   end
 
