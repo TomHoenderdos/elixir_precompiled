@@ -607,7 +607,9 @@ defmodule Precompiled do
   end
 
   defp activate(install, path, state) do
-    files = install.build["ebin"] || []
+    # The priv files too: the loader re-hashes each one (a NIF's .so) just
+    # before anything loads.
+    files = (install.build["ebin"] || []) ++ (install.build["priv"] || [])
 
     with {:ok, app_items} <- app_compile_env(install, path),
          {:ok, warnings} <-
