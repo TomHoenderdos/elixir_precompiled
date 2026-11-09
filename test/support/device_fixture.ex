@@ -116,4 +116,13 @@ defmodule ElixirPrecompiled.DeviceFixture do
       Map.new(overrides)
     )
   end
+
+  @spec elf_header(32 | 64, atom()) :: binary()
+  def elf_header(class, machine) do
+    {em, ^machine} = Enum.find(ElixirPrecompiled.Device.Elf.machines(), &(elem(&1, 1) == machine))
+    class_byte = if class == 64, do: 2, else: 1
+    # 16-byte identification, e_type 3 (shared object), e_machine, then
+    # zeros to the 64-byte header size.
+    <<0x7F, "ELF", class_byte, 1, 1, 0, 0::64, 3::little-16, em::little-16, 0::size(44)-unit(8)>>
+  end
 end
