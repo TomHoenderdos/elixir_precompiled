@@ -11,7 +11,12 @@ defmodule ElixirPrecompiled.TestPeer do
 
   @spec start_embedded() :: {pid(), node()}
   def start_embedded() do
-    dirs = Enum.map([:compile, :crypto, Kernel, Logger, ElixirPrecompiled.Device.Loader], &ebin/1)
+    # A release ships consolidated protocols: this VM's go first, so they
+    # are the ones loaded below.
+    dirs =
+      consolidated() ++
+        Enum.map([:compile, :crypto, Kernel, Logger, ElixirPrecompiled.Device.Loader], &ebin/1)
+
     pa = Enum.flat_map(dirs, &[~c"-pa", String.to_charlist(&1)])
 
     {peer, node} =
@@ -25,6 +30,10 @@ defmodule ElixirPrecompiled.TestPeer do
     # crypto's on_load refuses to run in embedded mode before its app is.
     :ok = :peer.call(peer, :application, :load, [:crypto])
 
+    # Ahead of Elixir's own ebin whatever order -pa gave them.
+    for dir <- consolidated(),
+        do: true = :peer.call(peer, :code, :add_patha, [String.to_charlist(dir)])
+
     for dir <- dirs do
       :ok = :peer.call(peer, :code, :ensure_modules_loaded, [modules(dir)])
     end
@@ -32,6 +41,10 @@ defmodule ElixirPrecompiled.TestPeer do
     {:ok, _} = :peer.call(peer, :application, :ensure_all_started, [:elixir])
     {:ok, _} = :peer.call(peer, :application, :ensure_all_started, [:logger])
     {peer, node}
+  end
+
+  defp consolidated() do
+    if Protocol.consolidated?(Inspect), do: [ebin(Inspect)], else: []
   end
 
   defp ebin(mod), do: mod |> :code.which() |> to_string() |> Path.dirname()

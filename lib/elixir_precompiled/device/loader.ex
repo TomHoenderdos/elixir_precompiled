@@ -8,6 +8,11 @@ defmodule ElixirPrecompiled.Device.Loader do
   # section 6). Nothing here runs at boot: only an install or uninstall call
   # reaches it.
   #
+  # Serialization. activate/5, deactivate/3 and rollback/1 are safe only
+  # when every call runs under the store lock (Store.with_lock/2): the
+  # conflict checks, the record of what was loaded and the code path are
+  # read and changed without any lock of their own.
+  #
   # Code path (6.1). The install's ebin is appended with :code.add_pathz/1,
   # as exactly the string Path.join(install_path, "ebin"), so the store's
   # in-use check sees the same name. The release's own code always wins a
@@ -20,7 +25,11 @@ defmodule ElixirPrecompiled.Device.Loader do
   # Loading (6.3). The .app and every beam are read once and checked
   # against the build's file list (sha256 and size). The app is loaded from
   # the parsed bytes ({:application, app, props}) and the modules from the
-  # verified binaries, so nothing is re-read from disk after the check. The
+  # verified binaries, so nothing is re-read from disk after the check.
+  # Every priv file in the list is re-hashed in the same step, just before
+  # anything loads: a NIF's .so is dlopened from disk by the package's own
+  # on_load, so this narrows the window between the check and the dlopen to
+  # the activation itself. The
   # modules load with :code.atomic_load/1; the -on_load ones it refuses load
   # afterwards one at a time, in .app order, with :code.load_binary/3.
   # Explicit loading works the same in embedded mode, where nothing
@@ -31,7 +40,15 @@ defmodule ElixirPrecompiled.Device.Loader do
   # record and only on modules still loaded from that ebin, so a .app
   # rewritten on disk can never make it delete or purge firmware code. With
   # no record it does nothing. A failed activate tears down what it did
-  # before returning.
+  # before returning. The record is written before the code path changes,
+  # so a crash between the two never leaves an unrecorded path behind.
+  #
+  # Apps started on the way. Application.ensure_all_started/2 also starts
+  # the app's dependencies that were not running, firmware apps included;
+  # the record keeps that list. rollback/1, which undoes activations of the
+  # same call seconds later, stops those apps again (newest first, only
+  # when still running). deactivate/3, an uninstall at any later time,
+  # leaves them running: by then something else may use them.
   #
   # A refused uninstall (force: false). Before anything changes, processes
   # outside the app whose stacks run its modules are found, and the call is
@@ -45,7 +62,12 @@ defmodule ElixirPrecompiled.Device.Loader do
   alias ElixirPrecompiled.Device.Env
   alias ElixirPrecompiled.Match
 
-  @typep activation :: %{ebin: Path.t(), app?: boolean(), modules: [module()]}
+  @typep activation :: %{
+           ebin: Path.t(),
+           app?: boolean(),
+           modules: [module()],
+           started: [atom()]
+         }
 
   @doc "The config function for an install whose builds record no compile_env."
   @spec no_config(String.t(), [String.t()]) :: :error
@@ -100,7 +122,7 @@ defmodule ElixirPrecompiled.Device.Loader do
          :ok <- not_active(app),
          {:ok, props, beams} <- read_verified(app, ebin, files),
          :ok <- hook(opts, :verified),
-         :ok <- add_path(app, ebin, props[:modules]) do
+         :ok <- add_path(app, ebin, props[:modules], opts) do
       guarded(app, fn ->
         with :ok <- load_app(app, props),
              :ok <- deferred_env(app, deferred, config_fun),
@@ -126,7 +148,8 @@ defmodule ElixirPrecompiled.Device.Loader do
     end
   end
 
-  # Test seam: called once the bytes are read and checked.
+  # Test seam: called once the bytes are read and checked (:verified), and
+  # once the record is written, before the code path changes (:recorded).
   defp hook(opts, stage) do
     case opts[:hook] do
       fun when is_function(fun, 1) ->
@@ -151,7 +174,9 @@ defmodule ElixirPrecompiled.Device.Loader do
       end
 
     with {:error, _} <- result do
-      _ = teardown(app, record(app), true)
+      rec = record(app)
+      _ = teardown(app, rec, true)
+      _ = rec && stop_started(rec.started)
       result
     end
   end
@@ -163,7 +188,8 @@ defmodule ElixirPrecompiled.Device.Loader do
 
     with {:ok, bin} <- read_checked(app, ebin, "#{app}.app", index),
          {:ok, props} <- parse_app(app, bin),
-         {:ok, beams} <- read_beams(app, ebin, props[:modules], index) do
+         {:ok, beams} <- read_beams(app, ebin, props[:modules], index),
+         :ok <- priv_verified(app, Path.dirname(ebin), files) do
       {:ok, props, beams}
     end
   end
@@ -213,6 +239,56 @@ defmodule ElixirPrecompiled.Device.Loader do
        else: {:error, {:fetch, app, "sha256 mismatch (#{rel})"}}
   end
 
+  defp priv_verified(app, root, files) do
+    Enum.find_value(files, :ok, fn
+      %{"path" => "priv/" <> _ = rel} = entry -> priv_file(app, root, rel, entry)
+      _ -> nil
+    end)
+  end
+
+  # nil when the file matches its entry.
+  defp priv_file(app, root, rel, entry) do
+    with {:ok, safe} <- safe_rel(rel),
+         {:ok, digest, size} <- hash_file(Path.join(root, safe)),
+         true <- entry["size"] == size and is_binary(entry["sha256"]),
+         true <- String.downcase(entry["sha256"]) == digest do
+      nil
+    else
+      {:error, why} -> {:error, {:fetch, app, "cannot read #{rel}: #{why}"}}
+      _ -> {:error, {:fetch, app, "sha256 mismatch (#{rel})"}}
+    end
+  end
+
+  defp safe_rel(rel) do
+    case Path.safe_relative(rel) do
+      {:ok, safe} -> {:ok, safe}
+      :error -> {:error, :unsafe_path}
+    end
+  end
+
+  # Streamed: a .so can be large.
+  defp hash_file(path) do
+    case File.open(path, [:read, :binary]) do
+      {:ok, io} ->
+        try do
+          hash_io(io, :crypto.hash_init(:sha256), 0)
+        after
+          File.close(io)
+        end
+
+      {:error, why} ->
+        {:error, why}
+    end
+  end
+
+  defp hash_io(io, ctx, size) do
+    case IO.binread(io, 65_536) do
+      :eof -> {:ok, Base.encode16(:crypto.hash_final(ctx), case: :lower), size}
+      {:error, why} -> {:error, why}
+      bin -> hash_io(io, :crypto.hash_update(ctx, bin), size + byte_size(bin))
+    end
+  end
+
   defp sha256(bin), do: Base.encode16(:crypto.hash(:sha256, bin), case: :lower)
 
   # The .app is parsed from bytes already checked, never consulted from disk.
@@ -231,18 +307,21 @@ defmodule ElixirPrecompiled.Device.Loader do
 
   ## Activation steps
 
-  defp add_path(app, ebin, modules) do
+  defp add_path(app, ebin, modules, opts) do
     dir = String.to_charlist(ebin)
 
-    cond do
-      dir in :code.get_path() ->
-        {:error, {:code_path, ebin, :already_present}}
+    if dir in :code.get_path() do
+      {:error, {:code_path, ebin, :already_present}}
+    else
+      :ok = put_record(app, %{ebin: ebin, app?: false, modules: modules, started: []})
+      :ok = hook(opts, :recorded)
 
-      :code.add_pathz(dir) == true ->
-        put_record(app, %{ebin: ebin, app?: false, modules: modules})
-
-      true ->
+      if :code.add_pathz(dir) == true do
+        :ok
+      else
+        _ = :persistent_term.erase({__MODULE__, app})
         {:error, {:code_path, ebin, :bad_directory}}
+      end
     end
   end
 
@@ -311,7 +390,7 @@ defmodule ElixirPrecompiled.Device.Loader do
       :ok
     else
       case Application.ensure_all_started(app, :temporary) do
-        {:ok, _} -> :ok
+        {:ok, started} -> put_record(app, %{record(app) | started: started -- [app]})
         {:error, why} -> {:error, {:start_failed, app, why}}
       end
     end
@@ -319,7 +398,7 @@ defmodule ElixirPrecompiled.Device.Loader do
 
   defp protocol_warnings(modules) do
     for mod <- modules,
-        function_exported?(mod, :__impl__, 1),
+        Code.ensure_loaded?(mod) and function_exported?(mod, :__impl__, 1),
         proto <- [mod.__impl__(:protocol)],
         consolidated?(proto) do
       "#{inspect(proto)} impl for #{inspect(mod.__impl__(:for))} is not dispatched: " <>
@@ -327,8 +406,7 @@ defmodule ElixirPrecompiled.Device.Loader do
     end
   end
 
-  defp consolidated?(proto),
-    do: function_exported?(proto, :__protocol__, 1) and Protocol.consolidated?(proto)
+  defp consolidated?(proto), do: Code.ensure_loaded?(proto) and Protocol.consolidated?(proto)
 
   ## Deactivation
 
@@ -344,7 +422,29 @@ defmodule ElixirPrecompiled.Device.Loader do
 
   @spec rollback([{atom(), Path.t()}]) :: :ok
   def rollback(activated) do
-    for {app, path} <- Enum.reverse(activated), do: _ = deactivate(app, path, true)
+    for {app, path} <- Enum.reverse(activated) do
+      ebin = Path.join(path, "ebin")
+
+      case record(app) do
+        %{ebin: ^ebin, started: started} = rec ->
+          with :ok <- teardown(app, rec, true), do: stop_started(started)
+
+        _ ->
+          :ok
+      end
+    end
+
+    :ok
+  end
+
+  # Newest first, and only what is still running.
+  defp stop_started(started) do
+    running = for {a, _, _} <- Application.started_applications(), do: a
+
+    for a <- Enum.reverse(started), a in running do
+      _ = Application.stop(a)
+    end
+
     :ok
   end
 

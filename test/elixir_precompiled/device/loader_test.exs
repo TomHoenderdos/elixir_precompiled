@@ -232,6 +232,78 @@ defmodule ElixirPrecompiled.Device.LoaderTest do
       gone!(peer, :demo_unlisted, path, [DemoUnlisted])
     end
 
+    test "a priv file swapped after staging is refused before anything loads", %{
+      peer: peer,
+      tmp_dir: dir
+    } do
+      src =
+        "defmodule DemoSo do\n @on_load :init\n def init, do: :persistent_term.put(:demo_so_ran, true)\nend"
+
+      path = compile_app(dir, :demo_so, "1.0.0", [src], [])
+      File.mkdir_p!(Path.join(path, "priv"))
+      File.write!(Path.join([path, "priv", "demo_nif.so"]), "signed bytes")
+      list = files(path)
+      assert Enum.any?(list, &(&1["path"] == "priv/demo_nif.so"))
+      File.write!(Path.join([path, "priv", "demo_nif.so"]), "evil! bytes!")
+
+      assert {:error, {:fetch, :demo_so, "sha256 mismatch (priv/demo_nif.so)"}} =
+               activate(peer, :demo_so, path, files: list)
+
+      gone!(peer, :demo_so, path, [DemoSo])
+      assert rpc(peer, :persistent_term, :get, [:demo_so_ran, false]) == false
+
+      # A listed priv file that is gone is refused too.
+      File.rm!(Path.join([path, "priv", "demo_nif.so"]))
+
+      assert {:error, {:fetch, :demo_so, "cannot read priv/demo_nif.so: enoent"}} =
+               activate(peer, :demo_so, path, files: list)
+
+      gone!(peer, :demo_so, path, [DemoSo])
+    end
+
+    test "a matching priv file passes", %{peer: peer, tmp_dir: dir} do
+      path = compile_app(dir, :demo_priv, "1.0.0", ["defmodule DemoPriv do\nend"], [])
+      File.mkdir_p!(Path.join([path, "priv", "sub"]))
+      File.write!(Path.join([path, "priv", "sub", "x.so"]), :crypto.strong_rand_bytes(200_000))
+      assert {:ok, []} = activate(peer, :demo_priv, path)
+      assert loaded?(peer, DemoPriv)
+    end
+
+    test "the record exists before the code path changes", %{peer: peer, tmp_dir: dir} do
+      path = compile_app(dir, :demo_rec, "1.0.0", ["defmodule DemoRec do\nend"], [])
+      ebin = String.to_charlist(Path.join(path, "ebin"))
+
+      # The activating process is killed between the record and add_pathz.
+      hook =
+        peer_fun(peer, """
+        fn
+          :recorded -> Process.exit(self(), :kill)
+          _ -> :ok
+        end
+        """)
+
+      runner =
+        peer_fun(peer, """
+        fn args ->
+          {pid, ref} = spawn_monitor(fn -> apply(ElixirPrecompiled.Device.Loader, :activate, args) end)
+          receive do
+            {:DOWN, ^ref, _, ^pid, why} -> why
+          end
+        end
+        """)
+
+      args = [:demo_rec, path, [], &Loader.no_config/2, [files: files(path), hook: hook]]
+      assert :peer.call(peer, :erlang, :apply, [runner, [args]], 30_000) == :killed
+
+      refute ebin in rpc(peer, :code, :get_path, [])
+      assert %{ebin: _} = rpc(peer, :persistent_term, :get, [{Loader, :demo_rec}, nil])
+
+      # The record lets a later rollback clear it.
+      assert :ok = call(peer, :rollback, [[{:demo_rec, path}]])
+      assert rpc(peer, :persistent_term, :get, [{Loader, :demo_rec}, nil]) == nil
+      assert {:ok, []} = activate(peer, :demo_rec, path)
+    end
+
     test "the file list is required", %{peer: peer, tmp_dir: dir} do
       path = compile_app(dir, :demo_nofiles, "1.0.0", ["defmodule DemoNoFiles do\nend"], [])
 
@@ -253,10 +325,13 @@ defmodule ElixirPrecompiled.Device.LoaderTest do
       # Copies the other build's .app and beam over the verified ones.
       hook =
         peer_fun(peer, """
-        fn :verified ->
-          for f <- ["demo_swap.app", "Elixir.DemoSwap.beam"] do
-            File.cp!(Path.join(#{inspect(Path.join(other, "ebin"))}, f), Path.join(#{inspect(Path.join(path, "ebin"))}, f))
-          end
+        fn
+          :verified ->
+            for f <- ["demo_swap.app", "Elixir.DemoSwap.beam"] do
+              File.cp!(Path.join(#{inspect(Path.join(other, "ebin"))}, f), Path.join(#{inspect(Path.join(path, "ebin"))}, f))
+            end
+          _ ->
+            :ok
         end
         """)
 
@@ -334,14 +409,12 @@ defmodule ElixirPrecompiled.Device.LoaderTest do
 
       path = compile_app(dir, :demo_proto, "1.0.0", [src], [])
       {:ok, warnings} = activate(peer, :demo_proto, path)
-      # Elixir's own Inspect is consolidated in a release build only.
-      if rpc(peer, Protocol, :consolidated?, [Inspect]) do
-        assert warnings == [
-                 "Inspect impl for DemoProto is not dispatched: protocols are consolidated in this release"
-               ]
-      else
-        assert warnings == []
-      end
+      # The peer runs this VM's consolidated protocols, as a release does.
+      assert rpc(peer, Protocol, :consolidated?, [Inspect])
+
+      assert warnings == [
+               "Inspect impl for DemoProto is not dispatched: protocols are consolidated in this release"
+             ]
     end
 
     test "an impl of an unconsolidated protocol gives no warning", %{peer: peer, tmp_dir: dir} do
@@ -502,6 +575,46 @@ defmodule ElixirPrecompiled.Device.LoaderTest do
       assert started?(peer, :demo_other)
       assert loaded?(peer, DemoOther)
       assert code_path?(peer, path)
+    end
+  end
+
+  describe "apps started on the way" do
+    test "rollback stops the dependencies this activation started", %{
+      peer: peer,
+      tmp_dir: dir
+    } do
+      refute started?(peer, :crypto)
+      path = compile_app(dir, :demo_dep, "1.0.0", ["defmodule DemoDep do\nend"], deps: [:crypto])
+      assert {:ok, []} = activate(peer, :demo_dep, path)
+      assert started?(peer, :crypto)
+
+      assert :ok = call(peer, :rollback, [[{:demo_dep, path}]])
+      gone!(peer, :demo_dep, path, [DemoDep])
+      refute started?(peer, :crypto)
+    end
+
+    test "rollback leaves dependencies that were already running", %{peer: peer, tmp_dir: dir} do
+      {:ok, _} = rpc(peer, :application, :ensure_all_started, [:crypto])
+
+      path =
+        compile_app(dir, :demo_dep2, "1.0.0", ["defmodule DemoDep2 do\nend"], deps: [:crypto])
+
+      assert {:ok, []} = activate(peer, :demo_dep2, path)
+
+      assert :ok = call(peer, :rollback, [[{:demo_dep2, path}]])
+      gone!(peer, :demo_dep2, path, [DemoDep2])
+      assert started?(peer, :crypto)
+      assert started?(peer, :logger)
+    end
+
+    test "an uninstall leaves the dependencies it started running", %{peer: peer, tmp_dir: dir} do
+      path =
+        compile_app(dir, :demo_dep3, "1.0.0", ["defmodule DemoDep3 do\nend"], deps: [:crypto])
+
+      assert {:ok, []} = activate(peer, :demo_dep3, path)
+      assert :ok = call(peer, :deactivate, [:demo_dep3, path, true])
+      gone!(peer, :demo_dep3, path, [DemoDep3])
+      assert started?(peer, :crypto)
     end
   end
 
