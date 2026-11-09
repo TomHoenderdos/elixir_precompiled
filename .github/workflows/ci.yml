@@ -61,6 +61,13 @@ jobs:
           mix elixir_precompiled.install > install.txt 2>&1
           grep -q "runs through Igniter" install.txt
       - run: mix test
+      # The device layer must run in a release without Mix: nothing it
+      # reaches may call Mix or Hex (scripts/mix_free_check.exs).
+      - if: matrix.lint
+        name: device layer is Mix-free
+        run: |
+          MIX_ENV=prod mix compile
+          elixir scripts/mix_free_check.exs _build/prod/lib/elixir_precompiled/ebin
       # Child Mix projects against the local fixture (plain, umbrella, alias
       # order, a git dependency, Mix.install/2, and from 1.18 the Igniter
       # installer): the deps.loadpaths alias on each Mix in the range.
