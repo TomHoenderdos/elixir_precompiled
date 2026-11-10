@@ -211,7 +211,10 @@ defmodule Precompiled.Host do
   follow-up questions (at most 100 characters), `dump: true` prints the exact
   JSON and `dump: path` writes it, sending nothing. Without `yes: true` only
   `y` or `yes` sends; anything else, and a stdin that is not interactive,
-  counts as no. A new report prints its id, the one thing needed to retract
+  counts as no.
+
+  Livebook has no stdin, so there `Precompiled.Host.report()` shows the
+  summary and cancels, and `Precompiled.Host.report(yes: true)` sends. A new report prints its id, the one thing needed to retract
   it; a report already received prints no id. Never raises for a reporting
   problem; returns what happened.
   """

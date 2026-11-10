@@ -57,7 +57,8 @@ defmodule Mix.Tasks.Precompiled.Report do
               config: config,
               project_dir: File.cwd!(),
               env: Atom.to_string(Mix.env()),
-              target: Atom.to_string(Mix.target())
+              target: Atom.to_string(Mix.target()),
+              app: Mix.Project.config()[:app]
             },
             yes: Keyword.get(opts, :yes, false),
             contact: opts[:contact],

@@ -79,6 +79,17 @@ defmodule Mix.Tasks.Precompiled.ReportTest do
     assert %{"contact" => "@me", "target" => "host"} = :json.decode(body)
   end
 
+  test "the project's app name in a contact is redacted", %{tmp_dir: dir} do
+    write_report(dir)
+
+    in_project(dir, fn ->
+      Mix.Tasks.Precompiled.Report.run(["--yes", "--contact", "@me of report_test_project"])
+    end)
+
+    assert [%{body: body}] = F.report_posts()
+    assert %{"contact" => "@me of <redacted>"} = :json.decode(body)
+  end
+
   test "an error from the source still exits 0", %{tmp_dir: dir} do
     write_report(dir)
     F.set_report_response({500, "boom"})
