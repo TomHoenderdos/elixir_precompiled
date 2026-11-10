@@ -30,6 +30,21 @@ defmodule ElixirPrecompiled.Device.ElfTest do
     assert :ok = Elf.check("priv/x.so", elf_header(64, :riscv), "riscv64-unknown-linux-gnu")
   end
 
+  test "a big-endian or unknown-class ELF is refused" do
+    <<head::binary-size(5), _data, rest::binary>> = elf_header(64, :aarch64)
+
+    assert Elf.check("priv/x.so", head <> <<2>> <> rest, @aarch64) ==
+             {:fail, "priv/x.so is big-endian, device runs little-endian"}
+
+    assert Elf.check("priv/x.so", head <> <<0>> <> rest, @aarch64) ==
+             {:fail, "priv/x.so has an unknown ELF byte order (0)"}
+
+    <<magic::binary-size(4), _class, tail::binary>> = elf_header(64, :aarch64)
+
+    assert Elf.check("priv/x.so", magic <> <<3>> <> tail, @aarch64) ==
+             {:fail, "priv/x.so has an unknown ELF class (3)"}
+  end
+
   test "non-ELF priv files pass; a truncated ELF header is refused" do
     assert Elf.check("priv/data.txt", "hello", @aarch64) == :ok
 
@@ -47,14 +62,6 @@ defmodule ElixirPrecompiled.Device.ElfTest do
              {:fail, "priv/x.so is x86, device runs x86_64"}
 
     assert Elf.check("priv/x.so", elf_header(32, :x86), "i686-pc-linux-gnu") == :ok
-  end
-
-  test "a big-endian e_machine is read as big-endian" do
-    <<head::binary-size(5), _data, mid::binary-size(12), _m::binary-size(2), rest::binary>> =
-      elf_header(64, :aarch64)
-
-    big = <<head::binary, 2, mid::binary, 183::big-16, rest::binary>>
-    assert Elf.check("priv/x.so", big, @aarch64) == :ok
   end
 
   test "expected/1 maps the system architecture to a class and machine" do

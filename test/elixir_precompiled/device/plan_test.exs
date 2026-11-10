@@ -246,7 +246,16 @@ defmodule ElixirPrecompiled.Device.PlanTest do
     m =
       manifests(%{
         "poller" =>
-          manifest(%{"1.2.0" => [build(run_id: "p", deps: @tel, ebin: [f.(100)], priv: [f.(7)])]}),
+          manifest(%{
+            "1.2.0" => [
+              build(
+                run_id: "p",
+                deps: @tel,
+                ebin: [f.(100)],
+                priv: [%{f.(7) | "path" => "priv/x"}]
+              )
+            ]
+          }),
         "telemetry" => manifest(%{"1.3.0" => [build(checksum: "tsum", ebin: [f.(30)])]})
       })
 

@@ -42,7 +42,7 @@ defmodule ElixirPrecompiled.Device.Rules do
           {:ok, verdict()} | {:miss, String.t(), non_neg_integer()}
   def check(build, name, ctx) do
     b = build["build"] || %{}
-    if not is_map(b), do: throw(:malformed)
+    if not is_map(b) or not lists_in_place?(build), do: throw(:malformed)
     acc = %{needs: [], uncovered: [], warnings: [], deferred_env: []}
 
     [
@@ -293,6 +293,24 @@ defmodule ElixirPrecompiled.Device.Rules do
   rescue
     ArgumentError -> nil
   end
+
+  # Every ebin entry under ebin/ and every priv entry under priv/: the ELF
+  # and noexec checks walk the priv list, so a .so must not hide in the
+  # ebin one.
+  defp lists_in_place?(build) do
+    in_dir?(build["ebin"], "ebin/") and in_dir?(build["priv"], "priv/")
+  end
+
+  defp in_dir?(nil, _dir), do: true
+
+  defp in_dir?(files, dir) when is_list(files),
+    do:
+      Enum.all?(
+        files,
+        &(is_map(&1) and is_binary(&1["path"]) and String.starts_with?(&1["path"], dir))
+      )
+
+  defp in_dir?(_files, _dir), do: false
 
   @spec select(map(), String.t(), nil | String.t(), ctx()) ::
           {:ok, String.t(), map(), verdict()} | {:miss, String.t()}

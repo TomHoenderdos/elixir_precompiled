@@ -53,7 +53,14 @@ defmodule ElixirPrecompiled.Device.EnvTest do
     assert env.present[:ssh] == %{vsn: "5.2.4", loaded?: false}
     refute Map.has_key?(env.present, :not_an_app)
     assert Enum.all?(Map.keys(env.present), &is_atom/1)
-    assert map_size(env.present) == 3
+    # A release app nothing has named yet is still present: the release's
+    # lib dir is the firmware's own.
+    assert Enum.any?(env.present, fn {app, info} ->
+             Atom.to_string(app) == "zz_never_an_atom_qq" and
+               info == %{vsn: "1.0.0", loaded?: false}
+           end)
+
+    assert map_size(env.present) == 4
   end
 
   test "a host without Nerves files and without KV: system and platform nil", %{
