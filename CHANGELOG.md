@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.2 - 2026-11-10
+
+* Docs only. The Nerves, What matches, Trust and Troubleshooting guides
+  are rewritten for reading, mostly as tables, and Known limitations is
+  its own guide.
+* The docs are titled "Precompiled", and the README has a Nerves
+  compatibility badge.
+
 ## v0.2.1 - 2026-11-10
 
 * Docs only. The README's guide links open the HexDocs pages again (on
@@ -7,9 +15,6 @@
   documents its own `report()` type, and the docs build without
   warnings.
 * `mix hex.publish` runs in the docs env, where ex_doc lives.
-* The Nerves and What matches guides are rewritten for reading: a setup
-  comparison table, and the matching rules as a table with the details
-  below it.
 
 ## v0.2.0 - 2026-11-10
 

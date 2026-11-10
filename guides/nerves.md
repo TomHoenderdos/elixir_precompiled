@@ -1,6 +1,6 @@
 # Nerves
 
-A Nerves project spends most of its `mix firmware` time compiling
+A Nerves project spends most of its [`mix firmware`](https://hexdocs.pm/nerves/Mix.Tasks.Firmware.html) time compiling
 dependencies for the target. With `precompiled`, every dependency that has
 a matching signed build for your Nerves system is installed instead, and
 only the rest is compiled. The line per dependency tells you which was
@@ -18,7 +18,7 @@ precompiled: nerves_pack 0.7.1            MISS  built with nerves_ssh 1.3.3, pro
 | How | The alias from [Setup](setup.md#any-mix-project-plain-phoenix-libraries) | `{:nerves, github: "TomHoenderdos/nerves", branch: "feat/precompiled", runtime: false}` |
 | Builds served | `pure_elixir` only | `pure_elixir` **and** builds for your Nerves system |
 | What compiles | Every dependency with native code | Only what has no matching build |
-| `mix nerves.info` | — | Shows the last run |
+| [`mix nerves.info`](https://hexdocs.pm/nerves/Mix.Tasks.Nerves.Info.html) | — | Shows the last run |
 
 Start with the alias: it works with the nerves you already have. Switch to
 the fork when you want the native-code dependencies (circuits, NIFs) to
@@ -53,6 +53,6 @@ reuses the first.
 
 ## On the device itself
 
-Everything above runs on your build machine, during `mix firmware`. To
+Everything above runs on your build machine, during [`mix firmware`](https://hexdocs.pm/nerves/Mix.Tasks.Firmware.html). To
 install a library on a running device, from IEx on the device, see
 [On a device](device.md).
