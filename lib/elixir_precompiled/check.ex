@@ -411,9 +411,9 @@ defmodule ElixirPrecompiled.Check do
     offline? = Map.get(meta, :offline, false)
     fetch = &Fetch.get_conditional(meta, &1, &2)
 
-    with {:ok, root} <- Trust.load_root(meta) do
-      checked? = not offline? and Trust.root_check_due?(meta)
-      root = if checked?, do: refresh_root(meta, root), else: root
+    with {:ok, root, refreshed?} <- root_in_use(meta, offline?) do
+      checked? = refreshed? or (not offline? and Trust.root_check_due?(meta))
+      root = if checked? and not refreshed?, do: refresh_root(meta, root), else: root
 
       meta
       |> Trust.fetch_batch_cached(root, fetch)
@@ -436,6 +436,29 @@ defmodule ElixirPrecompiled.Check do
   end
 
   defp source_down(result, _config), do: result
+
+  # The root in use. When it has expired (an offline bundle can adopt an
+  # expired root into the same trust state), the TUF way: chain from it to
+  # the served root first, and only then judge expiry, so an expired root
+  # is never a dead end while the source serves a newer one.
+  defp root_in_use(meta, offline?) do
+    case Trust.load_root(meta) do
+      {:ok, root} ->
+        {:ok, root, false}
+
+      {:error, _} = error when not offline? ->
+        with {:ok, expired} <- Trust.load_root(meta, offline: true),
+             _ = refresh_root(meta, expired),
+             {:ok, root} <- Trust.load_root(meta) do
+          {:ok, root, true}
+        else
+          _ -> error
+        end
+
+      error ->
+        error
+    end
+  end
 
   defp refresh_root(config, root) do
     {:ok, root} =
