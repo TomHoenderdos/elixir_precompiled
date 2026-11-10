@@ -17,13 +17,20 @@ if Code.ensure_loaded?(Igniter) do
 
     `--device` is for a Nerves firmware that should be able to install on
     the device itself (`Precompiled.install/1`, see the README's "On a
-    device"). It keeps the dependency at runtime, so the library ships in
-    the firmware, and adds `{:castore, "~> 1.0"}` unless the project already
-    depends on `castore`. That check looks at the dependencies only: a
-    firmware that sets `cacerts_path:` under `config :elixir_precompiled,
-    :device` still gets `castore` added, and can drop it again. Nothing
-    else is written for the device: it is on by default and uses the
-    official signed source.
+    device"). It does three things:
+
+      * removes `runtime: false` from the dependency, so the library ships
+        in the firmware;
+      * adds `{:castore, "~> 1.0"}` unless the project already depends on
+        `castore`. The check looks at the dependencies only: a firmware
+        that sets `cacerts_path:` under `config :elixir_precompiled,
+        :device` still gets `castore` added, and can drop it again;
+      * adds `:inets`, `:ssl` and `:public_key` to `extra_applications`:
+        they are optional applications of this library, and an online
+        install needs them.
+
+    Nothing else is written for the device: it is on by default and uses
+    the official signed source.
     """
     use Igniter.Mix.Task
 
@@ -52,6 +59,7 @@ if Code.ensure_loaded?(Igniter) do
       igniter
       |> keep_runtime(device?)
       |> add_castore(device?)
+      |> add_network_apps(device?)
       |> Igniter.Project.Config.configure_new(
         "config.exs",
         :elixir_precompiled,
@@ -79,10 +87,61 @@ if Code.ensure_loaded?(Igniter) do
     # Without --device the dependency only runs at build time, as it does
     # today. With --device it stays at runtime: the library ships in the
     # firmware so a shell on the device can call `Precompiled.install/1`.
-    defp keep_runtime(igniter, true),
-      do: Igniter.Project.Deps.set_dep_option(igniter, :elixir_precompiled, :runtime, true)
+    # `runtime: true` is the default, so --device only takes an existing
+    # `runtime: false` away, by editing the tuple in place: set_dep_option/4
+    # would hit the one-liner `defp deps, do: [...]` bug below.
+    defp keep_runtime(igniter, true) do
+      Igniter.update_elixir_file(igniter, "mix.exs", fn zipper ->
+        with {:ok, zipper} <- Igniter.Code.Module.move_to_module_using(zipper, Mix.Project),
+             {:ok, zipper} <- Igniter.Code.Function.move_to_defp(zipper, :deps, 0),
+             {:ok, dep} <- Igniter.Code.List.move_to_list_item(zipper, &our_dep?/1),
+             {:ok, opts} <- Igniter.Code.Tuple.tuple_elem(dep, 2),
+             {:ok, value} <- Igniter.Code.Keyword.get_key(opts, :runtime),
+             true <- Igniter.Code.Common.nodes_equal?(value, false) do
+          drop_runtime(dep, opts)
+        else
+          _ -> {:ok, zipper}
+        end
+      end)
+    end
 
     defp keep_runtime(igniter, _device?), do: runtime_false(igniter)
+
+    # The only option: back to the plain 2-tuple. Otherwise just that key.
+    defp drop_runtime(dep, opts) do
+      opts = Igniter.Code.Common.maybe_move_to_single_child_block(opts)
+
+      case opts.node do
+        [_only] ->
+          {:ok, name} = Igniter.Code.Tuple.tuple_elem(dep, 0)
+          {:ok, version} = Igniter.Code.Tuple.tuple_elem(dep, 1)
+          code = "{#{Sourceror.to_string(name.node)}, #{Sourceror.to_string(version.node)}}"
+          {:ok, Igniter.Code.Common.replace_code(dep, code)}
+
+        _ ->
+          Igniter.Code.Keyword.remove_keyword_key(opts, :runtime)
+      end
+    end
+
+    # A firmware that installs online needs the network apps in its
+    # release; they are optional applications of this library, so a
+    # firmware without them would refuse with {:missing_app, :inets}.
+    defp add_network_apps(igniter, true) do
+      Igniter.Project.MixProject.update(igniter, :application, [:extra_applications], fn
+        nil ->
+          {:ok, {:code, [:inets, :ssl, :public_key]}}
+
+        zipper ->
+          Enum.reduce_while([:inets, :ssl, :public_key], {:ok, zipper}, fn app, {:ok, z} ->
+            case Igniter.Code.List.append_new_to_list(z, app) do
+              {:ok, z} -> {:cont, {:ok, z}}
+              :error -> {:halt, :error}
+            end
+          end)
+      end)
+    end
+
+    defp add_network_apps(igniter, _device?), do: igniter
 
     # A Nerves system's CA store may be empty, so a device install needs its
     # own certificates. Only the deps are checked: a `cacerts_path:` in the
