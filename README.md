@@ -42,8 +42,8 @@ end
 ```
 
 No config is needed: builds come from the portal's signed API by default.
-The source and the root of trust can be changed only in the project's
-config, never by an option or an environment variable (see
+The source, its mirrors and the root of trust can be changed only in the
+project's config, never by an option or an environment variable (see
 [Trust](https://hexdocs.pm/precompiled/trust.html)).
 
 ## Usage

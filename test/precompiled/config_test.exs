@@ -161,14 +161,14 @@ defmodule Precompiled.ConfigTest do
     assert Config.load().home == to_string(:filename.basedir(:user_cache, "precompiled"))
   end
 
-  test "home and except can be given; source and root are config only" do
+  test "home and except can be given; source, root and content are config only" do
     configure(source: "https://cfg.test/x")
     c = Config.load(home: "/tmp/h", except: ["ash"])
     assert c.source == "https://cfg.test/x"
     assert c.home == "/tmp/h"
     assert c.except == [:ash]
 
-    for key <- [:source, :root] do
+    for key <- [:source, :root, :content] do
       e = assert_raise ArgumentError, fn -> Config.load([{key, "https://opt.test/y"}]) end
       assert e.message =~ inspect(key)
       assert e.message =~ "config only"

@@ -50,10 +50,11 @@ compile every dependency before the task could run. Keep the dependency
 in every environment (no `only:`), since `mix test` runs in `test`.
 
 `config :precompiled, source: ..., root: ...` points it at another
-source and root, for a self-hosted mirror of the API. Those two keys are
-project config only: no option, call or environment variable sets them,
-because a source learns which dependencies you use and a root decides
-whose builds run (see [Trust](trust.md)).
+source and root, for a self-hosted mirror of the API, and `content:
+[...]` adds file mirrors. Those keys are project config only: no option,
+call or environment variable sets them, because a source or mirror
+learns which dependencies you use and a root decides whose builds run
+(see [Trust](trust.md)).
 
 On the host, only `pure_elixir` builds can match. The portal builds those
 with Elixir 1.19.3 and 1.20.3 on OTP 28 and 29 today, so other toolchains
@@ -131,8 +132,8 @@ runtime uses, and keep only the last line:
 
 Builds of these two exist for Elixir 1.20 on OTP 29 today; on other
 versions they compile as usual. `Precompiled.Host.install/2` takes
-`Mix.install/2`'s options plus `:except` and `:home`; `:source` and
-`:root` raise, since they are project config only. Keep the archive named
+`Mix.install/2`'s options plus `:except` and `:home`; `:source`, `:root`
+and `:content` raise, since they are project config only. Keep the archive named
 `precompiled*.ez`: another name can make `:code.priv_dir/1` miss the
 root of trust.
 

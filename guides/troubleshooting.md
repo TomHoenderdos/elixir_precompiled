@@ -15,8 +15,9 @@ that line below.
 
 | Line | Meaning | What to do |
 | --- | --- | --- |
-| `ArgumentError: precompiled: :source is not an option` (or `:root`) | `Precompiled.Host.install/2` was given a source or root. | Drop the option: the official API is the default. A self-hosted source goes in the project's config ([Trust](trust.md#where-the-source-and-root-come-from)). |
+| `ArgumentError: precompiled: :source is not an option` (or `:root`, `:content`) | `Precompiled.Host.install/2` was given a source, root or content origins. | Drop the option: the official API is the default. A self-hosted source goes in the project's config ([Trust](trust.md#where-the-source-and-root-come-from)). |
 | `{:error, {:source_not_allowed, source}}` | A device call named a network source. | Drop it, or set it in the firmware's `config :precompiled, :device`. Per call, only `file://` bundles. |
+| `{:error, {:content_not_allowed, origins}}` | A device call named content origins (mirrors). | Drop it, or set `content:` in the firmware's `config :precompiled, :device`. |
 | `source must be https (http only on loopback), disabled: ...` | The configured source is plain `http` or not a URL; nothing installs. | Fix `config :precompiled, source:`. |
 
 ## Nothing installs: the batch

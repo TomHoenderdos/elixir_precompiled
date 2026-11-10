@@ -49,7 +49,8 @@ config :precompiled, :device, enabled: false
 | `max_bytes` | 64 MB | The size bound of that store. |
 | `cacerts_path` | none | A PEM CA bundle to verify the source with. |
 | `root` | the shipped `root.json` | Another trust anchor. Set here only: a call cannot pass it. |
-| `content`, `deadline_seconds`, `max_closure`, `start`, `closure`, `quiet` | as in the options below | Firmware-wide defaults for those `install/2` options. |
+| `content` | the batch's | Mirror or CDN origins (`https://`) to fetch files from. Set here only: a call cannot pass it. |
+| `deadline_seconds`, `max_closure`, `start`, `closure`, `quiet` | as in the options below | Firmware-wide defaults for those `install/2` options. |
 
 `enabled` and `allow` are read from the firmware's config only: a call can
 neither pass, widen nor clear them. Any other key under `:device` is
@@ -108,8 +109,8 @@ The options of `install/2`:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `:source` | the `:device` config, else the official API | `file://DIR` for a bundle only. A per-call `https://` or `http://` source returns `{:error, {:source_not_allowed, source}}`: a network source is firmware config only (see [Trust](trust.md)). |
-| `:content`, `:deadline_seconds` | as on the host | See [Configuration](configuration.md). |
+| `:source` | the `:device` config, else the official API | `file://DIR` for a bundle only. A per-call `https://` or `http://` source returns `{:error, {:source_not_allowed, source}}`: a network source is firmware config only (see [Trust](trust.md)). A per-call `:content` returns `{:error, {:content_not_allowed, origins}}` the same way. |
+| `:deadline_seconds` | as on the host | See [Configuration](configuration.md). |
 | `:cacerts_path` | none | A PEM CA bundle (see [CA certificates](trust.md#ca-certificates)). |
 | `:dir` | `/data/precompiled` | The store. Its trust state lives in `DIR/.trust`, so another `:dir` has its own trust state, starting again from the shipped root. |
 | `:start` | `true` | Start the installed apps (`:temporary`). `false` only loads them. |

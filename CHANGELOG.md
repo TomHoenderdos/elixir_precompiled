@@ -2,9 +2,9 @@
 
 ## v0.3.0 - 2026-11-10
 
-Breaking changes. A source learns which dependencies a project has, and a
-root decides whose builds run, so both are now set only in the project's
-config, never by an option or environment variable a pasted snippet could
+Breaking changes. A source or mirror learns which dependencies a project
+has, and a root decides whose builds run, so all three are now set only in
+the project's config, never by an option or environment variable a pasted snippet could
 carry (see the Trust guide).
 
 * The source defaults to the official API,
@@ -12,15 +12,17 @@ carry (see the Trust guide).
   against the shipped root. No source configured no longer means off; to
   turn it off, use `PRECOMPILED=0`, `config :precompiled, :device,
   enabled: false` on a device, or `:except` per dependency.
-* `Precompiled.Host.install/2` no longer takes `:source` or `:root`;
-  passing either raises `ArgumentError`. `config :precompiled, source:
-  ..., root: ...` still sets them.
+* `Precompiled.Host.install/2` no longer takes `:source`, `:root` or
+  `:content`; passing any of them raises `ArgumentError`. `config
+  :precompiled, source: ..., root: ..., content: [...]` still sets them.
 * `PRECOMPILED_SOURCE` (and `NERVES_PRECOMPILED_SOURCE`) is no longer
   read.
 * On a device, a per-call `:source` must be a `file://` bundle; a network
   source per call returns `{:error, {:source_not_allowed, source}}`. A
   network source comes from `config :precompiled, :device, source: ...`
-  or the default.
+  or the default. A per-call `:content` returns `{:error,
+  {:content_not_allowed, origins}}`; `content:` in the `:device` config
+  still works.
 * The Igniter installer no longer writes `config :precompiled, source:`
   and has no `--source` option.
 
