@@ -15,6 +15,12 @@ defmodule Precompiled.Device.Rules do
   # optional dependencies as ranking, never as a refusal; compile_env
   # compared now for loaded apps and later for the rest. Anything missing or
   # malformed is a miss: nothing here guesses. No Mix, no Hex.
+  #
+  # The host's build-method rule (rule 9 in the matching guide; this
+  # module's own numbering differs) has no device side: a device declares
+  # no dependency options and resolves no manager, so it takes the build
+  # Mix makes by default, as it takes dep_env "prod". A build's manager is
+  # what that default resolved to and is not compared here.
 
   alias Precompiled.Match
 

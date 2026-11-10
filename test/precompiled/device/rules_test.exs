@@ -7,6 +7,15 @@ defmodule Precompiled.Device.RulesTest do
   import Precompiled.DeviceFixture
   alias Precompiled.Device.Rules
 
+  describe "build method (host rule 9)" do
+    test "a recorded manager is not compared on a device" do
+      for manager <- ["mix", "rebar3", "make"] do
+        b = put_in(build(), ["build", "manager"], manager)
+        assert {:ok, _} = Rules.check(b, "recon", ctx())
+      end
+    end
+  end
+
   describe "rule 1: target" do
     test "pure_elixir passes on any system, and on none" do
       assert {:ok, _} = Rules.check(build(), "recon", ctx())

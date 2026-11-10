@@ -29,9 +29,31 @@ defmodule Precompiled.Env.MixProject do
       installed: Enum.map(installed, &elem(&1, 0)),
       installed_envs: Map.new(installed),
       tooling: nerves_children_from(deps),
-      mix_target: Atom.to_string(Mix.target())
+      mix_target: Atom.to_string(Mix.target()),
+      build_methods: build_methods_from(deps)
     }
   end
+
+  @doc false
+  # Per Hex dep, the manager Mix resolved for it and the build options its
+  # declaration sets. Mix pops `:system_env` out of the opts into the
+  # dep's own field, so it is read from there.
+  @spec build_methods_from([Mix.Dep.t()]) :: %{optional(atom()) => Env.build_method()}
+  def build_methods_from(deps) do
+    for %Mix.Dep{app: app, scm: Hex.SCM, opts: opts, manager: manager} = dep <- deps,
+        into: %{} do
+      opts = put_system_env(opts, Map.get(dep, :system_env, []))
+      {app, %{manager: manager_name(manager), overrides: Env.overrides(opts)}}
+    end
+  end
+
+  defp put_system_env(opts, []), do: opts
+  defp put_system_env(opts, system_env), do: Keyword.put(opts, :system_env, system_env)
+
+  defp manager_name(manager) when is_atom(manager) and manager != nil,
+    do: Atom.to_string(manager)
+
+  defp manager_name(_), do: nil
 
   @doc false
   # The closure of nerves' children as Mix loaded them: each Mix.Dep names

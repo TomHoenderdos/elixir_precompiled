@@ -127,6 +127,50 @@ defmodule Precompiled.CheckTest do
              report_file["lines"]
   end
 
+  test "a dep's build overrides and manager reach the rules (rule 9)", %{
+    f: f,
+    config: config,
+    env: env,
+    lib: lib
+  } do
+    entry = put_in(good_entry(f, "ash", "1.31.0"), ["build", "manager"], "rebar3")
+
+    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [entry]}}}})
+    env = %{env | candidates: [hd(env.candidates)]}
+
+    out =
+      run_capturing(config, %{env | build_methods: %{ash: %{manager: "mix", overrides: []}}})
+
+    assert_received {:report, {:ok, %{hits: 0, misses: 1}}}
+    assert out =~ ~r/ash 3\.5\.2\s+MISS\s+built with rebar3, project builds with mix/
+
+    out =
+      run_capturing(config, %{
+        env
+        | build_methods: %{ash: %{manager: "rebar3", overrides: [:system_env]}}
+      })
+
+    assert_received {:report, {:ok, %{hits: 0, misses: 1}}}
+    assert out =~ ~r/ash 3\.5\.2\s+MISS\s+project sets :system_env for this dependency/
+    refute File.exists?(Path.join(lib, "ash"))
+
+    run_capturing(config, %{env | build_methods: %{ash: %{manager: "rebar3", overrides: []}}})
+    assert_received {:report, {:ok, %{hits: 1}}}
+
+    # Installed, then the project overrides how ash is built: removed.
+    out =
+      run_capturing(config, %{
+        env
+        | candidates: [],
+          installed: [:ash],
+          build_methods: %{ash: %{manager: "rebar3", overrides: [:compile]}}
+      })
+
+    assert_received {:report, {:ok, %{misses: 1}}}
+    assert out =~ ~r/ash 3\.5\.2\s+MISS\s+project sets :compile for this dependency/
+    refute File.exists?(Path.join(lib, "ash"))
+  end
+
   test "a run with a verified batch keeps the cache under its bound, once a day", %{
     f: f,
     config: config,

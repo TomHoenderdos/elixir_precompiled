@@ -15,6 +15,8 @@ defmodule Precompiled.Match do
   @tooling_names ["nerves", "nerves_system_br", "nerves_bootstrap", "precompiled"]
 
   @type ctx :: %{
+          optional(:manager) => String.t() | nil,
+          optional(:overrides) => [atom()],
           name: String.t(),
           version: String.t(),
           lock_entry: tuple(),
@@ -184,6 +186,7 @@ defmodule Precompiled.Match do
 
     [
       fn -> target_ok(build["target"], b["system_version"], ctx.system) end,
+      fn -> build_method_ok(b, ctx) end,
       fn -> compile_inputs_ok(build["target"], b, ctx) end,
       fn -> toolchain_present(b) end,
       fn -> elixir_ok(b["elixir"], ctx.elixir) end,
@@ -211,6 +214,29 @@ defmodule Precompiled.Match do
     do: {:miss, "built for #{t} #{built}, project has #{project}"}
 
   def target_ok(t, _, _), do: {:miss, "not built for this system (#{t})"}
+
+  # Rule 9: the build must have been made the way Mix builds the dep here.
+  # A declaration with :manager, :compile or :system_env builds it another
+  # way than the portal did, so nothing matches it. A build that records
+  # its manager must name the one Mix resolved here; one that records none
+  # predates the field and is judged by the other rules alone.
+  defp build_method_ok(build, ctx) do
+    case Map.get(ctx, :overrides, []) do
+      [opt | _] -> {:miss, "project sets #{inspect(opt)} for this dependency"}
+      [] -> manager_ok(build["manager"], Map.get(ctx, :manager))
+    end
+  end
+
+  defp manager_ok(nil, _running), do: :ok
+  defp manager_ok(built, built) when is_binary(built), do: :ok
+
+  defp manager_ok(built, nil) when is_binary(built),
+    do: {:miss, "built with #{built}, project's manager for it is unknown"}
+
+  defp manager_ok(built, running) when is_binary(built),
+    do: {:miss, "built with #{built}, project builds with #{running}"}
+
+  defp manager_ok(_built, _running), do: {:miss, "malformed entry"}
 
   # What the build key does not record (G6): a dep whose own sources read
   # an env var at module level could have been compiled with any value of

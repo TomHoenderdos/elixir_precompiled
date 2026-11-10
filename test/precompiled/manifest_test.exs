@@ -40,6 +40,20 @@ defmodule Precompiled.ManifestTest do
     assert {:ok, ^doc} = Manifest.normalize(doc)
   end
 
+  test "a build's manager passes through, in either format" do
+    entry = put_in(@entry, ["build", "manager"], "rebar3")
+
+    {:ok, m} = Manifest.normalize(%{"versions" => %{"1.0.0" => %{"pure_elixir" => entry}}})
+    assert [%{"build" => %{"manager" => "rebar3"}}] = m["versions"]["1.0.0"]["builds"]
+
+    doc = %{
+      "format" => 2,
+      "versions" => %{"1.0.0" => %{"builds" => [Map.put(entry, "target", "pure_elixir")]}}
+    }
+
+    assert {:ok, ^doc} = Manifest.normalize(doc)
+  end
+
   test "a newer format is refused" do
     assert {:fail, "manifest format 3 not supported"} =
              Manifest.normalize(%{"format" => 3, "versions" => %{}})
