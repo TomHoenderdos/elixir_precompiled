@@ -5,13 +5,19 @@
 * New matching rule 9, build method. A dependency whose `deps` entry sets
   `:manager`, `:compile` or `:system_env` is built differently from any
   precompiled build, so it always compiles from source, with a line such as
-  `MISS  project sets :manager for this dependency`. An installed build is
-  removed on the next run once such an option appears.
+  `MISS  project sets :manager for this dependency`. This includes options
+  a package's own `mix.exs` sets on its dependencies, under
+  `Precompiled.Host.install/2` too. An installed build is removed on the
+  next run once such an option appears.
+* A global `Mix.install(deps, system_env: ...)` is not treated as an
+  override: rule 8 already refuses dependencies that read an environment
+  variable at module level in `lib/`, and reads in a dependency's `mix.exs`
+  remain a documented limitation.
 * A manifest build may record `manager` (a string such as `"mix"`,
   `"rebar3"` or `"make"`). When it differs from the manager Mix resolves
   for the dependency, the build misses: `built with rebar3, project builds
-  with make`. A build without `manager` matches as before. On a device the
-  field is not compared.
+  with make`. A build without `manager` matches as before. The device API
+  (`Precompiled.install/2`) does not compare it.
 
 ## v0.3.0 - 2026-11-10
 

@@ -152,10 +152,10 @@ defmodule Precompiled.CheckTest do
 
     assert_received {:report, {:ok, %{hits: 0, misses: 1}}}
     assert out =~ ~r/ash 3\.5\.2\s+MISS\s+project sets :system_env for this dependency/
-    refute File.exists?(Path.join(lib, "ash"))
 
     run_capturing(config, %{env | build_methods: %{ash: %{manager: "rebar3", overrides: []}}})
     assert_received {:report, {:ok, %{hits: 1}}}
+    assert File.exists?(Path.join(lib, "ash/.mix/compile.elixir_scm"))
 
     # Installed, then the project overrides how ash is built: removed.
     out =

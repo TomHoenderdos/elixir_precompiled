@@ -121,6 +121,16 @@ defmodule Precompiled.Env.MixInstallTest do
            }
   end
 
+  test "load takes the build methods Mix loaded over its own reading", %{tmp_dir: dir} do
+    Mix.Dep.Lock.write(%{jason: @jason}, file: Path.join(dir, "mix.lock"))
+    loaded = %{jason: %{manager: "make", overrides: [:manager]}}
+
+    assert MixInstall.load(dir, [], loaded).build_methods == loaded
+
+    assert MixInstall.load(dir, [{:jason, "1.4.5", system_env: %{}}]).build_methods ==
+             %{jason: %{manager: "mix", overrides: []}}
+  end
+
   test "system falls back to the loaded nerves_system_* application, or nil" do
     loaded = [{:kernel, ~c"ERTS", ~c"10.0"}, {:nerves_system_rpi4, ~c"rpi4", ~c"1.31.0"}]
     assert MixInstall.system([], loaded) == {"nerves_system_rpi4", "1.31.0"}

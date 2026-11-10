@@ -84,12 +84,19 @@ defmodule Precompiled.Env do
 
   @doc """
   The options among `:manager`, `:compile` and `:system_env` that a
-  dependency's declaration sets, in that order. Each makes Mix build the
+  dependency's declaration sets, in that order; an empty list or map
+  sets nothing. Each makes Mix build the
   dependency another way than the portal did, so no build matches it.
   """
   @spec overrides(keyword()) :: [atom()]
   def overrides(opts) when is_list(opts),
-    do: Enum.filter(@overrides, &(Keyword.get(opts, &1) not in [nil, []]))
+    do: Enum.filter(@overrides, &set?(Keyword.get(opts, &1)))
 
   def overrides(_opts), do: []
+
+  # An empty list or map (`system_env: %{}`) sets nothing; `compile: false`
+  # does (Mix then skips compiling the dep).
+  defp set?(nil), do: false
+  defp set?(v) when is_list(v) or is_map(v), do: v != [] and v != %{}
+  defp set?(_), do: true
 end
