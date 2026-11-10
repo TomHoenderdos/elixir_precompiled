@@ -10,11 +10,14 @@ defmodule Precompiled.Report do
   # each line's code, its name/version arguments and the code's template,
   # the toolchain context, and the public Hex lock entries of the
   # candidates and their closure. Private-organisation, git and path
-  # packages are left out, lines included. As a backstop, the two fields
-  # that carry text, `contact` and each line's `reason`, have the source,
-  # content origins, home, project dir and host name replaced by
-  # <redacted>. Names, versions and targets are never rewritten: a host
-  # named like a package must not turn that package's line into garbage.
+  # packages are left out, lines included, and a Nerves system that is not
+  # a public Hex package is sent as `custom`, with its target. As a
+  # backstop, the two fields that carry text, `contact` and each line's
+  # `reason`, have the source, content origins, home, project dir and host
+  # name replaced by <redacted>, ignoring case; `contact` also loses the
+  # app, project directory and user names. Names, versions and targets are
+  # never rewritten: a host named like a package must not turn that
+  # package's line into garbage.
 
   alias Precompiled.{HTTP, Output, Reason}
 
@@ -24,6 +27,24 @@ defmodule Precompiled.Report do
   @response_bytes 16_384
   @timeout_ms 15_000
   @min_needle 4
+  @min_contact_needle 3
+  @statuses ["hit", "miss", "fail"]
+  @custom "custom"
+  # Codes whose arguments name the target or the Nerves system.
+  @target_codes [:not_built_target, :rule8_target]
+
+  # How many arguments each code's template shows: the rest are not sent.
+  @arity Map.new(Reason.codes(), fn code ->
+           marks = for i <- 0..7, do: "\u0001#{i}\u0001"
+           text = Reason.render(code, marks)
+
+           shown =
+             if String.contains?(text, Enum.join(marks, ", ")),
+               do: 8,
+               else: Enum.count(marks, &String.contains?(text, &1))
+
+           {code, shown}
+         end)
   @checksum ~r/\A[0-9a-fA-F]{64}\z/
 
   @type where :: %{
@@ -33,7 +54,8 @@ defmodule Precompiled.Report do
           required(:project_dir) => Path.t(),
           required(:env) => String.t(),
           required(:target) => String.t(),
-          optional(:host_name) => String.t() | nil
+          optional(:host_name) => String.t() | nil,
+          optional(:app) => atom() | String.t() | nil
         }
 
   @type outcome ::
@@ -55,7 +77,7 @@ defmodule Precompiled.Report do
 
     with :ok <- contact_ok(contact),
          {:ok, report} <- read(where.build_lib) do
-      body = where |> payload(report, contact) |> redact_payload(needles(where))
+      body = where |> payload(report, contact) |> redact(where)
       output(summary(body, report, where))
       deliver(body, where, opts)
     else
@@ -210,11 +232,13 @@ defmodule Precompiled.Report do
     ctx = report["context"]
     public = public_names(where.lock)
 
+    {target, system, system_version} = place(ctx, public)
+
     lines =
       report["lines"]
-      |> Enum.filter(&(is_map(&1) and MapSet.member?(public, &1["name"])))
+      |> Enum.filter(&(well_formed?(&1) and MapSet.member?(public, &1["name"])))
       |> Enum.take(@max_lines)
-      |> Enum.map(&line/1)
+      |> Enum.map(&line(&1, system == @custom))
 
     %{
       "format" => 1,
@@ -223,15 +247,42 @@ defmodule Precompiled.Report do
       "elixir" => text(ctx["elixir"]),
       "otp" => otp(ctx["otp"]),
       "os" => os(),
-      "target" => text(ctx["target"]),
-      "system" => text(ctx["system"]),
-      "system_version" => text(ctx["system_version"]),
+      "target" => target,
+      "system" => system,
+      "system_version" => system_version,
       "lines" => lines,
       "lock" => lock_closure(where.lock, Enum.map(lines, & &1["name"]), @max_lock),
       "contact" => text(contact)
     }
     |> Map.reject(fn {_k, v} -> is_nil(v) end)
   end
+
+  # The target and Nerves system are sent only when the system is a public
+  # Hex package of the lock; a private or local system would be named by
+  # them. A host build (no system, target host) has nothing to hide.
+  defp place(ctx, public) do
+    target = text(ctx["target"])
+    system = text(ctx["system"])
+
+    cond do
+      system == nil and target in [nil, "host"] ->
+        {target, nil, nil}
+
+      system != nil and MapSet.member?(public, system) ->
+        {target, system, text(ctx["system_version"])}
+
+      true ->
+        {@custom, @custom, nil}
+    end
+  end
+
+  # A line the portal would refuse, or `:json` would write as "nil", is
+  # not sent: name and version non-empty strings, a known status.
+  defp well_formed?(%{"name" => name, "version" => version, "status" => status})
+       when is_binary(name) and name != "" and is_binary(version) and version != "",
+       do: status in @statuses
+
+  defp well_formed?(_), do: false
 
   # `:json` decodes a JSON null as the atom `null`: left out, like nil.
   defp text(s) when is_binary(s), do: s
@@ -244,9 +295,12 @@ defmodule Precompiled.Report do
     end
   end
 
-  defp line(l) do
+  defp line(l, custom?) do
     code = Reason.code(l["reason_code"])
-    args = Reason.clean_args(l["reason_args"])
+    args = l["reason_args"] |> Reason.clean_args() |> Enum.take(Map.fetch!(@arity, code))
+
+    args =
+      if custom? and code in @target_codes, do: Enum.map(args, fn _ -> @custom end), else: args
 
     %{
       "name" => l["name"],
@@ -345,8 +399,33 @@ defmodule Precompiled.Report do
     |> Enum.sort_by(&(-String.length(&1)))
   end
 
-  defp long_enough(needles),
-    do: Enum.filter(needles, &(is_binary(&1) and String.length(&1) >= @min_needle))
+  defp long_enough(needles, min \\ @min_needle),
+    do: Enum.filter(needles, &(is_binary(&1) and String.length(&1) >= min))
+
+  # Names that are also package and target names: `contact` is the only
+  # free text they are removed from.
+  @spec contact_needles(where()) :: [String.t()]
+  def contact_needles(where) do
+    app = Map.get_lazy(where, :app, &mix_app/0)
+    user = System.get_env("USER") || System.get_env("USERNAME")
+    names = [app && to_string(app), Path.basename(where.project_dir), user]
+
+    (needles(where) ++ long_enough(names, @min_contact_needle))
+    |> Enum.uniq()
+    |> Enum.sort_by(&(-String.length(&1)))
+  end
+
+  defp mix_app() do
+    if Code.ensure_loaded?(Mix.Project) and Mix.Project.get() != nil,
+      do: Mix.Project.config()[:app]
+  end
+
+  @doc false
+  # The redaction `run/2` applies: every needle in each line's reason, and
+  # the contact-only names in `contact` as well.
+  @spec redact(map(), where()) :: map()
+  def redact(payload, where),
+    do: redact_payload(payload, needles(where), contact_needles(where))
 
   defp host_name() do
     case :inet.gethostname() do
@@ -357,13 +436,14 @@ defmodule Precompiled.Report do
 
   # Only `contact` and each line's `reason` carry free text; every other
   # field is a name, version, code or count and is never rewritten.
-  @spec redact_payload(map(), [String.t()]) :: map()
-  def redact_payload(payload, needles) do
+  @spec redact_payload(map(), [String.t()], [String.t()] | nil) :: map()
+  def redact_payload(payload, needles, contact_needles \\ nil) do
+    contact_needles = long_enough(contact_needles || needles, @min_contact_needle)
     needles = long_enough(needles)
 
     payload =
       case payload do
-        %{"contact" => contact} -> Map.put(payload, "contact", scrub(contact, needles))
+        %{"contact" => contact} -> Map.put(payload, "contact", scrub(contact, contact_needles))
         _ -> payload
       end
 
@@ -381,8 +461,11 @@ defmodule Precompiled.Report do
 
   defp redact_line(line, _needles), do: line
 
-  defp scrub(s, needles) when is_binary(s),
-    do: Enum.reduce(needles, s, &String.replace(&2, &1, "<redacted>"))
+  defp scrub(s, needles) when is_binary(s) do
+    Enum.reduce(needles, s, fn needle, acc ->
+      Regex.replace(Regex.compile!(Regex.escape(needle), "iu"), acc, "<redacted>")
+    end)
+  end
 
   defp scrub(other, _needles), do: other
 
