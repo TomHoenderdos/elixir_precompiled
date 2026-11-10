@@ -318,7 +318,7 @@ defmodule Precompiled.Trust do
         # signature, and Check then fetches the root again regardless.
         # A bundle's root.json is not the online source's: it never stands
         # in for the online check.
-        if not offline?(opts),
+        if not offline?(opts) and Map.get(config, :root_check_stamp, true),
           do:
             _ =
               write_atomic(state_dir(config), "root_checked", Integer.to_string(unix_now(config)))

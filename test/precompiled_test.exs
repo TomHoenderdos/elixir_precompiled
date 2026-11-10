@@ -1168,6 +1168,25 @@ defmodule PrecompiledTest do
                )
     end
 
+    test "a bundle install does not stand in for the online root check", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_bstamp, "1.0.0")
+      plain = write_bundle!(f, dir, %{"demo_bstamp" => manifest(%{"1.0.0" => [build]})})
+
+      assert {:ok, [_]} =
+               Precompiled.install(:demo_bstamp, Keyword.put(opts, :source, "file://" <> plain))
+
+      assert Path.wildcard(Path.join([opts[:dir], ".trust", "**", "root_checked"])) == []
+
+      # The next online call checks the served root at once.
+      Fixture.clear_requests()
+      _ = Precompiled.install(:demo_bstamp_absent, opts)
+      assert Enum.any?(Fixture.requests(), &String.ends_with?(&1.path, "/root.json"))
+    end
+
     test "a native library listed under ebin is a malformed entry, refused before download", %{
       fixture: f,
       opts: opts,

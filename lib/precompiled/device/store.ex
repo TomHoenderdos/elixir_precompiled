@@ -788,7 +788,9 @@ defmodule Precompiled.Device.Store do
     |> MapSet.new(&realpath/1)
   end
 
-  defp in_use?(path, in_use), do: MapSet.member?(in_use, Path.join(path, "ebin"))
+  # The entry side resolved too: an entry whose ebin is a symlink is in use
+  # when the dir it points to runs.
+  defp in_use?(path, in_use), do: MapSet.member?(in_use, realpath(Path.join(path, "ebin")))
 
   defp discard(dir, path) do
     staging = Path.join(dir, @staging)

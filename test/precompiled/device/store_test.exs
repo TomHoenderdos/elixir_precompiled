@@ -507,6 +507,22 @@ defmodule Precompiled.Device.StoreTest do
       assert [%{path: ^path}] = Store.list(via_link)
     end
 
+    test "an entry whose ebin is a symlink is in use when its target runs", %{tmp_dir: dir} do
+      {path, _} = put_entry(dir, :recon, "2.5.6", :binary.copy("a", 400), 100)
+      elsewhere = Path.join(Path.dirname(dir), "elsewhere-#{System.unique_integer([:positive])}")
+      File.rename!(Path.join(path, "ebin"), elsewhere)
+      File.ln_s!(elsewhere, Path.join(path, "ebin"))
+      true = :code.add_pathz(String.to_charlist(elsewhere))
+
+      on_exit(fn ->
+        :code.del_path(String.to_charlist(elsewhere))
+        File.rm_rf(elsewhere)
+      end)
+
+      assert %{removed: [], kept: [:recon]} = Store.clean(dir, %{})
+      assert File.dir?(elsewhere)
+    end
+
     test "a plan that fits evicts nothing", %{tmp_dir: dir} do
       put_entry(dir, :recon, "2.5.6", "a", 100)
       assert :ok = Store.make_room(dir, 10, Store.used_bytes(dir) + 20, %{}, [])

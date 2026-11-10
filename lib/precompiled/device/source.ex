@@ -95,6 +95,9 @@ defmodule Precompiled.Device.Source do
          cache: false,
          offline: false,
          bundle: bundle?,
+         # A bundle's root.json is not the network source's: reading it
+         # never counts as the online root check (Trust.update_root/4).
+         root_check_stamp: not bundle?,
          clock_offset_seconds: 0,
          deadline_ms: deadline_s * 1000,
          metadata_timeout_ms: 15_000,
