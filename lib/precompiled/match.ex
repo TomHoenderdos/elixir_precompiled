@@ -9,6 +9,8 @@ defmodule Precompiled.Match do
   so every rule is testable without a network or a build.
   """
 
+  alias Precompiled.Reason
+
   @tooling_prefixes ["nerves_system_", "nerves_toolchain_"]
   # precompiled itself: the client must never install a portal build
   # of itself.
@@ -75,12 +77,19 @@ defmodule Precompiled.Match do
   defp hex?(_), do: false
 
   @spec select(map(), ctx()) :: {:ok, map(), String.t()} | {:miss, String.t()}
-  def select(manifest, ctx) do
+  def select(manifest, ctx), do: manifest |> select_reason(ctx) |> Reason.textual()
+
+  @doc """
+  `select/2` with the reason of a miss as a `Precompiled.Reason`: the code
+  and arguments a miss report sends, beside the text the line prints.
+  """
+  @spec select_reason(map(), ctx()) :: {:ok, map(), String.t()} | {:miss, Reason.t()}
+  def select_reason(manifest, ctx) do
     {system, system_version} = ctx.system
 
     case get_in(manifest, ["versions", ctx.version, "builds"]) || [] do
       [] ->
-        {:miss, "not built for #{ctx.version}"}
+        {:miss, Reason.new(:not_built_version, [ctx.version], "not built for #{ctx.version}")}
 
       builds ->
         results = Enum.map(builds, &{&1, check(&1, ctx)})
@@ -151,7 +160,11 @@ defmodule Precompiled.Match do
   defp furthest_reason(results, system, system_version) do
     case Enum.reject(results, &foreign?(&1, system)) do
       [] ->
-        String.trim_trailing("not built for #{system} #{system_version}")
+        Reason.new(
+          :not_built_target,
+          [system, system_version],
+          String.trim_trailing("not built for #{system} #{system_version}")
+        )
 
       own ->
         {_, {:miss, reason, _}} =
@@ -180,7 +193,7 @@ defmodule Precompiled.Match do
   catch
     # Catches everything: a rule that fails on an odd manifest entry makes
     # that build a miss, so the dependency compiles from source instead.
-    _, _ -> {:miss, "malformed entry", 0}
+    _, _ -> {:miss, Reason.new(:malformed_entry, [], "malformed entry"), 0}
   end
 
   defp rules(build, ctx) do
@@ -188,35 +201,52 @@ defmodule Precompiled.Match do
     {:hex, _, _, _, _, _, _, outer} = ctx.lock_entry
 
     [
-      fn -> target_ok(build["target"], b["system_version"], ctx.system) end,
+      fn -> target_reason(build["target"], b["system_version"], ctx.system) end,
       fn -> build_method_ok(b, ctx) end,
       fn -> compile_inputs_ok(build["target"], b, ctx) end,
-      fn -> toolchain_present(b) end,
-      fn -> elixir_ok(b["elixir"], ctx.elixir) end,
-      fn -> otp_ok(b["otp"], ctx.otp) end,
-      fn -> dep_env_ok(b["dep_env"], ctx.dep_env) end,
-      fn -> present(b, "package_checksum") end,
+      fn -> toolchain_reason(b) end,
+      fn -> elixir_reason(b["elixir"], ctx.elixir) end,
+      fn -> otp_reason(b["otp"], ctx.otp) end,
+      fn -> dep_env_reason(b["dep_env"], ctx.dep_env) end,
+      fn -> present_reason(b, "package_checksum") end,
       fn ->
-        eq(b["package_checksum"], outer, fn _, _ -> "package checksum differs from mix.lock" end)
+        if b["package_checksum"] == outer,
+          do: :ok,
+          else:
+            {:miss, Reason.new(:checksum_differs, [], "package checksum differs from mix.lock")}
       end,
-      fn -> present(b, "deps") end,
+      fn -> present_reason(b, "deps") end,
       fn -> deps_ok(b["deps"], ctx.lock) end,
       fn -> declared_deps_ok(ctx.lock_entry, b["deps"], ctx.lock) end,
-      fn -> present(b, "compile_env") end,
-      fn -> compile_env_ok(b["compile_env"], ctx.config) end
+      fn -> present_reason(b, "compile_env") end,
+      fn -> compile_env_reason(b["compile_env"], ctx.config) end
     ]
   end
 
   # Rules 1 to 5 are shared with the device layer (Precompiled.Device.Rules), so both print the same text.
   @doc false
   @spec target_ok(String.t(), term(), {String.t(), term()}) :: :ok | {:miss, String.t()}
-  def target_ok("pure_elixir", _, _), do: :ok
-  def target_ok(t, built, {t, project}) when built == project, do: :ok
+  def target_ok(t, built, system), do: t |> target_reason(built, system) |> Reason.textual()
 
-  def target_ok(t, built, {t, project}),
-    do: {:miss, "built for #{t} #{built}, project has #{project}"}
+  defp target_reason("pure_elixir", _, _), do: :ok
+  defp target_reason(t, built, {t, project}) when built == project, do: :ok
 
-  def target_ok(t, _, _), do: {:miss, "not built for this system (#{t})"}
+  defp target_reason(t, built, {t, project}),
+    do:
+      {:miss,
+       Reason.new(
+         :not_built_target,
+         [t, project],
+         "built for #{t} #{built}, project has #{project}"
+       )}
+
+  defp target_reason(t, _, {system, project}),
+    do:
+      {:miss,
+       Reason.new(:not_built_target, [system, project], "not built for this system (#{t})")}
+
+  defp target_reason(t, _, _),
+    do: {:miss, Reason.new(:not_built_target, [], "not built for this system (#{t})")}
 
   # Rule 9: the build must have been made the way Mix builds the dep here.
   # A declaration with :manager, :compile or :system_env builds it another
@@ -227,9 +257,20 @@ defmodule Precompiled.Match do
   # and nothing matches.
   defp build_method_ok(build, ctx) do
     case {Map.get(ctx, :build_method_unknown), Map.get(ctx, :overrides, [])} do
-      {why, _} when is_binary(why) -> {:miss, "build method unknown (deps did not load: #{why})"}
-      {_, [opt | _]} -> {:miss, "project sets #{inspect(opt)} for this dependency"}
-      {_, []} -> manager_ok(build["manager"], Map.get(ctx, :manager))
+      {why, _} when is_binary(why) ->
+        {:miss,
+         Reason.new(:build_method_unknown, [], "build method unknown (deps did not load: #{why})")}
+
+      {_, [opt | _]} ->
+        {:miss,
+         Reason.new(
+           :build_method_override,
+           [Atom.to_string(opt)],
+           "project sets #{inspect(opt)} for this dependency"
+         )}
+
+      {_, []} ->
+        manager_ok(build["manager"], Map.get(ctx, :manager))
     end
   end
 
@@ -237,12 +278,25 @@ defmodule Precompiled.Match do
   defp manager_ok(built, built) when is_binary(built), do: :ok
 
   defp manager_ok(built, nil) when is_binary(built),
-    do: {:miss, "built with #{built}, project's manager for it is unknown"}
+    do:
+      {:miss,
+       Reason.new(
+         :build_method_mismatch,
+         [built, "unknown"],
+         "built with #{built}, project's manager for it is unknown"
+       )}
 
   defp manager_ok(built, running) when is_binary(built),
-    do: {:miss, "built with #{built}, project builds with #{running}"}
+    do:
+      {:miss,
+       Reason.new(
+         :build_method_mismatch,
+         [built, running],
+         "built with #{built}, project builds with #{running}"
+       )}
 
-  defp manager_ok(_built, _running), do: {:miss, "malformed entry"}
+  defp manager_ok(_built, _running),
+    do: {:miss, Reason.new(:malformed_entry, [], "malformed entry")}
 
   # What the build key does not record (G6): a dep whose own sources read
   # an env var at module level could have been compiled with any value of
@@ -252,10 +306,18 @@ defmodule Precompiled.Match do
   # Sources that could not be scanned could read anything.
   defp compile_inputs_ok(target, build, ctx) do
     case Map.get(ctx, :reads) do
-      {:unscannable, why} -> {:miss, "source not scannable: #{why}"}
-      %{env: [var | _]} -> {:miss, "reads #{var} at compile time, which no build records"}
-      %{target: true} -> target_name_ok(target, build, Map.get(ctx, :mix_target, "host"))
-      _ -> :ok
+      {:unscannable, why} ->
+        {:miss, Reason.new(:rule8_unscannable, [], "source not scannable: #{why}")}
+
+      %{env: [var | _]} ->
+        {:miss,
+         Reason.new(:rule8_env, [], "reads #{var} at compile time, which no build records")}
+
+      %{target: true} ->
+        target_name_ok(target, build, Map.get(ctx, :mix_target, "host"))
+
+      _ ->
+        :ok
     end
   end
 
@@ -270,7 +332,11 @@ defmodule Precompiled.Match do
       do: :ok,
       else:
         {:miss,
-         "reads Mix.target() at compile time; built for target #{built}, project targets #{running}"}
+         Reason.new(
+           :rule8_target,
+           [built, running],
+           "reads Mix.target() at compile time; built for target #{built}, project targets #{running}"
+         )}
   end
 
   defp conventional_target("pure_elixir"), do: "host"
@@ -279,10 +345,12 @@ defmodule Precompiled.Match do
 
   @doc false
   @spec toolchain_present(map()) :: :ok | {:miss, String.t()}
-  def toolchain_present(%{"elixir" => e, "otp" => o}) when is_binary(e) and is_binary(o),
-    do: :ok
+  def toolchain_present(build), do: build |> toolchain_reason() |> Reason.textual()
 
-  def toolchain_present(_), do: {:miss, "build predates toolchain"}
+  defp toolchain_reason(%{"elixir" => e, "otp" => o}) when is_binary(e) and is_binary(o), do: :ok
+
+  defp toolchain_reason(_),
+    do: {:miss, Reason.new(:build_predates, ["toolchain"], "build predates toolchain")}
 
   # Elixir's promise is backward within a minor: code compiled on x.y.N runs
   # on x.y.M for M >= N. Hex builds its own archive on x.y.0 for the same
@@ -292,14 +360,22 @@ defmodule Precompiled.Match do
   # a pre-release build is still served to the final release.
   @doc false
   @spec elixir_ok(term(), term()) :: :ok | {:miss, String.t()}
-  def elixir_ok(built, running) do
+  def elixir_ok(built, running), do: built |> elixir_reason(running) |> Reason.textual()
+
+  defp elixir_reason(built, running) do
     with {:ok, b} <- parse_version(built),
          {:ok, r} <- parse_version(running),
          true <- b.major > 0 and {b.major, b.minor} == {r.major, r.minor},
          true <- Version.compare(r, b) != :lt do
       :ok
     else
-      _ -> {:miss, "built with Elixir #{built}, running #{running}"}
+      _ ->
+        {:miss,
+         Reason.new(
+           :toolchain_elixir,
+           [built, running],
+           "built with Elixir #{built}, running #{running}"
+         )}
     end
   end
 
@@ -311,17 +387,34 @@ defmodule Precompiled.Match do
   # majors (public_key.hrl between 27 and 28), so majors must match.
   @doc false
   @spec otp_ok(term(), term()) :: :ok | {:miss, String.t()}
-  def otp_ok(built, running) when built == running, do: :ok
-  def otp_ok(built, running), do: {:miss, "built on OTP #{built}, running #{running}"}
+  def otp_ok(built, running), do: built |> otp_reason(running) |> Reason.textual()
+
+  defp otp_reason(built, running) when built == running, do: :ok
+
+  defp otp_reason(built, running),
+    do:
+      {:miss,
+       Reason.new(:toolchain_otp, [built, running], "built on OTP #{built}, running #{running}")}
 
   # A build made before dep_env was recorded has nothing to compare, so the
-  # rule that follows (eq/3) would otherwise read `#{nil}` as an empty env.
+  # comparison would otherwise read `#{nil}` as an empty env.
   @doc false
   @spec dep_env_ok(term(), term()) :: :ok | {:miss, String.t()}
-  def dep_env_ok(nil, _running), do: {:miss, "build predates dep_env"}
+  def dep_env_ok(built, running), do: built |> dep_env_reason(running) |> Reason.textual()
 
-  def dep_env_ok(built, running),
-    do: eq(built, running, &"built with env #{&1}, dependency compiles as #{&2}")
+  defp dep_env_reason(nil, _running),
+    do: {:miss, Reason.new(:build_predates, ["dep_env"], "build predates dep_env")}
+
+  defp dep_env_reason(built, built), do: :ok
+
+  defp dep_env_reason(built, running),
+    do:
+      {:miss,
+       Reason.new(
+         :dep_env_differs,
+         [built, running],
+         "built with env #{built}, dependency compiles as #{running}"
+       )}
 
   # {0, 0, 0} for a value that does not parse; only rank/2 uses it, on
   # builds elixir_ok/2 already accepted.
@@ -336,9 +429,6 @@ defmodule Precompiled.Match do
 
   def parse3(_), do: {0, 0, 0}
 
-  defp eq(a, b, _fmt) when a == b, do: :ok
-  defp eq(a, b, fmt), do: {:miss, fmt.(a, b)}
-
   @field_names %{
     "package_checksum" => "package_checksum",
     "deps" => "deps lock",
@@ -347,10 +437,12 @@ defmodule Precompiled.Match do
 
   @doc false
   @spec present(map(), String.t()) :: :ok | {:miss, String.t()}
-  def present(build, key) do
+  def present(build, key), do: build |> present_reason(key) |> Reason.textual()
+
+  defp present_reason(build, key) do
     case Map.fetch(build, key) do
       {:ok, v} when not is_nil(v) -> :ok
-      _ -> {:miss, "build predates #{@field_names[key]}"}
+      _ -> {:miss, Reason.new(:build_predates, [key], "build predates #{@field_names[key]}")}
     end
   end
 
@@ -369,13 +461,27 @@ defmodule Precompiled.Match do
           {:cont, :ok}
 
         {:hex, _, ^v, _, _, _, _, _} ->
-          {:halt, {:miss, "built against #{name} #{v} with another checksum"}}
+          {:halt,
+           {:miss,
+            Reason.new(
+              :closure_checksum,
+              [name, v],
+              "built against #{name} #{v} with another checksum"
+            )}}
 
         {:hex, _, lv, _, _, _, _, _} ->
-          {:halt, {:miss, "built against #{name} #{v}, lock has #{lv}"}}
+          {:halt,
+           {:miss,
+            Reason.new(
+              :closure_mismatch,
+              [name, v, lv],
+              "built against #{name} #{v}, lock has #{lv}"
+            )}}
 
         _ ->
-          {:halt, {:miss, "built against #{name} #{v}, not in lock"}}
+          {:halt,
+           {:miss,
+            Reason.new(:closure_absent, [name, v], "built against #{name} #{v}, not in lock")}}
       end
     end)
   end
@@ -394,13 +500,23 @@ defmodule Precompiled.Match do
         entry ->
           if Map.has_key?(built, Atom.to_string(name)),
             do: {:cont, :ok},
-            else: {:halt, {:miss, "built without #{name}, lock has #{locked_version(entry)}"}}
+            else:
+              {:halt,
+               {:miss,
+                Reason.new(
+                  :closure_without,
+                  [Atom.to_string(name), locked_arg(entry)],
+                  "built without #{name}, lock has #{locked_version(entry)}"
+                )}}
       end
     end)
   end
 
   defp locked_version({:hex, _, v, _, _, _, _, _}), do: v
   defp locked_version(_), do: "a non-Hex source"
+
+  defp locked_arg({:hex, _, v, _, _, _, _, _}), do: v
+  defp locked_arg(_), do: "non_hex"
 
   @spec compile_env_from_app(Path.t()) :: [map()] | nil
   def compile_env_from_app(app_path) do
@@ -425,10 +541,15 @@ defmodule Precompiled.Match do
 
   @spec compile_env_ok([map()], (String.t(), [String.t()] -> {:ok, term()} | :error)) ::
           :ok | {:miss, String.t()}
-  def compile_env_ok(items, config) do
+  def compile_env_ok(items, config), do: items |> compile_env_reason(config) |> Reason.textual()
+
+  @doc false
+  @spec compile_env_reason([map()], (String.t(), [String.t()] -> {:ok, term()} | :error)) ::
+          :ok | {:miss, Reason.t()}
+  def compile_env_reason(items, config) do
     if is_list(items) and Enum.all?(items, &well_formed_item?/1),
       do: compare_compile_env(items, config),
-      else: {:miss, "malformed entry"}
+      else: {:miss, Reason.new(:malformed_entry, [], "malformed entry")}
   end
 
   # An item missing a field would otherwise be skipped, never compared.
@@ -442,11 +563,17 @@ defmodule Precompiled.Match do
     mismatches =
       for %{"app" => app, "path" => path, "value" => value} <- items,
           not recorded_equals?(value, config.(app, path)),
-          do: "#{app} [:#{Enum.join(path, ", :")}]"
+          do: {app, "#{app} [:#{Enum.join(path, ", :")}]"}
 
     if mismatches == [],
       do: :ok,
-      else: {:miss, "compile_env differs: " <> Enum.join(mismatches, ", ")}
+      else:
+        {:miss,
+         Reason.new(
+           :compile_env_differs,
+           mismatches |> Enum.map(&elem(&1, 0)) |> Enum.uniq(),
+           "compile_env differs: " <> Enum.map_join(mismatches, ", ", &elem(&1, 1))
+         )}
   end
 
   # The recorded value comes from a build of a third-party package, which
