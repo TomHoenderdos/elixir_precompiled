@@ -16,8 +16,12 @@ defmodule Precompiled.Integration.InstallRecheckTest do
   # the next, as it does across boots of a device.
   @script """
   [source, root] = System.argv()
+  # Config, as a project's config/config.exs would set it: install/2
+  # takes no :source or :root.
+  Application.put_env(:precompiled, :source, source)
+  Application.put_env(:precompiled, :root, root)
   deps = [{:jason, "1.4.5"}]
-  Precompiled.Host.install(deps, source: source, root: root)
+  Precompiled.Host.install(deps)
   IO.puts("encoded=" <> Jason.encode!(%{a: 1}))
   IO.puts("mix_dir=" <> Mix.install_project_dir())
   """

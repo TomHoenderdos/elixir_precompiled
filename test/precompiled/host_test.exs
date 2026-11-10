@@ -31,8 +31,20 @@ defmodule Precompiled.HostTest do
     refute Precompiled.Host.skipped_task?([env: :x], "precompiled.status")
   end
 
-  test "disabled without a source", %{env: env} do
-    assert Precompiled.Host.run(env: env, host?: false) == :disabled
+  test "on without a source configured: the official API", %{env: env} do
+    assert Precompiled.Host.run(env: env, host?: false) == :nothing_to_do
+  end
+
+  test "install/2 refuses :source and :root, never ignoring them" do
+    for key <- [:source, :root] do
+      e =
+        assert_raise ArgumentError, fn ->
+          Precompiled.Host.install([{:jason, "1.4.5"}], [{key, "https://example.test/x"}])
+        end
+
+      assert e.message =~ inspect(key)
+      assert e.message =~ "config only"
+    end
   end
 
   test "disabled on the host target even with a source", %{env: env} do
@@ -279,10 +291,37 @@ defmodule Precompiled.HostTest do
     refute File.exists?(Path.join(lib, "jason"))
   end
 
+  # A fresh Livebook runtime has Mix loaded but not started; install/2
+  # starts it first, as Mix.install/2 does. A child VM, since this one runs
+  # under Mix.
+  test "install/2 starts Mix itself before anything else" do
+    script = """
+    false = Process.whereis(Mix.State) != nil
+
+    try do
+      Precompiled.Host.install([], source: "https://example.test/x")
+    rescue
+      ArgumentError -> :ok
+    end
+
+    IO.puts("mix_started=" <> to_string(Process.whereis(Mix.State) != nil))
+    """
+
+    ebin = Path.join(Mix.Project.build_path(), "lib/precompiled/ebin")
+
+    {out, 0} =
+      System.cmd("elixir", ["-pa", ebin, "-e", script],
+        env: [{"MIX_ENV", nil}, {"MIX_EXS", nil}],
+        stderr_to_stdout: true
+      )
+
+    assert out =~ "mix_started=true", out
+  end
+
   describe "the application" do
-    test "is 0.2.2 and needs only crypto and logger to start" do
+    test "is 0.3.0 and needs only crypto and logger to start" do
       Application.load(:precompiled)
-      assert Application.spec(:precompiled, :vsn) == ~c"0.2.2"
+      assert Application.spec(:precompiled, :vsn) == ~c"0.3.0"
       apps = Application.spec(:precompiled, :applications)
       assert :crypto in apps and :logger in apps
       optional = Application.spec(:precompiled, :optional_applications)

@@ -8,8 +8,10 @@ defmodule Precompiled.Device.Source do
   # the manifests and the .app files it plans with.
   #
   # The source is the call's :source, else the :device config's, else the
-  # official API: nothing else is ever guessed. An https source (or http on
-  # loopback) is a network source. A file:// source is a bundle on local
+  # official API: nothing else is ever guessed. A call may name only a
+  # file:// bundle (Precompiled.install/2 refuses any other per-call
+  # source); a network source is the firmware's config or the default.
+  # An https source (or http on loopback) is a network source. A file:// source is a bundle on local
   # storage: it is read from the disk only (Fetch's file:// path), its
   # symlinks resolved once here, and the content origins its batch names
   # are never asked, so a bundle install opens no connection at all.
@@ -31,14 +33,13 @@ defmodule Precompiled.Device.Source do
   alias Precompiled.Match
   alias Precompiled.Trust
 
-  @official "https://compatibility.nerves-project.org/api/precompiled"
   @default_dir "/data/precompiled"
   @max_offline_bytes 8 * 1_048_576
   @max_app_bytes 1_048_576
 
   @doc false
   @spec official() :: String.t()
-  def official(), do: @official
+  def official(), do: Config.official()
 
   @doc false
   @spec default_dir() :: String.t()
@@ -81,7 +82,7 @@ defmodule Precompiled.Device.Source do
     opts = Keyword.merge(device_config(), opts)
     dir = Path.expand(opts[:dir] || @default_dir)
 
-    with {:ok, source, bundle?} <- source(opts[:source] || @official),
+    with {:ok, source, bundle?} <- source(opts[:source] || Config.official()),
          {:ok, content} <- content(opts[:content]),
          {:ok, deadline_s} <- deadline(opts[:deadline_seconds]),
          :ok <- cacerts_path(opts[:cacerts_path]) do

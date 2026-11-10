@@ -5,7 +5,7 @@
 defmodule Precompiled.MixProject do
   use Mix.Project
 
-  @version "0.2.2"
+  @version "0.3.0"
   @source_url "https://github.com/TomHoenderdos/elixir_precompiled"
 
   @otp_release :erlang.system_info(:otp_release) |> List.to_integer()
@@ -83,7 +83,8 @@ defmodule Precompiled.MixProject do
         "Precompiled.Env.MixProject",
         "Precompiled.Env.MixInstall",
         "Precompiled.Manifest",
-        "Mix.Dep.ElixirSCM"
+        "Mix.Dep.ElixirSCM",
+        "Mix.Hex.ensure_installed?/1"
       ],
       source_ref: "v#{@version}",
       source_url: @source_url,

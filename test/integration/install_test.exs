@@ -13,8 +13,8 @@ defmodule Precompiled.Integration.InstallTest do
   @source "https://compatibility.nerves-project.org/api/precompiled"
   @script """
   deps = [{:jason, "1.4.5"}, {:decimal, "3.2.0"}]
-  opts = [source: "#{@source}"]
-  Precompiled.Host.install(deps, opts)
+  # No source given: the official API is the default.
+  Precompiled.Host.install(deps)
   IO.puts("encoded=" <> Jason.encode!(%{a: 1}))
   IO.puts("mix_dir=" <> Mix.install_project_dir())
   IO.puts("our_dir=" <> Precompiled.Install.project_dir(deps, []))

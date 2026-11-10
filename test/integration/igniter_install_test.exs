@@ -50,19 +50,20 @@ defmodule Precompiled.Integration.IgniterInstallTest do
         [
           "igniter.install",
           "precompiled@path:#{File.cwd!()}",
-          "--source",
-          F.base_url(),
           "--yes"
         ],
         [],
         packages: packages
       )
 
-    # The fixture's root, which no installer writes.
+    # The fixture's source and root, which no installer writes.
+    config = Path.join(proj, "config/config.exs")
+    File.mkdir_p!(Path.dirname(config))
+
     File.write!(
-      Path.join(proj, "config/config.exs"),
-      File.read!(Path.join(proj, "config/config.exs")) <>
-        "\nconfig :precompiled, root: #{inspect(f.root_path)}\n"
+      config,
+      if(File.exists?(config), do: File.read!(config), else: "import Config\n") <>
+        "\nconfig :precompiled, source: #{inspect(F.base_url())}, root: #{inspect(f.root_path)}\n"
     )
 
     out
@@ -110,7 +111,6 @@ defmodule Precompiled.Integration.IgniterInstallTest do
              ["deps.compile precompiled", "precompiled.deps", "deps.loadpaths"]
 
     assert Keyword.get(own_dep_opts(proj), :runtime) == false
-    assert File.read!(Path.join(proj, "config/config.exs")) =~ "source: #{inspect(F.base_url())}"
 
     # Running it again changes nothing.
     before = File.read!(Path.join(proj, "mix.exs"))

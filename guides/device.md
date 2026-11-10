@@ -19,7 +19,7 @@ the library ships in the firmware, and `castore` when the system has no
 CA certificates of its own (see [CA certificates](trust.md#ca-certificates)):
 
 ```elixir
-{:precompiled, "~> 0.2", targets: @all_targets},
+{:precompiled, "~> 0.3", targets: @all_targets},
 {:castore, "~> 1.0", targets: @all_targets}
 ```
 
@@ -44,7 +44,7 @@ config :precompiled, :device, enabled: false
 | --- | --- | --- |
 | `enabled` | `true` | `false` disables installing: `install/2` returns `{:error, :disabled}`. `list/1`, `uninstall/2` and `clean/1` keep working, so what is installed can still be removed. |
 | `allow` | any app | A list of apps: only those may be installed, closure members included. |
-| `source` | the official API | Another source: an `https://` API root, or a `file://` bundle dir. |
+| `source` | the official API | Another source: an `https://` API root, or a `file://` bundle dir. The only place a network source can be set. |
 | `dir` | `/data/precompiled` | Where installs are stored. |
 | `max_bytes` | 64 MB | The size bound of that store. |
 | `cacerts_path` | none | A PEM CA bundle to verify the source with. |
@@ -108,7 +108,7 @@ The options of `install/2`:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `:source` | the `:device` config, else the official API | `https://...` (`http://` on loopback only), or `file://DIR` for a bundle. |
+| `:source` | the `:device` config, else the official API | `file://DIR` for a bundle only. A per-call `https://` or `http://` source returns `{:error, {:source_not_allowed, source}}`: a network source is firmware config only (see [Trust](trust.md)). |
 | `:content`, `:deadline_seconds` | as on the host | See [Configuration](configuration.md). |
 | `:cacerts_path` | none | A PEM CA bundle (see [CA certificates](trust.md#ca-certificates)). |
 | `:dir` | `/data/precompiled` | The store. Its trust state lives in `DIR/.trust`, so another `:dir` has its own trust state, starting again from the shipped root. |

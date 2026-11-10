@@ -28,6 +28,27 @@ file             a beam, .app or priv file
 - The root is an Ed25519 key, valid until 2027-10-22.
 - Plain `http` sources are refused, except on loopback.
 
+## Where the source and root come from
+
+The source is the portal's API,
+`https://compatibility.nerves-project.org/api/precompiled`, and the root
+is the `root.json` this library ships. Only code in your project can
+change them: `config :precompiled, source: ..., root: ...` on the host,
+`config :precompiled, :device, source: ..., root: ...` in a firmware.
+No option, call or environment variable can, because a pasted snippet or
+a stray variable is easy to miss:
+
+- a source sees which dependencies you ask for, so a lookalike URL
+  (`nervs-project.org`) would learn them;
+- a root decides whose signatures count, so together with a source it
+  would run someone else's code in your build.
+
+So `Precompiled.Host.install/2` raises on `:source` and `:root`, there is
+no `PRECOMPILED_SOURCE`, and on a device a call may name only a
+`file://` bundle (`{:error, {:source_not_allowed, source}}` otherwise).
+`PRECOMPILED_HOME` and `:home` move only the trust state, which starts
+again from the shipped root.
+
 ## Mirrors and redirects
 
 A batch may name content origins (a CDN) to fetch files and manifests

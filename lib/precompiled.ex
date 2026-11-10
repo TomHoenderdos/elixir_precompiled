@@ -44,7 +44,7 @@ defmodule Precompiled do
 
   | Option | Default | Meaning |
   | --- | --- | --- |
-  | `:source` | `config :precompiled, :device, source:`, else the official API | The API root (`https://...`, or `http://` on loopback only), or `file://DIR` for a bundle. The default is `https://compatibility.nerves-project.org/api/precompiled`, checked against the root this library ships. Any other source must be configured or passed. |
+  | `:source` | `config :precompiled, :device, source:`, else the official API | Per call: `file://DIR` for a bundle only. A network source (`https://...`, or `http://` on loopback only) is set in the firmware's config, never per call: a call naming one is refused with `{:source_not_allowed, source}` (see the Trust guide). The default is `https://compatibility.nerves-project.org/api/precompiled`, checked against the root this library ships. |
   | `:content`, `:deadline_seconds` | as on the host | Same meaning as the host config keys. |
   | `:cacerts_path` | none | A PEM CA bundle to verify an `https` source with (a path). |
   | `:dir` | `/data/precompiled` | The store. Its trust state lives in `DIR/.trust`: a call with another `:dir` gets its own trust state (root chain and sequence floors), starting again from the shipped root. |
@@ -60,9 +60,10 @@ defmodule Precompiled do
   set in the firmware's config only (`config :precompiled,
   :device, root: path`), never per call.
 
-  The device facts, the clock check and the trust anchor have test seams
-  (`:env`, `:clock_synchronized?`, `:root`). A call may pass them only while this library's
-  application env has `test_seams: true`, as its own test suite sets;
+  The device facts, the clock check, the trust anchor and the network
+  source have test seams (`:env`, `:clock_synchronized?`, `:root`, an
+  `https` or loopback `:source`). A call may pass them only while this
+  library's application env has `test_seams: true`, as its own test suite sets;
   otherwise they are refused as unknown options, and the firmware's
   `:device` config never sets them.
 
@@ -89,6 +90,7 @@ defmodule Precompiled do
     * with `dry_run: true`, `{:ok, %Precompiled.Plan{}}`;
     * `{:error, reason}`, where `reason` is one of:
       * `{:bad_request, term}`, `{:bad_option, key}`, `{:bad_source, s}`;
+      * `{:source_not_allowed, s}`, a per-call source that is not `file://`;
       * `{:clock_unsynchronized, now}`;
       * `{:missing_app, app}`, a network app the firmware leaves out;
       * `{:batch, why}`, the trust chain refused (`why` is the client's
@@ -183,11 +185,12 @@ defmodule Precompiled do
   def install(request, opts \\ []) do
     with {:ok, requests} <- normalize(request),
          :ok <- enabled(),
-         {:ok, opts} <- normalize_opts(opts, install_keys()),
-         {:ok, config} <- Source.config(opts),
+         {:ok, merged} <- normalize_opts(opts, install_keys()),
+         :ok <- call_source(opts),
+         {:ok, config} <- Source.config(merged),
          :ok <- network_apps(config),
-         :ok <- clock(config, opts) do
-      Store.with_lock(fn -> locked_install(requests, config, opts) end, opts[:lock_retries])
+         :ok <- clock(config, merged) do
+      Store.with_lock(fn -> locked_install(requests, config, merged) end, merged[:lock_retries])
     end
     |> said(opts)
   rescue
@@ -343,8 +346,24 @@ defmodule Precompiled do
 
   defp device_config(), do: Source.device_config()
 
+  # A network source learns which apps a device asks for, so a call may
+  # not name one: a pasted snippet with a lookalike host would leak them.
+  # It comes from the firmware's config or is the official API. A call
+  # names only a file:// bundle, which reads the local disk. Under
+  # :test_seams (this library's own suite) a per-call network source is a
+  # seam like :root, for the local fixture server.
+  defp call_source(opts) do
+    case Keyword.fetch(opts, :source) do
+      {:ok, "file://" <> _} -> :ok
+      {:ok, source} -> if seams?(), do: :ok, else: {:error, {:source_not_allowed, source}}
+      _ -> :ok
+    end
+  end
+
+  defp seams?(), do: Application.get_env(:precompiled, :test_seams) == true
+
   defp install_keys() do
-    if Application.get_env(:precompiled, :test_seams) == true,
+    if seams?(),
       do: @install_keys ++ @seam_keys,
       else: @install_keys
   end

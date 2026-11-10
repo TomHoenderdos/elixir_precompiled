@@ -33,7 +33,7 @@ defmodule Precompiled.Install do
         Output.warning(
           if Config.disabled?(),
             do: "precompiled: disabled by PRECOMPILED, installing without precompiled builds",
-            else: "precompiled: no source configured, installing without precompiled builds"
+            else: "precompiled: source refused, installing without precompiled builds"
         )
 
         # A second call in one VM finds its deps loaded: nothing to undo.

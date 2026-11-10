@@ -65,7 +65,7 @@ defmodule Precompiled.InstallTest do
     assert Install.ensure_mix!(true) == :ok
   end
 
-  test "no config: plain Mix.install with one warning", %{tmp_dir: dir} do
+  test "no usable config (a refused source): plain Mix.install with one warning", %{tmp_dir: dir} do
     parent = self()
 
     installer = fn deps, opts ->
@@ -78,7 +78,7 @@ defmodule Precompiled.InstallTest do
         assert Install.run([:jason], [verbose: true], nil, installer: installer) == :ok
       end)
 
-    assert out =~ "precompiled: no source configured"
+    assert out =~ "precompiled: source refused"
     assert_received {:installed, [:jason], [verbose: true]}
 
     refute File.exists?(
@@ -95,7 +95,7 @@ defmodule Precompiled.InstallTest do
         capture_io(fn -> assert Install.run([:jason], [], nil, installer: installer) == :ok end)
 
       assert out =~ "precompiled: disabled by PRECOMPILED"
-      refute out =~ "no source configured"
+      refute out =~ "source refused"
     after
       System.delete_env("PRECOMPILED")
     end

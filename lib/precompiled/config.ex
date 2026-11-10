@@ -4,13 +4,16 @@
 #
 defmodule Precompiled.Config do
   @moduledoc """
-  The client's configuration: `config :precompiled, source: url` plus
-  `except: [dep, ...]` and `root: path`; `Precompiled.Host.install/2` passes
-  the same keys as options.
+  The client's configuration. The source defaults to the official API,
+  `https://compatibility.nerves-project.org/api/precompiled`, checked
+  against the root this library ships; `config :precompiled, source: url`
+  and `root: path` replace them, in the project's config only: no option,
+  call or environment variable can, since a source learns which
+  dependencies a project has and a root decides whose builds it runs.
+  `except: [dep, ...]` skips dependencies; `Precompiled.Host.install/2`
+  takes `:except` and `:home` as options.
 
   Environment variables: `PRECOMPILED=0` disables a run;
-  `PRECOMPILED_SOURCE` sets the source when no `source:` option is
-  passed, over the app config (same https-only rule);
   `PRECOMPILED_HOME` moves the cache; `PRECOMPILED_OFFLINE=1`
   is offline mode (below); `PRECOMPILED_CACERTS_PATH` (else
   `HEX_CACERTS_PATH`) names a CA bundle that replaces the OS store;
@@ -43,13 +46,24 @@ defmodule Precompiled.Config do
         }
 
   @loopback ["127.0.0.1", "::1", "localhost"]
+  @official "https://compatibility.nerves-project.org/api/precompiled"
 
+  @doc "The official API, the source when the project's config names none."
+  @spec official() :: String.t()
+  def official(), do: @official
+
+  @doc """
+  The run's config, or nil when it is off (`PRECOMPILED=0`) or the
+  configured source is not https. `overrides` may hold `:except` and
+  `:home` only: `:source` and `:root` come from the project's config.
+  """
   @spec load(keyword()) :: t() | nil
   def load(overrides \\ []) do
+    config_only!(overrides)
     opts = Keyword.merge(app_env(), overrides)
 
     with false <- disabled?(),
-         source when is_binary(source) <- source(overrides, opts),
+         source = opts[:source] || @official,
          :ok <- transport_ok(source) do
       %{
         source: String.trim_trailing(source, "/"),
@@ -71,15 +85,23 @@ defmodule Precompiled.Config do
     end
   end
 
-  # An explicit option (install/2) wins; then PRECOMPILED_SOURCE, so
-  # CI or a script can opt in without editing config; then app config. An
-  # empty variable counts as unset. Whichever wins passes transport_ok/1.
-  defp source(overrides, opts) do
-    overrides[:source] || non_empty(env_var("_SOURCE")) || opts[:source]
-  end
+  @doc false
+  # A source learns which dependencies a project has, and a root decides
+  # whose builds it runs: both are code in the project's config, never an
+  # option a pasted snippet can carry. Refused loudly, not ignored.
+  @spec config_only!(keyword()) :: :ok
+  def config_only!(opts) do
+    case Enum.find([:source, :root], &Keyword.has_key?(opts, &1)) do
+      nil ->
+        :ok
 
-  defp non_empty(""), do: nil
-  defp non_empty(value), do: value
+      key ->
+        raise ArgumentError,
+              "precompiled: #{inspect(key)} is not an option; the source and root are set " <>
+                "in the project's config only (config :precompiled, source: ..., root: ...), " <>
+                "see the Trust guide"
+    end
+  end
 
   # Test-only clock skew for the freshness checks. Project config only, never
   # an environment variable: whoever can edit the project config can already

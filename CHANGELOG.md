@@ -1,10 +1,38 @@
 # Changelog
 
-## v0.2.2 - 2026-11-10
+## v0.3.0 - 2026-11-10
 
-* Docs only. The Nerves, What matches, Trust and Troubleshooting guides
-  are rewritten for reading, mostly as tables, and Known limitations is
-  its own guide.
+Breaking changes. A source learns which dependencies a project has, and a
+root decides whose builds run, so both are now set only in the project's
+config, never by an option or environment variable a pasted snippet could
+carry (see the Trust guide).
+
+* The source defaults to the official API,
+  `https://compatibility.nerves-project.org/api/precompiled`, checked
+  against the shipped root. No source configured no longer means off; to
+  turn it off, use `PRECOMPILED=0`, `config :precompiled, :device,
+  enabled: false` on a device, or `:except` per dependency.
+* `Precompiled.Host.install/2` no longer takes `:source` or `:root`;
+  passing either raises `ArgumentError`. `config :precompiled, source:
+  ..., root: ...` still sets them.
+* `PRECOMPILED_SOURCE` (and `NERVES_PRECOMPILED_SOURCE`) is no longer
+  read.
+* On a device, a per-call `:source` must be a `file://` bundle; a network
+  source per call returns `{:error, {:source_not_allowed, source}}`. A
+  network source comes from `config :precompiled, :device, source: ...`
+  or the default.
+* The Igniter installer no longer writes `config :precompiled, source:`
+  and has no `--source` option.
+
+Also:
+
+* `Precompiled.Host.install/2` starts Mix itself, as `Mix.install/2`
+  does, so it works in a fresh Livebook runtime.
+* The "Mix.install and Livebook" setup is one cell that installs the
+  archive when it is missing.
+* The Nerves, What matches, Trust and Troubleshooting guides are
+  rewritten for reading, mostly as tables, and Known limitations is its
+  own guide.
 * The docs are titled "Precompiled", and the README has a Nerves
   compatibility badge.
 

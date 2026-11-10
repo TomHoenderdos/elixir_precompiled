@@ -64,26 +64,31 @@ if Code.ensure_loaded?(Igniter) do
       """
     end
 
-    test "a new project gets the dep option, the source and the alias" do
+    test "a new project gets the dep option and the alias, and no config" do
       igniter =
         test_project()
         |> Igniter.Project.Deps.add_dep({:precompiled, "~> 0.1"})
-        |> install(["--source", "https://example.test/api/precompiled"])
+        |> install()
         |> apply_igniter!()
 
       mix_exs = content(igniter, "mix.exs")
       assert mix_exs =~ ~s({:precompiled, "~> 0.1", runtime: false})
       assert mix_exs =~ @alias_entries
 
-      assert content(igniter, "config/config.exs") =~
-               ~s(source: "https://example.test/api/precompiled")
+      # The source is the official API by default: nothing to configure.
+      refute Enum.any?(
+               Rewrite.sources(igniter.rewrite),
+               &(Rewrite.Source.get(&1, :content) =~ "config :precompiled")
+             )
     end
 
-    test "without --source the public portal is configured" do
-      igniter = project_with("[]") |> install() |> apply_igniter!()
+    test "--source is no longer an option" do
+      igniter = project_with("[]") |> install(["--source", "https://example.test/p"])
 
-      assert content(igniter, "config/config.exs") =~
-               ~s(source: "https://compatibility.nerves-project.org/api/precompiled")
+      refute Enum.any?(
+               Rewrite.sources(igniter.rewrite),
+               &(Rewrite.Source.get(&1, :content) =~ "example.test")
+             )
     end
 
     test "an existing deps.loadpaths alias keeps its own steps after ours" do
@@ -109,15 +114,13 @@ if Code.ensure_loaded?(Igniter) do
     test "running it twice changes nothing" do
       igniter = project_with("[]") |> install() |> apply_igniter!()
       once = content(igniter, "mix.exs")
-      config = content(igniter, "config/config.exs")
 
       igniter
-      |> install(["--source", "https://other.example.test/p"])
+      |> install()
       |> assert_unchanged()
 
       assert count(once, ~s("precompiled.deps")) == 1
       assert count(once, ~s("deps.compile precompiled")) == 1
-      assert config =~ "compatibility.nerves-project.org"
     end
 
     test "an already set-up alias with other steps is left as it is" do
