@@ -40,8 +40,12 @@ defmodule Precompiled.HTTP do
   # ignored"). Such a body is still bounded by the deadline.
   #
   # post/3 sends a miss report: never redirected, https or loopback http
-  # only, and its whole response is buffered by httpc before the size cap
-  # applies (bounded by the deadline, as non-2xx bodies are).
+  # only, and its answer capped while it is read. A 200 is streamed and
+  # counted chunk by chunk, as a GET's body is. Any other status httpc
+  # buffers whole; where inets takes max_body_size as a request option
+  # (9.8, OTP 29) that caps a sized or chunked body as it arrives, and
+  # elsewhere, or for a body that only ends when the connection closes,
+  # the deadline bounds it.
 
   @max_redirects 5
   @profile :precompiled
@@ -289,6 +293,7 @@ defmodule Precompiled.HTTP do
 
   @post_max_bytes 16_384
   @post_deadline_ms 15_000
+  @post_keys [:max_bytes, :deadline_ms, :connect_timeout_ms, :cacerts_path, :offline]
 
   @doc """
   POST `body` as `application/json`. Only https, or http on loopback; never
@@ -298,8 +303,10 @@ defmodule Precompiled.HTTP do
   @spec post(String.t(), iodata(), keyword()) ::
           {:ok, pos_integer(), binary()} | {:error, term()}
   def post(url, body, opts \\ []) when is_binary(url) do
+    _ = Keyword.validate!(opts, @post_keys)
     max = Keyword.get(opts, :max_bytes, @post_max_bytes)
     deadline_ms = Keyword.get(opts, :deadline_ms, @post_deadline_ms)
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
 
     with :ok <- post_transport(url),
          :ok <- online(opts),
@@ -323,11 +330,15 @@ defmodule Precompiled.HTTP do
              :post,
              request,
              http_opts,
-             [sync: false, receiver: self(), body_format: :binary],
+             [sync: false, receiver: self(), stream: :self, body_format: :binary] ++
+               body_cap(max),
              @profile
            ) do
-        {:ok, ref} -> await_post(ref, max, deadline_ms)
-        {:error, reason} -> {:error, reason}
+        {:ok, ref} ->
+          await_post(ref, %{max: max, deadline: {deadline, deadline_ms}, received: 0, acc: []})
+
+        {:error, reason} ->
+          {:error, reason}
       end
     end
   end
@@ -338,24 +349,90 @@ defmodule Precompiled.HTTP do
       else: {:error, "plain http is only allowed on loopback"}
   end
 
-  defp await_post(ref, max, deadline_ms) do
+  # httpc streams only a 200 or 206 body; every other answer arrives whole.
+  defp await_post(ref, state) do
+    {deadline, deadline_ms} = state.deadline
+    left = max(deadline - System.monotonic_time(:millisecond), 0)
+
     receive do
       {:http, {^ref, {:error, reason}}} ->
-        {:error, reason}
+        post_error(reason, state.max)
+
+      {:http, {^ref, :stream_start, headers}} ->
+        case content_length(headers) do
+          {:ok, n} ->
+            if exceeds?(n, state.max),
+              do: post_too_large(ref, state.max),
+              else: await_post(ref, state)
+
+          :error ->
+            cancel_and_drain(ref)
+            {:error, "invalid content-length"}
+        end
+
+      {:http, {^ref, :stream, data}} ->
+        size = state.received + byte_size(data)
+
+        if exceeds?(size, state.max),
+          do: post_too_large(ref, state.max),
+          else: await_post(ref, %{state | received: size, acc: [state.acc | data]})
+
+      # A streamed answer does not carry its status; the report endpoint
+      # never sends a partial-content 206, so it is the 200.
+      {:http, {^ref, :stream_end, _headers}} ->
+        {:ok, 200, IO.iodata_to_binary(state.acc)}
 
       {:http, {^ref, {{_, status, _}, _headers, _body}}} when div(status, 100) == 3 ->
         {:error, :redirect}
 
-      {:http, {^ref, {{_, _status, _}, _headers, body}}} when byte_size(body) > max ->
-        {:error, {:too_large, max}}
+      {:http, {^ref, {{_, _status, _}, _headers, body}}} when byte_size(body) > state.max ->
+        {:error, {:too_large, state.max}}
 
       {:http, {^ref, {{_, status, _}, _headers, body}}} ->
         {:ok, status, body}
     after
-      deadline_ms + 1_000 ->
+      left ->
         cancel_and_drain(ref)
         {:error, "no response within #{format_seconds(deadline_ms)} s"}
     end
+  end
+
+  defp post_too_large(ref, max) do
+    cancel_and_drain(ref)
+    {:error, {:too_large, max}}
+  end
+
+  # httpc's own cap: :body_too_big for a sized body, body_too_long for a
+  # chunked one.
+  defp post_error(:body_too_big, max), do: {:error, {:too_large, max}}
+  defp post_error({:body_too_long, _}, max), do: {:error, {:too_large, max}}
+  defp post_error(reason, _max), do: {:error, reason}
+
+  defp body_cap(max), do: if(capped_buffer?(), do: [max_body_size: max], else: [])
+
+  @doc false
+  # Whether httpc takes max_body_size as a request option, so a body it
+  # buffers whole is capped while it arrives: inets 9.8 (OTP 29) does,
+  # older ones log the option as invalid and ignore it.
+  @spec capped_buffer?() :: boolean()
+  def capped_buffer?() do
+    _ = Application.load(:inets)
+
+    case Application.spec(:inets, :vsn) do
+      vsn when is_list(vsn) -> version_parts(vsn) >= [9, 8]
+      _ -> false
+    end
+  end
+
+  defp version_parts(vsn) do
+    for part <- vsn |> List.to_string() |> String.split("."),
+        do:
+          part
+          |> Integer.parse()
+          |> then(fn
+            {n, _} -> n
+            :error -> 0
+          end)
   end
 
   defp await_response({:done, result}), do: result

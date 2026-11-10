@@ -58,4 +58,46 @@ defmodule Precompiled.HTTPPostTest do
     assert {:error, "offline"} = HTTP.post(url("/reports"), "{}", offline: true)
     assert F.report_posts() == []
   end
+
+  test "an unknown option is refused before any request" do
+    assert_raise ArgumentError, fn -> HTTP.post(url("/reports"), "{}", headers: []) end
+    assert F.report_posts() == []
+  end
+
+  # The server sends 64 chunks of 64 KiB, 20 ms apart: about 1.3 s and 4 MiB
+  # in full. The client must stop at the cap and close the connection, so the
+  # server's writes start failing long before the last chunk.
+  test "a streamed 200 over the cap stops the transfer early" do
+    assert_stops_early("/huge/200/reports")
+  end
+
+  test "a 201 over the cap stops the transfer early where httpc can cap it" do
+    if HTTP.capped_buffer?() do
+      assert_stops_early("/huge/201/reports")
+    else
+      assert {:error, {:too_large, 16_384}} = HTTP.post(url("/huge/201/reports"), "{}")
+    end
+  end
+
+  defp assert_stops_early(path) do
+    started = System.monotonic_time(:millisecond)
+    assert {:error, {:too_large, 16_384}} = HTTP.post(url(path), "{}", deadline_ms: 5_000)
+    assert System.monotonic_time(:millisecond) - started < 1_000
+    assert %{sent: sent, of: 64} = await_huge()
+    assert sent < 64
+  end
+
+  defp await_huge(tries \\ 100) do
+    case F.report_posts() do
+      [%{sent: _} = post] ->
+        post
+
+      _ when tries > 0 ->
+        Process.sleep(20)
+        await_huge(tries - 1)
+
+      other ->
+        flunk("the server never finished sending: #{inspect(other)}")
+    end
+  end
 end

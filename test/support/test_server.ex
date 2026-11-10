@@ -260,6 +260,28 @@ defmodule Precompiled.TestServer do
     |> send_resp(307, "")
   end
 
+  # 64 chunks of 64 KiB, 20 ms apart, with the given status; records how
+  # many chunks went out before the client hung up.
+  post "/precompiled/huge/:status/reports" do
+    conn = send_chunked(conn, String.to_integer(status))
+    data = String.duplicate("x", 65_536)
+
+    sent =
+      Enum.reduce_while(1..64, 0, fn n, _ ->
+        case chunk(conn, data) do
+          {:ok, _} ->
+            Process.sleep(20)
+            {:cont, n}
+
+          {:error, _} ->
+            {:halt, n - 1}
+        end
+      end)
+
+    Precompiled.Fixture.record_report_post(%{sent: sent, of: 64})
+    conn
+  end
+
   post "/precompiled/slow/reports" do
     Process.sleep(2000)
     send_resp(conn, 201, ~s({"id":"slow"}))
