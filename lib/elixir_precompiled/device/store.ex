@@ -83,7 +83,7 @@ defmodule ElixirPrecompiled.Device.Store do
   @doc false
   @spec ensure_root(Path.t()) :: :ok | {:error, {:unsafe_store, term()}}
   def ensure_root(dir) do
-    dir = Path.expand(dir)
+    dir = root(dir)
 
     with :ok <- create(dir),
          :ok <- safe_dir(dir) do
@@ -96,7 +96,7 @@ defmodule ElixirPrecompiled.Device.Store do
   # store yet, else the same ownership, mode and marker checks.
   @spec check_root(Path.t()) :: :ok | :absent | {:error, {:unsafe_store, term()}}
   def check_root(dir) do
-    dir = Path.expand(dir)
+    dir = root(dir)
 
     case File.lstat(dir) do
       {:error, :enoent} -> :absent
@@ -198,7 +198,7 @@ defmodule ElixirPrecompiled.Device.Store do
   @spec staging(Path.t(), atom(), String.t()) :: Path.t()
   def staging(dir, app, vsn) do
     {:ok, name} = entry_name(app, vsn)
-    parent = Path.join(Path.expand(dir), @staging)
+    parent = Path.join(root(dir), @staging)
     File.mkdir_p!(parent)
     path = Path.join(parent, name <> "." <> unique())
     File.mkdir!(path)
@@ -211,7 +211,7 @@ defmodule ElixirPrecompiled.Device.Store do
   @spec commit(Path.t(), Path.t(), atom(), String.t(), map(), map(), keyword()) ::
           {:ok, Path.t()} | {:error, term()}
   def commit(staging, dir, app, vsn, provenance, active, opts \\ []) do
-    dir = Path.expand(dir)
+    dir = root(dir)
     hook = Keyword.get(opts, :hook, fn _ -> :ok end)
 
     with {:ok, name} <- entry_name(app, vsn),
@@ -223,7 +223,7 @@ defmodule ElixirPrecompiled.Device.Store do
   end
 
   defp own_staging(dir, staging) do
-    path = Path.expand(staging)
+    path = root(staging)
 
     if Path.dirname(path) == Path.join(dir, @staging) and
          not String.starts_with?(Path.basename(path), ".") and
@@ -332,7 +332,7 @@ defmodule ElixirPrecompiled.Device.Store do
   # else removes the entry (unless it is in use) and is a miss.
   @spec cached(Path.t(), atom(), String.t(), map()) :: {:hit, Path.t()} | :miss
   def cached(dir, app, vsn, entry) do
-    dir = Path.expand(dir)
+    dir = root(dir)
 
     with {:ok, name} <- entry_name(app, vsn),
          path = Path.join(dir, name),
@@ -370,7 +370,7 @@ defmodule ElixirPrecompiled.Device.Store do
   # Best effort: a failure only makes the entry look older to eviction.
   @spec touch(Path.t(), atom(), String.t()) :: :ok
   def touch(dir, app, vsn) do
-    dir = Path.expand(dir)
+    dir = root(dir)
 
     with {:ok, name} <- entry_name(app, vsn),
          path = Path.join(dir, name),
@@ -404,7 +404,7 @@ defmodule ElixirPrecompiled.Device.Store do
   @doc false
   @spec list(Path.t()) :: [entry_info()]
   def list(dir) do
-    for %{provenance: prov} = e <- entries(Path.expand(dir)),
+    for %{provenance: prov} = e <- entries(root(dir)),
         is_map(prov),
         do: %{app: app(e), version: e.version, path: e.path, provenance: prov, bytes: e.bytes}
   end
@@ -450,7 +450,7 @@ defmodule ElixirPrecompiled.Device.Store do
   # Everything under the store but .trust and the marker.
   @spec used_bytes(Path.t()) :: non_neg_integer()
   def used_bytes(dir) do
-    dir = Path.expand(dir)
+    dir = root(dir)
 
     dir
     |> ls()
@@ -474,7 +474,7 @@ defmodule ElixirPrecompiled.Device.Store do
   ## Eviction and cleaning
 
   @doc false
-  # Makes 2 * plan_bytes (staging plus install) free under max_bytes,
+  # Makes plan_bytes free under max_bytes,
   # evicting least recently used entries first. Never evicts an `active`
   # app, one of `keep` (the plan's own reuses), or an entry in use.
   @spec make_room(Path.t(), non_neg_integer(), non_neg_integer(), map(), [atom()]) ::
@@ -492,8 +492,11 @@ defmodule ElixirPrecompiled.Device.Store do
   @spec room(Path.t(), non_neg_integer(), non_neg_integer(), map(), [atom()]) ::
           {:ok, [Path.t()]} | {:error, {:too_big, non_neg_integer(), non_neg_integer()}}
   def room(dir, plan_bytes, max_bytes, active, keep) do
-    dir = Path.expand(dir)
-    needed = 2 * plan_bytes
+    dir = root(dir)
+    # Staging is renamed into place, never copied: the plan's bytes exist
+    # once. An entry the plan replaces is already gone by now (cached/4
+    # removes a stale one) or refuses the commit (in use).
+    needed = plan_bytes
     free = max_bytes - used_bytes(dir)
     in_use = in_use()
 
@@ -520,7 +523,7 @@ defmodule ElixirPrecompiled.Device.Store do
   # Discards each entry room/5 chose, unless it has come into use since.
   @spec evict(Path.t(), [Path.t()]) :: :ok
   def evict(dir, paths) do
-    dir = Path.expand(dir)
+    dir = root(dir)
     in_use = in_use()
 
     if store?(dir) do
@@ -548,7 +551,7 @@ defmodule ElixirPrecompiled.Device.Store do
           kept: [atom()]
         }
   def clean(dir, active) do
-    dir = Path.expand(dir)
+    dir = root(dir)
 
     if store?(dir) do
       in_use = in_use()
@@ -571,7 +574,7 @@ defmodule ElixirPrecompiled.Device.Store do
   # one of them is in use.
   @spec remove(Path.t(), atom()) :: :ok | {:error, {:in_use, atom()}}
   def remove(dir, app) do
-    dir = Path.expand(dir)
+    dir = root(dir)
     in_use = in_use()
     name = Atom.to_string(app)
     mine = if store?(dir), do: Enum.filter(entries(dir), &(&1.app == name)), else: []
@@ -592,7 +595,7 @@ defmodule ElixirPrecompiled.Device.Store do
   # touched. Never raises.
   @spec sweep(Path.t()) :: :ok
   def sweep(dir) do
-    dir = Path.expand(dir)
+    dir = root(dir)
 
     if store?(dir) do
       sweep_staging(dir)
@@ -682,6 +685,17 @@ defmodule ElixirPrecompiled.Device.Store do
     do: path == mountpoint or String.starts_with?(path, mountpoint <> "/")
 
   @doc false
+  # The store dir every function here works on: its parent resolved to a
+  # real path, its own last component kept, so the same store reached
+  # through a link (/data -> /root) is one store, while a store dir that is
+  # itself a symlink is still seen, and refused, as one.
+  @spec root(Path.t()) :: Path.t()
+  def root(dir) do
+    dir = Path.expand(dir)
+    Path.join(realpath(Path.dirname(dir)), Path.basename(dir))
+  end
+
+  @doc false
   # Resolves symlinks one component at a time; a missing component and
   # everything after it are kept as written.
   @spec realpath(Path.t()) :: Path.t()
@@ -757,6 +771,10 @@ defmodule ElixirPrecompiled.Device.Store do
 
   # The ebin dirs code runs from: the code path, and where each loaded
   # module was loaded from.
+  #
+  # Real paths on both sides: an install made through /data/precompiled
+  # (/data a link to /root on Nerves) is in use when looked at as
+  # /root/precompiled, and the other way round.
   defp in_use() do
     paths = for p <- :code.get_path(), do: Path.expand(to_string(p))
 
@@ -765,7 +783,9 @@ defmodule ElixirPrecompiled.Device.Store do
           is_list(file),
           do: Path.dirname(Path.expand(to_string(file)))
 
-    MapSet.new(paths ++ loaded)
+    (paths ++ loaded)
+    |> Enum.uniq()
+    |> MapSet.new(&realpath/1)
   end
 
   defp in_use?(path, in_use), do: MapSet.member?(in_use, Path.join(path, "ebin"))

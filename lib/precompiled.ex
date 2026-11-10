@@ -45,10 +45,9 @@ defmodule Precompiled do
   | Option | Default | Meaning |
   | --- | --- | --- |
   | `:source` | `config :elixir_precompiled, :device, source:`, else the official API | The API root (`https://...`, or `http://` on loopback only), or `file://DIR` for a bundle. The default is `https://compatibility.nerves-project.org/api/precompiled`, checked against the root this library ships. Any other source must be configured or passed. |
-  | `:root` | the shipped `priv/precompiled/root.json` | A trust anchor that overrides the shipped one, as on the host. |
   | `:content`, `:deadline_seconds` | as on the host | Same meaning as the host config keys. |
   | `:cacerts_path` | none | A PEM CA bundle to verify an `https` source with (a path). |
-  | `:dir` | `/data/precompiled` | The store. Its trust state lives in `DIR/.trust`, so a call with another `:dir` keeps its own sequence floors. |
+  | `:dir` | `/data/precompiled` | The store. Its trust state lives in `DIR/.trust`: a call with another `:dir` gets its own trust state (root chain and sequence floors), starting again from the shipped root. |
   | `:start` | `true` | Start the installed apps (`:temporary`) after loading them. |
   | `:closure` | `true` | Install absent runtime dependencies. `false` refuses with `{:needs, [...]}` instead. |
   | `:max_closure`, `:max_bytes` | 25, 64 MB | Bounds on the apps of one call and on the store's size. |
@@ -57,8 +56,12 @@ defmodule Precompiled do
   | `:quiet` | `false` | Print nothing. |
   | `:lock_retries` | 60 | For tests: how often to retry a store another call holds. |
 
-  The device facts and the clock check have test seams (`:env`,
-  `:clock_synchronized?`). A call may pass them only while this library's
+  Another trust anchor than the shipped `priv/precompiled/root.json` is
+  set in the firmware's config only (`config :elixir_precompiled,
+  :device, root: path`), never per call.
+
+  The device facts, the clock check and the trust anchor have test seams
+  (`:env`, `:clock_synchronized?`, `:root`). A call may pass them only while this library's
   application env has `test_seams: true`, as its own test suite sets;
   otherwise they are refused as unknown options, and the firmware's
   `:device` config never sets them.
@@ -76,7 +79,8 @@ defmodule Precompiled do
   An online call needs a synchronized clock: on an unsynchronized one it
   refuses before any request. A `file://` bundle with a signed
   `offline.json` needs no clock and no network at all; one without it is
-  bounded by its batch's own expiry.
+  bounded by its batch's own expiry and needs a synchronized clock too,
+  checked once its batch is read.
 
   ## Return values
 
@@ -149,7 +153,6 @@ defmodule Precompiled do
                   [
                     :source,
                     :content,
-                    :root,
                     :cacerts_path,
                     :deadline_seconds,
                     :start,
@@ -163,7 +166,9 @@ defmodule Precompiled do
   # call may pass them only while `:test_seams` is set in this library's
   # application env (its own test suite, the qemu test). Otherwise they
   # are unknown options.
-  @seam_keys [:env, :clock_synchronized?]
+  # :root swaps the trust anchor: per call only as a seam, otherwise the
+  # firmware's :device config sets it.
+  @seam_keys [:env, :clock_synchronized?, :root]
   @uninstall_keys @common_keys ++ [:force, :cascade, :remove]
   @network_apps [:ssl, :inets, :public_key]
 
@@ -193,10 +198,12 @@ defmodule Precompiled do
   end
 
   @doc """
-  The apps in the store, each with whether it is loaded in this VM.
-  Prints one line per app unless `quiet: true`.
+  The apps in the store, each with whether it is loaded in this VM (`[]`
+  when there is no store yet), or `{:error, reason}`: a bad option, an
+  unsafe store, `{:internal, message}`. Prints one line per app unless
+  `quiet: true`.
   """
-  @spec list(keyword()) :: [Precompiled.Installed.t()]
+  @spec list(keyword()) :: [Precompiled.Installed.t()] | {:error, term()}
   def list(opts \\ []) do
     with {:ok, opts} <- common_opts(opts),
          :ok <- Store.check_root(opts[:dir]) do
@@ -204,15 +211,14 @@ defmodule Precompiled do
       for i <- items, do: say(opts, list_line(i))
       items
     else
-      {:error, reason} ->
-        said({:error, reason}, opts)
-        []
-
-      :absent ->
-        []
+      {:error, reason} -> said({:error, reason}, opts)
+      :absent -> []
     end
   rescue
-    _ -> []
+    e -> {:error, {:internal, Exception.message(e)}}
+  catch
+    kind, reason when kind in [:exit, :throw] ->
+      {:error, {:internal, inspect({kind, reason})}}
   end
 
   @doc """
@@ -409,11 +415,16 @@ defmodule Precompiled do
     end
   end
 
-  # A bundle needs no clock: Trust decides (an online batch's expiry needs
-  # a sane clock, an offline document none).
+  # A bundle is gated once its batch is read (bundle_clock/2): only a
+  # signed offline.json is free of the clock.
   defp clock(%{bundle: true}, _opts), do: :ok
 
-  defp clock(_config, opts) do
+  defp clock(_config, opts), do: clock_set(opts)
+
+  defp bundle_clock(%{offline: true}, _opts), do: :ok
+  defp bundle_clock(_batch, opts), do: clock_set(opts)
+
+  defp clock_set(opts) do
     synchronized? = Keyword.get(opts, :clock_synchronized?, &nerves_time_synced?/0)
 
     if synchronized?.() == true do
@@ -465,7 +476,8 @@ defmodule Precompiled do
     active = active(entries)
 
     with :ok <- not_present(requests, env, active),
-         {:ok, batch} <- Source.batch(config) do
+         {:ok, batch} <- Source.batch(config),
+         :ok <- if(config.bundle, do: bundle_clock(batch, opts), else: :ok) do
       config = Source.with_batch(config, batch)
       ctx = ctx(env, config, entries, active, memo, opts)
 
@@ -499,7 +511,12 @@ defmodule Precompiled do
   defp ctx(env, config, entries, active, memo, opts) do
     %{
       env: env,
-      app_spec: Source.app_spec_fun(config, memo: memo, budget: 4 * opts[:max_closure]),
+      app_spec:
+        Source.app_spec_fun(config,
+          memo: memo,
+          budget: 4 * opts[:max_closure],
+          entries: entries
+        ),
       installed: Map.new(entries, &{&1.app, &1.provenance["files_sha256"]}),
       active: active,
       config: &CompileEnv.lookup/2,
@@ -578,9 +595,12 @@ defmodule Precompiled do
     with {:ok, victims} <-
            Store.room(config.dir, plan_bytes, opts[:max_bytes], state.active, keep),
          :ok <- noexec(plan.installs, state),
+         # Room first: on a nearly full /data a stale cache must go before
+         # the download, or staging hits ENOSPC. Only unloaded, unused
+         # entries are victims, so this never touches what runs.
+         :ok <- Store.evict(config.dir, victims),
          {:ok, placed} <- place_all(checked, state),
          :ok <- verify_placed(placed, state),
-         :ok <- Store.evict(config.dir, victims),
          {:ok, committed} <- commit_all(placed, state),
          {:ok, installed} <- activate_all(committed, state) do
       for i <- installed, do: Store.touch(config.dir, i.app, i.version)

@@ -60,6 +60,7 @@ defmodule ElixirPrecompiled.Device.Loader do
   # until a forced uninstall.
 
   alias ElixirPrecompiled.Device.Env
+  alias ElixirPrecompiled.Device.Source
   alias ElixirPrecompiled.Match
 
   @typep activation :: %{
@@ -294,19 +295,14 @@ defmodule ElixirPrecompiled.Device.Loader do
 
   defp sha256(bin), do: Base.encode16(:crypto.hash(:sha256, bin), case: :lower)
 
-  # The .app is parsed from bytes already checked, never consulted from disk.
+  # The .app is parsed from bytes already checked, never consulted from
+  # disk, by the same parser planning used (Source.parse_app/2).
   defp parse_app(app, bin) do
-    with chars when is_list(chars) <- :unicode.characters_to_list(bin),
-         {:ok, tokens, _} <- :erl_scan.string(chars),
-         {:ok, {:application, ^app, props}} <- :erl_parse.parse_term(tokens),
-         true <- Keyword.keyword?(props) and module_list?(props[:modules]) do
-      {:ok, props}
-    else
-      _ -> {:error, {:fetch, app, "malformed ebin/#{app}.app"}}
+    case Source.parse_app(bin, Atom.to_string(app)) do
+      {:ok, props} -> {:ok, props}
+      {:fail, why} -> {:error, {:fetch, app, why}}
     end
   end
-
-  defp module_list?(mods), do: is_list(mods) and Enum.all?(mods, &is_atom/1)
 
   ## Activation steps
 

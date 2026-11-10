@@ -248,10 +248,15 @@ defmodule ElixirPrecompiled.Device.Source do
   def app_spec_fun(config, opts \\ []) do
     memo = opts[:memo]
     budget = Keyword.get(opts, :budget, 100)
+    # The store's entries, listed once for the whole call (the caller's,
+    # or read here once), never once per candidate build.
+    entries = Keyword.get_lazy(opts, :entries, fn -> Store.list(config.dir) end)
 
     fn build ->
       with {:ok, entry, app} <- app_entry(build) do
-        memoized(memo, budget, entry["sha256"], fn -> app_spec(config, build, entry, app) end)
+        memoized(memo, budget, entry["sha256"], fn ->
+          app_spec(config, entries, build, entry, app)
+        end)
       end
     end
   end
@@ -294,14 +299,14 @@ defmodule ElixirPrecompiled.Device.Source do
     end
   end
 
-  defp app_spec(config, build, entry, app) do
-    with {:ok, bytes} <- app_bytes(config, build, entry) do
+  defp app_spec(config, entries, build, entry, app) do
+    with {:ok, bytes} <- app_bytes(config, entries, build, entry) do
       parse_app(bytes, app)
     end
   end
 
-  defp app_bytes(config, build, entry) do
-    case cached_app(config, build, entry) do
+  defp app_bytes(config, entries, build, entry) do
+    case cached_app(entries, build, entry) do
       {:ok, bytes} -> {:ok, bytes}
       :miss -> download(config, entry)
     end
@@ -309,10 +314,10 @@ defmodule ElixirPrecompiled.Device.Source do
 
   # An entry of this exact build (by its provenance) whose .app has the
   # signed bytes. The provenance only points; the hash decides.
-  defp cached_app(config, build, entry) do
+  defp cached_app(entries, build, entry) do
     hash = Match.files_hash(build)
 
-    Enum.find_value(Store.list(config.dir), :miss, fn
+    Enum.find_value(entries, :miss, fn
       %{provenance: %{"files_sha256" => ^hash}, path: path} ->
         read_checked(Path.join(path, entry["path"]), entry)
 
@@ -357,14 +362,18 @@ defmodule ElixirPrecompiled.Device.Source do
 
   @doc false
   # The .app term of `app`, from bytes already checked: never consulted
-  # from disk.
+  # from disk. The one parser of a build's .app: planning, staging and the
+  # loader all read it here, so they agree on what is valid (a :modules
+  # list of atoms included, refused before any download).
   @spec parse_app(binary(), String.t()) :: {:ok, keyword()} | {:fail, String.t()}
   def parse_app(bytes, app) do
     with chars when is_list(chars) <- :unicode.characters_to_list(bytes),
          {:ok, tokens, _} <- :erl_scan.string(chars),
          {:ok, {:application, name, props}} when is_atom(name) and is_list(props) <-
            :erl_parse.parse_term(tokens),
-         true <- Atom.to_string(name) == app and Keyword.keyword?(props) do
+         true <- Atom.to_string(name) == app and Keyword.keyword?(props),
+         mods when is_list(mods) <- props[:modules],
+         true <- Enum.all?(mods, &is_atom/1) do
       {:ok, props}
     else
       _ -> {:fail, "malformed ebin/#{app}.app"}
