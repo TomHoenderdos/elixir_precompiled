@@ -1,8 +1,9 @@
-# precompiled
+# Precompiled
 
 [![Hex version](https://img.shields.io/hexpm/v/precompiled.svg)](https://hex.pm/packages/precompiled)
 [![HexDocs](https://img.shields.io/badge/hex-docs-lightgreen.svg)](https://hexdocs.pm/precompiled/)
 [![CI](https://github.com/TomHoenderdos/elixir_precompiled/actions/workflows/ci.yml/badge.svg)](https://github.com/TomHoenderdos/elixir_precompiled/actions/workflows/ci.yml)
+[![Nerves](https://compatibility.nerves-project.org/badge/precompiled.svg)](https://compatibility.nerves-project.org/packages/precompiled)
 
 Install signed, verified precompiled builds of your Hex dependencies
 instead of compiling them. Builds come from the
@@ -48,7 +49,7 @@ config :precompiled, source: "https://compatibility.nerves-project.org/api/preco
 
 ## Usage
 
-Nothing more: every `mix compile`, `mix test`, `mix phx.server` and
+Nothing more: every `mix compile`, `mix test`, [`mix phx.server`](https://hexdocs.pm/phoenix/Mix.Tasks.Phx.Server.html) and
 `mix release` installs the matching builds before Mix compiles the rest,
 and prints one line per candidate:
 
@@ -87,8 +88,9 @@ Explanation:
 
 Troubleshooting:
 
-- [Troubleshooting](https://hexdocs.pm/precompiled/troubleshooting.html),
-  with the known limitations
+- [Troubleshooting](https://hexdocs.pm/precompiled/troubleshooting.html):
+  every line the library prints, and what to do
+- [Known limitations](https://hexdocs.pm/precompiled/limitations.html)
 
 The guides are also in
 [guides/](https://github.com/TomHoenderdos/elixir_precompiled/tree/main/guides).

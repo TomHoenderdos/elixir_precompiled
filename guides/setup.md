@@ -42,7 +42,7 @@ For unreleased changes, the git form works too:
 (and `mix archive.install github TomHoenderdos/elixir_precompiled` for
 the archive below).
 
-Every `mix compile`, `mix test`, `mix run`, `mix phx.server` and
+Every `mix compile`, `mix test`, `mix run`, [`mix phx.server`](https://hexdocs.pm/phoenix/Mix.Tasks.Phx.Server.html) and
 `mix release` passes through `deps.loadpaths` before Mix compiles
 dependencies; the alias installs the matching builds first. The first
 entry compiles this library so its task exists. Without it, Mix would
@@ -64,7 +64,7 @@ The Igniter installer does not edit umbrellas.
 
 ## Phoenix
 
-Nothing beyond the above: `mix phx.server`, `mix test` and `mix release`
+Nothing beyond the above: [`mix phx.server`](https://hexdocs.pm/phoenix/Mix.Tasks.Phx.Server.html), `mix test` and `mix release`
 all go through the alias. Assets are not touched.
 
 ## CI

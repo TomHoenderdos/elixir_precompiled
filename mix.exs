@@ -5,7 +5,7 @@
 defmodule Precompiled.MixProject do
   use Mix.Project
 
-  @version "0.2.1"
+  @version "0.2.2"
   @source_url "https://github.com/TomHoenderdos/elixir_precompiled"
 
   @otp_release :erlang.system_info(:otp_release) |> List.to_integer()
@@ -16,6 +16,7 @@ defmodule Precompiled.MixProject do
   def project do
     [
       app: :precompiled,
+      name: "Precompiled",
       version: @version,
       elixir: "~> 1.17",
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -95,13 +96,14 @@ defmodule Precompiled.MixProject do
         "guides/matching.md",
         "guides/trust.md",
         "guides/troubleshooting.md",
+        "guides/limitations.md",
         "CHANGELOG.md"
       ],
       groups_for_extras: [
         "Getting started": ["guides/setup.md", "guides/nerves.md", "guides/device.md"],
         Reference: ["guides/configuration.md", "guides/matching.md"],
         Explanation: ["guides/trust.md"],
-        Troubleshooting: ["guides/troubleshooting.md"]
+        Troubleshooting: ["guides/troubleshooting.md", "guides/limitations.md"]
       ]
     ]
   end
