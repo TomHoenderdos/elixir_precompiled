@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule ElixirPrecompiled.ChildProjectTest do
+defmodule Precompiled.ChildProjectTest do
   use ExUnit.Case, async: true
-  alias ElixirPrecompiled.ChildProject, as: C
+  alias Precompiled.ChildProject, as: C
 
   @moduletag :tmp_dir
 

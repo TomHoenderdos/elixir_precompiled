@@ -5,17 +5,17 @@
 defmodule PrecompiledTest do
   # Installs load into this VM, so every test removes what it loaded on exit.
   use ExUnit.Case, async: false
-  import ElixirPrecompiled.DeviceFixture
-  alias ElixirPrecompiled.Device.Source
-  alias ElixirPrecompiled.Device.Store
-  alias ElixirPrecompiled.Fixture
+  import Precompiled.DeviceFixture
+  alias Precompiled.Device.Source
+  alias Precompiled.Device.Store
+  alias Precompiled.Fixture
 
   @moduletag :tmp_dir
 
   setup %{tmp_dir: dir} do
     # Other suites reset this app's env; the seams (env:, ...) need it.
-    Application.put_env(:elixir_precompiled, :test_seams, true)
-    start_supervised!(ElixirPrecompiled.TestServer)
+    Application.put_env(:precompiled, :test_seams, true)
+    start_supervised!(Precompiled.TestServer)
     fixture = Fixture.new(dir, offline_key: true)
 
     host_env =
@@ -91,8 +91,8 @@ defmodule PrecompiledTest do
   end
 
   defp put_device_env(kw) do
-    Application.put_env(:elixir_precompiled, :device, kw)
-    on_exit(fn -> Application.delete_env(:elixir_precompiled, :device) end)
+    Application.put_env(:precompiled, :device, kw)
+    on_exit(fn -> Application.delete_env(:precompiled, :device) end)
   end
 
   defp new_key() do
@@ -115,7 +115,7 @@ defmodule PrecompiledTest do
               }} =
                Source.config(dir: System.tmp_dir!())
 
-      assert root == Path.join(ElixirPrecompiled.Config.priv_dir(), "precompiled/root.json")
+      assert root == Path.join(Precompiled.Config.priv_dir(), "precompiled/root.json")
     end
 
     test "another source must be named: config or option, never guessed", %{opts: opts} do
@@ -189,8 +189,8 @@ defmodule PrecompiledTest do
     end
 
     test "the test seams are refused per call unless the test env enables them", %{opts: opts} do
-      Application.delete_env(:elixir_precompiled, :test_seams)
-      on_exit(fn -> Application.put_env(:elixir_precompiled, :test_seams, true) end)
+      Application.delete_env(:precompiled, :test_seams)
+      on_exit(fn -> Application.put_env(:precompiled, :test_seams, true) end)
       plain = Keyword.drop(opts, [:env, :root])
 
       assert Precompiled.install(:demo_a, Keyword.drop(opts, [:root])) ==
@@ -1217,7 +1217,7 @@ defmodule PrecompiledTest do
   end
 
   describe "output" do
-    alias ElixirPrecompiled.Device.Output
+    alias Precompiled.Device.Output
 
     test "the env line" do
       assert Output.env_line(env()) ==

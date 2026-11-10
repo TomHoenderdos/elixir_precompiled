@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule ElixirPrecompiled.Integration.IgniterInstallTest do
+defmodule Precompiled.Integration.IgniterInstallTest do
   use ExUnit.Case, async: false
-  alias ElixirPrecompiled.ChildProject, as: C
-  alias ElixirPrecompiled.Fixture, as: F
+  alias Precompiled.ChildProject, as: C
+  alias Precompiled.Fixture, as: F
 
   @moduletag :integration
   @moduletag :tmp_dir
@@ -16,7 +16,7 @@ defmodule ElixirPrecompiled.Integration.IgniterInstallTest do
     do: @moduletag(skip: "Igniter needs Elixir 1.18")
 
   setup_all do
-    start_supervised!(ElixirPrecompiled.TestServer)
+    start_supervised!(Precompiled.TestServer)
     :ok
   end
 
@@ -49,7 +49,7 @@ defmodule ElixirPrecompiled.Integration.IgniterInstallTest do
         proj,
         [
           "igniter.install",
-          "elixir_precompiled@path:#{File.cwd!()}",
+          "precompiled@path:#{File.cwd!()}",
           "--source",
           F.base_url(),
           "--yes"
@@ -62,7 +62,7 @@ defmodule ElixirPrecompiled.Integration.IgniterInstallTest do
     File.write!(
       Path.join(proj, "config/config.exs"),
       File.read!(Path.join(proj, "config/config.exs")) <>
-        "\nconfig :elixir_precompiled, root: #{inspect(f.root_path)}\n"
+        "\nconfig :precompiled, root: #{inspect(f.root_path)}\n"
     )
 
     out
@@ -83,18 +83,18 @@ defmodule ElixirPrecompiled.Integration.IgniterInstallTest do
     found
   end
 
-  # The options of the child's elixir_precompiled dependency, as written.
+  # The options of the child's precompiled dependency, as written.
   defp own_dep_opts(proj) do
     ast = proj |> Path.join("mix.exs") |> File.read!() |> Code.string_to_quoted!()
 
     {_, found} =
       Macro.prewalk(ast, nil, fn
-        {:{}, _, [:elixir_precompiled, opts]} = node, nil -> {node, opts}
-        {:elixir_precompiled, opts} = node, nil when is_list(opts) -> {node, opts}
+        {:{}, _, [:precompiled, opts]} = node, nil -> {node, opts}
+        {:precompiled, opts} = node, nil when is_list(opts) -> {node, opts}
         node, acc -> {node, acc}
       end)
 
-    assert is_list(found), "no elixir_precompiled dependency in #{proj}/mix.exs"
+    assert is_list(found), "no precompiled dependency in #{proj}/mix.exs"
     found
   end
 
@@ -107,14 +107,14 @@ defmodule ElixirPrecompiled.Integration.IgniterInstallTest do
     install!(proj, f)
 
     assert alias_list(proj) ==
-             ["deps.compile elixir_precompiled", "precompiled.install", "deps.loadpaths"]
+             ["deps.compile precompiled", "precompiled.deps", "deps.loadpaths"]
 
     assert Keyword.get(own_dep_opts(proj), :runtime) == false
     assert File.read!(Path.join(proj, "config/config.exs")) =~ "source: #{inspect(F.base_url())}"
 
     # Running it again changes nothing.
     before = File.read!(Path.join(proj, "mix.exs"))
-    C.mix!(proj, ["elixir_precompiled.install", "--yes"], [], packages: C.lock_packages())
+    C.mix!(proj, ["precompiled.install", "--yes"], [], packages: C.lock_packages())
     assert File.read!(Path.join(proj, "mix.exs")) == before
 
     C.publish_jason!(f, proj)
@@ -137,8 +137,8 @@ defmodule ElixirPrecompiled.Integration.IgniterInstallTest do
     install!(proj, f)
 
     assert alias_list(proj) == [
-             "deps.compile elixir_precompiled",
-             "precompiled.install",
+             "deps.compile precompiled",
+             "precompiled.deps",
              "cmd echo user step ran",
              "deps.loadpaths"
            ]

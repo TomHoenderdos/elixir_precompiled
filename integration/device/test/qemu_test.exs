@@ -22,7 +22,7 @@ defmodule DeviceQemuTest do
   test "the release has no Mix, and the device layer is on it" do
     assert dev("IO.inspect(:code.which(Mix))") =~ ":non_existing"
     assert dev("IO.inspect(Code.ensure_loaded?(Precompiled))") =~ "true"
-    assert value("Application.get_all_env(:elixir_precompiled)") == "[]"
+    assert value("Application.get_all_env(:precompiled)") == "[]"
     # DEVICE_TEST_MODE=embedded for a firmware built with EMBEDDED=1.
     mode = System.get_env("DEVICE_TEST_MODE", "interactive")
     assert dev("IO.inspect(:code.get_mode())") =~ ":#{mode}"
@@ -77,9 +77,9 @@ defmodule DeviceQemuTest do
              "{:error, {:bad_option, :clock_synchronized?}}"
 
     assert dev(
-             "Application.put_env(:elixir_precompiled, :test_seams, true); " <>
+             "Application.put_env(:precompiled, :test_seams, true); " <>
                "r = Precompiled.install(:recon, clock_synchronized?: fn -> false end); " <>
-               "Application.delete_env(:elixir_precompiled, :test_seams); IO.inspect(r)"
+               "Application.delete_env(:precompiled, :test_seams); IO.inspect(r)"
            ) =~ "{:error, {:clock_unsynchronized,"
 
     # Back on an exec mount, the same install goes through.

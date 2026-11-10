@@ -60,7 +60,7 @@ defmodule ChainTest.Synthetic do
 
     case kind do
       :installed ->
-        File.write!(Path.join(mix, "elixir_precompiled.json"), JSON.encode!(provenance))
+        File.write!(Path.join(mix, "precompiled.json"), JSON.encode!(provenance))
 
       :elixir ->
         File.write!(Path.join(mix, "compile.elixir"), "manifest")

@@ -60,7 +60,7 @@ defmodule ChainTest.Lock do
   The locked deps `nerves` pulls in, sorted: the client's Nerves tooling,
   which `nerves_bootstrap` compiles together with `nerves` before the
   client runs, so the client never considers them
-  (`ElixirPrecompiled.Match.nerves_children/1`).
+  (`Precompiled.Match.nerves_children/1`).
 
   The closure follows each Hex entry's dependency list in the lock, as the
   client does. A git or path `nerves` has no list in the lock, so its own

@@ -2,17 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule ElixirPrecompiled.Integration.GitDepTest do
+defmodule Precompiled.Integration.GitDepTest do
   use ExUnit.Case, async: false
-  alias ElixirPrecompiled.ChildProject, as: C
-  alias ElixirPrecompiled.Fixture, as: F
+  alias Precompiled.ChildProject, as: C
+  alias Precompiled.Fixture, as: F
 
   @moduletag :integration
   @moduletag :tmp_dir
   @moduletag timeout: 600_000
 
   setup_all do
-    start_supervised!(ElixirPrecompiled.TestServer)
+    start_supervised!(Precompiled.TestServer)
     :ok
   end
 
@@ -56,7 +56,7 @@ defmodule ElixirPrecompiled.Integration.GitDepTest do
     F.publish(f, %{}, sequence: 1)
     C.mix!(proj, ["deps.get"])
     assert {:git, _, _, _} = Mix.Dep.Lock.read(Path.join(proj, "mix.lock"))[:gitdep]
-    C.mix!(proj, ["deps.compile"], [{"ELIXIR_PRECOMPILED", "0"}])
+    C.mix!(proj, ["deps.compile"], [{"PRECOMPILED", "0"}])
 
     # Real beams of both, published as the portal's builds; the git dep's
     # manifest carries a well-formed checksum like any other.
@@ -81,7 +81,7 @@ defmodule ElixirPrecompiled.Integration.GitDepTest do
     assert out =~ "1 hit, 0 miss, 0 fail of 1 deps", out
     refute out =~ ~r/gitdep 0\.1\.0\s+HIT/, out
     assert out =~ "==> gitdep", out
-    refute File.exists?(Path.join(lib.("gitdep"), ".mix/elixir_precompiled.json")), out
+    refute File.exists?(Path.join(lib.("gitdep"), ".mix/precompiled.json")), out
     refute Enum.any?(F.requests(), &(&1.path =~ "gitdep")), inspect(F.requests())
   end
 end

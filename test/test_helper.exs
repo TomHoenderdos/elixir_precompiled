@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-ElixirPrecompiled.Fixture.start_link()
+Precompiled.Fixture.start_link()
 
 ExUnit.start()
 

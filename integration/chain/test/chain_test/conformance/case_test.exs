@@ -494,7 +494,7 @@ defmodule ChainTest.Conformance.CaseTest do
       assert {:ok, _} = Case.load(write(tmp, [%{@v2 | after: %{log: "treating it as 0"}}]))
 
       for env <- [
-            %{"ELIXIR_PRECOMPILED_ROOT" => {:home, "attacker/root.json"}},
+            %{"PRECOMPILED_ROOT" => {:home, "attacker/root.json"}},
             %{"NERVES_PRECOMPILED_ROOT" => "/abs/root.json"}
           ] do
         assert {:ok, _} = Case.load(write(tmp, [Map.put(@v2, :client_env, env)]))
@@ -524,11 +524,11 @@ defmodule ChainTest.Conformance.CaseTest do
           {"an empty log list", :after, %{log: []}},
           {"a log list with an empty string", :after, %{log: ["a", ""]}},
           {"a client_env name the harness does not allow", :client_env,
-           %{"ELIXIR_PRECOMPILED_HOME" => "/h"}},
+           %{"PRECOMPILED_HOME" => "/h"}},
           {"a client_env value outside the home", :client_env,
-           %{"ELIXIR_PRECOMPILED_ROOT" => {:home, "../root.json"}}},
+           %{"PRECOMPILED_ROOT" => {:home, "../root.json"}}},
           {"a relative client_env path", :client_env,
-           %{"ELIXIR_PRECOMPILED_ROOT" => "root.json"}},
+           %{"PRECOMPILED_ROOT" => "root.json"}},
           {"an empty client_env", :client_env, %{}}
         ] do
       test "refuses #{name}", %{tmp_dir: tmp} do

@@ -8,7 +8,7 @@ project; the library's own test suite does not run it.
 
 **It talks to the public portal**, `https://compatibility.nerves-project.org/api/precompiled`,
 with the library's defaults: the fixture configures nothing for
-`:elixir_precompiled`, so the test also proves that the defaults (on, the
+`:precompiled`, so the test also proves that the defaults (on, the
 official signed source) work with nothing configured. It needs the portal to
 have builds of `recon` 2.5.6 (`pure_elixir`) and `circuits_gpio` 2.3.1 for
 `nerves_system_qemu_aarch64` 0.5.1, Elixir 1.20.3 and OTP 29.
@@ -18,7 +18,7 @@ have builds of `recon` 2.5.6 (`pure_elixir`) and `circuits_gpio` 2.3.1 for
 The tests run in file order: the cache tests build on the earlier installs.
 
 - **No Mix.** The release has no `Mix` module, the device layer is loaded,
-  and no `:elixir_precompiled` config is set. With `DEVICE_TEST_MODE=embedded`
+  and no `:precompiled` config is set. With `DEVICE_TEST_MODE=embedded`
   it also checks that the VM runs in embedded mode.
 - **recon.** A `pure_elixir` package installs from the portal and runs
   (`:recon.info/2`).

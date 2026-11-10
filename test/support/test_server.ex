@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule ElixirPrecompiled.TestServer do
+defmodule Precompiled.TestServer do
   @moduledoc false
   use Plug.Router
 
@@ -30,7 +30,7 @@ defmodule ElixirPrecompiled.TestServer do
   end
 
   defp record(conn, _opts) do
-    ElixirPrecompiled.Fixture.record(%{
+    Precompiled.Fixture.record(%{
       port: listener_port(conn),
       path: conn.request_path,
       if_none_match: List.first(get_req_header(conn, "if-none-match"))
@@ -100,17 +100,17 @@ defmodule ElixirPrecompiled.TestServer do
   end
 
   get "/precompiled/root.json" do
-    serve_json(conn, ElixirPrecompiled.Fixture.get(:root))
+    serve_json(conn, Precompiled.Fixture.get(:root))
   end
 
   get "/precompiled/batch.json" do
-    serve_json(conn, ElixirPrecompiled.Fixture.get(:batch))
+    serve_json(conn, Precompiled.Fixture.get(:batch))
   end
 
   get "/precompiled/manifests/:name" do
     name = String.replace_suffix(name, ".json", "")
 
-    case get_in(ElixirPrecompiled.Fixture.get(:manifests) || %{}, [name]) do
+    case get_in(Precompiled.Fixture.get(:manifests) || %{}, [name]) do
       nil ->
         send_resp(conn, 404, "not found")
 
@@ -123,9 +123,9 @@ defmodule ElixirPrecompiled.TestServer do
   # clashes with the by-name route below.
   get "/precompiled/v2/manifests/by-sha/:file" do
     sha = String.replace_suffix(file, ".json", "")
-    docs = ElixirPrecompiled.Fixture.get(:manifests_v2) || %{}
+    docs = Precompiled.Fixture.get(:manifests_v2) || %{}
 
-    case Enum.find(docs, fn {_name, bytes} -> ElixirPrecompiled.Fixture.sha(bytes) == sha end) do
+    case Enum.find(docs, fn {_name, bytes} -> Precompiled.Fixture.sha(bytes) == sha end) do
       nil ->
         send_resp(conn, 404, "not found")
 
@@ -137,7 +137,7 @@ defmodule ElixirPrecompiled.TestServer do
   get "/precompiled/v2/manifests/:name" do
     name = String.replace_suffix(name, ".json", "")
 
-    case get_in(ElixirPrecompiled.Fixture.get(:manifests_v2) || %{}, [name]) do
+    case get_in(Precompiled.Fixture.get(:manifests_v2) || %{}, [name]) do
       nil ->
         send_resp(conn, 404, "not found")
 
@@ -147,7 +147,7 @@ defmodule ElixirPrecompiled.TestServer do
   end
 
   get "/precompiled/files/:sha" do
-    case get_in(ElixirPrecompiled.Fixture.get(:files) || %{}, [sha]) do
+    case get_in(Precompiled.Fixture.get(:files) || %{}, [sha]) do
       nil ->
         send_resp(conn, 404, "not found")
 
@@ -218,11 +218,11 @@ defmodule ElixirPrecompiled.TestServer do
 
   defp serve_json(conn, map) do
     body = map |> :json.encode() |> IO.iodata_to_binary()
-    etag = ~s("#{ElixirPrecompiled.Fixture.sha(body)}")
+    etag = ~s("#{Precompiled.Fixture.sha(body)}")
     conn = put_resp_content_type(conn, "application/json")
 
     cond do
-      ElixirPrecompiled.Fixture.get(:etags) == false ->
+      Precompiled.Fixture.get(:etags) == false ->
         send_resp(conn, 200, body)
 
       etag in get_req_header(conn, "if-none-match") ->
@@ -235,7 +235,7 @@ defmodule ElixirPrecompiled.TestServer do
 
   # Fixture.corrupt_port/1: a listener that serves wrong bytes.
   defp corrupt(conn, <<c, rest::binary>>) do
-    if ElixirPrecompiled.Fixture.get(:corrupt_port) == listener_port(conn),
+    if Precompiled.Fixture.get(:corrupt_port) == listener_port(conn),
       do: <<c + 1, rest::binary>>,
       else: <<c, rest::binary>>
   end

@@ -56,7 +56,7 @@ defmodule ChainTest.Conformance.Case do
       args (checked like a transform's), run against the case's fresh client
       home before the build.
     * `client_config` - merged into the fixture's `config
-      :elixir_precompiled` for this case's build only
+      :precompiled` for this case's build only
       (`ChainTest.Build.client_config?/1`): `clock_offset_seconds`
       (integer, or `{:age, seconds}`: the client's clock that long after
       the snapshot batch's `issued`, `ChainTest.Conformance.Clock`),
@@ -83,7 +83,7 @@ defmodule ChainTest.Conformance.Case do
         than that one as setup left it (a second source's, R19).
       * `log` - a non-empty string, or a non-empty list of them, the
         build's output must contain (a warning the client must print, R4).
-      * `installed` - `:none` (no `.mix/elixir_precompiled.json` anywhere
+      * `installed` - `:none` (no `.mix/precompiled.json` anywhere
         in the target's `_build`), `:snapshot` (one for exactly the deps
         the snapshot holds a build of, the Nerves tooling aside), or those
         but some: `{:without, [dep]}`, `:older_manifest`, `:recheck` (the

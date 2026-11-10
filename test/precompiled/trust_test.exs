@@ -1,0 +1,1107 @@
+# SPDX-FileCopyrightText: 2026 Tom Hoenderdos
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+defmodule Precompiled.TrustTest do
+  use ExUnit.Case, async: false
+  alias Precompiled.Fixture, as: F
+  alias Precompiled.Trust
+  @moduletag :tmp_dir
+
+  setup_all do
+    start_supervised!(Precompiled.TestServer)
+    :ok
+  end
+
+  setup %{tmp_dir: dir} do
+    f = F.new(dir)
+
+    config = %{
+      source: F.base_url(),
+      except: [],
+      root_path: f.root_path,
+      home: Path.join(dir, "home")
+    }
+
+    %{f: f, config: config, fetch: &fetch/1}
+  end
+
+  defp shipped(config) do
+    config.root_path
+    |> File.read!()
+    |> :json.decode()
+    |> Map.fetch!("payload")
+    |> Base.url_decode64!(padding: false)
+    |> :json.decode()
+  end
+
+  defp state_dir(config), do: Trust.state_dir(config, shipped(config))
+
+  defp fetch(url) do
+    case Precompiled.HTTP.get(url) do
+      {:ok, body} -> {:ok, body}
+      other -> other
+    end
+  end
+
+  test "a run that verified an older batch never moves the floor or the cached batch back",
+       %{tmp_dir: tmp} do
+    dir = Path.join(tmp, "race")
+    File.mkdir_p!(dir)
+    # Another run sharing this home adopted sequence 9 while this one was
+    # between its sequence check and its write for 5.
+    File.write!(Path.join(dir, "state"), "9")
+    File.write!(Path.join(dir, "batch.json"), "nine")
+
+    assert :ok = Trust.write_state(dir, 5)
+    assert File.read!(Path.join(dir, "state")) == "9"
+    assert :ok = Trust.cache_batch(dir, "five", nil, 5)
+    assert File.read!(Path.join(dir, "batch.json")) == "nine"
+
+    assert :ok = Trust.write_state(dir, 10)
+    assert File.read!(Path.join(dir, "state")) == "10"
+    assert :ok = Trust.cache_batch(dir, "ten", nil, 10)
+    assert File.read!(Path.join(dir, "batch.json")) == "ten"
+  end
+
+  test "loads and verifies the shipped root", %{config: config, f: f} do
+    assert {:ok, root} = Trust.load_root(config)
+    assert {keys, 1} = Trust.root_keys(root, "batch")
+    assert Map.keys(keys) == [f.key.keyid]
+  end
+
+  test "a shipped root with a bad signature is refused", %{config: config, f: f} do
+    bad = put_in(f.root_env, ["signatures"], [])
+    File.write!(config.root_path, :json.encode(bad))
+    assert {:error, _} = Trust.load_root(config)
+  end
+
+  test "fetches a valid batch and stores the sequence", %{config: config, f: f} do
+    F.publish(f, %{"ash" => %{"versions" => %{}}}, sequence: 5, format: 1)
+    {:ok, root} = Trust.load_root(config)
+
+    assert {:ok, %{sequence: 5, manifests: %{"ash" => _}, manifests_v2: nil}} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    assert File.read!(Path.join(state_dir(config), "state")) =~ "5"
+  end
+
+  test "a batch with manifests_v2 returns it", %{config: config, f: f} do
+    F.publish(f, %{"ash" => %{"versions" => %{}}})
+    {:ok, root} = Trust.load_root(config)
+
+    assert {:ok, %{manifests: %{}, manifests_v2: %{"ash" => sha}}} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    assert sha =~ ~r/\A[0-9a-f]{64}\z/
+  end
+
+  test "a batch whose manifests_v2 is not a map is malformed", %{
+    config: config,
+    f: f
+  } do
+    F.publish(f, %{}, format: 1, batch_extra: %{"manifests_v2" => ["ash"]})
+    {:ok, root} = Trust.load_root(config)
+    assert {:error, "batch malformed"} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  test "an expired batch is refused", %{config: config, f: f} do
+    F.publish(f, %{}, expires: "2020-01-01T00:00:00Z")
+    {:ok, root} = Trust.load_root(config)
+    assert {:error, "batch expired" <> _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  test "a replayed older batch is refused and state unchanged", %{
+    config: config,
+    f: f
+  } do
+    {:ok, root} = Trust.load_root(config)
+    F.publish(f, %{}, sequence: 7)
+    assert {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    F.publish(f, %{}, sequence: 6)
+
+    assert {:error, "batch sequence 6 is older than 7"} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    assert File.read!(Path.join(state_dir(config), "state")) =~ "7"
+  end
+
+  test "a batch signed by an unknown key is refused", %{config: config, f: f} do
+    {pub, priv} = :crypto.generate_key(:eddsa, :ed25519)
+
+    other = %{
+      keyid: Base.encode16(:crypto.hash(:sha256, pub), case: :lower),
+      public: pub,
+      private: priv
+    }
+
+    F.publish(f, %{}, signers: [other])
+    {:ok, root} = Trust.load_root(config)
+
+    assert {:error, "batch signature invalid"} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  test "a newer root signed by the current root is adopted and cached", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    {pub, priv} = :crypto.generate_key(:eddsa, :ed25519)
+
+    k2 = %{
+      keyid: Base.encode16(:crypto.hash(:sha256, pub), case: :lower),
+      public: pub,
+      private: priv
+    }
+
+    root2 = F.root_payload(k2.keyid, pub, "2031-01-01T00:00:00Z", 2)
+    F.serve_root(f, F.sign(root2, [f.key, k2]))
+    {:ok, root} = Trust.load_root(config)
+    assert {:ok, new_root} = Trust.update_root(config, root, fetch)
+    assert {%{} = keys, 1} = Trust.root_keys(new_root, "batch")
+    assert Map.keys(keys) == [k2.keyid]
+    assert File.exists?(Path.join(state_dir(config), "roots.json"))
+    assert {:ok, ^new_root} = Trust.load_root(config)
+  end
+
+  test "a newer root signed only by a stranger is ignored", %{config: config, f: f, fetch: fetch} do
+    {pub, priv} = :crypto.generate_key(:eddsa, :ed25519)
+
+    k2 = %{
+      keyid: Base.encode16(:crypto.hash(:sha256, pub), case: :lower),
+      public: pub,
+      private: priv
+    }
+
+    F.serve_root(f, F.sign(F.root_payload(k2.keyid, pub, "2031-01-01T00:00:00Z", 2), [k2]))
+    {:ok, root} = Trust.load_root(config)
+    assert {:ok, ^root} = Trust.update_root(config, root, fetch)
+    refute File.exists?(Path.join(state_dir(config), "roots.json"))
+  end
+
+  test "a served root with a missing or zero root threshold is ignored, never raises", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    {pub, priv} = :crypto.generate_key(:eddsa, :ed25519)
+    keyid = Base.encode16(:crypto.hash(:sha256, pub), case: :lower)
+    k2 = %{keyid: keyid, public: pub, private: priv}
+    {:ok, root} = Trust.load_root(config)
+
+    missing_threshold =
+      raw_root(keyid, pub, "2031-01-01T00:00:00Z", 2, root: %{"keyids" => [keyid]})
+
+    F.serve_root(f, F.sign(missing_threshold, [f.key, k2]))
+    assert {:ok, ^root} = Trust.update_root(config, root, fetch)
+    refute File.exists?(Path.join(state_dir(config), "roots.json"))
+
+    zero_threshold =
+      raw_root(keyid, pub, "2031-01-01T00:00:00Z", 2,
+        root: %{"keyids" => [keyid], "threshold" => 0}
+      )
+
+    F.serve_root(f, F.sign(zero_threshold, [f.key, k2]))
+    assert {:ok, ^root} = Trust.update_root(config, root, fetch)
+    refute File.exists?(Path.join(state_dir(config), "roots.json"))
+  end
+
+  test "a served root whose only key is undersized is ignored, never raises", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    {pub, priv} = :crypto.generate_key(:eddsa, :ed25519)
+    keyid = Base.encode16(:crypto.hash(:sha256, pub), case: :lower)
+    short_pub = :crypto.strong_rand_bytes(10)
+    {:ok, root} = Trust.load_root(config)
+
+    payload =
+      :json.encode(%{
+        "version" => 2,
+        "expires" => "2031-01-01T00:00:00Z",
+        "keys" => %{keyid => %{"type" => "ed25519", "public" => F.b64(short_pub)}},
+        "roles" => %{
+          "root" => %{"keyids" => [keyid], "threshold" => 1},
+          "batch" => %{"keyids" => [keyid], "threshold" => 1}
+        }
+      })
+      |> IO.iodata_to_binary()
+
+    F.serve_root(f, F.sign(payload, [%{keyid: keyid, public: pub, private: priv}]))
+    assert {:ok, ^root} = Trust.update_root(config, root, fetch)
+    refute File.exists?(Path.join(state_dir(config), "roots.json"))
+  end
+
+  test "a batch whose root lacks a batch role is refused, not raised", %{
+    config: config,
+    f: f
+  } do
+    payload =
+      :json.encode(%{
+        "version" => 1,
+        "expires" => "2030-01-01T00:00:00Z",
+        "keys" => %{f.key.keyid => %{"type" => "ed25519", "public" => F.b64(f.key.public)}},
+        "roles" => %{
+          "root" => %{"keyids" => [f.key.keyid], "threshold" => 1}
+        }
+      })
+      |> IO.iodata_to_binary()
+
+    File.write!(config.root_path, :json.encode(F.sign(payload, [f.key])))
+    F.publish(f, %{}, sequence: 1)
+    {:ok, root} = Trust.load_root(config)
+
+    assert {:error, "batch signature invalid"} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  test "a shipped root past its own expiry is refused, not raised", %{tmp_dir: dir} do
+    f = F.new(dir, root_expires: "2020-01-01T00:00:00Z")
+
+    config = %{
+      source: F.base_url(),
+      except: [],
+      root_path: f.root_path,
+      home: Path.join(dir, "home")
+    }
+
+    assert {:error, "root document at " <> rest} = Trust.load_root(config)
+    assert rest =~ "expired at 2020-01-01T00:00:00Z"
+  end
+
+  test "a served root with a higher version but expired is ignored, never raises", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    {pub, priv} = :crypto.generate_key(:eddsa, :ed25519)
+
+    k2 = %{
+      keyid: Base.encode16(:crypto.hash(:sha256, pub), case: :lower),
+      public: pub,
+      private: priv
+    }
+
+    root2 = F.root_payload(k2.keyid, pub, "2020-01-01T00:00:00Z", 2)
+    F.serve_root(f, F.sign(root2, [f.key, k2]))
+    {:ok, root} = Trust.load_root(config)
+    assert {:ok, ^root} = Trust.update_root(config, root, fetch)
+    refute File.exists?(Path.join(state_dir(config), "roots.json"))
+  end
+
+  # Builds a root payload like F.root_payload/4 but lets the caller override
+  # the "root" role's shape (to exercise a missing/zero threshold).
+  defp raw_root(keyid, public, expires, version, root: root_role) do
+    :json.encode(%{
+      "version" => version,
+      "expires" => expires,
+      "keys" => %{keyid => %{"type" => "ed25519", "public" => F.b64(public)}},
+      "roles" => %{
+        "root" => root_role,
+        "batch" => %{"keyids" => [keyid], "threshold" => 1}
+      }
+    })
+    |> IO.iodata_to_binary()
+  end
+
+  test "verify_envelope rejects garbage and duplicate signatures" do
+    assert {:error, :bad_envelope} = Trust.verify_envelope("nope", %{}, 1)
+    f = F.new(System.tmp_dir!())
+    env = F.sign("x", [f.key])
+    dup = Map.update!(env, "signatures", fn [s] -> [s, s] end)
+
+    assert {:error, :below_threshold} =
+             Trust.verify_envelope(dup, %{f.key.keyid => f.key.public}, 2)
+  end
+
+  test "state is kept per source: two sources do not see each other's sequence", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    other = %{
+      config
+      | source: "http://localhost:#{Precompiled.TestServer.port()}/precompiled"
+    }
+
+    {:ok, root} = Trust.load_root(config)
+
+    F.publish(f, %{}, sequence: 7)
+    assert {:ok, %{sequence: 7}} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    F.publish(f, %{}, sequence: 6)
+    assert {:ok, %{sequence: 6}} = Trust.fetch_batch_cached(other, root, &cond_fetch/2)
+
+    assert {:error, "batch sequence 6 is older than 7"} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    refute state_dir(config) == state_dir(other)
+    assert Path.dirname(state_dir(config)) == config.home
+    assert File.read!(Path.join(state_dir(other), "state")) =~ "6"
+
+    # R19: adopting a new root for source A is state kept per source too;
+    # it must not raise source B's root_version floor.
+    k2 = key()
+    F.serve_root(f, root_env(k2, 2, "2031-01-01T00:00:00Z", [f.key, k2]))
+    assert {:ok, %{"version" => 2}} = Trust.update_root(config, root, fetch)
+    assert File.exists?(Path.join(state_dir(config), "root_version"))
+    refute File.exists?(Path.join(state_dir(other), "root_version"))
+    assert {:ok, %{"version" => 1}} = Trust.load_root(other)
+  end
+
+  test "the state dir is keyed by the shipped root, not a rotated one", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    {pub, priv} = :crypto.generate_key(:eddsa, :ed25519)
+    k2 = %{keyid: F.sha(pub), public: pub, private: priv}
+    F.serve_root(f, F.sign(F.root_payload(k2.keyid, pub, "2031-01-01T00:00:00Z", 2), [f.key, k2]))
+    {:ok, root} = Trust.load_root(config)
+    {:ok, rotated} = Trust.update_root(config, root, fetch)
+    F.publish(f, %{}, sequence: 4, signers: [k2])
+    assert {:ok, %{sequence: 4}} = Trust.fetch_batch_cached(config, rotated, &cond_fetch/2)
+    assert File.read!(Path.join(state_dir(config), "state")) =~ "4"
+  end
+
+  defp key() do
+    {pub, priv} = :crypto.generate_key(:eddsa, :ed25519)
+    %{keyid: F.sha(pub), public: pub, private: priv}
+  end
+
+  defp root_env(k, version, expires, signers),
+    do: F.sign(F.root_payload(k.keyid, k.public, expires, version), signers)
+
+  defp write_chain(config, envs) do
+    File.mkdir_p!(state_dir(config))
+    File.write!(Path.join(state_dir(config), "roots.json"), :json.encode(envs))
+  end
+
+  defp version(root), do: root["version"]
+
+  test "two-hop rotation: v2 signed by v1, then v3 signed by v2 only, ends on v3", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    k2 = key()
+    k3 = key()
+    {:ok, v1} = Trust.load_root(config)
+
+    F.serve_root(f, root_env(k2, 2, "2031-01-01T00:00:00Z", [f.key, k2]))
+    assert {:ok, v2} = Trust.update_root(config, v1, fetch)
+    assert version(v2) == 2
+
+    F.serve_root(f, root_env(k3, 3, "2031-01-01T00:00:00Z", [k2, k3]))
+    assert {:ok, v3} = Trust.update_root(config, v2, fetch)
+    assert version(v3) == 3
+
+    assert {:ok, ^v3} = Trust.load_root(config)
+
+    chain =
+      Path.join(state_dir(config), "roots.json") |> File.read!() |> :json.decode()
+
+    assert length(chain) == 2
+  end
+
+  test "a self-signed root dropped into roots.json is ignored", %{config: config} do
+    k9 = key()
+    {:ok, v1} = Trust.load_root(config)
+    write_chain(config, [root_env(k9, 9, "2031-01-01T00:00:00Z", [k9])])
+    assert {:ok, ^v1} = Trust.load_root(config)
+  end
+
+  test "an expired shipped root is fine when the chain leads to an unexpired root", %{
+    tmp_dir: dir
+  } do
+    f = F.new(dir, root_expires: "2020-01-01T00:00:00Z")
+
+    config = %{
+      source: F.base_url(),
+      except: [],
+      root_path: f.root_path,
+      home: Path.join(dir, "h")
+    }
+
+    k2 = key()
+    write_chain(config, [root_env(k2, 2, "2031-01-01T00:00:00Z", [f.key, k2])])
+
+    assert {:ok, v2} = Trust.load_root(config)
+    assert version(v2) == 2
+  end
+
+  # TUF: every step must verify under the previous root's root role and be
+  # newer; only the root the fold ends on must be unexpired.
+  test "an expired intermediate root does not stop the chain: v1 -> v2 (expired) -> v3", %{
+    config: config,
+    f: f
+  } do
+    k2 = key()
+    k3 = key()
+
+    write_chain(config, [
+      root_env(k2, 2, "2020-01-01T00:00:00Z", [f.key, k2]),
+      root_env(k3, 3, "2031-01-01T00:00:00Z", [k2, k3])
+    ])
+
+    File.write!(Path.join(state_dir(config), "root_version"), "3")
+
+    assert {:ok, v3} = Trust.load_root(config)
+    assert version(v3) == 3
+  end
+
+  test "a chain whose final root is expired is refused", %{config: config, f: f} do
+    k2 = key()
+    k3 = key()
+
+    write_chain(config, [
+      root_env(k2, 2, "2031-01-01T00:00:00Z", [f.key, k2]),
+      root_env(k3, 3, "2020-01-01T00:00:00Z", [k2, k3])
+    ])
+
+    assert {:error, "cached root expired at 2020-01-01T00:00:00Z"} = Trust.load_root(config)
+  end
+
+  test "an expired intermediate not signed by the previous root still stops the chain", %{
+    config: config
+  } do
+    k2 = key()
+    k3 = key()
+    {:ok, v1} = Trust.load_root(config)
+
+    write_chain(config, [
+      root_env(k2, 2, "2020-01-01T00:00:00Z", [k2]),
+      root_env(k3, 3, "2031-01-01T00:00:00Z", [k2, k3])
+    ])
+
+    assert {:ok, ^v1} = Trust.load_root(config)
+  end
+
+  test "update_root adopts across an expired intermediate and keeps the chain", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    k2 = key()
+    k3 = key()
+    k4 = key()
+
+    write_chain(config, [
+      root_env(k2, 2, "2020-01-01T00:00:00Z", [f.key, k2]),
+      root_env(k3, 3, "2031-01-01T00:00:00Z", [k2, k3])
+    ])
+
+    {:ok, v3} = Trust.load_root(config)
+    assert version(v3) == 3
+
+    F.serve_root(f, root_env(k4, 4, "2031-01-01T00:00:00Z", [k3, k4]))
+    assert {:ok, v4} = Trust.update_root(config, v3, fetch)
+    assert version(v4) == 4
+
+    chain = Path.join(state_dir(config), "roots.json") |> File.read!() |> :json.decode()
+    assert length(chain) == 3
+    assert {:ok, ^v4} = Trust.load_root(config)
+  end
+
+  test "a chain entry after a bad one is not used", %{config: config, f: f} do
+    k2 = key()
+    k3 = key()
+    k4 = key()
+    {:ok, v1} = Trust.load_root(config)
+
+    write_chain(config, [
+      root_env(k2, 2, "2031-01-01T00:00:00Z", [f.key, k2]),
+      root_env(k3, 3, "2031-01-01T00:00:00Z", [k3]),
+      root_env(k4, 4, "2031-01-01T00:00:00Z", [k3, k4])
+    ])
+
+    assert {:ok, v2} = Trust.load_root(config)
+    assert version(v2) == 2
+    refute v2 == v1
+  end
+
+  test "an unwritable state dir is named as such, not as a malformed batch", %{
+    config: config,
+    f: f
+  } do
+    F.publish(f, %{}, sequence: 2)
+    {:ok, root} = Trust.load_root(config)
+    File.mkdir_p!(config.home)
+    File.write!(state_dir(config), "a file where the state dir should be")
+
+    assert {:error, "state dir unwritable: " <> _} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  test "R17: an adopted root version survives roots.json disappearing", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    # Adopt v2 through the existing rotation path (copy the setup of
+    # "a newer root signed by the current root is adopted and cached").
+    v2 = F.rotate_root(f, version: 2)
+    {:ok, root} = Trust.load_root(config)
+    assert {:ok, %{"version" => 2}} = Trust.update_root(config, root, fetch)
+    File.rm!(Path.join(state_dir(config), "roots.json"))
+    path = Path.join(state_dir(config), "root_version")
+
+    assert {:error, "root version 1 is older than 2" <> rest} = Trust.load_root(config)
+    assert rest =~ "delete #{path}"
+    _ = v2
+  end
+
+  test "R4: a corrupt state file warns and counts as 0", %{config: config, f: f} do
+    File.mkdir_p!(state_dir(config))
+    File.write!(Path.join(state_dir(config), "state"), "not a number")
+    F.publish(f, %{}, sequence: 4)
+    {:ok, root} = Trust.load_root(config)
+
+    {result, log} =
+      capture_warning(fn -> Trust.fetch_batch_cached(config, root, &cond_fetch/2) end)
+
+    assert {:ok, %{sequence: 4}} = result
+    assert log =~ "sequence state"
+  end
+
+  test "a root_version write failure is named, not raised, and the adopted root is kept", %{
+    config: config,
+    f: f,
+    fetch: fetch
+  } do
+    v2 = F.rotate_root(f, version: 2)
+    dir = state_dir(config)
+    # roots.json writes fine; renaming root_version.tmp onto this directory
+    # fails with EISDIR, isolating write_root_version/2's own rescue from
+    # the write that precedes it.
+    File.mkdir_p!(Path.join(dir, "root_version"))
+    {:ok, root} = Trust.load_root(config)
+
+    {result, log} = capture_warning(fn -> Trust.update_root(config, root, fetch) end)
+    assert {:ok, %{"version" => 2}} = result
+    assert File.exists?(Path.join(dir, "roots.json"))
+    assert log =~ "root version state"
+    _ = v2
+  end
+
+  # Output.warning/1 goes through Mix.shell().info (stdout) when Mix is
+  # running and IO.puts(:stderr) otherwise; capture both so this is not
+  # fragile to which applies under `mix test` (see config_test.exs).
+  defp capture_warning(fun) do
+    stderr =
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        stdio = ExUnit.CaptureIO.capture_io(fn -> send(self(), {:result, fun.()}) end)
+        send(self(), {:stdio, stdio})
+      end)
+
+    assert_received {:result, result}
+    assert_received {:stdio, stdio}
+    {result, stdio <> stderr}
+  end
+
+  defp iso(dt), do: DateTime.to_iso8601(dt)
+  defp ago(seconds), do: DateTime.add(DateTime.utc_now(), -seconds, :second)
+
+  test "R1: a batch issued 15 minutes ago is accepted", %{config: config, f: f} do
+    F.publish(f, %{}, sequence: 3, issued: iso(ago(15 * 60)))
+    {:ok, root} = Trust.load_root(config)
+    assert {:ok, %{sequence: 3}} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  test "R2: an unexpired batch issued 25 hours ago is refused as stale", %{
+    config: config,
+    f: f
+  } do
+    F.publish(f, %{}, sequence: 3, issued: iso(ago(25 * 3600)))
+    {:ok, root} = Trust.load_root(config)
+    assert {:error, "batch stale" <> _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    refute File.exists?(Path.join(state_dir(config), "state"))
+  end
+
+  test "R7/R8: the clock offset moves now: 23 h accepted, 25 h stale", %{
+    config: config,
+    f: f
+  } do
+    F.publish(f, %{}, sequence: 3, issued: iso(DateTime.utc_now()))
+    {:ok, root} = Trust.load_root(config)
+
+    assert {:ok, _} =
+             Trust.fetch_batch_cached(
+               Map.put(config, :clock_offset_seconds, 23 * 3600),
+               root,
+               &cond_fetch/2
+             )
+
+    assert {:error, "batch stale" <> _} =
+             Trust.fetch_batch_cached(
+               Map.put(config, :clock_offset_seconds, 25 * 3600),
+               root,
+               &cond_fetch/2
+             )
+  end
+
+  test "R9: issued an hour in the future is refused as clock", %{
+    config: config,
+    f: f
+  } do
+    F.publish(f, %{}, issued: iso(DateTime.add(DateTime.utc_now(), 3600, :second)))
+    {:ok, root} = Trust.load_root(config)
+    assert {:error, "clock" <> _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  test "R10: issued 2 minutes in the future is accepted", %{config: config, f: f} do
+    F.publish(f, %{}, issued: iso(DateTime.add(DateTime.utc_now(), 120, :second)))
+    {:ok, root} = Trust.load_root(config)
+    assert {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  test "R12: a clock before the library's compile-time floor is refused as clock", %{
+    config: config,
+    f: f
+  } do
+    F.publish(f, %{})
+    {:ok, root} = Trust.load_root(config)
+    behind = DateTime.diff(Trust.clock_floor(), DateTime.utc_now(), :second) - 86_400
+
+    assert {:error, "clock" <> _} =
+             Trust.fetch_batch_cached(
+               Map.put(config, :clock_offset_seconds, behind),
+               root,
+               &cond_fetch/2
+             )
+  end
+
+  test "R13: a clock a year ahead sees an expired batch", %{config: config, f: f} do
+    F.publish(f, %{}, expires: iso(DateTime.add(DateTime.utc_now(), 86_400, :second)))
+    {:ok, root} = Trust.load_root(config)
+
+    assert {:error, reason} =
+             Trust.fetch_batch_cached(
+               Map.put(config, :clock_offset_seconds, 365 * 86_400),
+               root,
+               &cond_fetch/2
+             )
+
+    assert reason =~ ~r/^batch (expired|stale)/
+  end
+
+  test "T8: a batch whose expires is more than 30 days after issued is refused", %{
+    config: config,
+    f: f
+  } do
+    now = DateTime.utc_now()
+    F.publish(f, %{}, issued: iso(now), expires: iso(DateTime.add(now, 31 * 86_400, :second)))
+    {:ok, root} = Trust.load_root(config)
+    assert {:error, "batch lifetime" <> _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  test "R11: a 30-day batch is still refused once 24 h past issued", %{
+    config: config,
+    f: f
+  } do
+    issued = ago(25 * 3600)
+
+    F.publish(f, %{},
+      issued: iso(issued),
+      expires: iso(DateTime.add(issued, 30 * 86_400, :second))
+    )
+
+    {:ok, root} = Trust.load_root(config)
+    assert {:error, "batch stale" <> _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  test "a batch without issued is malformed", %{config: config, f: f} do
+    F.publish(f, %{}, issued: nil)
+    {:ok, root} = Trust.load_root(config)
+    assert {:error, "batch malformed"} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  test "issued without any offset is malformed, never read as local time", %{
+    config: config,
+    f: f
+  } do
+    F.publish(f, %{}, issued: Calendar.strftime(ago(600), "%Y-%m-%dT%H:%M:%S"))
+    {:ok, root} = Trust.load_root(config)
+    assert {:error, "batch malformed"} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  test "issued with an offset is read as an instant", %{config: config, f: f} do
+    # The same instant as 10 minutes ago, written in +01:00 local time.
+    offset =
+      Calendar.strftime(DateTime.add(ago(600), 3600, :second), "%Y-%m-%dT%H:%M:%S") <> "+01:00"
+
+    F.publish(f, %{}, issued: offset)
+    {:ok, root} = Trust.load_root(config)
+    assert {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  test "root_keys drops keys whose keyid is not their hash or whose type is not ed25519" do
+    good = key()
+    misnamed = key()
+    other_type = key()
+
+    root = %{
+      "keys" => %{
+        good.keyid => %{"type" => "ed25519", "public" => F.b64(good.public)},
+        "not-the-hash" => %{"type" => "ed25519", "public" => F.b64(misnamed.public)},
+        other_type.keyid => %{"type" => "rsa", "public" => F.b64(other_type.public)}
+      },
+      "roles" => %{
+        "batch" => %{
+          "keyids" => [good.keyid, "not-the-hash", other_type.keyid],
+          "threshold" => 1
+        }
+      }
+    }
+
+    assert {keys, 1} = Trust.root_keys(root, "batch")
+    assert Map.keys(keys) == [good.keyid]
+  end
+
+  test "two concurrent batch fetches on one home both succeed", %{
+    config: config,
+    f: f
+  } do
+    F.publish(f, %{"ash" => %{"versions" => %{}}}, sequence: 5)
+    {:ok, root} = Trust.load_root(config)
+
+    results =
+      1..8
+      |> Task.async_stream(fn _ -> Trust.fetch_batch_cached(config, root, &cond_fetch/2) end,
+        max_concurrency: 8
+      )
+      |> Enum.map(fn {:ok, r} -> r end)
+
+    assert Enum.all?(results, &match?({:ok, %{sequence: 5}}, &1))
+  end
+
+  defp cond_fetch(url, etag) do
+    headers = if etag, do: [{"if-none-match", etag}], else: []
+    Precompiled.HTTP.request(url, headers: headers)
+  end
+
+  test "a cached batch is revalidated with its etag and reused on 304", %{config: config, f: f} do
+    F.publish(f, %{"ash" => %{"versions" => %{}}}, sequence: 5)
+    {:ok, root} = Trust.load_root(config)
+    assert {:ok, %{sequence: 5}} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    F.clear_requests()
+
+    assert {:ok, %{sequence: 5, manifests_v2: %{"ash" => _}}} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    assert [%{path: "/precompiled/batch.json", if_none_match: "\"" <> _}] = F.requests()
+  end
+
+  test "a 304 still runs every freshness rule on the cached batch", %{config: config, f: f} do
+    F.publish(f, %{}, sequence: 5)
+    {:ok, root} = Trust.load_root(config)
+    {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    # 25 hours later the same batch (still a 304) is stale.
+    later = Map.put(config, :clock_offset_seconds, 25 * 3600)
+    assert {:error, "batch stale" <> _} = Trust.fetch_batch_cached(later, root, &cond_fetch/2)
+  end
+
+  test "a 304 never re-verifies a cached batch under another root", %{config: config, f: f} do
+    F.publish(f, %{}, sequence: 5)
+    {:ok, root} = Trust.load_root(config)
+    {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    other = put_in(root, ["roles", "batch", "keyids"], ["0000"])
+    F.clear_requests()
+
+    assert {:error, "batch signature invalid"} =
+             Trust.fetch_batch_cached(config, other, &cond_fetch/2)
+
+    assert [%{if_none_match: "\"" <> _}] = F.requests()
+  end
+
+  test "a corrupt cached batch is refetched, never trusted", %{config: config, f: f} do
+    F.publish(f, %{}, sequence: 5)
+    {:ok, root} = Trust.load_root(config)
+    {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    File.write!(Path.join(state_dir(config), "batch.json"), "{not json")
+    F.clear_requests()
+
+    assert {:ok, %{sequence: 5}} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    assert [%{path: "/precompiled/batch.json", if_none_match: nil}] = F.requests()
+  end
+
+  test "a cached batch past the size cap is ignored", %{config: config, f: f} do
+    F.publish(f, %{}, sequence: 5)
+    {:ok, root} = Trust.load_root(config)
+    {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    File.write!(Path.join(state_dir(config), "batch.json"), :binary.copy("x", 8_388_609))
+    offline = Map.put(config, :offline, true)
+
+    assert {:error, "batch unavailable: offline, no cached batch"} =
+             Trust.fetch_batch_cached(offline, root, &cond_fetch/2)
+  end
+
+  test "a newer batch replaces the cache only once it verifies", %{config: config, f: f} do
+    F.publish(f, %{}, sequence: 7)
+    {:ok, root} = Trust.load_root(config)
+    {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    F.publish(f, %{}, sequence: 6)
+
+    assert {:error, "batch sequence 6 is older than 7"} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    offline = Map.put(config, :offline, true)
+    assert {:ok, %{sequence: 7}} = Trust.fetch_batch_cached(offline, root, &cond_fetch/2)
+  end
+
+  test "offline uses the cached batch and makes no request", %{config: config, f: f} do
+    F.publish(f, %{}, sequence: 5)
+    {:ok, root} = Trust.load_root(config)
+    offline = Map.put(config, :offline, true)
+
+    assert {:error, "batch unavailable: offline, no cached batch"} =
+             Trust.fetch_batch_cached(offline, root, &cond_fetch/2)
+
+    {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    F.clear_requests()
+    assert {:ok, %{sequence: 5}} = Trust.fetch_batch_cached(offline, root, &cond_fetch/2)
+    assert F.requests() == []
+
+    # Offline, a cached batch that has gone stale is refused like any other.
+    stale = Map.put(offline, :clock_offset_seconds, 25 * 3600)
+    assert {:error, "batch stale" <> _} = Trust.fetch_batch_cached(stale, root, &cond_fetch/2)
+  end
+
+  test "a batch's content origins are read, https only", %{config: config, f: f} do
+    F.publish(f, %{},
+      batch_extra: %{"content" => ["https://cdn.example.test/p/", "http://cdn.example.test"]}
+    )
+
+    {:ok, root} = Trust.load_root(config)
+
+    assert {:ok, %{content: ["https://cdn.example.test/p"]}} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    F.publish(f, %{}, sequence: 2, batch_extra: %{"content" => "not a list"})
+    assert {:ok, %{content: nil}} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  test "the root is due for a check until a fetch of it is stamped", %{
+    config: config,
+    fetch: fetch
+  } do
+    assert Trust.root_check_due?(config)
+    {:ok, root} = Trust.load_root(config)
+    {:ok, _} = Trust.update_root(config, root, fetch)
+    refute Trust.root_check_due?(config)
+    refute Trust.root_check_due?(Map.put(config, :clock_offset_seconds, 3599))
+    assert Trust.root_check_due?(Map.put(config, :clock_offset_seconds, 3600))
+    # A stamp from the future (a clock set back) is due too.
+    assert Trust.root_check_due?(Map.put(config, :clock_offset_seconds, -60))
+  end
+
+  describe "an unreachable source falls back to the cached batch" do
+    setup %{config: config, f: f} do
+      F.publish(f, %{}, sequence: 5)
+      {:ok, root} = Trust.load_root(config)
+      {:ok, _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+      %{root: root}
+    end
+
+    defp answer(result), do: fn _url, _etag -> result end
+
+    test "on a transport error, timeout, 5xx or deadline", %{config: config, root: root} do
+      for why <- ["Status 503 Service Unavailable", "run deadline passed", "econnrefused"] do
+        out =
+          ExUnit.CaptureIO.capture_io(fn ->
+            assert {:ok, %{sequence: 5, source_unreachable: true}} =
+                     Trust.fetch_batch_cached(config, root, answer({:error, {:unreachable, why}}))
+          end)
+
+        assert out =~ "source unreachable (#{why}); using the cached batch (sequence 5)"
+      end
+
+      # A live batch, fresh or revalidated, carries no such flag.
+      assert {:ok, live} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+      refute Map.has_key?(live, :source_unreachable)
+    end
+
+    test "only while the cached batch passes every check", %{config: config, root: root} do
+      later = Map.put(config, :clock_offset_seconds, 25 * 3600)
+      unreachable = answer({:error, {:unreachable, "Status 502 Bad Gateway"}})
+
+      assert {:error, "batch unavailable: Status 502 Bad Gateway (cached batch: " <> why} =
+               Trust.fetch_batch_cached(later, root, unreachable)
+
+      assert why =~ "batch stale"
+    end
+
+    test "never on a response the source gave and that is refused", %{
+      config: config,
+      root: root,
+      f: f
+    } do
+      assert {:error, "batch unavailable: Status 404 Not Found"} =
+               Trust.fetch_batch_cached(config, root, answer({:error, "Status 404 Not Found"}))
+
+      assert {:error, "batch unavailable: redirect to another host refused"} =
+               Trust.fetch_batch_cached(
+                 config,
+                 root,
+                 answer({:error, "redirect to another host refused"})
+               )
+
+      assert {:error, "batch signature invalid"} =
+               Trust.fetch_batch_cached(
+                 config,
+                 root,
+                 answer({:ok, F.sign("{}", []) |> :json.encode() |> IO.iodata_to_binary(), nil})
+               )
+
+      assert {:error, "batch signature invalid"} =
+               Trust.fetch_batch_cached(config, root, answer({:ok, "not json", nil}))
+
+      F.publish(f, %{}, sequence: 4)
+
+      assert {:error, "batch sequence 4 is older than 5"} =
+               Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    end
+
+    test "a 503 from the real source is unreachable", %{config: config, root: root} do
+      F.withdraw_batch()
+      fetch = &Precompiled.Fetch.get_conditional(config, &1, &2)
+
+      out =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert {:ok, %{sequence: 5}} = Trust.fetch_batch_cached(config, root, fetch)
+        end)
+
+      assert out =~ "source unreachable (Status 503"
+    end
+  end
+
+  test "runs writing the cache while new batches are published keep a verifiable cache", %{
+    config: config,
+    f: f
+  } do
+    F.publish(f, %{}, sequence: 1)
+    {:ok, root} = Trust.load_root(config)
+
+    publisher =
+      Task.async(fn ->
+        for seq <- 2..12 do
+          F.publish(f, %{}, sequence: seq)
+          Process.sleep(2)
+        end
+      end)
+
+    results =
+      1..8
+      |> Task.async_stream(fn _ ->
+        for _ <- 1..4, do: Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+      end)
+      |> Enum.flat_map(fn {:ok, r} -> r end)
+
+    Task.await(publisher)
+
+    assert Enum.all?(results, fn
+             {:ok, %{sequence: s}} -> s in 1..12
+             {:error, "batch sequence " <> _} -> true
+             _ -> false
+           end)
+
+    # Whatever the race left, the next online run settles on the newest
+    # batch and the cache then serves it offline.
+    assert {:ok, %{sequence: 12}} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    assert {:ok, %{sequence: 12}} =
+             Trust.fetch_batch_cached(Map.put(config, :offline, true), root, &cond_fetch/2)
+  end
+
+  test "batch content origins are https only, even on loopback", %{
+    config: config,
+    f: f
+  } do
+    F.publish(f, %{},
+      batch_extra: %{"content" => ["http://127.0.0.1:9", "https://cdn.example.test"]}
+    )
+
+    {:ok, root} = Trust.load_root(config)
+
+    assert {:ok, %{content: ["https://cdn.example.test"]}} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  # The batch the fixture serves, as the bytes a bundle holds.
+  defp bundle_with_batch(dir) do
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "batch.json"), :json.encode(F.get(:batch)))
+    "file://" <> dir
+  end
+
+  defp file_fetch(config), do: &Precompiled.Fetch.get_conditional(config, &1, &2)
+
+  test "state_key shares one sequence floor between two sources", %{
+    config: config,
+    f: f,
+    tmp_dir: dir
+  } do
+    online = Map.put(config, :state_key, "device")
+    F.publish(f, %{}, sequence: 5)
+    {:ok, root} = Trust.load_root(online)
+    assert {:ok, %{sequence: 5}} = Trust.fetch_batch_cached(online, root, &cond_fetch/2)
+
+    F.publish(f, %{}, sequence: 4)
+    bundle = %{online | source: bundle_with_batch(Path.join(dir, "bundle"))}
+
+    assert {:error, "batch sequence 4 is older than 5"} =
+             Trust.fetch_batch_cached(bundle, root, file_fetch(bundle))
+
+    # Without the shared key the bundle is a source of its own, with its own floor.
+    alone = Map.delete(bundle, :state_key)
+    assert {:ok, %{sequence: 4}} = Trust.fetch_batch_cached(alone, root, file_fetch(alone))
+  end
+
+  test "a bundle batch older than 24 h but unexpired passes; expired still fails", %{
+    config: config,
+    f: f,
+    tmp_dir: dir
+  } do
+    issued = DateTime.utc_now() |> DateTime.add(-3 * 86_400) |> DateTime.to_iso8601()
+    F.publish(f, %{}, issued: issued)
+    source = bundle_with_batch(Path.join(dir, "b1"))
+    bundle = %{config | source: source} |> Map.put(:bundle, true)
+    {:ok, root} = Trust.load_root(bundle)
+
+    assert {:ok, %{sequence: 1}} = Trust.fetch_batch_cached(bundle, root, file_fetch(bundle))
+
+    not_bundle = %{bundle | bundle: false, home: Path.join(dir, "h2")}
+
+    assert {:error, "batch stale: issued " <> _} =
+             Trust.fetch_batch_cached(not_bundle, root, file_fetch(not_bundle))
+
+    expired = DateTime.utc_now() |> DateTime.add(-1) |> DateTime.to_iso8601()
+    F.publish(f, %{}, issued: issued, expires: expired, sequence: 2)
+    source = bundle_with_batch(Path.join(dir, "b2"))
+    bundle = %{bundle | source: source}
+
+    assert {:error, "batch expired at " <> _} =
+             Trust.fetch_batch_cached(bundle, root, file_fetch(bundle))
+
+    # The other checks still hold for a bundle: a lifetime over 30 days.
+    long = DateTime.utc_now() |> DateTime.add(40 * 86_400) |> DateTime.to_iso8601()
+    F.publish(f, %{}, issued: issued, expires: long, sequence: 3)
+    bundle = %{bundle | source: bundle_with_batch(Path.join(dir, "b3"))}
+
+    assert {:error, "batch lifetime over 30 days" <> _} =
+             Trust.fetch_batch_cached(bundle, root, file_fetch(bundle))
+  end
+
+  test "Check.fetch_batch/1 is the run's batch fetch, with the run's deadline", %{
+    config: config,
+    f: f
+  } do
+    F.publish(f, %{}, sequence: 7)
+
+    assert {:ok, %{sequence: 7}} =
+             config
+             |> Precompiled.Check.with_deadline()
+             |> Precompiled.Check.fetch_batch()
+  end
+end

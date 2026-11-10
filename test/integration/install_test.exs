@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule ElixirPrecompiled.Integration.InstallTest do
+defmodule Precompiled.Integration.InstallTest do
   use ExUnit.Case, async: false
-  alias ElixirPrecompiled.ChildProject, as: C
+  alias Precompiled.ChildProject, as: C
   # Not :integration: `--only integration` must never reach the portal.
   @moduletag :production
   @moduletag :tmp_dir
@@ -14,10 +14,10 @@ defmodule ElixirPrecompiled.Integration.InstallTest do
   @script """
   deps = [{:jason, "1.4.5"}, {:decimal, "3.2.0"}]
   opts = [source: "#{@source}"]
-  ElixirPrecompiled.install(deps, opts)
+  Precompiled.Host.install(deps, opts)
   IO.puts("encoded=" <> Jason.encode!(%{a: 1}))
   IO.puts("mix_dir=" <> Mix.install_project_dir())
-  IO.puts("our_dir=" <> ElixirPrecompiled.Install.project_dir(deps, []))
+  IO.puts("our_dir=" <> Precompiled.Install.project_dir(deps, []))
 
   beam = Path.join(Mix.install_project_dir(), "_build/dev/lib/jason/ebin/Elixir.Jason.beam")
   sha = :crypto.hash(:sha256, File.read!(beam)) |> Base.encode16(case: :lower)
@@ -36,7 +36,7 @@ defmodule ElixirPrecompiled.Integration.InstallTest do
       C.cmd!(["elixir", "-pa", C.own_ebin(), script], dir,
         env: [
           {"MIX_INSTALL_DIR", Path.join(dir, "installs")},
-          {"ELIXIR_PRECOMPILED_HOME", Path.join(dir, "home")},
+          {"PRECOMPILED_HOME", Path.join(dir, "home")},
           {"MIX_ENV", nil}
         ],
         offline: false
@@ -59,7 +59,7 @@ defmodule ElixirPrecompiled.Integration.InstallTest do
       refute out =~ ~r/==> decimal/, out
       sha = line!(out, "jason_beam_sha")
 
-      {:ok, body} = ElixirPrecompiled.HTTP.get(@source <> "/manifests/jason.json")
+      {:ok, body} = Precompiled.HTTP.get(@source <> "/manifests/jason.json")
       ebin = get_in(:json.decode(body), ["versions", "1.4.5", "pure_elixir", "ebin"])
       assert sha in Enum.map(ebin, & &1["sha256"]), out
     end

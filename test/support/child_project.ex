@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule ElixirPrecompiled.ChildProject do
+defmodule Precompiled.ChildProject do
   @moduledoc false
   # Real Mix projects in a tmp dir that depend on this checkout by path,
   # exactly as a user adds the library, served by the test fixture, and the
@@ -17,9 +17,9 @@ defmodule ElixirPrecompiled.ChildProject do
   # MIX_HOME is shared on purpose: it holds the Hex archive and rebar, which
   # the children only read.
   import ExUnit.Assertions
-  alias ElixirPrecompiled.Fixture, as: F
+  alias Precompiled.Fixture, as: F
 
-  @alias ~s(["deps.compile elixir_precompiled", "precompiled.install", "deps.loadpaths"])
+  @alias ~s(["deps.compile precompiled", "precompiled.deps", "deps.loadpaths"])
   @timeout_s 300
 
   @spec alias_value() :: String.t()
@@ -54,7 +54,7 @@ defmodule ElixirPrecompiled.ChildProject do
 
   @doc "This checkout as a child's dependency, as a user adds it."
   @spec own_dep() :: String.t()
-  def own_dep(), do: "{:elixir_precompiled, path: #{inspect(File.cwd!())}, runtime: false}"
+  def own_dep(), do: "{:precompiled, path: #{inspect(File.cwd!())}, runtime: false}"
 
   @spec umbrella!(Path.t(), map()) :: Path.t()
   def umbrella!(dir, f) do
@@ -84,7 +84,7 @@ defmodule ElixirPrecompiled.ChildProject do
           config_path: "../../config/config.exs",
           deps_path: "../../deps",
           lockfile: "../../mix.lock",
-          deps: [{:jason, "1.4.5"}, {:elixir_precompiled, path: #{inspect(File.cwd!())}, runtime: false}]
+          deps: [{:jason, "1.4.5"}, {:precompiled, path: #{inspect(File.cwd!())}, runtime: false}]
         ]
       end
     end
@@ -99,7 +99,7 @@ defmodule ElixirPrecompiled.ChildProject do
 
     File.write!(Path.join(proj, "config/config.exs"), """
     import Config
-    config :elixir_precompiled, source: #{inspect(F.base_url())}, root: #{inspect(f.root_path)}
+    config :precompiled, source: #{inspect(F.base_url())}, root: #{inspect(f.root_path)}
     """)
   end
 
@@ -111,7 +111,7 @@ defmodule ElixirPrecompiled.ChildProject do
   def publish_jason!(f, proj) do
     F.publish(f, %{}, sequence: 1)
     mix!(proj, ["deps.get"])
-    mix!(proj, ["deps.compile", "jason"], [{"ELIXIR_PRECOMPILED", "0"}])
+    mix!(proj, ["deps.compile", "jason"], [{"PRECOMPILED", "0"}])
     lib = Path.join(proj, "_build/dev/lib/jason")
     entry = jason_entry(f, lib, proj)
     File.rm_rf!(lib)
@@ -185,8 +185,8 @@ defmodule ElixirPrecompiled.ChildProject do
         {"MIX_BUILD_ROOT", nil},
         {"MIX_DEPS_PATH", nil},
         {"MIX_EXS", nil},
-        {"ELIXIR_PRECOMPILED_SOURCE", nil},
-        {"ELIXIR_PRECOMPILED_HOME", Path.join(Path.dirname(proj), "home")}
+        {"PRECOMPILED_SOURCE", nil},
+        {"PRECOMPILED_HOME", Path.join(Path.dirname(proj), "home")}
       ] ++ env
 
     cmd!(argv, Path.dirname(proj), [cd: proj, env: env] ++ Keyword.take(opts, [:packages]))
@@ -204,7 +204,7 @@ defmodule ElixirPrecompiled.ChildProject do
   end
 
   @spec own_ebin() :: Path.t()
-  def own_ebin(), do: Path.join(Mix.Project.build_path(), "lib/elixir_precompiled/ebin")
+  def own_ebin(), do: Path.join(Mix.Project.build_path(), "lib/precompiled/ebin")
 
   @doc """
   Runs `argv` with `base/hex` as its HEX_HOME, seeded with `:packages`

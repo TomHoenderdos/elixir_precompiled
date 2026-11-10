@@ -11,7 +11,7 @@ defmodule ChainTest.Compiled do
   here when `<build_lib>/<dep>/.mix/compile.elixir` exists (Mix's manifest
   for an Elixir dep), or, for a rebar or make dep, when Mix's
   `.mix/compile.elixir_scm` marker exists without the client's provenance
-  file `.mix/elixir_precompiled.json`. A precompiled install carries the
+  file `.mix/precompiled.json`. A precompiled install carries the
   marker and the provenance file and no compile manifest.
 
   Checks:
@@ -33,7 +33,7 @@ defmodule ChainTest.Compiled do
 
   alias ChainTest.{Integrity, Result}
 
-  @tooling ~w(nerves nerves_system_* nerves_toolchain_* elixir_precompiled interactive_cmd
+  @tooling ~w(nerves nerves_system_* nerves_toolchain_* precompiled interactive_cmd
               nerves_discovery tablet)
 
   @doc """
@@ -93,7 +93,7 @@ defmodule ChainTest.Compiled do
 
     File.exists?(Path.join(mix, "compile.elixir")) or
       (File.exists?(Path.join(mix, "compile.elixir_scm")) and
-         not File.exists?(Path.join(mix, "elixir_precompiled.json")))
+         not File.exists?(Path.join(mix, "precompiled.json")))
   end
 
   defp deps(build_lib) do
@@ -130,7 +130,7 @@ defmodule ChainTest.Compiled do
           check,
           :fail,
           "the report calls #{dep} a hit, but it has Mix's marker without " <>
-            "#{Path.join(mix, "elixir_precompiled.json")}: Mix compiled it here"
+            "#{Path.join(mix, "precompiled.json")}: Mix compiled it here"
         )
 
       true ->

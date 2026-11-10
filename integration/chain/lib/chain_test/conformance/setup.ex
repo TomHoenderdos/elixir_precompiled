@@ -7,7 +7,7 @@ defmodule ChainTest.Conformance.Setup do
   A conformance case's preparation of the client home, as data: a module
   implementing this behaviour plus its args map, written `{module, args}`
   as a case's `setup`. It runs once per case against the case's fresh,
-  empty client home (`ELIXIR_PRECOMPILED_HOME`), after the case's mirrors
+  empty client home (`PRECOMPILED_HOME`), after the case's mirrors
   are up and before the build: write a state file, pre-populate the cache,
   plant a symlink.
 
@@ -81,7 +81,7 @@ defmodule ChainTest.Conformance.Setup do
 
   @doc """
   The client's state dir for `source` and the shipped root at `root_path`
-  under `home`, named as the client names it (`ElixirPrecompiled.Trust.state_dir/2`):
+  under `home`, named as the client names it (`Precompiled.Trust.state_dir/2`):
   the first 16 hex digits of sha256 of `"<source>|<first root-role key id>"`,
   the source without a trailing `/`.
   """

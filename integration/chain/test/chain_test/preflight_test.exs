@@ -169,7 +169,7 @@ defmodule ChainTest.PreflightTest do
     end
 
     test "the expected deps are expected.exs's hits and nevers plus the system", %{tmp_dir: tmp} do
-      # elixir_precompiled is a path dep in mix.exs: never in a lock.
+      # precompiled is a path dep in mix.exs: never in a lock.
       assert Enum.sort(Preflight.expected_deps(tmp, "rpi4")) ==
                ~w(exqlite jason nerves nerves_system_rpi4)
 
@@ -185,7 +185,7 @@ defmodule ChainTest.PreflightTest do
         assert dep in deps
       end
 
-      refute "elixir_precompiled" in deps
+      refute "precompiled" in deps
       refute "chain_path_dep" in deps
     end
 
@@ -208,7 +208,7 @@ defmodule ChainTest.PreflightTest do
       fixture = Path.expand("../../fixture", __DIR__)
 
       assert %{
-               "elixir_precompiled" => "../../..",
+               "precompiled" => "../../..",
                "chain_path_dep" => "deps_local/chain_path_dep"
              } =
                Preflight.path_deps(fixture)
@@ -304,13 +304,13 @@ defmodule ChainTest.PreflightTest do
   # An expected.exs and a mix.exs with one path dep, as the fixture has.
   defp write_fixture(
          dir,
-         expected \\ "%{hits: [:exqlite, :jason], never: [:nerves, :elixir_precompiled]}\n"
+         expected \\ "%{hits: [:exqlite, :jason], never: [:nerves, :precompiled]}\n"
        ) do
     File.write!(Path.join(dir, "expected.exs"), expected)
 
     File.write!(
       Path.join(dir, "mix.exs"),
-      ~s|defp deps, do: [{:elixir_precompiled, path: "../../..", override: true}, {:jason, "1.4.5"}]\n|
+      ~s|defp deps, do: [{:precompiled, path: "../../..", override: true}, {:jason, "1.4.5"}]\n|
     )
   end
 

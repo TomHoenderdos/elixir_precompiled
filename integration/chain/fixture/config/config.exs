@@ -14,7 +14,7 @@ config :nerves, :firmware, rootfs_overlay: "rootfs_overlay"
 config :nerves, source_date_epoch: "1792484640"
 
 # The chain test passes CHAIN_SOURCE; the default is the production portal.
-config :elixir_precompiled,
+config :precompiled,
   source:
     System.get_env("CHAIN_SOURCE", "https://compatibility.nerves-project.org/api/precompiled")
 

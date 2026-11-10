@@ -420,7 +420,7 @@ defmodule ChainTest.ConformanceTest do
         v2(@t0, %{
           setup: {ChainTest.Conformance.Setup.PlantRoot, %{path: "attacker/root.json"}},
           client_env: %{
-            "ELIXIR_PRECOMPILED_ROOT" => {:home, "attacker/root.json"},
+            "PRECOMPILED_ROOT" => {:home, "attacker/root.json"},
             "NERVES_PRECOMPILED_ROOT" => "/abs/root.json"
           }
         })
@@ -431,7 +431,7 @@ defmodule ChainTest.ConformanceTest do
       build = fn input ->
         if env = input.client_env,
           do:
-            send(:conformance_env_test, {:planted, File.exists?(env["ELIXIR_PRECOMPILED_ROOT"])})
+            send(:conformance_env_test, {:planted, File.exists?(env["PRECOMPILED_ROOT"])})
 
         s.build.(input)
       end
@@ -440,7 +440,7 @@ defmodule ChainTest.ConformanceTest do
       Conformance.run(ctx.opts, %{s | build: build})
 
       assert_received {:build, %{home: home, client_env: env}}
-      assert env["ELIXIR_PRECOMPILED_ROOT"] == Path.join(home, "attacker/root.json")
+      assert env["PRECOMPILED_ROOT"] == Path.join(home, "attacker/root.json")
       assert env["NERVES_PRECOMPILED_ROOT"] == "/abs/root.json"
       assert_received {:planted, true}
       assert_received {:build, %{client_env: nil}}

@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Proves the device layer never calls Mix or Hex: walks the local calls and
-# captured funs reachable from every Precompiled*/ElixirPrecompiled.Device*
-# module through this library's own modules, and fails on any reference to Mix* or Hex*,
-# found through any of three beam chunks:
+# captured funs reachable from Precompiled (with its structs) and every
+# Precompiled.Device* module through this library's own modules, and fails
+# on any reference to Mix* or Hex*, found through any of three beam chunks:
 #
 #   - :imports, for a plain remote call (Mix.env()) — gives the precise
 #     module/function/arity;
@@ -19,15 +19,19 @@
 #     parameter defeats that fold) — this only proves a forbidden module
 #     was referenced at all, not which function.
 #
-# The two allowed references are ElixirPrecompiled.Output's Mix.shell/0
+# The two allowed references are Precompiled.Output's Mix.shell/0
 # (behind mix_running?/0, which is false on a device) and
-# ElixirPrecompiled.Fetch's bare Hex.SCM marker atom (never called).
+# Precompiled.Fetch's bare Hex.SCM marker atom (never called).
 #
 # Run on the prod build: MIX_ENV=prod mix compile, then
-# elixir scripts/mix_free_check.exs _build/prod/lib/elixir_precompiled/ebin.
+# elixir scripts/mix_free_check.exs _build/prod/lib/precompiled/ebin.
 defmodule MixFreeCheck do
-  @allowed_calls [{ElixirPrecompiled.Output, Mix, :shell, 0}]
-  @allowed_atoms [{ElixirPrecompiled.Output, Mix}, {ElixirPrecompiled.Fetch, Hex.SCM}]
+  # The device API: Precompiled and its structs. Every other Precompiled.*
+  # module outside Precompiled.Device is host code, checked only when the
+  # device layer reaches it.
+  @api [Precompiled, Precompiled.Installed, Precompiled.Plan]
+  @allowed_calls [{Precompiled.Output, Mix, :shell, 0}]
+  @allowed_atoms [{Precompiled.Output, Mix}, {Precompiled.Fetch, Hex.SCM}]
 
   @spec run(Path.t()) :: {:ok, [module()]} | {:error, [String.t()]}
   def run(ebin) do
@@ -89,9 +93,8 @@ defmodule MixFreeCheck do
   defp root?(m) do
     s = Atom.to_string(m)
 
-    s == "Elixir.Precompiled" or String.starts_with?(s, "Elixir.Precompiled.") or
-      s == "Elixir.ElixirPrecompiled.Device" or
-      String.starts_with?(s, "Elixir.ElixirPrecompiled.Device.")
+    m in @api or s == "Elixir.Precompiled.Device" or
+      String.starts_with?(s, "Elixir.Precompiled.Device.")
   end
 
   defp reach([], _modules, seen), do: seen
@@ -189,7 +192,7 @@ end
 ex_unit_running? = Enum.any?(Application.started_applications(), &match?({:ex_unit, _, _}, &1))
 
 unless ex_unit_running? do
-  ebin = List.first(System.argv()) || "_build/prod/lib/elixir_precompiled/ebin"
+  ebin = List.first(System.argv()) || "_build/prod/lib/precompiled/ebin"
 
   case MixFreeCheck.run(ebin) do
     {:ok, roots} ->

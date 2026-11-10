@@ -878,11 +878,11 @@ defmodule ChainTest.Conformance do
     build_lib = Path.join(build_dir, "lib")
 
     build_dir
-    |> Path.join("**/.mix/elixir_precompiled.json")
+    |> Path.join("**/.mix/precompiled.json")
     |> Path.wildcard(match_dot: true)
     |> Enum.map(fn path ->
       case Path.split(Path.relative_to(path, build_lib)) do
-        [dep, ".mix", "elixir_precompiled.json"] -> dep
+        [dep, ".mix", "precompiled.json"] -> dep
         _ -> Path.relative_to(path, build_dir)
       end
     end)

@@ -58,7 +58,7 @@ jobs:
           mix deps > deps.txt
           # Not `! grep`: bash -e ignores a negated command's status.
           if grep -q igniter deps.txt; then echo "igniter is a dependency below 1.18"; exit 1; fi
-          mix elixir_precompiled.install > install.txt 2>&1
+          mix precompiled.install > install.txt 2>&1
           grep -q "runs through Igniter" install.txt
       - run: mix test
       # The device layer must run in a release without Mix: nothing it
@@ -67,14 +67,14 @@ jobs:
         name: device layer is Mix-free
         run: |
           MIX_ENV=prod mix compile
-          elixir scripts/mix_free_check.exs _build/prod/lib/elixir_precompiled/ebin
+          elixir scripts/mix_free_check.exs _build/prod/lib/precompiled/ebin
       # Child Mix projects against the local fixture (plain, umbrella, alias
       # order, a git dependency, Mix.install/2, and from 1.18 the Igniter
       # installer): the deps.loadpaths alias on each Mix in the range.
       # Children fetch from hex.pm into a private HEX_HOME.
       - run: mix test --only integration
       - if: matrix.lint
-        run: MIX_ENV=prod mix archive.build -o /tmp/elixir_precompiled.ez
+        run: MIX_ENV=prod mix archive.build -o /tmp/precompiled.ez
   chain:
     runs-on: ubuntu-24.04
     steps:

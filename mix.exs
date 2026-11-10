@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: CC0-1.0
 #
-defmodule ElixirPrecompiled.MixProject do
+defmodule Precompiled.MixProject do
   use Mix.Project
 
   @version "0.2.0"
@@ -10,12 +10,12 @@ defmodule ElixirPrecompiled.MixProject do
 
   @otp_release :erlang.system_info(:otp_release) |> List.to_integer()
   if @otp_release < 27 do
-    raise "elixir_precompiled requires OTP 27 or later. Current OTP version: #{@otp_release}"
+    raise "precompiled requires OTP 27 or later. Current OTP version: #{@otp_release}"
   end
 
   def project do
     [
-      app: :elixir_precompiled,
+      app: :precompiled,
       version: @version,
       elixir: "~> 1.17",
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -62,7 +62,7 @@ defmodule ElixirPrecompiled.MixProject do
     ] ++ igniter()
   end
 
-  # The installer task (mix igniter.install elixir_precompiled) needs
+  # The installer task (mix igniter.install precompiled) needs
   # Igniter, whose own dependencies need Elixir 1.18; the library does not.
   # Optional and runtime: false, so a project that does not use Igniter
   # never fetches it.
@@ -94,6 +94,7 @@ defmodule ElixirPrecompiled.MixProject do
         "README.md",
         "REUSE.toml"
       ],
+      name: "precompiled",
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url}
     ]

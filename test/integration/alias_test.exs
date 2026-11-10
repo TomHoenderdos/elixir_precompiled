@@ -2,17 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule ElixirPrecompiled.Integration.AliasTest do
+defmodule Precompiled.Integration.AliasTest do
   use ExUnit.Case, async: false
-  alias ElixirPrecompiled.ChildProject, as: C
-  alias ElixirPrecompiled.Fixture, as: F
+  alias Precompiled.ChildProject, as: C
+  alias Precompiled.Fixture, as: F
 
   @moduletag :integration
   @moduletag :tmp_dir
   @moduletag timeout: 600_000
 
   setup_all do
-    start_supervised!(ElixirPrecompiled.TestServer)
+    start_supervised!(Precompiled.TestServer)
     :ok
   end
 
@@ -45,27 +45,27 @@ defmodule ElixirPrecompiled.Integration.AliasTest do
     out = C.mix!(proj, ["precompiled.clean"])
     assert out =~ "precompiled: removed 1 installed build", out
     refute File.exists?(Path.join(proj, "_build/dev/lib/jason")), out
-    out = C.mix!(proj, ["compile"], [{"ELIXIR_PRECOMPILED", "0"}])
+    out = C.mix!(proj, ["compile"], [{"PRECOMPILED", "0"}])
     assert out =~ "==> jason", out
   end
 
   # Turning the library off undoes it: the installed build goes and Mix
   # compiles the dep from source in that same run.
-  test "ELIXIR_PRECOMPILED=0 removes installs and Mix compiles them", %{tmp_dir: dir} do
+  test "PRECOMPILED=0 removes installs and Mix compiles them", %{tmp_dir: dir} do
     f = F.new(dir)
     proj = C.plain!(dir, f)
     C.publish_jason!(f, proj)
     assert C.mix!(proj, ["compile"]) =~ ~r/precompiled: jason 1\.4\.5\s+HIT/
 
-    out = C.mix!(proj, ["compile"], [{"ELIXIR_PRECOMPILED", "0"}])
+    out = C.mix!(proj, ["compile"], [{"PRECOMPILED", "0"}])
     assert out =~ "precompiled: disabled; removed 1 installed build", out
     assert out =~ "==> jason", out
     lib = Path.join(proj, "_build/dev/lib/jason")
-    refute File.exists?(Path.join(lib, ".mix/elixir_precompiled.json")), out
+    refute File.exists?(Path.join(lib, ".mix/precompiled.json")), out
 
     out =
       C.mix!(proj, ["run", "-e", ~s|IO.puts("encoded=" <> Jason.encode!(%{a: 1}))|], [
-        {"ELIXIR_PRECOMPILED", "0"}
+        {"PRECOMPILED", "0"}
       ])
 
     assert out =~ ~s(encoded={"a":1}), out
@@ -83,7 +83,7 @@ defmodule ElixirPrecompiled.Integration.AliasTest do
     assert out =~ ~r/precompiled: jason 1\.4\.5\s+HIT/, out
     refute out =~ "==> jason", out
     lib = Path.join(proj, "_build/dev/lib/jason")
-    assert File.exists?(Path.join(lib, ".mix/elixir_precompiled.json")), out
+    assert File.exists?(Path.join(lib, ".mix/precompiled.json")), out
     refute File.exists?(Path.join(lib, ".mix/compile.elixir")), out
   end
 
@@ -113,7 +113,7 @@ defmodule ElixirPrecompiled.Integration.AliasTest do
       C.plain!(dir, f,
         prelude: prelude,
         aliases:
-          ~s(["deps.loadpaths": ["fake.bootstrap", "deps.compile elixir_precompiled", "precompiled.install", "deps.loadpaths"]])
+          ~s(["deps.loadpaths": ["fake.bootstrap", "deps.compile precompiled", "precompiled.deps", "deps.loadpaths"]])
       )
 
     C.publish_jason!(f, proj)
@@ -124,7 +124,7 @@ defmodule ElixirPrecompiled.Integration.AliasTest do
     assert out =~ ~r/jason 1\.4\.5\s+HIT/, out
   end
 
-  # Why the alias has three entries: without "deps.compile elixir_precompiled"
+  # Why the alias has three entries: without "deps.compile precompiled"
   # the task is not on the code path yet, and Mix's fallback for an unknown
   # task runs deps.loadpaths first, compiling every dep from source.
   test "the one-entry alias is too late: Mix compiles jason before the task exists", %{
@@ -133,7 +133,7 @@ defmodule ElixirPrecompiled.Integration.AliasTest do
     f = F.new(dir)
 
     proj =
-      C.plain!(dir, f, aliases: ~s(["deps.loadpaths": ["precompiled.install", "deps.loadpaths"]]))
+      C.plain!(dir, f, aliases: ~s(["deps.loadpaths": ["precompiled.deps", "deps.loadpaths"]]))
 
     C.publish_jason!(f, proj)
 

@@ -6,13 +6,13 @@ defmodule Mix.Tasks.Precompiled.Status do
   @shortdoc "Lists the dependencies installed precompiled in this build"
   @moduledoc """
   Lists every dependency in the current `_build` (this `MIX_ENV` and
-  `MIX_TARGET`) that `elixir_precompiled` installed, with the batch and
+  `MIX_TARGET`) that `precompiled` installed, with the batch and
   manifest it came from, and where the cache lives.
 
       mix precompiled.status
   """
   use Mix.Task
-  alias ElixirPrecompiled.{Config, Status}
+  alias Precompiled.{Config, Status}
 
   @impl Mix.Task
   def run(_args) do

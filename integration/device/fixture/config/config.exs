@@ -13,7 +13,7 @@ config :nerves, :firmware, rootfs_overlay: "rootfs_overlay"
 # See https://reproducible-builds.org/docs/source-date-epoch/
 config :nerves, source_date_epoch: "1794262280"
 
-# No :elixir_precompiled config anywhere: the test proves the defaults (on,
+# No :precompiled config anywhere: the test proves the defaults (on,
 # the official source) with nothing configured.
 
 if Mix.target() == :host do
