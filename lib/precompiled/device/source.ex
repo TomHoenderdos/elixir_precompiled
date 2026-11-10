@@ -44,8 +44,8 @@ defmodule Precompiled.Device.Source do
   @spec default_dir() :: String.t()
   def default_dir(), do: @default_dir
 
-  # The keys `config :precompiled, :device` may set (the README
-  # lists them). Any other key there is ignored: the test seams (:env,
+  # The keys `config :precompiled, :device` may set (the "On a device"
+  # guide lists them). Any other key there is ignored: the test seams (:env,
   # :clock_synchronized?) and :home in particular are never read from it.
   @device_keys [
     :enabled,
