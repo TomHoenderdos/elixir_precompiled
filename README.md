@@ -74,6 +74,10 @@ Precompiled.install(:recon)
 
 `PRECOMPILED=0` turns it off.
 
+`mix precompiled.report` sends the last build's HIT/MISS/FAIL report,
+after showing it and asking (see
+[Troubleshooting](https://hexdocs.pm/precompiled/troubleshooting.html#reporting-a-miss)).
+
 ## Guides
 
 Getting started:

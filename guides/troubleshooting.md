@@ -11,6 +11,84 @@ that line below.
 | `PRECOMPILED_DEBUG=1` | also list the dependencies that were not candidates, and why |
 | `PRECOMPILED=0` | rule the library out completely: it removes its installs and Mix compiles everything |
 
+## Reporting a miss
+
+When a dependency misses or fails and it should not, send the build's
+report so it can be looked at:
+
+```
+mix precompiled.report
+```
+
+Run it with the same `MIX_ENV` and `MIX_TARGET` as the build: it reads
+that build's `report.json`, which needs precompiled 0.4.0 or later (an
+older build's `report.json` lacks the fields a report needs; the task
+notices and sends nothing rather than guessing). It always prints what
+it would send and asks before sending anything:
+
+| Flag | Effect |
+| --- | --- |
+| *(none)* | Shows the report, then asks `[y/N]`; anything but `y` or `yes`, including a non-interactive terminal such as CI, sends nothing |
+| `--yes` | Skips the question and sends (for CI) |
+| `--contact @you` | Adds a handle for follow-up questions (printable text, at most 100 characters once redacted) |
+| `--dump` | Prints the exact JSON to stdout and sends nothing; everything else goes to stderr, so stdout alone can be redirected to a file |
+| `--dump out.json` | Writes the JSON to `out.json` instead, and sends nothing |
+
+In a script or Livebook, after `Precompiled.Host.install/2`:
+`Precompiled.Host.report()` shows the report; Livebook has no terminal
+to answer `[y/N]`, so it stops there. `Precompiled.Host.report(yes: true)`
+sends it.
+
+Reporting never fails a build or a script: any problem prints one line,
+and `mix precompiled.report` always exits 0.
+
+### What is sent, and what never is
+
+| Sent | Never sent |
+| --- | --- |
+| Each candidate's name, version, HIT/MISS/FAIL and reason code and text | The project's name, its directory, the host name, the OS user name |
+| The Elixir and OTP versions, the OS family and CPU architecture | Config values or environment variables |
+| The target and, when it is one of the project's public Hex dependencies, the Nerves system and its version | A private, git or path package's name — only public Hex packages are ever named |
+| The public Hex lock entries (name, version, checksum) of the reported dependencies and theirs in turn | — |
+| `--contact`, if given | — |
+
+A Nerves system that is *not* a public Hex package (an in-house or
+unpublished one) is sent as `custom` with no version, and so is the
+target of any line whose reason would otherwise name the real target
+(for example "not built for this target"). The project's directory,
+home directory, the configured source and mirror hosts, and the local
+host name are replaced by `<redacted>` wherever a reason's free text
+contains them, regardless of case; `--contact` loses those too, plus
+the project's app name, its directory's own name and the OS user name.
+Names, versions, targets and reason codes themselves are never
+rewritten by this — a host that happens to share a name with a
+dependency must not turn that dependency's line into noise.
+
+### Retracting a report
+
+A new report answers with its id, printed once:
+
+```
+precompiled: report 3f9c2b7a-...
+```
+
+That id is the only way to retract it:
+
+```
+curl -X DELETE <source>/reports/<id>
+```
+
+Keep it somewhere. Sending the exact same report again answers
+"already received" and prints no id — the source hands an id out only
+once, so a second report of the same build cannot be used to retract
+the first one. A "not built" miss of a package the portal already
+tracks may be queued for a build from the report alone.
+
+A build with no candidate dependencies does not write a new
+`report.json`: the previous one stays in place, and that is what
+`mix precompiled.report` sends. The command's summary shows how old it
+is, so it is clear when it is not from the latest build.
+
 ## Setup
 
 | Line | Meaning | What to do |
