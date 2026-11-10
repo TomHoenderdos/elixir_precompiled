@@ -299,8 +299,8 @@ defmodule ElixirPrecompiled.Trust do
 
   With `offline: true`, for a bundle's `root.json` read to verify its
   `offline.json`, a root that chains is adopted even when it has expired
-  (see `load_root/2`). Such a root ends the online path until a newer one
-  is adopted, as any expired root in use does.
+  (see `load_root/2`). The online path then chains from it to a newer,
+  unexpired root before it judges expiry (`ElixirPrecompiled.Check`).
   """
   @spec update_root(
           map(),
@@ -316,7 +316,13 @@ defmodule ElixirPrecompiled.Trust do
         # root.json that does not chain from the root in use. Safe: a batch
         # signed under a root this client has not adopted fails its
         # signature, and Check then fetches the root again regardless.
-        _ = write_atomic(state_dir(config), "root_checked", Integer.to_string(unix_now(config)))
+        # A bundle's root.json is not the online source's: it never stands
+        # in for the online check.
+        if not offline?(opts),
+          do:
+            _ =
+              write_atomic(state_dir(config), "root_checked", Integer.to_string(unix_now(config)))
+
         adopt_served(config, root, body, offline?(opts))
 
       _ ->
