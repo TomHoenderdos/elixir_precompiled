@@ -430,8 +430,7 @@ defmodule ChainTest.ConformanceTest do
 
       build = fn input ->
         if env = input.client_env,
-          do:
-            send(:conformance_env_test, {:planted, File.exists?(env["PRECOMPILED_ROOT"])})
+          do: send(:conformance_env_test, {:planted, File.exists?(env["PRECOMPILED_ROOT"])})
 
         s.build.(input)
       end

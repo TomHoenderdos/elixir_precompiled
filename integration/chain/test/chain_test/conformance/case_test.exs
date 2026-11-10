@@ -527,8 +527,7 @@ defmodule ChainTest.Conformance.CaseTest do
            %{"PRECOMPILED_HOME" => "/h"}},
           {"a client_env value outside the home", :client_env,
            %{"PRECOMPILED_ROOT" => {:home, "../root.json"}}},
-          {"a relative client_env path", :client_env,
-           %{"PRECOMPILED_ROOT" => "root.json"}},
+          {"a relative client_env path", :client_env, %{"PRECOMPILED_ROOT" => "root.json"}},
           {"an empty client_env", :client_env, %{}}
         ] do
       test "refuses #{name}", %{tmp_dir: tmp} do
