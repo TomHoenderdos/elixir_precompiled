@@ -64,32 +64,48 @@ defmodule Precompiled.Report do
           | :cancelled
           | :no_report
           | :invalid
-          | {:error, String.t()}
+          | {:error, String.t() | :internal}
 
   @doc false
   # Shows the redacted payload, then dumps it or asks and sends it. The id
   # of `{:sent, id, false}` is the report's retract capability; a duplicate
   # (`{:sent, nil, true}`) gets none, because the source hands an id out
-  # only once. Never raises for a reporting problem.
+  # only once. Never raises: an unexpected exception is one line naming
+  # only its module (its message could carry a path) and
+  # `{:error, :internal}`. With `dump: :stdout` everything but the JSON goes
+  # to stderr, so the output can be redirected into a file.
   @spec run(where(), keyword()) :: outcome()
   def run(where, opts \\ []) do
+    do_run(where, opts)
+  rescue
+    e ->
+      line = "precompiled: report not sent: internal error (#{inspect(e.__struct__)})"
+      if dump_stdout?(opts), do: Output.put(:error, line), else: Output.warning(line)
+      {:error, :internal}
+  end
+
+  defp do_run(where, opts) do
     contact = Keyword.get(opts, :contact)
 
     with :ok <- contact_ok(contact),
-         {:ok, report} <- read(where.build_lib) do
-      body = where |> payload(report, contact) |> redact(where)
-      output(summary(body, report, where))
+         {:ok, report} <- read(where.build_lib),
+         body = where |> payload(report, contact) |> redact(where),
+         :ok <- contact_length_ok(body) do
+      Enum.each(summary(body, report, where), &say(opts, &1))
       deliver(body, where, opts)
     else
       {:error, :contact} ->
-        Output.info(
-          "precompiled: --contact is at most #{@max_contact} printable characters; nothing sent"
+        say(
+          opts,
+          "precompiled: --contact is at most #{@max_contact} printable characters, " <>
+            "counted after paths and names in it become <redacted>; nothing sent"
         )
 
         :invalid
 
       {:error, _no_or_old} ->
-        Output.info(
+        say(
+          opts,
           "precompiled: no report for #{where.env}/#{where.target}; run a build first " <>
             "(with precompiled 0.4.0 or later, and the same MIX_ENV and MIX_TARGET)"
         )
@@ -98,16 +114,31 @@ defmodule Precompiled.Report do
     end
   end
 
+  defp dump_stdout?(opts), do: Keyword.get(opts, :dump) == :stdout
+
+  # Lines for the person, kept off stdout while stdout carries the JSON.
+  defp say(opts, line) do
+    if dump_stdout?(opts), do: Output.put(:error, line), else: Output.info(line)
+  end
+
+  # Printable text only; the length is checked on the redacted contact,
+  # since that is what the source counts.
   defp contact_ok(nil), do: :ok
 
   defp contact_ok(c) when is_binary(c) do
-    if String.valid?(c) and String.length(c) <= @max_contact and String.printable?(c) and
+    if String.valid?(c) and String.printable?(c) and
          not String.contains?(c, ["\n", "\r", "\t"]),
        do: :ok,
        else: {:error, :contact}
   end
 
   defp contact_ok(_), do: {:error, :contact}
+
+  defp contact_length_ok(%{"contact" => c}) do
+    if String.length(c) <= @max_contact, do: :ok, else: {:error, :contact}
+  end
+
+  defp contact_length_ok(_body), do: :ok
 
   defp deliver(body, where, opts) do
     json = body |> :json.encode() |> IO.iodata_to_binary()

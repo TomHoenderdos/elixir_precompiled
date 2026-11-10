@@ -71,6 +71,15 @@ defmodule Precompiled.ReportFlowTest do
     end
   end
 
+  defp streams(out \\ [], err \\ []) do
+    receive do
+      {:mix_shell, :info, [line]} -> streams([line | out], err)
+      {:mix_shell, :error, [line]} -> streams(out, [line | err])
+    after
+      0 -> {out |> Enum.reverse() |> Enum.join("\n"), err |> Enum.reverse() |> Enum.join("\n")}
+    end
+  end
+
   test "--yes sends and prints the id", %{where: where} do
     assert {:sent, @id, false} = Report.run(where, yes: true)
     assert output() =~ "report #{@id}"
@@ -206,10 +215,119 @@ defmodule Precompiled.ReportFlowTest do
     assert length(lines) == 4
   end
 
+  test "--dump to stdout prints only the JSON there; the summary goes to stderr",
+       %{where: where} do
+    assert :dumped = Report.run(where, dump: :stdout, contact: "@me")
+    {stdout, stderr} = streams()
+    assert %{"format" => 1, "contact" => "@me", "lines" => [_]} = :json.decode(stdout)
+    assert stderr =~ "MIX_ENV=dev"
+    assert stderr =~ "1 miss"
+  end
+
+  test "a 100-character contact that grows past 100 when redacted sends nothing",
+       %{where: where} do
+    where = Map.put(where, :host_name, "qzx7")
+    contact = "qzx7" <> String.duplicate("a", 96)
+    assert String.length(contact) == 100
+    assert :invalid = Report.run(where, yes: true, contact: contact)
+    assert output() =~ "at most 100"
+    assert F.report_posts() == []
+  end
+
+  test "malformed report lines are left out, never a raise", %{where: where, lib: lib} do
+    report = %{
+      "format" => 1,
+      "built_at" => "not a date",
+      "context" => %{"elixir" => 1, "otp" => [29], "target" => %{}},
+      "lines" => [
+        %{"name" => "jason", "version" => 1, "status" => "miss"},
+        %{
+          "name" => "jason",
+          "version" => "1.4.5",
+          "status" => "miss",
+          "reason_code" => 5,
+          "reason_args" => "x"
+        },
+        %{
+          "name" => "jason",
+          "version" => "1.4.5",
+          "status" => "fail",
+          "reason_code" => "compile_env_differs",
+          "reason_args" => [[1], %{}, nil, 1.5, true]
+        },
+        1,
+        nil
+      ]
+    }
+
+    File.write!(
+      Path.join(lib, ".precompiled/report.json"),
+      IO.iodata_to_binary(:json.encode(report))
+    )
+
+    assert :dumped = Report.run(where, dump: :stdout)
+    {stdout, _} = streams()
+    assert %{"lines" => [_, _]} = :json.decode(stdout)
+  end
+
+  test "an exception anywhere is one line naming its module, and {:error, :internal}",
+       %{where: where} do
+    assert {:error, :internal} = Report.run(%{where | lock: :corrupt}, yes: true)
+    out = output()
+    assert out =~ "report not sent: internal error (Protocol.UndefinedError)"
+    refute out =~ "corrupt"
+    assert F.report_posts() == []
+  end
+
   test "the device API has no report call" do
     Code.ensure_loaded!(Precompiled)
     refute function_exported?(Precompiled, :report, 0)
     refute function_exported?(Precompiled, :report, 1)
+  end
+
+  test "Host.report/1 after Mix.install/2 reports the install project's last build",
+       %{tmp_dir: dir} do
+    old_dir = System.get_env("MIX_INSTALL_DIR")
+    old_installed = Mix.State.get(:installed)
+    old_env = Application.get_all_env(:precompiled)
+    System.put_env("MIX_INSTALL_DIR", Path.join(dir, "installs"))
+    Mix.State.put(:installed, {"reportflow", []})
+    Application.put_env(:precompiled, :source, F.base_url())
+
+    try do
+      project = Mix.install_project_dir()
+      lib = Path.join([project, "_build", Atom.to_string(Mix.env()), "lib", ".precompiled"])
+      File.mkdir_p!(lib)
+
+      File.cp!(
+        Path.join(dir, "_build/dev/lib/.precompiled/report.json"),
+        Path.join(lib, "report.json")
+      )
+
+      File.write!(
+        Path.join(project, "mix.lock"),
+        ~s(%{"jason": {:hex, :jason, "1.4.5", "i", [:mix], [], "hexpm", "#{String.duplicate("a", 64)}"}}\n)
+      )
+
+      file = Path.join(dir, "host-dump.json")
+      assert :dumped = Precompiled.Host.report(dump: file, contact: "@me")
+      written = File.read!(file)
+      assert %{"contact" => "@me", "lines" => [%{"name" => "jason"}]} = :json.decode(written)
+      assert F.report_posts() == []
+
+      assert {:sent, "5b2c6f0e-8d1a-4c39-9a57-2f0f3f0f9b11", false} =
+               Precompiled.Host.report(yes: true, contact: "@me")
+
+      assert [%{body: ^written}] = F.report_posts()
+    after
+      Mix.State.put(:installed, old_installed)
+      Application.delete_env(:precompiled, :source)
+      Application.put_all_env(precompiled: old_env)
+
+      if old_dir,
+        do: System.put_env("MIX_INSTALL_DIR", old_dir),
+        else: System.delete_env("MIX_INSTALL_DIR")
+    end
   end
 
   test "Host.report/1 outside a Mix.install/2 runtime says so" do
