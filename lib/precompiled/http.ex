@@ -38,6 +38,10 @@ defmodule Precompiled.HTTP do
   # max_body_size limit is not settable: inets 9.7.1 (OTP 29) ignores
   # max_body_size as a request or profile option ("Invalid option ...
   # ignored"). Such a body is still bounded by the deadline.
+  #
+  # post/3 sends a miss report: never redirected, https or loopback http
+  # only, and its whole response is buffered by httpc before the size cap
+  # applies (bounded by the deadline, as non-2xx bodies are).
 
   @max_redirects 5
   @profile :precompiled
@@ -242,14 +246,7 @@ defmodule Precompiled.HTTP do
         timeout: :infinity,
         connect_timeout: Keyword.get(opts, :connect_timeout_ms, @connect_timeout),
         autoredirect: false,
-        ssl: [
-          verify: :verify_peer,
-          cacerts: cacerts,
-          depth: 3,
-          customize_hostname_check: [
-            match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
-          ]
-        ]
+        ssl: ssl_opts(cacerts)
       ] ++ proxy_request_options(url)
 
     case :httpc.request(
@@ -279,6 +276,85 @@ defmodule Precompiled.HTTP do
 
       {:error, reason} ->
         {:done, {:error, reason}}
+    end
+  end
+
+  defp ssl_opts(cacerts),
+    do: [
+      verify: :verify_peer,
+      cacerts: cacerts,
+      depth: 3,
+      customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]
+    ]
+
+  @post_max_bytes 16_384
+  @post_deadline_ms 15_000
+
+  @doc """
+  POST `body` as `application/json`. Only https, or http on loopback; never
+  redirected. `{:ok, status, body}` for any final answer, so the caller
+  decides what a 4xx means.
+  """
+  @spec post(String.t(), iodata(), keyword()) ::
+          {:ok, pos_integer(), binary()} | {:error, term()}
+  def post(url, body, opts \\ []) when is_binary(url) do
+    max = Keyword.get(opts, :max_bytes, @post_max_bytes)
+    deadline_ms = Keyword.get(opts, :deadline_ms, @post_deadline_ms)
+
+    with :ok <- post_transport(url),
+         :ok <- online(opts),
+         :ok <- start_httpc(),
+         {:ok, cacerts} <- cacerts_for(opts) do
+      url = lower_case_host(url)
+      headers = [{~c"User-Agent", @user_agent}, {~c"Accept", ~c"application/json"}]
+
+      http_opts =
+        [
+          timeout: deadline_ms,
+          connect_timeout: Keyword.get(opts, :connect_timeout_ms, @connect_timeout),
+          autoredirect: false,
+          ssl: ssl_opts(cacerts)
+        ] ++ proxy_request_options(url)
+
+      request =
+        {String.to_charlist(url), headers, ~c"application/json", IO.iodata_to_binary(body)}
+
+      case :httpc.request(
+             :post,
+             request,
+             http_opts,
+             [sync: false, receiver: self(), body_format: :binary],
+             @profile
+           ) do
+        {:ok, ref} -> await_post(ref, max, deadline_ms)
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp post_transport(url) do
+    if secure_origin?(URI.parse(url)),
+      do: :ok,
+      else: {:error, "plain http is only allowed on loopback"}
+  end
+
+  defp await_post(ref, max, deadline_ms) do
+    receive do
+      {:http, {^ref, {:error, reason}}} ->
+        {:error, reason}
+
+      {:http, {^ref, {{_, status, _}, _headers, _body}}} when div(status, 100) == 3 ->
+        {:error, :redirect}
+
+      {:http, {^ref, {{_, _status, _}, _headers, body}}} when byte_size(body) > max ->
+        {:error, {:too_large, max}}
+
+      {:http, {^ref, {{_, status, _}, _headers, body}}} ->
+        {:ok, status, body}
+    after
+      deadline_ms + 1_000 ->
+        cancel_and_drain(ref)
+        {:error, "no response within #{format_seconds(deadline_ms)} s"}
     end
   end
 

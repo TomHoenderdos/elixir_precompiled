@@ -242,6 +242,29 @@ defmodule Precompiled.TestServer do
 
   defp corrupt(_conn, bytes), do: bytes
 
+  post "/precompiled/reports" do
+    {:ok, body, conn} = read_body(conn)
+
+    Precompiled.Fixture.record_report_post(%{
+      body: body,
+      content_type: List.first(get_req_header(conn, "content-type"))
+    })
+
+    {status, response} = Precompiled.Fixture.report_response()
+    conn |> put_resp_content_type("application/json") |> send_resp(status, response)
+  end
+
+  post "/precompiled/redirect_report/reports" do
+    conn
+    |> put_resp_header("location", "http://127.0.0.1:#{port()}/precompiled/reports")
+    |> send_resp(307, "")
+  end
+
+  post "/precompiled/slow/reports" do
+    Process.sleep(2000)
+    send_resp(conn, 201, ~s({"id":"slow"}))
+  end
+
   match _ do
     conn
     |> send_resp(404, "Not Found")
