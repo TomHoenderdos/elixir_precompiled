@@ -96,6 +96,38 @@ defmodule Precompiled.Env.MixProjectTest do
              [%{name: :jason, version: "1.4.5", lock_entry: @jason, dep_env: "prod"}]
   end
 
+  test "build_methods_from reads each Hex dep's manager and build overrides" do
+    dep = fn app, manager, opts, system_env ->
+      %Mix.Dep{
+        app: app,
+        scm: Hex.SCM,
+        status: :compile,
+        manager: manager,
+        opts: opts,
+        system_env: system_env
+      }
+    end
+
+    deps = [
+      dep.(:ash, :mix, [hex: :ash, dest: "deps/ash"], []),
+      dep.(:jiffy, :make, [manager: :make], []),
+      dep.(:eleveldb, :rebar3, [compile: "make all"], []),
+      dep.(:exla, :mix, [], [{"XLA_TARGET", "cuda"}]),
+      dep.(:both, :mix, [compile: "x", manager: :mix], []),
+      dep.(:unknown, nil, [], []),
+      %Mix.Dep{app: :gitdep, scm: Mix.SCM.Git, manager: :mix, opts: [manager: :make]}
+    ]
+
+    assert MixProject.build_methods_from(deps) == %{
+             ash: %{manager: "mix", overrides: []},
+             jiffy: %{manager: "make", overrides: [:manager]},
+             eleveldb: %{manager: "rebar3", overrides: [:compile]},
+             exla: %{manager: "mix", overrides: [:system_env]},
+             both: %{manager: "mix", overrides: [:manager, :compile]},
+             unknown: %{manager: nil, overrides: []}
+           }
+  end
+
   test "nerves_children_from reads a git nerves' children from Mix's deps" do
     child = fn app, deps -> %Mix.Dep{app: app, scm: Hex.SCM, deps: deps} end
     castore = child.(:castore, [])

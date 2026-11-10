@@ -26,8 +26,18 @@ defmodule Precompiled.Env do
           installed: [atom()],
           installed_envs: %{optional(atom()) => String.t()},
           tooling: [atom()] | nil,
-          mix_target: String.t()
+          mix_target: String.t(),
+          build_methods: %{optional(atom()) => build_method()}
         }
+
+  @typedoc """
+  How Mix builds a dependency in this project: the manager it resolved
+  (`"mix"`, `"rebar3"`, `"make"`, or nil when unknown) and the options
+  among `:manager`, `:compile` and `:system_env` its declaration sets.
+  """
+  @type build_method :: %{manager: String.t() | nil, overrides: [atom()]}
+
+  @overrides [:manager, :compile, :system_env]
 
   # `installed`: Hex deps Mix counts as compiled this run whose build dir
   # carries the provenance file an install writes, so `Check` can recheck
@@ -37,6 +47,8 @@ defmodule Precompiled.Env do
   # `tooling`: deps nerves_bootstrap compiles with nerves (its dependency
   # closure as Mix loaded it), or nil when that is unknown and the lock's
   # closure is all there is. A git or path nerves has no list in the lock.
+  # `build_methods`: per Hex dep, how Mix builds it here (rule 9); a dep
+  # missing from it has no override and no known manager.
   @enforce_keys [:candidates, :lock, :build_lib, :deps_path]
   defstruct system: nil,
             candidates: [],
@@ -48,7 +60,8 @@ defmodule Precompiled.Env do
             tooling: nil,
             # The project's MIX_TARGET name, for deps that read Mix.target() at
             # compile time.
-            mix_target: "host"
+            mix_target: "host",
+            build_methods: %{}
 
   @doc """
   The locked Hex entries among `apps`, in the order given. `envs` names each
@@ -68,4 +81,15 @@ defmodule Precompiled.Env do
           dep_env: Map.get(envs, app, "prod")
         }
   end
+
+  @doc """
+  The options among `:manager`, `:compile` and `:system_env` that a
+  dependency's declaration sets, in that order. Each makes Mix build the
+  dependency another way than the portal did, so no build matches it.
+  """
+  @spec overrides(keyword()) :: [atom()]
+  def overrides(opts) when is_list(opts),
+    do: Enum.filter(@overrides, &(Keyword.get(opts, &1) not in [nil, []]))
+
+  def overrides(_opts), do: []
 end

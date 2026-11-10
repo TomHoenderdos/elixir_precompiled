@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.3.1 - 2026-11-10
+
+* New matching rule 9, build method. A dependency whose `deps` entry sets
+  `:manager`, `:compile` or `:system_env` is built differently from any
+  precompiled build, so it always compiles from source, with a line such as
+  `MISS  project sets :manager for this dependency`. An installed build is
+  removed on the next run once such an option appears.
+* A manifest build may record `manager` (a string such as `"mix"`,
+  `"rebar3"` or `"make"`). When it differs from the manager Mix resolves
+  for the dependency, the build misses: `built with rebar3, project builds
+  with make`. A build without `manager` matches as before. On a device the
+  field is not compared.
+
 ## v0.3.0 - 2026-11-10
 
 Breaking changes. A source or mirror learns which dependencies a project

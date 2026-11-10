@@ -25,4 +25,16 @@ defmodule Precompiled.EnvTest do
     assert Env.hex_candidates(lock, [:ash]) ==
              [%{name: :ash, version: "3.5.2", lock_entry: @ash, dep_env: "prod"}]
   end
+
+  test "overrides names the build options a declaration sets, in rule order" do
+    assert Env.overrides([]) == []
+    assert Env.overrides(env: :dev, optional: true, override: true) == []
+    assert Env.overrides(system_env: [], manager: nil) == []
+    assert Env.overrides(compile: false) == [:compile]
+
+    assert Env.overrides(system_env: [{"A", "1"}], compile: "make", manager: :make) ==
+             [:manager, :compile, :system_env]
+
+    assert Env.overrides(nil) == []
+  end
 end

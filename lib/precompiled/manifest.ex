@@ -10,6 +10,11 @@ defmodule Precompiled.Manifest do
   # format 2 reaches Match, so format 1 is translated here, with
   # dep_env "prod": every build the portal ever made compiled its package
   # the way Mix compiles dependencies, as prod.
+  #
+  # A build's optional `build.manager` (a string: "mix", "rebar3", "make",
+  # ...) names the manager Mix built it with. It is not checked here, as no
+  # other build field is: Match judges it per build, and a value that is
+  # not a string makes that build a malformed entry, not the manifest.
 
   @spec normalize(map()) :: {:ok, map()} | {:fail, String.t()}
   def normalize(%{"format" => 2, "versions" => versions} = doc) when is_map(versions) do

@@ -558,6 +558,7 @@ defmodule Precompiled.Check do
 
   defp ctx(candidate, env, config, config_fun, reads) do
     {elixir, otp} = config.toolchain
+    method = Map.get(Map.get(env, :build_methods, %{}), candidate.name, %{})
 
     %{
       name: Atom.to_string(candidate.name),
@@ -571,7 +572,9 @@ defmodule Precompiled.Check do
       config: config_fun,
       prefer: Map.get(candidate, :installed_hash),
       mix_target: Map.get(env, :mix_target, "host"),
-      reads: reads
+      reads: reads,
+      manager: Map.get(method, :manager),
+      overrides: Map.get(method, :overrides, [])
     }
   end
 
@@ -702,7 +705,7 @@ defmodule Precompiled.Check do
   defp line_for(base, {:miss, why}), do: Map.merge(base, %{status: :miss, detail: why})
   defp line_for(base, {:fail, why}), do: Map.merge(base, %{status: :fail, detail: why})
 
-  # Rule 5, second half: the manifest said the compile_env matches; the
+  # Rule 7, second half: the manifest said the compile_env matches; the
   # downloaded .app is the authority. A manifest that lies still cannot
   # plant a mismatched build.
   defp verify_app(app_path, name, version, config_fun) do

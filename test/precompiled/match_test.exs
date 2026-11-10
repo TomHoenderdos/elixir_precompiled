@@ -654,6 +654,67 @@ defmodule Precompiled.MatchTest do
     end
   end
 
+  describe "build method (rule 9)" do
+    for opt <- [:manager, :compile, :system_env] do
+      test "a dependency declared with #{inspect(opt)} misses every build" do
+        expect = {:miss, "project sets #{inspect(unquote(opt))} for this dependency"}
+
+        assert ^expect =
+                 Match.select(doc([pe(@build)]), ctx(overrides: [unquote(opt)], manager: "mix"))
+
+        assert ^expect = Match.select(manifest(), ctx(overrides: [unquote(opt)]))
+      end
+    end
+
+    test "the first override in the list names the miss" do
+      assert {:miss, "project sets :compile for this dependency"} =
+               Match.select(doc([pe(@build)]), ctx(overrides: [:compile, :system_env]))
+    end
+
+    test "a recorded manager other than the project's misses" do
+      build = Map.put(@build, "manager", "rebar3")
+
+      assert {:miss, "built with rebar3, project builds with make"} =
+               Match.select(doc([pe(build)]), ctx(manager: "make"))
+    end
+
+    test "a recorded manager when the project's is unknown misses" do
+      build = Map.put(@build, "manager", "rebar3")
+
+      assert {:miss, "built with rebar3, project's manager for it is unknown"} =
+               Match.select(doc([pe(build)]), ctx(manager: nil))
+
+      assert {:miss, "built with rebar3, project's manager for it is unknown"} =
+               Match.select(doc([pe(build)]), ctx())
+    end
+
+    test "a recorded manager equal to the project's hits" do
+      build = Map.put(@build, "manager", "mix")
+      assert {:ok, _, "pure_elixir"} = Match.select(doc([pe(build)]), ctx(manager: "mix"))
+    end
+
+    test "an entry without a manager is judged as before" do
+      assert {:ok, _, "pure_elixir"} = Match.select(doc([pe(@build)]), ctx(manager: "make"))
+      assert {:ok, _, "pure_elixir"} = Match.select(doc([pe(@build)]), ctx(manager: nil))
+      assert {:ok, _, "pure_elixir"} = Match.select(doc([pe(@build)]), ctx(overrides: []))
+      assert {:ok, _, _} = Match.select(manifest(), ctx(manager: "rebar3"))
+    end
+
+    test "a manager that is not a string is a malformed entry" do
+      build = Map.put(@build, "manager", 3)
+
+      assert {:miss, "malformed entry"} =
+               Match.select(doc([pe(build)]), ctx(manager: "mix"))
+    end
+
+    test "a matching manager still answers to the other rules" do
+      build = @build |> Map.put("manager", "mix") |> Map.put("otp", "28")
+
+      assert {:miss, "built on OTP 28, running 29"} =
+               Match.select(doc([pe(build)]), ctx(manager: "mix"))
+    end
+  end
+
   describe "exposed rules (shared with the device)" do
     test "texts are the host's" do
       assert Match.target_ok("pure_elixir", nil, {"nerves_system_rpi4", "2.2.1"}) == :ok
