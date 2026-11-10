@@ -17,6 +17,7 @@ defmodule Precompiled.Match do
   @type ctx :: %{
           optional(:manager) => String.t() | nil,
           optional(:overrides) => [atom()],
+          optional(:build_method_unknown) => String.t() | nil,
           name: String.t(),
           version: String.t(),
           lock_entry: tuple(),
@@ -220,10 +221,13 @@ defmodule Precompiled.Match do
   # way than the portal did, so nothing matches it. A build that records
   # its manager must name the one Mix resolved here; one that records none
   # predates the field and is judged by the other rules alone.
+  # When Mix could not load the deps, how they are built here is unknown
+  # and nothing matches.
   defp build_method_ok(build, ctx) do
-    case Map.get(ctx, :overrides, []) do
-      [opt | _] -> {:miss, "project sets #{inspect(opt)} for this dependency"}
-      [] -> manager_ok(build["manager"], Map.get(ctx, :manager))
+    case {Map.get(ctx, :build_method_unknown), Map.get(ctx, :overrides, [])} do
+      {why, _} when is_binary(why) -> {:miss, "build method unknown (deps did not load: #{why})"}
+      {_, [opt | _]} -> {:miss, "project sets #{inspect(opt)} for this dependency"}
+      {_, []} -> manager_ok(build["manager"], Map.get(ctx, :manager))
     end
   end
 

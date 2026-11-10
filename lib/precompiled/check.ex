@@ -558,7 +558,12 @@ defmodule Precompiled.Check do
 
   defp ctx(candidate, env, config, config_fun, reads) do
     {elixir, otp} = config.toolchain
-    method = Map.get(Map.get(env, :build_methods, %{}), candidate.name, %{})
+
+    method =
+      case Map.get(env, :build_methods, %{}) do
+        {:unknown, why} -> %{unknown: why}
+        methods -> Map.get(methods, candidate.name, %{})
+      end
 
     %{
       name: Atom.to_string(candidate.name),
@@ -574,7 +579,8 @@ defmodule Precompiled.Check do
       mix_target: Map.get(env, :mix_target, "host"),
       reads: reads,
       manager: Map.get(method, :manager),
-      overrides: Map.get(method, :overrides, [])
+      overrides: Map.get(method, :overrides, []),
+      build_method_unknown: Map.get(method, :unknown)
     }
   end
 

@@ -66,6 +66,36 @@ defmodule Precompiled.InstallTest do
     refute Map.has_key?(methods, :parent)
   end
 
+  test "deps that do not load make build methods unknown, with the cause", %{tmp_dir: dir} do
+    boom = fn -> raise "lock is broken" end
+    assert Install.build_methods(dir, [], [], boom) == {:unknown, "lock is broken"}
+
+    thrown = fn -> throw(:nope) end
+    assert {:unknown, "** (throw) :nope"} = Install.build_methods(dir, [], [], thrown)
+  end
+
+  test "a configured install whose deps do not load warns once and checks with every candidate unknown",
+       %{config: config} do
+    parent = self()
+
+    check = fn -> send(parent, :checked) end
+
+    out =
+      capture_io(fn ->
+        assert Install.run([], [], config,
+                 installer: fn _, _ -> :ok end,
+                 in_project?: false,
+                 check: check,
+                 load: fn -> raise "lock is broken" end
+               ) == :ok
+      end)
+
+    assert_received :checked
+
+    assert out =~
+             "precompiled: deps did not load (lock is broken); every dependency compiles from source"
+  end
+
   # Mix.install/2 runs with no project on the stack; this test suite runs
   # inside one, which would make the install project a child of it.
   defp outside_project(fun) do

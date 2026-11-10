@@ -27,7 +27,7 @@ defmodule Precompiled.Env do
           installed_envs: %{optional(atom()) => String.t()},
           tooling: [atom()] | nil,
           mix_target: String.t(),
-          build_methods: %{optional(atom()) => build_method()}
+          build_methods: build_methods()
         }
 
   @typedoc """
@@ -36,6 +36,12 @@ defmodule Precompiled.Env do
   among `:manager`, `:compile` and `:system_env` its declaration sets.
   """
   @type build_method :: %{manager: String.t() | nil, overrides: [atom()]}
+
+  @typedoc """
+  Every Hex dependency's `t:build_method/0`, or `{:unknown, why}` when Mix
+  could not load the dependencies, in which case no build matches.
+  """
+  @type build_methods :: %{optional(atom()) => build_method()} | {:unknown, String.t()}
 
   @overrides [:manager, :compile, :system_env]
 
@@ -48,7 +54,8 @@ defmodule Precompiled.Env do
   # closure as Mix loaded it), or nil when that is unknown and the lock's
   # closure is all there is. A git or path nerves has no list in the lock.
   # `build_methods`: per Hex dep, how Mix builds it here (rule 9); a dep
-  # missing from it has no override and no known manager.
+  # missing from it has no override and no known manager. {:unknown, why}
+  # makes every candidate miss.
   @enforce_keys [:candidates, :lock, :build_lib, :deps_path]
   defstruct system: nil,
             candidates: [],
