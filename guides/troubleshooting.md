@@ -11,6 +11,14 @@ that line below.
 | `PRECOMPILED_DEBUG=1` | also list the dependencies that were not candidates, and why |
 | `PRECOMPILED=0` | rule the library out completely: it removes its installs and Mix compiles everything |
 
+## Setup
+
+| Line | Meaning | What to do |
+| --- | --- | --- |
+| `ArgumentError: precompiled: :source is not an option` (or `:root`) | `Precompiled.Host.install/2` was given a source or root. | Drop the option: the official API is the default. A self-hosted source goes in the project's config ([Trust](trust.md#where-the-source-and-root-come-from)). |
+| `{:error, {:source_not_allowed, source}}` | A device call named a network source. | Drop it, or set it in the firmware's `config :precompiled, :device`. Per call, only `file://` bundles. |
+| `source must be https (http only on loopback), disabled: ...` | The configured source is plain `http` or not a URL; nothing installs. | Fix `config :precompiled, source:`. |
+
 ## Nothing installs: the batch
 
 Without a usable batch, nothing installs and everything compiles.

@@ -32,7 +32,7 @@ defmodule Mix.Tasks.Precompiled.Status do
 
     Mix.shell().info(
       "precompiled: #{length(installed)} installed in #{build_lib}; " <>
-        "source #{if config, do: config.source, else: "not configured (off)"}; " <>
+        "source #{if config, do: config.source, else: "off"}; " <>
         "cache #{cache}" <>
         if(Config.offline?(), do: "; offline", else: "")
     )

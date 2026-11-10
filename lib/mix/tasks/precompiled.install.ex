@@ -7,12 +7,12 @@ if Code.ensure_loaded?(Igniter) do
     @shortdoc "Sets a project up to install signed precompiled dependency builds"
     @moduledoc """
     Run through `mix igniter.install precompiled`. Makes the
-    `precompiled` dependency `runtime: false`, adds
-    `config :precompiled, source: ...` to `config/config.exs`
-    (`--source URL`, default the public Nerves compatibility portal) and puts
+    `precompiled` dependency `runtime: false` and puts
     `"deps.compile precompiled", "precompiled.deps"` at the front of
     the project's `deps.loadpaths` alias, before any steps already there.
-    Running it again changes nothing. Not for umbrellas: add the alias to
+    No config is written: the source is the official API unless
+    `config :precompiled, source: ...` names another. Running it again
+    changes nothing. Not for umbrellas: add the alias to
     the umbrella root by hand (see `mix help precompiled.deps`).
 
     `--device` is for a Nerves firmware that should be able to install on
@@ -34,21 +34,17 @@ if Code.ensure_loaded?(Igniter) do
     """
     use Igniter.Mix.Task
 
-    @source "https://compatibility.nerves-project.org/api/precompiled"
-
     @impl Igniter.Mix.Task
     def info(_argv, _composing_task) do
       %Igniter.Mix.Task.Info{
         group: :precompiled,
         example: "mix igniter.install precompiled",
-        schema: [source: :string, device: :boolean],
-        defaults: [source: @source]
+        schema: [device: :boolean]
       }
     end
 
     @impl Igniter.Mix.Task
     def igniter(igniter) do
-      source = igniter.args.options[:source]
       device? = igniter.args.options[:device]
 
       # The two add_alias calls compose. With no alias the first writes the
@@ -60,12 +56,6 @@ if Code.ensure_loaded?(Igniter) do
       |> keep_runtime(device?)
       |> add_castore(device?)
       |> add_network_apps(device?)
-      |> Igniter.Project.Config.configure_new(
-        "config.exs",
-        :precompiled,
-        [:source],
-        source
-      )
       |> Igniter.Project.TaskAliases.add_alias(
         :"deps.loadpaths",
         ["deps.compile precompiled", "precompiled.deps", "deps.loadpaths"],
@@ -211,8 +201,7 @@ else
 
           aliases: ["deps.loadpaths": ["deps.compile precompiled", "precompiled.deps", "deps.loadpaths"]]
 
-      and `config :precompiled, source: "https://compatibility.nerves-project.org/api/precompiled"`
-      to config/config.exs (or set PRECOMPILED_SOURCE).
+      No config is needed: the source is the official API.
       """)
     end
   end

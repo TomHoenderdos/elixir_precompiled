@@ -34,11 +34,14 @@ defmodule Precompiled.ConfigTest do
     Application.put_all_env([{:precompiled, opts}])
   end
 
-  test "no source means nil" do
+  test "no source configured means the official API, checked against the shipped root" do
     configure([])
-    assert Config.load() == nil
-    configure([])
-    assert Config.load() == nil
+    c = Config.load()
+    assert c.source == "https://compatibility.nerves-project.org/api/precompiled"
+    assert c.source == Config.official()
+
+    assert c.root_path ==
+             Path.join(to_string(:code.priv_dir(:precompiled)), "precompiled/root.json")
   end
 
   test "source enables, with defaults" do
@@ -158,12 +161,18 @@ defmodule Precompiled.ConfigTest do
     assert Config.load().home == to_string(:filename.basedir(:user_cache, "precompiled"))
   end
 
-  test "overrides win over config, and home can be given" do
+  test "home and except can be given; source and root are config only" do
     configure(source: "https://cfg.test/x")
-    c = Config.load(source: "https://opt.test/y/", home: "/tmp/h", except: ["ash"])
-    assert c.source == "https://opt.test/y"
+    c = Config.load(home: "/tmp/h", except: ["ash"])
+    assert c.source == "https://cfg.test/x"
     assert c.home == "/tmp/h"
     assert c.except == [:ash]
+
+    for key <- [:source, :root] do
+      e = assert_raise ArgumentError, fn -> Config.load([{key, "https://opt.test/y"}]) end
+      assert e.message =~ inspect(key)
+      assert e.message =~ "config only"
+    end
   end
 
   test "clock_offset_seconds comes from config only, default 0" do
@@ -241,37 +250,22 @@ defmodule Precompiled.ConfigTest do
     assert %{home: nil} = Config.load()
   end
 
-  test "PRECOMPILED_SOURCE opts in without editing config, options still win" do
-    configure([])
+  test "PRECOMPILED_SOURCE and NERVES_PRECOMPILED_SOURCE are ignored" do
+    on_exit(fn ->
+      System.delete_env("PRECOMPILED_SOURCE")
+      System.delete_env("NERVES_PRECOMPILED_SOURCE")
+    end)
+
     System.put_env("PRECOMPILED_SOURCE", "https://env.example.test/p")
-    on_exit(fn -> System.delete_env("PRECOMPILED_SOURCE") end)
-    assert Config.load().source == "https://env.example.test/p"
+    System.put_env("NERVES_PRECOMPILED_SOURCE", "https://env.example.test/p")
+    configure([])
+    assert Config.load().source == Config.official()
     configure(source: "https://cfg.example.test/p")
-    assert Config.load().source == "https://env.example.test/p"
-
-    assert Config.load(source: "https://opt.example.test/p").source ==
-             "https://opt.example.test/p"
-  end
-
-  test "PRECOMPILED_SOURCE passes the same transport rule as config" do
-    configure(source: "https://cfg.example.test/p")
-    on_exit(fn -> System.delete_env("PRECOMPILED_SOURCE") end)
-
-    System.put_env("PRECOMPILED_SOURCE", "http://env.example.test/p")
-    {config, out} = with_shell(&Config.load/0)
-    assert config == nil
-    assert out =~ "precompiled: source must be https"
-
-    System.put_env("PRECOMPILED_SOURCE", "http://127.0.0.1:4917/p/")
-    assert Config.load().source == "http://127.0.0.1:4917/p"
-
-    System.put_env("PRECOMPILED_SOURCE", "")
     assert Config.load().source == "https://cfg.example.test/p"
   end
 
-  test "PRECOMPILED=0 wins over PRECOMPILED_SOURCE" do
-    System.put_env("PRECOMPILED_SOURCE", "https://env.example.test/p")
-    on_exit(fn -> System.delete_env("PRECOMPILED_SOURCE") end)
+  test "PRECOMPILED=0 turns off the default source too" do
+    configure([])
     System.put_env("PRECOMPILED", "0")
     assert Config.load() == nil
   end

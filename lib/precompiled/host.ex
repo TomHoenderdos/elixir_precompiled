@@ -7,8 +7,8 @@ defmodule Precompiled.Host do
   Install signed, verified precompiled dependency builds instead of
   compiling them.
 
-  Opt in with `config :precompiled, source: url`. In a Mix project
-  the `mix precompiled.deps` task, reached through the project's
+  On by default, against the official API (`Precompiled.Config`). In a
+  Mix project the `mix precompiled.deps` task, reached through the project's
   `deps.loadpaths` alias, calls `run/1` before Mix compiles the
   dependencies (the Nerves `nerves.init` hook calls it the same way);
   `install/2` wraps `Mix.install/2`. Every candidate dependency prints HIT,
@@ -39,7 +39,7 @@ defmodule Precompiled.Host do
 
   @doc """
   The build-time step: check every dependency Mix is about to compile and
-  install the matching builds. `:disabled` without a source, and on the host
+  install the matching builds. `:disabled` when turned off, and on the host
   target unless `allow_host: true` (what `mix precompiled.deps` passes);
   `host?: true | false` forces either.
   """
@@ -175,16 +175,24 @@ defmodule Precompiled.Host do
   @doc """
   `Mix.install/2` with precompiled builds: resolves `deps`, installs every
   matching build into the install project, then calls `Mix.install/2`,
-  which compiles only the rest. Takes `Mix.install/2`'s options plus
-  `:source`, `:except`, `:root` and `:home` (see `Precompiled.Config`);
-  without a source, configured or given, it is a plain `Mix.install/2`.
+  which compiles only the rest. Starts Mix first, as `Mix.install/2` does,
+  so it works in a fresh runtime such as Livebook's.
+
+  Takes `Mix.install/2`'s options plus `:except` and `:home` (see
+  `Precompiled.Config`). The source is the official API unless the
+  config names another; `:source` and `:root` are config only and raise
+  `ArgumentError` here (see the Trust guide). With `PRECOMPILED=0` it is a
+  plain `Mix.install/2`.
 
   Needs Mix on the device (`:mix` in `extra_applications`), a writable
   `MIX_INSTALL_DIR`, and Hex.
   """
   @spec install([term()], keyword()) :: :ok
   def install(deps, opts \\ []) when is_list(deps) and is_list(opts) do
-    {ours, mix_opts} = Keyword.split(opts, [:source, :except, :root, :home])
+    Install.ensure_mix!(Code.ensure_loaded?(Mix))
+    Mix.start()
+    Config.config_only!(opts)
+    {ours, mix_opts} = Keyword.split(opts, [:except, :home])
     Install.run(deps, mix_opts, Config.load(ours))
   end
 end

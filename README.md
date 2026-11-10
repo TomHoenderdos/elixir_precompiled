@@ -35,17 +35,16 @@ end
 
 defp deps do
   [
-    {:precompiled, "~> 0.2", runtime: false},
+    {:precompiled, "~> 0.3", runtime: false},
     ...
   ]
 end
 ```
 
-and in `config/config.exs`:
-
-```elixir
-config :precompiled, source: "https://compatibility.nerves-project.org/api/precompiled"
-```
+No config is needed: builds come from the portal's signed API by default.
+The source and the root of trust can be changed only in the project's
+config, never by an option or an environment variable (see
+[Trust](https://hexdocs.pm/precompiled/trust.html)).
 
 ## Usage
 
@@ -59,11 +58,21 @@ precompiled: nerves_pack 0.7.1            MISS  built with nerves_ssh 1.3.3, pro
 precompiled: 40 hit, 5 miss, 0 fail of 45 deps, 61.2 MB, 8.3 s
 ```
 
+In a script or a Livebook cell, with the
+[archive](https://hexdocs.pm/precompiled/setup.html#mix-install-and-livebook)
+installed:
+
+```elixir
+Precompiled.Host.install([{:jason, "1.4.5"}, {:decimal, "3.2.0"}])
+```
+
 On a running Nerves device, from an IEx shell:
 
 ```elixir
 Precompiled.install(:recon)
 ```
+
+`PRECOMPILED=0` turns it off.
 
 ## Guides
 

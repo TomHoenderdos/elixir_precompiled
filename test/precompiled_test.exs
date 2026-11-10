@@ -209,6 +209,35 @@ defmodule PrecompiledTest do
       assert Fixture.requests() == []
     end
 
+    test "a call may name a file:// bundle, never a network source", %{opts: opts, tmp_dir: dir} do
+      Application.delete_env(:precompiled, :test_seams)
+      on_exit(fn -> Application.put_env(:precompiled, :test_seams, true) end)
+      plain = Keyword.drop(opts, [:env, :root, :source])
+
+      for source <- [
+            "https://compatibility.nervs-project.org/api/precompiled",
+            "https://compatibility.nerves-project.org/api/precompiled",
+            Fixture.base_url()
+          ] do
+        assert Precompiled.install(:demo_a, plain ++ [source: source]) ==
+                 {:error, {:source_not_allowed, source}}
+      end
+
+      assert Fixture.requests() == []
+
+      # A network source in the firmware's config is the way to name one.
+      put_device_env(source: "https://mirror.example/api/precompiled")
+      assert {:ok, %{source: "https://mirror.example/api/precompiled"}} = Source.config(plain)
+
+      # A file:// bundle per call gets past the source check (it is empty,
+      # so the trust chain refuses it).
+      bundle = Path.join(dir, "bundle")
+      File.mkdir_p!(bundle)
+
+      assert {:error, {:batch, _}} =
+               Precompiled.install(:demo_a, plain ++ [source: "file://" <> bundle])
+    end
+
     test "a cacerts_path that is not a path is refused", %{opts: opts} do
       assert Precompiled.install(:demo_a, opts ++ [cacerts_path: :system]) ==
                {:error, {:bad_option, :cacerts_path}}

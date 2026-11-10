@@ -185,7 +185,6 @@ defmodule Precompiled.ChildProject do
         {"MIX_BUILD_ROOT", nil},
         {"MIX_DEPS_PATH", nil},
         {"MIX_EXS", nil},
-        {"PRECOMPILED_SOURCE", nil},
         {"PRECOMPILED_HOME", Path.join(Path.dirname(proj), "home")}
       ] ++ env
 
