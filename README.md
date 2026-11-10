@@ -205,7 +205,8 @@ config :elixir_precompiled, :device, enabled: false
 | `dir` | `/data/precompiled` | Where installs are stored. |
 | `max_bytes` | 64 MB | The size bound of that store. |
 | `cacerts_path` | none | A PEM CA bundle to verify the source with. |
-| `content`, `root`, `deadline_seconds`, `max_closure`, `start`, `closure`, `quiet` | as in the options below | Firmware-wide defaults for those `install/2` options. |
+| `root` | the shipped `root.json` | Another trust anchor. Set here only: a call cannot pass it. |
+| `content`, `deadline_seconds`, `max_closure`, `start`, `closure`, `quiet` | as in the options below | Firmware-wide defaults for those `install/2` options. |
 
 `enabled` and `allow` are read from the firmware's config only: a call can
 neither pass, widen nor clear them. Any other key under `:device` is
@@ -248,7 +249,8 @@ precompiled: 1 installed, 198 KB, 2.1 s
 - `dry_run: true` plans, checks the trust chain and fetches only the
   manifests and `.app` files, and returns `{:ok, %Precompiled.Plan{}}`.
 - `list/1` prints and returns what is in the store, each with its size,
-  the batch it was checked against, and whether it is loaded.
+  the batch it was checked against, and whether it is loaded; or
+  `{:error, reason}` for a bad option or an unsafe store.
 - `uninstall/2` stops the app, unloads it, purges its modules and takes it
   off the code path. Its files stay in the store as a cache
   (`remove: true` drops them). It refuses while other installed apps need
@@ -264,10 +266,9 @@ The options of `install/2`:
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `:source` | the `:device` config, else the official API | `https://...` (`http://` on loopback only), or `file://DIR` for a bundle. |
-| `:root` | the shipped `root.json` | Another trust anchor. |
 | `:content`, `:deadline_seconds` | as on the host | See [Configuration](#configuration). |
 | `:cacerts_path` | none | A PEM CA bundle (see [CA certificates](#ca-certificates)). |
-| `:dir` | `/data/precompiled` | The store. Its trust state lives in `DIR/.trust`. |
+| `:dir` | `/data/precompiled` | The store. Its trust state lives in `DIR/.trust`, so another `:dir` has its own trust state, starting again from the shipped root. |
 | `:start` | `true` | Start the installed apps (`:temporary`). `false` only loads them. |
 | `:closure` | `true` | Install absent runtime dependencies. `false` refuses with `{:needs, [{app, vsn}]}` instead. |
 | `:max_closure` | 25 | The most apps one call installs. |
@@ -306,7 +307,9 @@ calls, and ignore them.
 - **An unset clock.** An online call refuses before any request until the
   clock is synchronized (`NervesTime.synchronized?/0` when `nerves_time` is
   in the firmware): `{:error, {:clock_unsynchronized, now}}`. Set the
-  clock or wait for NTP, then retry.
+  clock or wait for NTP, then retry. A bundle without `offline.json` needs
+  the clock too (its batch expires); one with a signed `offline.json`
+  does not.
 
 ### The cache
 
@@ -317,10 +320,13 @@ after checking every cached file against the signed hashes of the current
 batch; a cached build the batch no longer names, or one whose files
 changed, is downloaded again and never loaded. The store is bounded by
 `max_bytes`, and the least recently used builds that are not loaded are
-evicted to make room. `Precompiled.clean/0` empties it.
+evicted to make room, before anything is downloaded, so a stale cache never
+fills `/data` under a new install. `Precompiled.clean/0` empties it.
 
 The store dir is created `0700`, and must not be writable by group or
 others and must be owned by the VM's user. One call at a time changes it.
+The same store reached through a link (`/data` is a link to `/root` on
+Nerves) is one store; the store dir itself must not be a symlink.
 
 ### Bundles: installing with no network
 
@@ -363,7 +369,7 @@ hours.
 ### Trust on the device
 
 The device checks the same chain as the host: the root this library ships
-(or `:root`), the signed batch, each manifest by the hash the batch names,
+(or the firmware's `root`), the signed batch, each manifest by the hash the batch names,
 and each file by the hash its manifest names, size included. A file is
 staged, verified and only then moved into the store; the loader hashes the
 `.app`, every beam and every `priv` file once more just before anything
