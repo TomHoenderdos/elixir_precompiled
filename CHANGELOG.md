@@ -7,6 +7,9 @@
   documents its own `report()` type, and the docs build without
   warnings.
 * `mix hex.publish` runs in the docs env, where ex_doc lives.
+* The Nerves and What matches guides are rewritten for reading: a setup
+  comparison table, and the matching rules as a table with the details
+  below it.
 
 ## v0.2.0 - 2026-11-10
 
