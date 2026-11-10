@@ -1,6 +1,14 @@
 # Changelog
 
-## v0.2.0 - unreleased
+## v0.2.1 - 2026-11-10
+
+* Docs only. The README's guide links open the HexDocs pages again (on
+  hex.pm they opened the raw Markdown), `Precompiled.Host.run/1`
+  documents its own `report()` type, and the docs build without
+  warnings.
+* `mix hex.publish` runs in the docs env, where ex_doc lives.
+
+## v0.2.0 - 2026-11-10
 
 * Renamed to `precompiled` before the first Hex release: the app and
   package `:precompiled`, modules `Precompiled.*` (the host API, `run/1`
