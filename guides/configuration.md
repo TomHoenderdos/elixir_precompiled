@@ -21,7 +21,7 @@ The keys go in `config :precompiled, ...` or as options to
 `config :nerves, :precompiled`, `NERVES_PRECOMPILED*`) are still read for
 one release, when the new ones are unset.
 
-# Turning it off
+## Turning it off
 
 - `PRECOMPILED=0` (`false` and `no` work too), or removing
   `:source`, turns it off and removes the builds it installed, so Mix
@@ -35,7 +35,7 @@ one release, when the new ones are unset.
 - `:except` keeps listed dependencies compiled from source; an earlier
   install of one is removed.
 
-# Seeing what happened
+## Seeing what happened
 
 Every candidate prints one line, then a summary:
 

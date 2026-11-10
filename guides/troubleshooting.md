@@ -17,7 +17,7 @@
 candidates and why. `PRECOMPILED=0` rules this library out
 completely: it removes its installs and Mix compiles everything.
 
-# Known limitations
+## Known limitations
 
 * Mix's `:lockfile` option is passed through to `Mix.install/2` but not used
   for the precompiled step, so an external lockfile can make Mix re-resolve
