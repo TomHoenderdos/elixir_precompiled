@@ -46,7 +46,7 @@ defmodule Precompiled.MixProject do
   end
 
   def cli do
-    [preferred_envs: %{credo: :dev, docs: :docs, "hex.build": :docs}]
+    [preferred_envs: %{credo: :dev, docs: :docs, "hex.build": :docs, "hex.publish": :docs}]
   end
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
