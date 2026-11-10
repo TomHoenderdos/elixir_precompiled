@@ -11,6 +11,8 @@ defmodule Precompiled.Match do
 
   alias Precompiled.Reason
 
+  @typep reason :: Reason.t()
+
   @tooling_prefixes ["nerves_system_", "nerves_toolchain_"]
   # precompiled itself: the client must never install a portal build
   # of itself.
@@ -80,10 +82,10 @@ defmodule Precompiled.Match do
   def select(manifest, ctx), do: manifest |> select_reason(ctx) |> Reason.textual()
 
   @doc """
-  `select/2` with the reason of a miss as a `Precompiled.Reason`: the code
+  `select/2` with the reason of a miss as a reason struct: the code
   and arguments a miss report sends, beside the text the line prints.
   """
-  @spec select_reason(map(), ctx()) :: {:ok, map(), String.t()} | {:miss, Reason.t()}
+  @spec select_reason(map(), ctx()) :: {:ok, map(), String.t()} | {:miss, reason()}
   def select_reason(manifest, ctx) do
     {system, system_version} = ctx.system
 
@@ -545,7 +547,7 @@ defmodule Precompiled.Match do
 
   @doc false
   @spec compile_env_reason([map()], (String.t(), [String.t()] -> {:ok, term()} | :error)) ::
-          :ok | {:miss, Reason.t()}
+          :ok | {:miss, reason()}
   def compile_env_reason(items, config) do
     if is_list(items) and Enum.all?(items, &well_formed_item?/1),
       do: compare_compile_env(items, config),

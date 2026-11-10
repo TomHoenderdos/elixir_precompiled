@@ -344,6 +344,10 @@ defmodule Precompiled.CheckTest do
     # The same dep on host takes it.
     out = run_capturing(config, %{env | candidates: [hd(env.candidates)], mix_target: "host"})
     assert_received {:report, {:ok, %{hits: 1}}}, out
+
+    # A nil target counts as host, not as a target named nil.
+    out = run_capturing(config, %{env | candidates: [hd(env.candidates)], mix_target: nil})
+    assert_received {:report, {:ok, %{hits: 1}}}, out
   end
 
   test "an invalid batch fails every candidate", %{f: f, config: config, env: env} do
