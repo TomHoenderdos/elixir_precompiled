@@ -95,7 +95,7 @@ staged, verified and only then moved into the store; the loader hashes the
 `.app`, every beam and every `priv` file once more just before anything
 loads, and loads the beams from those verified bytes. Nothing unsigned is
 ever loaded, nothing is compiled, and there is no fallback that skips a
-check. An online batch must pass the freshness checks in [Trust](#trust),
+check. An online batch must pass the freshness checks above,
 which is why the clock must be set.
 
 ## CA certificates

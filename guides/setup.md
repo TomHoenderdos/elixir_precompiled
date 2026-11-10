@@ -116,7 +116,7 @@ takes `Mix.install/2`'s options plus `:source`, `:except`, `:root` and
 archive named `precompiled*.ez`: another name can make
 `:code.priv_dir/1` miss the root of trust.
 
-# Supported versions
+## Supported versions
 
 Elixir 1.17 or later on OTP 27 or later. CI runs 1.17/27, 1.18/27, 1.19/28
 and 1.20/29. The portal currently builds with Elixir 1.19.3 and 1.20.3 on
