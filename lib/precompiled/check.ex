@@ -7,13 +7,14 @@ defmodule Precompiled.Check do
   # The shared engine: every candidate becomes a HIT, MISS or FAIL line with
   # a reason; the same list lands in `<build_lib>/.precompiled/report.json`.
 
-  alias Precompiled.{CompileEnv, Config, Env, Fetch, FileUtil, Match, Output, Trust}
+  alias Precompiled.{CompileEnv, Config, Env, Fetch, FileUtil, Match, Output, Reason, Trust}
 
   @type line :: %{
           name: String.t(),
           version: String.t(),
           status: :hit | :miss | :fail,
-          detail: String.t()
+          detail: String.t(),
+          reason: {atom(), [String.t()]}
         }
   @type report :: %{
           hits: non_neg_integer(),
@@ -94,7 +95,7 @@ defmodule Precompiled.Check do
     if shown != [], do: print_summary(summarize(shown, ms), length(shown))
     print_stripped(Enum.count(lines, &Map.get(&1, :stripped, false)))
     # Nothing to say also means nothing to record: keep the last report.
-    if lines != [], do: write_report(env.build_lib, report)
+    if lines != [], do: write_report(env, config, report)
     {:ok, report}
   end
 
@@ -195,7 +196,7 @@ defmodule Precompiled.Check do
       {:error, why} ->
         # No fresh batch, no verdict: installed builds stay as they are,
         # and their line says so rather than reading as a source compile.
-        Enum.map(candidates, &revoke_line(&1, :fail, why)) ++
+        Enum.map(candidates, &revoke_line(&1, :fail, Reason.of_batch_error(why))) ++
           Enum.map(installed, &kept_line(&1, why))
     end
   end
@@ -215,8 +216,11 @@ defmodule Precompiled.Check do
   defp except_lines(excepted, env) do
     for dep <- excepted do
       case remove(env.build_lib, Atom.to_string(dep.name)) do
-        :ok -> revoke_line(dep, :miss, "excepted: compiled from source")
-        {:error, why} -> revoke_line(dep, :fail, why)
+        :ok ->
+          revoke_line(dep, :miss, Reason.new(:excepted, [], "excepted: compiled from source"))
+
+        {:error, why} ->
+          revoke_line(dep, :fail, Reason.new(:remove_failed, [], why))
       end
     end
   end
@@ -257,23 +261,44 @@ defmodule Precompiled.Check do
        })}
 
   defp recheck_one(dep, sha, nil, env) when is_binary(sha),
-    do: revoke(dep, env, revoke_line(dep, :miss, "revoked: provenance unreadable"))
+    do:
+      revoke(
+        dep,
+        env,
+        revoke_line(
+          dep,
+          :miss,
+          Reason.new(:revoked_provenance, [], "revoked: provenance unreadable")
+        )
+      )
 
   defp recheck_one(dep, _sha, _recorded, env),
-    do: revoke(dep, env, revoke_line(dep, :miss, "revoked: no longer in the current batch"))
+    do:
+      revoke(
+        dep,
+        env,
+        revoke_line(
+          dep,
+          :miss,
+          Reason.new(:revoked_not_in_batch, [], "revoked: no longer in the current batch")
+        )
+      )
 
   # Removes the installed build; `outcome` once it is gone, a FAIL line
   # naming the file that would not go otherwise.
   defp revoke(dep, env, outcome) do
     case remove(env.build_lib, Atom.to_string(dep.name)) do
       :ok -> outcome
-      {:error, why} -> revoke_line(dep, :fail, why)
+      {:error, why} -> revoke_line(dep, :fail, Reason.new(:remove_failed, [], why))
     end
   end
 
   defp kept_line(dep, why),
     do:
-      Map.merge(revoke_line(dep, :fail, why <> " (installed build kept)"), %{kept: true, why: why})
+      Map.merge(
+        revoke_line(dep, :fail, Reason.of_batch_error(why, " (installed build kept)")),
+        %{kept: true, why: why}
+      )
 
   defp print_kept([]), do: :ok
 
@@ -292,12 +317,13 @@ defmodule Precompiled.Check do
   defp print_note(%{why: why} = l),
     do: Output.warning(line(%{l | detail: "#{why}; installed build kept, not rechecked"}, "KEPT"))
 
-  defp revoke_line(dep, status, detail),
+  defp revoke_line(dep, status, %Reason{} = r),
     do: %{
       name: Atom.to_string(dep.name),
       version: dep.version,
       status: status,
-      detail: detail,
+      detail: r.text,
+      reason: {r.code, r.args},
       bytes: 0
     }
 
@@ -361,7 +387,8 @@ defmodule Precompiled.Check do
       version: dep.version,
       bytes: 0,
       status: :fail,
-      detail: "candidate crashed: #{inspect(reason)}"
+      detail: "candidate crashed: #{inspect(reason)}",
+      reason: {:internal, []}
     }
   end
 
@@ -483,12 +510,13 @@ defmodule Precompiled.Check do
       if not replacing?, do: _ = File.rm(Fetch.provenance_path(env.build_lib, name))
 
       result =
-        with sha when is_binary(sha) <- sha || {:miss, "not in batch"},
-             {:ok, manifest} <- Fetch.manifest(config, sname, sha, path),
+        with sha when is_binary(sha) <-
+               sha || {:miss, Reason.new(:not_in_batch, [], "not in batch")},
+             {:ok, manifest} <- config |> Fetch.manifest(sname, sha, path) |> Reason.of_manifest(),
              reads = scan_reads(config, env, sname, candidate.lock_entry),
              :ok <- scan_in_time(reads),
              {:ok, entry, _system_key} <-
-               Match.select(manifest, ctx(candidate, env, config, config_fun, reads)) do
+               Match.select_reason(manifest, ctx(candidate, env, config, config_fun, reads)) do
           provenance = %{
             sha: sha,
             path: path,
@@ -497,7 +525,9 @@ defmodule Precompiled.Check do
             source: Map.get(config, :source)
           }
 
-          place(candidate, entry, provenance, config, env, config_fun)
+          candidate
+          |> place(entry, provenance, config, env, config_fun)
+          |> Reason.of_install()
         end
 
       result =
@@ -528,7 +558,7 @@ defmodule Precompiled.Check do
   # A scan the run deadline cut short is like a manifest the network could
   # not deliver: it says nothing about the build either way.
   defp scan_in_time({:unscannable, "run deadline passed" = why}),
-    do: {:unreachable, "source not scannable: " <> why}
+    do: {:unreachable, Reason.new(:deadline_passed, [], "source not scannable: " <> why)}
 
   defp scan_in_time(_reads), do: :ok
 
@@ -540,7 +570,7 @@ defmodule Precompiled.Check do
 
     case verify_app(app, sname, candidate.version, config_fun) do
       :ok -> kept
-      fail -> fail
+      fail -> Reason.of_install(fail)
     end
   end
 
@@ -554,7 +584,12 @@ defmodule Precompiled.Check do
   defp stays?(_), do: false
 
   defp crashed(base, why),
-    do: Map.merge(base, %{status: :fail, detail: "candidate crashed: #{why}"})
+    do:
+      Map.merge(base, %{
+        status: :fail,
+        detail: "candidate crashed: #{why}",
+        reason: {:internal, []}
+      })
 
   defp ctx(candidate, env, config, config_fun, reads) do
     {elixir, otp} = config.toolchain
@@ -691,14 +726,15 @@ defmodule Precompiled.Check do
 
   defp line_for(_base, :kept), do: nil
 
-  defp line_for(base, {:kept_unchecked, why}),
+  defp line_for(base, {:kept_unchecked, %Reason{} = r}),
     do:
       Map.merge(base, %{
         status: :fail,
-        detail: why <> " (installed build kept)",
+        detail: r.text <> " (installed build kept)",
+        reason: {r.code, r.args},
         kept: true,
         note: true,
-        why: why
+        why: r.text
       })
 
   defp line_for(base, {:hit, %{bytes: bytes, files: files, cached: cached} = stats}) do
@@ -706,12 +742,23 @@ defmodule Precompiled.Check do
     |> Map.merge(%{
       stripped: stats.stripped,
       status: :hit,
+      reason: {:hit, []},
       detail: "#{mb(bytes)} MB#{if cached == files, do: ", cached", else: ""}"
     })
   end
 
-  defp line_for(base, {:miss, why}), do: Map.merge(base, %{status: :miss, detail: why})
-  defp line_for(base, {:fail, why}), do: Map.merge(base, %{status: :fail, detail: why})
+  defp line_for(base, {status, %Reason{} = r}) when status in [:miss, :fail],
+    do: Map.merge(base, %{status: status, detail: r.text, reason: {r.code, r.args}})
+
+  # `one/5` already turns `{:unreachable, _}` into a miss (or a kept build)
+  # through `unreachable/2`; kept here so a stage that skips it is still a
+  # line, never a FunctionClauseError.
+  defp line_for(base, {:unreachable, %Reason{} = r}),
+    do: Map.merge(base, %{status: :miss, detail: r.text, reason: {r.code, r.args}})
+
+  # A plain text outcome no stage coded: still a line, as an internal error.
+  defp line_for(base, {status, why}) when status in [:miss, :fail] and is_binary(why),
+    do: Map.merge(base, %{status: status, detail: why, reason: {:internal, []}})
 
   # Rule 7, second half: the manifest said the compile_env matches; the
   # downloaded .app is the authority. A manifest that lies still cannot
@@ -790,26 +837,31 @@ defmodule Precompiled.Check do
 
   # The report is a convenience artifact, not the run's result: an
   # unwritable _build degrades to a warning rather than failing the step.
-  defp write_report(build_lib, report) do
-    dir = Path.join(build_lib, ".precompiled")
+  defp write_report(env, config, report) do
+    dir = Path.join(env.build_lib, ".precompiled")
 
     json = %{
       "format" => 1,
+      "built_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+      "context" => context(env, config),
       "hits" => report.hits,
       "misses" => report.misses,
       "fails" => report.fails,
       "bytes" => report.bytes,
       "seconds" => report.seconds,
       "lines" =>
-        Enum.map(
-          report.lines,
-          &%{
-            "name" => &1.name,
-            "version" => &1.version,
-            "status" => Atom.to_string(&1.status),
-            "detail" => &1.detail
+        Enum.map(report.lines, fn l ->
+          {code, args} = Map.get(l, :reason, {:internal, []})
+
+          %{
+            "name" => l.name,
+            "version" => l.version,
+            "status" => Atom.to_string(l.status),
+            "detail" => l.detail,
+            "reason_code" => Atom.to_string(code),
+            "reason_args" => args
           }
-        )
+        end)
     }
 
     case FileUtil.write_atomic(Path.join(dir, "report.json"), :json.encode(json)) do
@@ -820,5 +872,21 @@ defmodule Precompiled.Check do
         Output.warning("precompiled: could not write report.json: #{inspect(reason)}")
         :ok
     end
+  end
+
+  # What a miss report needs to know about the build that wrote this report:
+  # the toolchain it matched against and the target and Nerves system.
+  defp context(env, config) do
+    {elixir, otp} = Map.get(config, :toolchain)
+    # `:json` encodes `nil` as the string "nil"; a host has JSON null.
+    {system, system_version} = env.system || {:null, :null}
+
+    %{
+      "elixir" => elixir,
+      "otp" => otp,
+      "target" => Map.get(env, :mix_target, "host"),
+      "system" => system,
+      "system_version" => system_version
+    }
   end
 end
