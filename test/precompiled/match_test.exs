@@ -666,6 +666,19 @@ defmodule Precompiled.MatchTest do
       end
     end
 
+    test "deps that did not load miss every build, before any override" do
+      expect = {:miss, "build method unknown (deps did not load: lock is broken)"}
+
+      assert ^expect =
+               Match.select(
+                 doc([pe(@build)]),
+                 ctx(build_method_unknown: "lock is broken", overrides: [:manager])
+               )
+
+      assert ^expect = Match.select(manifest(), ctx(build_method_unknown: "lock is broken"))
+      assert {:ok, _, _} = Match.select(manifest(), ctx(build_method_unknown: nil))
+    end
+
     test "the first override in the list names the miss" do
       assert {:miss, "project sets :compile for this dependency"} =
                Match.select(doc([pe(@build)]), ctx(overrides: [:compile, :system_env]))

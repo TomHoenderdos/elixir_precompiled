@@ -79,10 +79,14 @@ Such a dependency can be served a build made with other values.
   project, it misses: `built with rebar3, project builds with make`. A build
   that records no manager is judged by the other rules alone.
 - A global `Mix.install(deps, system_env: ...)` (also through
-  `Precompiled.Host.install/2`) is not an override of any one dependency and
-  does not cause a miss. Rule 8 already refuses a dependency that reads an
-  environment variable at module level in `lib/`; one read in a
-  dependency's `mix.exs` stays unrecorded, as rule 8 says.
+  `Precompiled.Host.install/2`) is not an override of any one dependency
+  and does not cause a miss. It is the same as setting those variables in
+  your shell, which no rule records: builds are made in a clean
+  environment, and a dependency whose compile-time output depends on
+  environment variables is a [known limitation](limitations.md#matching).
+- When `Precompiled.Host.install/2` cannot load the dependencies through
+  Mix, how they are built is unknown: every dependency misses with
+  `build method unknown (deps did not load: ...)`, after one warning.
 - `Precompiled.Host.install/2` applies rule 9 wherever it runs, a device
   included. The device API, `Precompiled.install/2`, does not: it has no
   `deps` options and no manager to compare, and takes the build Mix makes by

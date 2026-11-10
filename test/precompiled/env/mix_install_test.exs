@@ -89,46 +89,15 @@ defmodule Precompiled.Env.MixInstallTest do
     assert envs == %{jason: "dev", decimal: "prod"}
   end
 
-  test "load carries each dep's manager and build overrides, resolved as Mix resolves them", %{
+  test "load carries the build methods Mix loaded; without them rule 9 knows nothing", %{
     tmp_dir: dir
   } do
-    rebar = {:hex, :telemetry, "1.3.0", "i", [:rebar3], [], "hexpm", "TOUTER"}
-    both = {:hex, :exqlite, "0.30.0", "i", [:make, :mix], [], "hexpm", "EOUTER"}
-    make = {:hex, :makeonly, "1.0.0", "i", [:make], [], "hexpm", "MOUTER"}
-    bare = {:hex, :bare, "1.0.0", "i", [], [], "hexpm", "BOUTER"}
-
-    Mix.Dep.Lock.write(
-      %{jason: @jason, telemetry: rebar, exqlite: both, makeonly: make, bare: bare},
-      file: Path.join(dir, "mix.lock")
-    )
-
-    File.mkdir_p!(Path.join([dir, "deps", "makeonly"]))
-    File.write!(Path.join([dir, "deps", "makeonly", "Makefile"]), "all:\n")
-
-    deps = [
-      {:jason, "1.4.5", manager: :rebar3},
-      {:exqlite, "0.30.0", system_env: [{"EXQLITE_USE_SYSTEM", "1"}], compile: "make"}
-    ]
-
-    methods = MixInstall.load(dir, deps).build_methods
-
-    assert methods == %{
-             jason: %{manager: "rebar3", overrides: [:manager]},
-             telemetry: %{manager: "rebar3", overrides: []},
-             exqlite: %{manager: "mix", overrides: [:compile, :system_env]},
-             makeonly: %{manager: "make", overrides: []},
-             bare: %{manager: nil, overrides: []}
-           }
-  end
-
-  test "load takes the build methods Mix loaded over its own reading", %{tmp_dir: dir} do
     Mix.Dep.Lock.write(%{jason: @jason}, file: Path.join(dir, "mix.lock"))
     loaded = %{jason: %{manager: "make", overrides: [:manager]}}
 
     assert MixInstall.load(dir, [], loaded).build_methods == loaded
-
-    assert MixInstall.load(dir, [{:jason, "1.4.5", system_env: %{}}]).build_methods ==
-             %{jason: %{manager: "mix", overrides: []}}
+    assert MixInstall.load(dir, [], {:unknown, "boom"}).build_methods == {:unknown, "boom"}
+    assert {:unknown, _} = MixInstall.load(dir, []).build_methods
   end
 
   test "system falls back to the loaded nerves_system_* application, or nil" do

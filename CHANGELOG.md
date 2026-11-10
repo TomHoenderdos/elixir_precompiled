@@ -10,9 +10,13 @@
   `Precompiled.Host.install/2` too. An installed build is removed on the
   next run once such an option appears.
 * A global `Mix.install(deps, system_env: ...)` is not treated as an
-  override: rule 8 already refuses dependencies that read an environment
-  variable at module level in `lib/`, and reads in a dependency's `mix.exs`
-  remain a documented limitation.
+  override: it is the same as the shell environment, which no rule
+  records. Builds are made in a clean environment, and a dependency whose
+  compile-time output depends on environment variables is a known
+  limitation (Known limitations, Matching).
+* Under `Precompiled.Host.install/2`, when Mix cannot load the
+  dependencies, every one misses with `build method unknown (deps did not
+  load: ...)`, after one warning naming the cause.
 * A manifest build may record `manager` (a string such as `"mix"`,
   `"rebar3"` or `"make"`). When it differs from the manager Mix resolves
   for the dependency, the build misses: `built with rebar3, project builds

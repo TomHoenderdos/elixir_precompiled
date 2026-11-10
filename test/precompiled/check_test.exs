@@ -157,6 +157,16 @@ defmodule Precompiled.CheckTest do
     assert_received {:report, {:ok, %{hits: 1}}}
     assert File.exists?(Path.join(lib, "ash/.mix/compile.elixir_scm"))
 
+    # Deps that did not load: every candidate misses, naming the cause.
+    out = run_capturing(config, %{env | build_methods: {:unknown, "lock is broken"}})
+    assert_received {:report, {:ok, %{hits: 0, misses: 1}}}
+
+    assert out =~
+             ~r/ash 3\.5\.2\s+MISS\s+build method unknown \(deps did not load: lock is broken\)/
+
+    run_capturing(config, %{env | build_methods: %{ash: %{manager: "rebar3", overrides: []}}})
+    assert_received {:report, {:ok, %{hits: 1}}}
+
     # Installed, then the project overrides how ash is built: removed.
     out =
       run_capturing(config, %{

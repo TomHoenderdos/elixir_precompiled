@@ -21,15 +21,15 @@ defmodule Precompiled.Env.MixInstall do
 
   @default_os_release_paths ["/usr/lib/os-release", "/etc/os-release"]
 
-  # `methods`: how Mix builds each Hex dep there, as Install.build_methods/3
-  # loads it from Mix; nil falls back to the deps list and the lock.
-  @spec load(Path.t(), [term()], %{optional(atom()) => Env.build_method()} | nil) :: Env.t()
-  def load(project_dir, deps, methods \\ nil) do
+  # `methods`: how Mix builds each Hex dep there, as Install.build_methods/4
+  # loads it from Mix. Without it rule 9 has nothing to go on, and every
+  # candidate misses.
+  @spec load(Path.t(), [term()], Env.build_methods()) :: Env.t()
+  def load(project_dir, deps, methods \\ {:unknown, "not loaded"}) do
     lock = Mix.Dep.Lock.read(Path.join(project_dir, "mix.lock"))
     build_lib = Path.join([project_dir, "_build", Atom.to_string(Mix.env()), "lib"])
 
     envs = dep_envs(deps)
-    deps_path = Path.join(project_dir, "deps")
     system = system()
 
     {compiled, apps} =
@@ -43,47 +43,12 @@ defmodule Precompiled.Env.MixInstall do
       candidates: Env.hex_candidates(lock, apps, envs),
       lock: lock,
       build_lib: build_lib,
-      deps_path: deps_path,
+      deps_path: Path.join(project_dir, "deps"),
       installed: installed,
       installed_envs: Map.new(installed, &{&1, Map.get(envs, &1, "prod")}),
-      build_methods: methods || build_methods(lock, deps, deps_path)
+      build_methods: methods
     }
   end
-
-  # The fallback when Mix could not load the deps: per Hex lock entry, the
-  # manager Mix would resolve and the build options the deps list sets.
-  # Mix's own order (Mix.Dep.Loader): the declared manager, else mix or
-  # rebar3 from the lock's managers, else what the fetched sources hold.
-  # Declarations in a package's own mix.exs are not seen here.
-  defp build_methods(lock, deps, deps_path) do
-    declared = Map.new(for d <- deps, {app, opts} <- [dep_opts(d)], app != nil, do: {app, opts})
-
-    for {app, {:hex, _, _, _, managers, _, _, _}} <- lock, into: %{} do
-      opts = Map.get(declared, app, [])
-
-      manager =
-        opts[:manager] || Enum.find([:mix, :rebar3], &(&1 in List.wrap(managers))) ||
-          infer_manager(Path.join(deps_path, Atom.to_string(app)))
-
-      {app, %{manager: manager_name(manager), overrides: Env.overrides(opts)}}
-    end
-  end
-
-  defp manager_name(manager) when is_atom(manager) and manager != nil,
-    do: Atom.to_string(manager)
-
-  defp manager_name(_), do: nil
-
-  defp infer_manager(dest) do
-    cond do
-      any_file?(dest, ["mix.exs"]) -> :mix
-      any_file?(dest, ["rebar", "rebar.config", "rebar.config.script", "rebar.lock"]) -> :rebar3
-      any_file?(dest, ["Makefile", "Makefile.win"]) -> :make
-      true -> nil
-    end
-  end
-
-  defp any_file?(dest, names), do: Enum.any?(names, &File.regular?(Path.join(dest, &1)))
 
   @doc false
   # Mix.install on a device compiles as :host, but a build for the device's

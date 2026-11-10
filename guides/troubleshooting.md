@@ -66,6 +66,7 @@ A `MISS` line names the rule that the closest build broke; see
 | `MISS  reads Mix.target() at compile time ...` | Rule 8: no build was made for your target name. It compiles from source. |
 | `MISS  project sets :manager for this dependency` | Rule 9: your `deps` entry, or a package's `mix.exs`, changes how Mix builds it, with `:manager`, `:compile` or `:system_env`. It always compiles from source. |
 | `MISS  built with rebar3, project builds with make` | Rule 9: the build was made by another manager than Mix uses for it here. It compiles from source. |
+| `MISS  build method unknown (deps did not load: ...)` | Rule 9: `Precompiled.Host.install/2` could not load the dependencies through Mix (the warning above names why), so no build can be confirmed. Everything compiles from source. |
 | `MISS  built with rebar3, project's manager for it is unknown` | Rule 9: Mix resolved no manager for the dependency here (often: its sources are not fetched yet), so the build's cannot be confirmed. It compiles from source. |
 
 ## A bug

@@ -60,7 +60,15 @@ defmodule Precompiled.Install do
     {forced?, mix_opts} = take_force(mix_opts)
     dir = project_dir(deps, mix_opts)
     if forced?, do: File.rm_rf!(dir)
-    methods = resolve(dir, deps, mix_opts)
+
+    methods =
+      resolve(dir, deps, mix_opts, Keyword.get(test_opts, :load, &Mix.Dep.load_and_cache/0))
+
+    with {:unknown, why} <- methods do
+      Output.warning(
+        "precompiled: deps did not load (#{why}); every dependency compiles from source"
+      )
+    end
 
     check =
       Keyword.get(test_opts, :check, fn ->
@@ -178,13 +186,13 @@ defmodule Precompiled.Install do
   # project config it would push. Running it early is idempotent; the lock it
   # writes is what Env.MixInstall reads. Returns how Mix builds each Hex dep
   # there (build_methods/3).
-  defp resolve(dir, deps, mix_opts) do
+  defp resolve(dir, deps, mix_opts, load) do
     System.put_env(Keyword.get(mix_opts, :system_env, []))
     File.mkdir_p!(dir)
 
     in_install_project(dir, deps, mix_opts, fn ->
       Mix.Task.rerun("deps.get")
-      load_build_methods()
+      load_build_methods(load)
     end)
   end
 
@@ -192,19 +200,24 @@ defmodule Precompiled.Install do
   # Per Hex dep of the install project in `dir`, the manager Mix resolves
   # and the build options its declaration sets, read from the deps Mix
   # loads there: transitive declarations (a package's own mix.exs setting
-  # :manager on a child) and inherited managers included. nil when Mix
-  # cannot load them; Env.MixInstall then reads the deps list and lock.
-  @spec build_methods(Path.t(), [term()], keyword()) ::
-          %{optional(atom()) => Env.build_method()} | nil
-  def build_methods(dir, deps, mix_opts \\ []),
-    do: in_install_project(dir, deps, mix_opts, &load_build_methods/0)
+  # :manager on a child) and inherited managers included. When Mix cannot
+  # load them, {:unknown, why}: rule 9 then misses every candidate, as a
+  # guess from the deps list alone could miss an override and hit wrongly.
+  # `load` stands in for Mix.Dep.load_and_cache/0 in tests.
+  @spec build_methods(Path.t(), [term()], keyword(), (-> [Mix.Dep.t()])) ::
+          Env.build_methods()
+  def build_methods(dir, deps, mix_opts \\ [], load \\ &Mix.Dep.load_and_cache/0),
+    do: in_install_project(dir, deps, mix_opts, fn -> load_build_methods(load) end)
 
   # Never cached past this call: Mix.install/2 loads its own deps.
-  defp load_build_methods() do
+  defp load_build_methods(load) do
     Mix.Dep.clear_cached()
-    Env.MixProject.build_methods_from(Mix.Dep.load_and_cache())
+    Env.MixProject.build_methods_from(load.())
   rescue
-    _ -> nil
+    e -> {:unknown, Exception.message(e)}
+  catch
+    :exit, reason when stop?(reason) -> exit(reason)
+    kind, reason -> {:unknown, Exception.format_banner(kind, reason)}
   after
     Mix.Dep.clear_cached()
   end
