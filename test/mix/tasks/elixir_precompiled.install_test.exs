@@ -202,6 +202,60 @@ if Code.ensure_loaded?(Igniter) do
       end)
     end
 
+    test "--device on a one-liner deps function keeps it valid and at runtime" do
+      for dep <- [
+            ~s({:elixir_precompiled, "~> 0.2"}),
+            ~s({:elixir_precompiled, "~> 0.2", runtime: false}),
+            ~s({:elixir_precompiled, "~> 0.2", runtime: false, targets: :rpi4})
+          ] do
+        igniter = project_with("[]", dep) |> install(["--device"]) |> apply_igniter!()
+        mix_exs = content(igniter, "mix.exs")
+        assert {:ok, _} = Code.string_to_quoted(mix_exs), mix_exs
+        refute mix_exs =~ "runtime:", mix_exs
+        refute mix_exs =~ "=>", mix_exs
+        assert mix_exs =~ ~s({:elixir_precompiled, "~> 0.2"), mix_exs
+      end
+
+      igniter =
+        project_with("[]", ~s({:elixir_precompiled, "~> 0.2", runtime: false, targets: :rpi4}))
+        |> install(["--device"])
+        |> apply_igniter!()
+
+      assert content(igniter, "mix.exs") =~ ~s({:elixir_precompiled, "~> 0.2", targets: :rpi4})
+    end
+
+    test "--device adds the network apps to extra_applications, once" do
+      mix_exs = """
+      defmodule Test.MixProject do
+        use Mix.Project
+
+        def project do
+          [app: :test, version: "0.1.0", deps: deps()]
+        end
+
+        def application do
+          [extra_applications: [:logger, :ssl]]
+        end
+
+        defp deps do
+          [
+            {:elixir_precompiled, "~> 0.2", runtime: false}
+          ]
+        end
+      end
+      """
+
+      igniter =
+        test_project(files: %{"mix.exs" => mix_exs})
+        |> install(["--device"])
+        |> apply_igniter!()
+
+      text = content(igniter, "mix.exs")
+      assert text =~ "extra_applications: [:logger, :ssl, :inets, :public_key]"
+
+      igniter |> install(["--device"]) |> assert_unchanged()
+    end
+
     test "--device twice changes nothing" do
       igniter =
         test_project(files: %{"mix.exs" => nerves_mix_exs()})
