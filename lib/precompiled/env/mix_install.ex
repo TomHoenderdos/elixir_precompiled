@@ -21,8 +21,10 @@ defmodule Precompiled.Env.MixInstall do
 
   @default_os_release_paths ["/usr/lib/os-release", "/etc/os-release"]
 
-  @spec load(Path.t(), [term()]) :: Env.t()
-  def load(project_dir, deps) do
+  # `methods`: how Mix builds each Hex dep there, as Install.build_methods/3
+  # loads it from Mix; nil falls back to the deps list and the lock.
+  @spec load(Path.t(), [term()], %{optional(atom()) => Env.build_method()} | nil) :: Env.t()
+  def load(project_dir, deps, methods \\ nil) do
     lock = Mix.Dep.Lock.read(Path.join(project_dir, "mix.lock"))
     build_lib = Path.join([project_dir, "_build", Atom.to_string(Mix.env()), "lib"])
 
@@ -44,16 +46,15 @@ defmodule Precompiled.Env.MixInstall do
       deps_path: deps_path,
       installed: installed,
       installed_envs: Map.new(installed, &{&1, Map.get(envs, &1, "prod")}),
-      build_methods: build_methods(lock, deps, deps_path)
+      build_methods: methods || build_methods(lock, deps, deps_path)
     }
   end
 
-  # Per Hex lock entry, the manager Mix would resolve and the build options
-  # the deps list sets (a transitive dep has none here). Mix's own order
-  # (Mix.Dep.Loader): the declared manager, else mix or rebar3 from the
-  # lock's managers, else what the fetched sources hold. A dep of a rebar3
-  # parent that the lock and files leave open inherits rebar3 in Mix and
-  # gets make or nil here: a miss, never a wrong hit.
+  # The fallback when Mix could not load the deps: per Hex lock entry, the
+  # manager Mix would resolve and the build options the deps list sets.
+  # Mix's own order (Mix.Dep.Loader): the declared manager, else mix or
+  # rebar3 from the lock's managers, else what the fetched sources hold.
+  # Declarations in a package's own mix.exs are not seen here.
   defp build_methods(lock, deps, deps_path) do
     declared = Map.new(for d <- deps, {app, opts} <- [dep_opts(d)], app != nil, do: {app, opts})
 

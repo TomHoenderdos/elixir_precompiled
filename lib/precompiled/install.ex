@@ -60,13 +60,13 @@ defmodule Precompiled.Install do
     {forced?, mix_opts} = take_force(mix_opts)
     dir = project_dir(deps, mix_opts)
     if forced?, do: File.rm_rf!(dir)
-    resolve(dir, deps, mix_opts)
+    methods = resolve(dir, deps, mix_opts)
 
     check =
       Keyword.get(test_opts, :check, fn ->
         Check.check(
           config,
-          Env.MixInstall.load(dir, deps),
+          Env.MixInstall.load(dir, deps, methods),
           Keyword.take(test_opts, [:config_fun])
         )
       end)
@@ -176,11 +176,40 @@ defmodule Precompiled.Install do
 
   # What Mix.install/2 does first: deps.get in its install project, with the
   # project config it would push. Running it early is idempotent; the lock it
-  # writes is what Env.MixInstall reads.
+  # writes is what Env.MixInstall reads. Returns how Mix builds each Hex dep
+  # there (build_methods/3).
   defp resolve(dir, deps, mix_opts) do
     System.put_env(Keyword.get(mix_opts, :system_env, []))
     File.mkdir_p!(dir)
 
+    in_install_project(dir, deps, mix_opts, fn ->
+      Mix.Task.rerun("deps.get")
+      load_build_methods()
+    end)
+  end
+
+  @doc false
+  # Per Hex dep of the install project in `dir`, the manager Mix resolves
+  # and the build options its declaration sets, read from the deps Mix
+  # loads there: transitive declarations (a package's own mix.exs setting
+  # :manager on a child) and inherited managers included. nil when Mix
+  # cannot load them; Env.MixInstall then reads the deps list and lock.
+  @spec build_methods(Path.t(), [term()], keyword()) ::
+          %{optional(atom()) => Env.build_method()} | nil
+  def build_methods(dir, deps, mix_opts \\ []),
+    do: in_install_project(dir, deps, mix_opts, &load_build_methods/0)
+
+  # Never cached past this call: Mix.install/2 loads its own deps.
+  defp load_build_methods() do
+    Mix.Dep.clear_cached()
+    Env.MixProject.build_methods_from(Mix.Dep.load_and_cache())
+  rescue
+    _ -> nil
+  after
+    Mix.Dep.clear_cached()
+  end
+
+  defp in_install_project(dir, deps, mix_opts, fun) do
     config = [
       version: "1.0.0",
       build_per_environment: true,
@@ -204,7 +233,7 @@ defmodule Precompiled.Install do
       :ok = Mix.ProjectStack.push(Precompiled.InstallProject, config, "nofile")
 
       try do
-        Mix.Task.rerun("deps.get")
+        fun.()
       after
         Mix.ProjectStack.pop()
         Mix.Task.clear()

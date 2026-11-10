@@ -29,7 +29,7 @@ A build of a candidate is installed only when **every** rule holds.
 | 6 | Dependencies | be compiled against the versions and checksums in your `mix.lock` | macros and inlined code from dependencies are baked in |
 | 7 | `compile_env` | have read the same `Application.compile_env` values as your config | those values are baked into the beams |
 | 8 | Compile-time inputs | not depend on build-machine facts it can't record (see below) | otherwise it could differ from your build |
-| 9 | Build method | be built the way Mix builds the dependency here: your `deps` entry sets none of `:manager`, `:compile` or `:system_env`, and a manager the build records is the one Mix uses here | an override, or another manager, builds other files |
+| 9 | Build method | be built the way Mix builds the dependency here: no declaration of it (yours or a package's) sets any of `:manager`, `:compile` or `:system_env`, and a manager the build records is the one Mix uses here | an override, or another manager, builds other files |
 
 ### The fine print
 
@@ -68,18 +68,25 @@ Such a dependency can be served a build made with other values.
 
 **Rule 9, build method.**
 
-- A dependency whose `deps` entry sets `:manager`, `:compile` or
-  `:system_env` never matches; the line names the option, for example
-  `project sets :manager for this dependency`. In a Mix project this holds
-  wherever Mix finds the option, including the `mix.exs` of a package that
-  depends on it; under `Precompiled.Host.install/2`, in the deps list given.
+- A dependency declared with `:manager`, `:compile` or `:system_env` never
+  matches; the line names the option, for example
+  `project sets :manager for this dependency`. This holds wherever Mix finds
+  the option: your `deps` entry, the deps list given to
+  `Precompiled.Host.install/2`, or the `mix.exs` of a package that depends
+  on it.
 - A build records the manager Mix built it with (`mix`, `rebar3`, `make`,
   ...). When that is not the manager Mix resolves for the dependency in your
   project, it misses: `built with rebar3, project builds with make`. A build
   that records no manager is judged by the other rules alone.
-- On a device (`Precompiled.install/2`) there are no `deps` options and no
-  manager to compare, so rule 9 does not apply there: a device takes the build
-  Mix makes by default.
+- A global `Mix.install(deps, system_env: ...)` (also through
+  `Precompiled.Host.install/2`) is not an override of any one dependency and
+  does not cause a miss. Rule 8 already refuses a dependency that reads an
+  environment variable at module level in `lib/`; one read in a
+  dependency's `mix.exs` stays unrecorded, as rule 8 says.
+- `Precompiled.Host.install/2` applies rule 9 wherever it runs, a device
+  included. The device API, `Precompiled.install/2`, does not: it has no
+  `deps` options and no manager to compare, and takes the build Mix makes by
+  default.
 
 ## When several builds match
 

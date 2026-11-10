@@ -30,6 +30,8 @@ defmodule Precompiled.EnvTest do
     assert Env.overrides([]) == []
     assert Env.overrides(env: :dev, optional: true, override: true) == []
     assert Env.overrides(system_env: [], manager: nil) == []
+    assert Env.overrides(system_env: %{}) == []
+    assert Env.overrides(system_env: %{"A" => "1"}) == [:system_env]
     assert Env.overrides(compile: false) == [:compile]
 
     assert Env.overrides(system_env: [{"A", "1"}], compile: "make", manager: :make) ==

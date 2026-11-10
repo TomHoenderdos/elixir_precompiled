@@ -21,6 +21,63 @@ defmodule Precompiled.InstallTest do
     %{config: %{source: "https://example.test/x", except: [], root_path: "/r", home: dir}}
   end
 
+  test "build_methods reads overrides a package's own mix.exs sets on its deps", %{
+    tmp_dir: dir
+  } do
+    parent = Path.join(dir, "parent")
+    File.mkdir_p!(parent)
+
+    File.write!(Path.join(parent, "mix.exs"), """
+    defmodule Parent.MixProject do
+      use Mix.Project
+
+      def project do
+        [
+          app: :parent,
+          version: "0.1.0",
+          deps: [
+            {:jason, "~> 1.4", manager: :make},
+            {:decimal, "~> 2.0", system_env: [{"DECIMAL_X", "1"}]},
+            {:telemetry, "~> 1.0"}
+          ]
+        ]
+      end
+    end
+    """)
+
+    project = Path.join(dir, "install")
+    File.mkdir_p!(project)
+
+    Mix.Dep.Lock.write(
+      %{
+        jason: {:hex, :jason, "1.4.4", "i", [:mix], [], "hexpm", "JOUTER"},
+        decimal: {:hex, :decimal, "2.3.0", "i", [:mix], [], "hexpm", "DOUTER"},
+        telemetry: {:hex, :telemetry, "1.3.0", "i", [:rebar3], [], "hexpm", "TOUTER"}
+      },
+      file: Path.join(project, "mix.lock")
+    )
+
+    deps = [{:parent, path: parent}]
+    methods = outside_project(fn -> Install.build_methods(project, deps) end)
+
+    assert methods[:jason] == %{manager: "make", overrides: [:manager]}
+    assert methods[:decimal] == %{manager: "mix", overrides: [:system_env]}
+    assert methods[:telemetry] == %{manager: "rebar3", overrides: []}
+    refute Map.has_key?(methods, :parent)
+  end
+
+  # Mix.install/2 runs with no project on the stack; this test suite runs
+  # inside one, which would make the install project a child of it.
+  defp outside_project(fun) do
+    %{name: name, config: config, file: file} = Mix.ProjectStack.pop()
+
+    try do
+      fun.()
+    after
+      :ok = Mix.ProjectStack.push(name, config, file)
+    end
+  end
+
   test "normalize_deps matches Mix.install/2" do
     assert Install.normalize_deps([
              :jason,
