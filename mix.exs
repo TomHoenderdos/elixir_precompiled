@@ -75,6 +75,15 @@ defmodule Precompiled.MixProject do
   defp docs do
     [
       main: "readme",
+      # Internal modules the public docs name for context. They stay hidden,
+      # so render these as plain code instead of warning about the link.
+      skip_code_autolink_to: [
+        "Precompiled.Check",
+        "Precompiled.Env.MixProject",
+        "Precompiled.Env.MixInstall",
+        "Precompiled.Manifest",
+        "Mix.Dep.ElixirSCM"
+      ],
       source_ref: "v#{@version}",
       source_url: @source_url,
       extras: [

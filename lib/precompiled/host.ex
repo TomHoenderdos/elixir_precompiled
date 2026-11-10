@@ -18,6 +18,19 @@ defmodule Precompiled.Host do
 
   alias Precompiled.{Check, Config, Env, Fetch, Install}
 
+  @typedoc """
+  What a run did: counts of hits, misses and failures, the bytes
+  installed, the time taken and one printed line per candidate.
+  """
+  @type report :: %{
+          hits: non_neg_integer(),
+          misses: non_neg_integer(),
+          fails: non_neg_integer(),
+          bytes: non_neg_integer(),
+          seconds: float(),
+          lines: [term()]
+        }
+
   # A process told to stop (supervisor shutdown, a linked :normal or
   # {:shutdown, _} exit) must stop, not turn into a source compile.
   defguardp stop?(reason)
@@ -30,7 +43,7 @@ defmodule Precompiled.Host do
   target unless `allow_host: true` (what `mix precompiled.deps` passes);
   `host?: true | false` forces either.
   """
-  @spec run(keyword()) :: :disabled | :nothing_to_do | {:ok, Check.report()}
+  @spec run(keyword()) :: :disabled | :nothing_to_do | {:ok, report()}
   def run(opts \\ []) do
     do_run(opts)
   rescue

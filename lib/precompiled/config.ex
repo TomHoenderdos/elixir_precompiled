@@ -87,7 +87,7 @@ defmodule Precompiled.Config do
   defp clock_offset(n) when is_integer(n), do: n
   defp clock_offset(_), do: 0
 
-  @doc "True when `PRECOMPILED` (or the old `NERVES_PRECOMPILED`) is `0`, `false` or `no`."
+  @doc "True when `PRECOMPILED=0`, `PRECOMPILED=false` or `PRECOMPILED=no` (the old `NERVES_PRECOMPILED` works the same)."
   @spec disabled?() :: boolean()
   def disabled?(), do: env_var("") in ["0", "false", "no"]
 
