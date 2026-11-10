@@ -29,9 +29,20 @@ defmodule ElixirPrecompiled.Device.Elf do
 
   @doc false
   @spec check(String.t(), binary(), String.t()) :: :ok | {:fail, String.t()}
-  def check(path, <<0x7F, "ELF", class, data, _::binary-size(12), m1, m2, _::binary>>, cpu) do
-    em = if data == 2, do: m1 * 256 + m2, else: m2 * 256 + m1
-    found = {if(class == 2, do: 64, else: 32), Map.get(@machines, em, :unknown)}
+  # Every target this knows is little-endian (EI_DATA 1); a big-endian
+  # or unknown byte order, or a class other than 32 (1) or 64 (2) bits, is
+  # refused rather than read as something else.
+  def check(path, <<0x7F, "ELF", class, _data, _::binary>>, _cpu) when class not in [1, 2],
+    do: {:fail, "#{path} has an unknown ELF class (#{class})"}
+
+  def check(path, <<0x7F, "ELF", _class, 2, _::binary>>, _cpu),
+    do: {:fail, "#{path} is big-endian, device runs little-endian"}
+
+  def check(path, <<0x7F, "ELF", _class, data, _::binary>>, _cpu) when data != 1,
+    do: {:fail, "#{path} has an unknown ELF byte order (#{data})"}
+
+  def check(path, <<0x7F, "ELF", class, 1, _::binary-size(12), m1, m2, _::binary>>, cpu) do
+    found = {if(class == 2, do: 64, else: 32), Map.get(@machines, m2 * 256 + m1, :unknown)}
     compare(path, found, expected(cpu), cpu)
   end
 

@@ -67,7 +67,7 @@ defmodule ElixirPrecompiled.Device.Env do
   defp present(loaded, lib_dir) do
     from_lib =
       for name <- ls(lib_dir),
-          {:ok, app, vsn} <- [split(name)],
+          {:ok, app, vsn} <- [split_release(name)],
           into: %{},
           do: {app, %{vsn: vsn, loaded?: false}}
 
@@ -98,9 +98,21 @@ defmodule ElixirPrecompiled.Device.Env do
     end
   end
 
-  defp app_vsn(app, vsn) do
+  @doc false
+  # split/1 for a dir of the release's own lib dir: the firmware ships it,
+  # so its app is present even when nothing has named the atom yet. The
+  # atom is made only for a plain app name.
+  @spec split_release(String.t()) :: {:ok, atom(), String.t()} | :error
+  def split_release(name) do
+    case Regex.run(~r/\A([a-z][a-z0-9_]*)-(\d.*)\z/, name, capture: :all_but_first) do
+      [app, vsn] -> app_vsn(app, vsn, &{:ok, String.to_atom(&1)})
+      _ -> split(name)
+    end
+  end
+
+  defp app_vsn(app, vsn, to_atom \\ &existing/1) do
     with {:ok, _} <- Version.parse(pad(vsn)),
-         {:ok, atom} <- existing(app) do
+         {:ok, atom} <- to_atom.(app) do
       {:ok, atom, vsn}
     else
       _ -> :error
