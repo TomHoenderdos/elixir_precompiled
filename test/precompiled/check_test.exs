@@ -371,7 +371,10 @@ defmodule Precompiled.CheckTest do
 
     out = run_capturing(config, %{env | candidates: []})
     assert_received {:report, :nothing_to_do}
-    assert [_one] = String.split(out, "\n", trim: true)
+    # Mix may print its own "==> precompiled" project header into the same
+    # captured shell when another test ran a task first; only our lines count.
+    lines = out |> String.split("\n", trim: true) |> Enum.reject(&String.starts_with?(&1, "==> "))
+    assert [_one] = lines
     assert out =~ "precompiled: no dependencies to check"
   end
 
