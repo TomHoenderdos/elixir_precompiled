@@ -28,6 +28,39 @@ defmodule Mix.Tasks.Precompiled.Report do
   (`DELETE <source>/reports/<id>`). Sending the same report again is
   answered with "already received" and no id.
 
+  A shortened `--dump` of a host project. A package from a private Hex
+  organisation in the same lock appears nowhere, and the checksums are cut
+  short here only:
+
+  ```json
+  {
+    "format": 1,
+    "client": "0.4.0",
+    "built_at": "2026-11-10T14:02:11Z",
+    "elixir": "1.20.3",
+    "otp": 29,
+    "os": {"family": "unix", "arch": "aarch64-apple-darwin"},
+    "target": "host",
+    "contact": "@my-github-handle",
+    "lines": [
+      {"name": "jason", "version": "1.4.4", "status": "hit",
+       "reason_code": "hit", "reason_args": [], "reason": "installed"},
+      {"name": "phoenix", "version": "1.8.1", "status": "miss",
+       "reason_code": "closure_mismatch",
+       "reason_args": ["telemetry", "1.2.1", "1.3.0"],
+       "reason": "built against telemetry 1.2.1, lock has 1.3.0"}
+    ],
+    "lock": [
+      {"name": "jason", "version": "1.4.4", "checksum": "bbbbbbbb…"},
+      {"name": "phoenix", "version": "1.8.1", "checksum": "ffffffff…"},
+      {"name": "telemetry", "version": "1.3.0", "checksum": "22222222…"}
+    ]
+  }
+  ```
+
+  The full example is in the
+  [Troubleshooting guide](troubleshooting.md#an-example).
+
   Reporting never fails anything: any error is one line and the task exits 0.
   It reads nothing but the report and the lock, and changes nothing in
   `_build`.
