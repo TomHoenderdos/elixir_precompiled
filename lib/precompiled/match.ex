@@ -178,6 +178,8 @@ defmodule Precompiled.Match do
       end
     end)
   catch
+    # Catches everything: a rule that fails on an odd manifest entry makes
+    # that build a miss, so the dependency compiles from source instead.
     _, _ -> {:miss, "malformed entry", 0}
   end
 
@@ -447,16 +449,23 @@ defmodule Precompiled.Match do
       else: {:miss, "compile_env differs: " <> Enum.join(mismatches, ", ")}
   end
 
-  # A recorded value [:safe] refuses to decode names an atom this VM has
-  # never seen (or is no term at all): no config here can hold it, so it
-  # differs from the project's value.
-  defp recorded_equals?(value, current) do
-    bin = Base.url_decode64!(value, padding: false)
+  # The recorded value comes from a build of a third-party package, which
+  # can put any term in its app env; the manifest signature only says the
+  # portal served it. A value SafeTerm refuses (compressed, over the cap,
+  # holding a fun, pid, port or reference, or naming an atom this VM has
+  # never seen) differs from the project's: no config here can hold it.
+  #
+  # 64 KiB of decoded ETF, after base64. The portal refuses the same. The
+  # recorded values seen so far are at most 124 base64 characters (p99 104,
+  # over 6,094 values), so the cap leaves over 500 times the largest.
+  @max_recorded_bytes 65_536
 
-    try do
-      :erlang.binary_to_term(bin, [:safe]) == current
-    rescue
-      ArgumentError -> false
+  defp recorded_equals?(value, current) do
+    with {:ok, bin} <- Base.url_decode64(value, padding: false),
+         {:ok, term} <- Precompiled.SafeTerm.decode(bin, @max_recorded_bytes) do
+      term == current
+    else
+      _ -> false
     end
   end
 end

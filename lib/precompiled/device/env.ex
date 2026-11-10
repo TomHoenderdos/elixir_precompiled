@@ -59,6 +59,8 @@ defmodule Precompiled.Device.Env do
       do: apply(Nerves.Runtime.KV, :get_all_active, []),
       else: nil
   rescue
+    # Catches everything: the KV store is optional context, and one that
+    # raises or exits is the same as none.
     _ -> nil
   catch
     _, _ -> nil

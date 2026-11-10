@@ -682,6 +682,8 @@ defmodule Precompiled.Check do
       _ -> false
     end
   rescue
+    # Catches everything: a beam it cannot read is taken as not stripped,
+    # never a failed build.
     _ -> false
   catch
     _, _ -> false

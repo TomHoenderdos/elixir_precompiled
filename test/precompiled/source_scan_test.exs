@@ -102,6 +102,28 @@ defmodule Precompiled.SourceScanTest do
     assert %{target: true} = SourceScan.cached(home, d, key)
   end
 
+  test "a compressed, fun-bearing or oversized cache entry is a miss", %{tmp_dir: dir} do
+    d = dep(Path.join(dir, "dep"), %{"lib/a.ex" => "defmodule A do\n  @t Mix.target()\nend\n"})
+    home = Path.join(dir, "home")
+    key = String.duplicate("ef", 32)
+    entry = Path.join([home, "scan", "v1", key <> ".term"])
+    File.mkdir_p!(Path.dirname(entry))
+
+    compressed =
+      :erlang.term_to_binary(%{target: false, env: List.duplicate("HOME", 100)}, [:compressed])
+
+    assert <<131, 80, _::binary>> = compressed
+
+    for bin <- [
+          compressed,
+          :erlang.term_to_binary(%{target: false, env: [], f: &Enum.map/2}),
+          :erlang.term_to_binary({:unscannable, :binary.copy("x", 70_000)})
+        ] do
+      File.write!(entry, bin)
+      assert %{target: true} = SourceScan.cached(home, d, key)
+    end
+  end
+
   test "a macro body outside its quote runs at the caller's compile time", %{tmp_dir: dir} do
     dep(dir, %{
       "lib/u.ex" => """

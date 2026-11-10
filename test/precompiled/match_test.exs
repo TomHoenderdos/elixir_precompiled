@@ -467,6 +467,71 @@ defmodule Precompiled.MatchTest do
     end
   end
 
+  describe "compile_env_ok/2 on a recorded value it will not decode" do
+    @differs {:miss, "compile_env differs: ash [:mode]"}
+
+    defp ce_bin(bin),
+      do: [
+        %{"app" => "ash", "path" => ["mode"], "value" => Base.url_encode64(bin, padding: false)}
+      ]
+
+    # Recorded as Application.fetch_env/2 would return it.
+    defp ce_term(:error), do: ce_bin(:erlang.term_to_binary(:error))
+    defp ce_term(value), do: ce_bin(:erlang.term_to_binary({:ok, value}))
+
+    test "compressed ETF differs, and is never inflated" do
+      huge = :erlang.term_to_binary(:binary.copy(<<0>>, 50_000_000), [:compressed])
+      assert byte_size(huge) < 65_536
+
+      {us, result} =
+        :timer.tc(fn -> Match.compile_env_ok(ce_bin(huge), fn _, _ -> :error end) end)
+
+      assert result == @differs
+      assert us < 50_000
+
+      # Even a value equal to the project's, once compressed, differs.
+      value = :binary.copy("x", 1000)
+      small = :erlang.term_to_binary({:ok, value}, [:compressed])
+      assert <<131, 80, _::binary>> = small
+      assert @differs = Match.compile_env_ok(ce_bin(small), fn _, _ -> {:ok, value} end)
+    end
+
+    test "a value over 64 KiB differs" do
+      value = :binary.copy("a", 65_536)
+      assert @differs = Match.compile_env_ok(ce_term(value), fn _, _ -> {:ok, value} end)
+      fits = :binary.copy("a", 65_000)
+      assert :ok = Match.compile_env_ok(ce_term(fits), fn _, _ -> {:ok, fits} end)
+    end
+
+    test "a value holding a fun, pid, port or reference differs" do
+      for bad <- [
+            &Enum.map/2,
+            self(),
+            hd(Port.list()),
+            make_ref(),
+            %{opts: %{fun: &Enum.map/2}}
+          ] do
+        assert @differs = Match.compile_env_ok(ce_term(bad), fn _, _ -> {:ok, bad} end),
+               inspect(bad)
+      end
+    end
+
+    test "invalid base64 is a miss, never a raise" do
+      item = %{"app" => "ash", "path" => ["mode"], "value" => "!!"}
+      assert {:miss, _} = Match.compile_env_ok([item], fn _, _ -> :error end)
+    end
+
+    test "plain values still match" do
+      for term <- [:fast, "a string", [mode: :fast, retries: 3], %{a: %{b: [1, "c"]}}] do
+        assert :ok = Match.compile_env_ok(ce_term(term), fn _, _ -> {:ok, term} end),
+               inspect(term)
+      end
+
+      # A recorded :error is a key the build did not have set.
+      assert :ok = Match.compile_env_ok(ce_term(:error), fn _, _ -> :error end)
+    end
+  end
+
   describe "compile_env_ok/2 on a value that is not base64" do
     test "is a malformed entry, never a raise" do
       for value <- ["!!", "a", nil, 1] do

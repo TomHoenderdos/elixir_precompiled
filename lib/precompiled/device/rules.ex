@@ -70,12 +70,15 @@ defmodule Precompiled.Device.Rules do
           {:miss, why} -> {:halt, {:miss, why, n}}
         end
       rescue
+        # Catches everything: a rule that raises on an odd manifest entry is
+        # a miss for this build, so the install goes on without it.
         _ -> {:halt, {:miss, "check raised", n}}
       catch
         _, _ -> {:halt, {:miss, "check raised", n}}
       end
     end)
   catch
+    # Catches everything left, including the throw above: a malformed entry.
     _, _ -> {:miss, "malformed entry", 0}
   end
 
