@@ -64,6 +64,108 @@ Names, versions, targets and reason codes themselves are never
 rewritten by this — a host that happens to share a name with a
 dependency must not turn that dependency's line into noise.
 
+### An example
+
+This is the `--dump` of a host project with `jason`, `decimal`,
+`phoenix`, `circuits_gpio` and a package from a private Hex organisation,
+`acme_secret`. The private package is left out of both the lines and the
+lock, and the checksums are shortened here only to keep the example
+readable.
+
+```json
+{
+  "built_at": "2026-11-10T14:02:11Z",
+  "client": "0.4.0",
+  "contact": "@my-github-handle",
+  "elixir": "1.20.3",
+  "format": 1,
+  "lines": [
+    {
+      "name": "jason",
+      "reason": "installed",
+      "reason_args": [],
+      "reason_code": "hit",
+      "status": "hit",
+      "version": "1.4.4"
+    },
+    {
+      "name": "decimal",
+      "reason": "installed",
+      "reason_args": [],
+      "reason_code": "hit",
+      "status": "hit",
+      "version": "2.3.0"
+    },
+    {
+      "name": "telemetry",
+      "reason": "not built for 1.3.0",
+      "reason_args": [
+        "1.3.0"
+      ],
+      "reason_code": "not_built_version",
+      "status": "miss",
+      "version": "1.3.0"
+    },
+    {
+      "name": "phoenix",
+      "reason": "built against telemetry 1.2.1, lock has 1.3.0",
+      "reason_args": [
+        "telemetry",
+        "1.2.1",
+        "1.3.0"
+      ],
+      "reason_code": "closure_mismatch",
+      "status": "miss",
+      "version": "1.8.1"
+    },
+    {
+      "name": "circuits_gpio",
+      "reason": "not built for host 1.20",
+      "reason_args": [
+        "host",
+        "1.20"
+      ],
+      "reason_code": "not_built_target",
+      "status": "miss",
+      "version": "2.1.2"
+    }
+  ],
+  "lock": [
+    {
+      "checksum": "bbbbbbbb…",
+      "name": "jason",
+      "version": "1.4.4"
+    },
+    {
+      "checksum": "dddddddd…",
+      "name": "decimal",
+      "version": "2.3.0"
+    },
+    {
+      "checksum": "22222222…",
+      "name": "telemetry",
+      "version": "1.3.0"
+    },
+    {
+      "checksum": "ffffffff…",
+      "name": "phoenix",
+      "version": "1.8.1"
+    },
+    {
+      "checksum": "44444444…",
+      "name": "circuits_gpio",
+      "version": "2.1.2"
+    }
+  ],
+  "os": {
+    "arch": "aarch64-apple-darwin",
+    "family": "unix"
+  },
+  "otp": 29,
+  "target": "host"
+}
+```
+
 ### Retracting a report
 
 A new report answers with its id, printed once:
