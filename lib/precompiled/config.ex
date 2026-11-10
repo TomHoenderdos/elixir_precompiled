@@ -205,10 +205,21 @@ defmodule Precompiled.Config do
   # `precompiled.status` and `precompiled.clean --cache` name the same dir
   # a run writes. Probing creates the dir, as a run does.
   @spec run_home(Path.t() | nil, Path.t()) :: {:ok, Path.t()} | {:fallback, Path.t()}
+  #
+  # A home this creates is made owner-only (0700): only such a home holds
+  # the stamps that spare a run re-hashing its cached files
+  # (Precompiled.FileStamp). An existing home keeps its mode.
   def run_home(home, build_lib) do
-    if is_binary(home) and Precompiled.FileUtil.writable_dir?(home),
+    if is_binary(home) and writable_home?(home),
       do: {:ok, home},
       else: {:fallback, fallback_home(build_lib)}
+  end
+
+  defp writable_home?(home) do
+    new? = match?({:error, :enoent}, File.lstat(home))
+    writable? = Precompiled.FileUtil.writable_dir?(home)
+    if writable? and new?, do: _ = File.chmod(home, 0o700)
+    writable?
   end
 
   @doc false

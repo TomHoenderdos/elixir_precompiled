@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.3.2 - unreleased
+
+* A warm run asks the source whether the batch changed and, while that
+  request is out, checks the cached batch and matches the dependencies
+  against it from the cache, without writing anything. Nothing is
+  installed or removed until the answer is verified, by the same checks
+  as before. A match is used only where the verified batch names the same
+  manifest; the rest are matched again. A refused answer installs nothing.
+* A cached file is no longer hashed again when it is exactly the file that
+  was hashed before: same device, inode, size, mtime and ctime, read from
+  the open file. Any change made through the file system moves ctime, so
+  a file rewritten with its size and mtime restored is still hashed and
+  fetched again. These records are kept only in a cache dir that only its
+  owner can enter (mode `0700`). A cache dir this library creates is made
+  that way; an existing one keeps its mode (`chmod 700` it to opt in).
+  Files in `_build` and on a device are checked as before.
+* A cached file is marked used for the cache's least-recently-used order
+  once a day instead of on every hit, so every file in use is still hashed
+  in full at least once a day.
+
 ## v0.3.1 - 2026-11-10
 
 * New matching rule 9, build method. A dependency whose `deps` entry sets

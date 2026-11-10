@@ -231,6 +231,65 @@ defmodule Precompiled.FetchTest do
              )
   end
 
+  # White-box: a stamp that matches the open file is what spares the hash,
+  # so different bytes behind a matching stamp are not looked at. This is
+  # the trust a stamp carries; FileStampTest and CheckOverlapTest show
+  # that no change made through the file system keeps a stamp matching.
+  test "a stamp that matches the open file spares the hash; one that does not, does not", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    s = F.file(f, "good")
+    file = Path.join(config.home, "files/#{s}")
+    File.mkdir_p!(Path.dirname(file))
+    File.chmod!(config.home, 0o700)
+    File.write!(file, "baad")
+    entry = entry(with_app(f, [file_entry(s, 4)]))
+    beam = Path.join([lib, "ash", "ebin", "Elixir.Ash.beam"])
+
+    stamps = Precompiled.FileStamp.open(config.home)
+    stat = File.stat!(file, time: :posix)
+    Precompiled.FileStamp.put(stamps, Precompiled.FileStamp.new(stat, s))
+    config = Map.put(config, :stamps, stamps)
+
+    assert {:ok, %{cached: 1}} =
+             Fetch.install(config, :ash, entry, @lock_entry, lib, deps_path: deps)
+
+    assert File.read!(beam) == "baad"
+
+    Precompiled.FileStamp.put(
+      stamps,
+      Precompiled.FileStamp.new(%{stat | ctime: stat.ctime - 1}, s)
+    )
+
+    assert {:ok, _} =
+             Fetch.install(config, :ash, entry, @lock_entry, lib, deps_path: deps)
+
+    assert File.read!(beam) == "good"
+    assert File.read!(file) == "good"
+    Precompiled.FileStamp.close(stamps, config.home)
+  end
+
+  test "without a stamps table every cached file is hashed", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    s = F.file(f, "good")
+    file = Path.join(config.home, "files/#{s}")
+    File.mkdir_p!(Path.dirname(file))
+    File.write!(file, "baad")
+    entry = entry(with_app(f, [file_entry(s, 4)]))
+
+    assert {:ok, %{cached: 0}} =
+             Fetch.install(config, :ash, entry, @lock_entry, lib, deps_path: deps)
+
+    assert File.read!(Path.join([lib, "ash", "ebin", "Elixir.Ash.beam"])) == "good"
+  end
+
   test "unsafe path or mode rejects the dependency", %{
     f: f,
     config: config,

@@ -117,4 +117,24 @@ defmodule Precompiled.CacheTest do
     # A cache dir that is a link is not ours to clear; Fetch refuses it too.
     assert {:ok, %File.Stat{type: :symlink}} = File.lstat(Path.join(home, "manifests"))
   end
+
+  test "the stamps file goes when gc evicts and when the cache is cleared", %{tmp_dir: home} do
+    stamps = Path.join(home, "file_stamps")
+    File.write!(stamps, "x")
+    put(home, "files/" <> String.duplicate("a", 64), "old", 1)
+    Cache.gc(home, 0)
+    refute File.exists?(stamps)
+
+    File.write!(stamps, "x")
+    Cache.clear(home)
+    refute File.exists?(stamps)
+  end
+
+  test "gc that evicts nothing keeps the stamps file", %{tmp_dir: home} do
+    stamps = Path.join(home, "file_stamps")
+    File.write!(stamps, "x")
+    put(home, "files/" <> String.duplicate("a", 64), "kept", 1)
+    Cache.gc(home, 1_000_000)
+    assert File.exists?(stamps)
+  end
 end

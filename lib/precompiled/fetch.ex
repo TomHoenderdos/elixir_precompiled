@@ -12,7 +12,7 @@ defmodule Precompiled.Fetch do
   marker.
   """
 
-  alias Precompiled.{FileUtil, Manifest}
+  alias Precompiled.{FileStamp, FileUtil, Manifest}
 
   # 8 MiB: root, batch and any other document
   # httpc's request errors that mean the connection failed or broke.
@@ -35,6 +35,8 @@ defmodule Precompiled.Fetch do
   @ok_modes [0o644, 0o755, 0o100644, 0o100755]
   @provenance_file "precompiled.json"
   @file_concurrency 8
+  # How often a cached file's last use is recorded (see file_used/5).
+  @used_every 86_400
 
   @doc """
   GET `url`'s body, capped at `:max_bytes`. A `file://` URL is read from
@@ -112,7 +114,7 @@ defmodule Precompiled.Fetch do
 
   defp read_file(path, %File.Stat{type: :regular} = stat, max) do
     case read_regular(path, stat, max) do
-      {:ok, bytes} -> {:ok, bytes}
+      {:ok, bytes, _stat} -> {:ok, bytes}
       # Unreadable, or grown past the cap since the lstat.
       :absent -> {:error, "cannot read #{path}"}
       {:fail, _} -> {:error, "#{path} changed while being read"}
@@ -350,6 +352,35 @@ defmodule Precompiled.Fetch do
     end
   end
 
+  @doc false
+  # The manifest the batch names by `expected_sha`, from the cache alone:
+  # nothing is asked of the network, and nothing is written, created or
+  # marked used. `:absent` when it is not cached as a plain file holding
+  # exactly those bytes.
+  @spec cached_manifest_only(map(), String.t()) :: {:ok, map()} | {:fail, String.t()} | :absent
+  def cached_manifest_only(config, expected_sha) do
+    dir = Path.join(Map.get(config, :home) || "", "manifests")
+
+    with true <- cache?(config) and sha256?(expected_sha),
+         {:ok, %File.Stat{type: :directory}} <- File.lstat(dir),
+         {:ok, bytes} <-
+           read_cached(manifest_cache_path(config, expected_sha), @max_manifest_bytes),
+         true <- sha256(bytes) == expected_sha do
+      decode_manifest(bytes)
+    else
+      _ -> :absent
+    end
+  end
+
+  @doc false
+  # A manifest read by cached_manifest_only/2 and then used: marked used,
+  # as manifest/4 marks a cache hit.
+  @spec manifest_used(map(), String.t()) :: :ok
+  def manifest_used(config, sha) do
+    if cache?(config) and sha256?(sha), do: used(manifest_cache_path(config, sha), :ok)
+    :ok
+  end
+
   defp uncached_manifest(config, name, sha, path) do
     if Map.get(config, :offline, false),
       do: {:unreachable, "offline: manifest not cached"},
@@ -456,6 +487,17 @@ defmodule Precompiled.Fetch do
   # two is refused. The read stops at `max` + 1 bytes, whatever the file
   # has grown to since.
   defp read_cached(path, max) do
+    case read_cached_stat(path, max) do
+      {:ok, bytes, _stat} -> {:ok, bytes}
+      other -> other
+    end
+  end
+
+  # As read_cached/2, with the open file's own stat: taken through the same
+  # handle before and after the read, and nil unless the two agree on
+  # everything a stamp records (Precompiled.FileStamp). A file renamed
+  # over or written to while it was read cannot pass for the one stat'ed.
+  defp read_cached_stat(path, max) do
     case File.lstat(path) do
       {:ok, %File.Stat{type: :regular, size: size}} when size > max -> :absent
       {:ok, %File.Stat{type: :regular} = stat} -> read_regular(path, stat, max)
@@ -488,13 +530,26 @@ defmodule Precompiled.Fetch do
          %File.Stat{type: :regular} = stat <- File.Stat.from_record(info),
          true <- {stat.inode, stat.major_device} == {lstat.inode, lstat.major_device},
          {:ok, bytes} when byte_size(bytes) <= max <- read_capped(fd, max + 1, []) do
-      {:ok, bytes}
+      {:ok, bytes, same_stat(stat, fd)}
     else
       {:ok, _too_long} -> :absent
       {:error, _} -> :absent
       _ -> {:fail, "cache refused (#{path} changed while being read)"}
     end
   end
+
+  defp same_stat(before, fd) do
+    with {:ok, info} <- :file.read_file_info(fd, time: :posix),
+         %File.Stat{type: :regular} = later <- File.Stat.from_record(info),
+         true <- stamp_fields(later) == stamp_fields(before) do
+      later
+    else
+      _ -> nil
+    end
+  end
+
+  defp stamp_fields(%File.Stat{} = s),
+    do: {s.major_device, s.minor_device, s.inode, s.size, s.mtime, s.ctime}
 
   defp read_capped(fd, left, acc) when left > 0 do
     case :file.read(fd, left) do
@@ -915,23 +970,63 @@ defmodule Precompiled.Fetch do
     end
   end
 
-  # The cached copy, re-hashed on every use; a wrong size or a wrong hash
-  # is no copy at all, and anything but a regular file refuses the dep.
+  # The cached copy, re-hashed on use unless the run's stamps
+  # (`config.stamps`, Precompiled.FileStamp) say the open file is the very
+  # one that was hashed to `sha` before; a wrong size or a wrong hash is no
+  # copy at all, and anything but a regular file refuses the dep.
   defp cached_file(config, sha, size) do
     if cache?(config), do: read_cached_file(config, sha, size), else: :absent
   end
 
   defp read_cached_file(config, sha, size) do
     path = file_cache_path(config, sha)
+    stamps = Map.get(config, :stamps)
 
-    case read_cached(path, size) do
-      {:ok, bytes} ->
-        if check_bytes(bytes, sha, size) == :ok, do: used(path, {:ok, bytes}), else: :absent
+    case read_cached_stat(path, size) do
+      {:ok, bytes, stat} ->
+        cond do
+          byte_size(bytes) != size ->
+            FileStamp.drop(stamps, sha)
+            :absent
+
+          stat != nil and FileStamp.match?(FileStamp.lookup(stamps, sha), stat, sha) ->
+            file_used(path, stat, stamps, nil, {:ok, bytes})
+
+          check_bytes(bytes, sha, size) == :ok ->
+            file_used(path, stat, stamps, sha, {:ok, bytes})
+
+          true ->
+            FileStamp.drop(stamps, sha)
+            :absent
+        end
 
       other ->
         other
     end
   end
+
+  # A cached file is marked used (for the gc's least-recently-used order)
+  # once a day, not on every hit: the mark changes its ctime and so voids
+  # its stamp, which makes the next run hash it in full again. Freshly
+  # hashed (`sha`), unmarked and settled, it is stamped.
+  defp file_used(path, stat, stamps, sha, result) do
+    now = System.os_time(:second)
+
+    cond do
+      stat == nil or not is_integer(stat.mtime) or stat.mtime <= now - @used_every ->
+        FileStamp.drop(stamps, sha_of(path))
+        used(path, result)
+
+      is_binary(sha) and FileStamp.settled?(stamps, stat) ->
+        FileStamp.put(stamps, FileStamp.new(stat, sha))
+        result
+
+      true ->
+        result
+    end
+  end
+
+  defp sha_of(path), do: Path.basename(path)
 
   # Each content origin, then the source. A content origin's failure
   # (unreachable, 404, wrong bytes) only moves on to the next URL, and only

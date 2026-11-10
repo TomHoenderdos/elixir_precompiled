@@ -463,6 +463,47 @@ defmodule Precompiled.Trust do
     _ -> {:error, "batch malformed"}
   end
 
+  @doc """
+  The cached batch, checked as `fetch_batch_cached/3` checks it (signature,
+  shape, clock, freshness, expiry; the sequence floor is read and not
+  raised), without asking the source and without writing anything. For
+  work done while the source is asked; what a run then uses is still
+  `fetch_batch_cached/3`'s answer. Also returns what was verified, which
+  `fetch_batch_cached/3` takes as `:seen_batch` in `config` so the very
+  same bytes under the very same keys are not verified twice.
+  """
+  @spec peek_cached_batch(map(), root()) :: {:ok, batch(), map()} | :error
+  def peek_cached_batch(config, root) do
+    dir = state_dir(config)
+
+    with %{body: body} <- read_cached_batch(dir),
+         {:ok, decoded, seen} <- verify_signed(config, root, body),
+         {:ok, batch} <- check_batch(config, decoded, dir) do
+      {:ok, batch, seen}
+    else
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  @doc """
+  The URL `fetch_batch_cached/3` asks and the ETag it sends with it (nil
+  when there is no usable cached batch), as of now.
+  """
+  @spec batch_request(map()) :: {String.t(), String.t() | nil}
+  def batch_request(config) do
+    etag =
+      case read_cached_batch(state_dir(config)) do
+        %{etag: etag} -> etag
+        nil -> nil
+      end
+
+    {config.source <> "/batch.json", etag}
+  rescue
+    _ -> {config.source <> "/batch.json", nil}
+  end
+
   defp online_batch(config, root, fetch, cached, dir) do
     case fetch.(config.source <> "/batch.json", cached && cached.etag) do
       :not_modified when cached != nil ->
@@ -581,11 +622,39 @@ defmodule Precompiled.Trust do
   end
 
   defp verify_batch(config, root, body, dir) do
+    with {:ok, decoded, _seen} <- verify_signed(config, root, body),
+         {:ok, batch} <- check_batch(config, decoded, dir),
+         :ok <- write_state(dir, batch.sequence) do
+      {:ok, batch}
+    end
+  end
+
+  # The signature and the JSON. Bytes that are exactly the ones
+  # peek_cached_batch/2 verified in this run under exactly the same keys
+  # and threshold are not verified again: the outcome could only be the
+  # same. Everything after (fields, clock, freshness, expiry, the sequence
+  # floor) is checked every time.
+  defp verify_signed(config, root, body) do
     {keys, t} = root_keys(root, "batch")
 
-    with {:ok, payload} <- verify_envelope(body, keys, t) |> or_error("batch signature invalid"),
-         {:ok, decoded} <- safe_decode(payload) |> or_error("batch malformed"),
-         {:ok, seq, issued, exp, manifests, v2, content} <- batch_fields(decoded),
+    case Map.get(config, :seen_batch) do
+      %{body: ^body, keys: ^keys, threshold: ^t, decoded: decoded} = seen
+      when is_binary(body) ->
+        {:ok, decoded, seen}
+
+      _ ->
+        with {:ok, payload} <-
+               verify_envelope(body, keys, t) |> or_error("batch signature invalid"),
+             {:ok, decoded} <- safe_decode(payload) |> or_error("batch malformed") do
+          {:ok, decoded, %{body: body, keys: keys, threshold: t, decoded: decoded}}
+        end
+    end
+  end
+
+  # Every check on a signed batch's fields, reading the sequence floor in
+  # `dir` but not raising it.
+  defp check_batch(config, decoded, dir) do
+    with {:ok, seq, issued, exp, manifests, v2, content} <- batch_fields(decoded),
          now = now(config),
          :ok <- sane_clock(now),
          {:ok, issued_at} <- parse_instant(issued),
@@ -594,8 +663,7 @@ defmodule Precompiled.Trust do
          :ok <- lifetime(issued_at, expires_at),
          :ok <- fresh(issued_at, now, Map.get(config, :bundle, false)),
          :ok <- not_expired(expires_at, now),
-         :ok <- monotonic(dir, seq),
-         :ok <- write_state(dir, seq) do
+         :ok <- monotonic(dir, seq) do
       {:ok, %{sequence: seq, manifests: manifests, manifests_v2: v2, content: content}}
     end
   end

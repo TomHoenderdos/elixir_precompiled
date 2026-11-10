@@ -82,7 +82,9 @@ Nothing CI-specific is needed; for speed:
 - a warm step asks the source one conditional question (`If-None-Match`
   on the batch) and downloads nothing else. Until the portal answers that
   question with `304 Not Modified`, the batch itself is downloaded again;
-  manifests and files still come from the cache.
+  manifests and files still come from the cache. While the question is
+  out, dependencies are matched against the cached batch; the answer
+  still decides what is installed.
 
 ```yaml
 - uses: actions/cache@v4

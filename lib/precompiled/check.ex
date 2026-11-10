@@ -7,7 +7,24 @@ defmodule Precompiled.Check do
   # The shared engine: every candidate becomes a HIT, MISS or FAIL line with
   # a reason; the same list lands in `<build_lib>/.precompiled/report.json`.
 
-  alias Precompiled.{CompileEnv, Config, Env, Fetch, FileUtil, Match, Output, Trust}
+  alias Precompiled.{
+    CompileEnv,
+    Config,
+    Env,
+    Fetch,
+    FileStamp,
+    FileUtil,
+    Match,
+    Output,
+    SourceScan,
+    Trust
+  }
+
+  # Dependencies matched and installed at once.
+  @concurrency 8
+  # How long past the metadata deadline the batch request's worker is
+  # waited for before it is stopped.
+  @answer_grace_ms 5_000
 
   @type line :: %{
           name: String.t(),
@@ -172,32 +189,51 @@ defmodule Precompiled.Check do
   # Nothing left that needs the batch (only excepted installs): no fetch.
   defp lines_for([], [], _config, _env, _config_fun), do: []
 
+  # Workers of this run (the batch request, the matching, the installs)
+  # are unlinked children of one supervisor that goes when the run does:
+  # none outlives it, and none that dies takes the caller with it.
   defp lines_for(candidates, installed, config, env, config_fun) do
-    case fetch_batch(config) do
-      {:ok, batch} ->
-        # Files may come from the project's own :content origins; by-sha
-        # manifest paths are used only where the signed batch says they exist.
-        config =
-          config
-          |> Map.put(:content, Map.get(config, :content_override) || batch.content)
-          |> Map.put(:by_sha, is_list(batch.content))
+    {:ok, sup} = Task.Supervisor.start_link()
+    stamps = FileStamp.open(if Map.get(config, :cache, true) != false, do: config.home)
+    config = Map.put(config, :stamps, stamps)
+    plan_ahead = &plan_ahead(&1, &2, sup, {candidates, installed}, env, config_fun)
 
-        {revoked, replaced} = recheck(installed, batch, env)
+    try do
+      case fetch_batch(config, sup, plan_ahead) do
+        {{:ok, batch}, plans} ->
+          config = with_batch(config, batch)
+          {revoked, replaced} = recheck(installed, batch, env)
 
-        lines = revoked ++ install_lines(candidates ++ replaced, config, batch, env, config_fun)
-        # Once a day, the cache back under its bound. Only after a run with
-        # a verified batch: a refused one changes nothing on disk (R14). A
-        # project with nothing to check never gets here, so it never gc's
-        # a shared home; the next project that checks something does.
-        Precompiled.Cache.maybe_gc(config)
-        lines
+          lines =
+            revoked ++
+              install_lines(candidates ++ replaced, config, batch, env, config_fun, sup, plans)
 
-      {:error, why} ->
-        # No fresh batch, no verdict: installed builds stay as they are,
-        # and their line says so rather than reading as a source compile.
-        Enum.map(candidates, &revoke_line(&1, :fail, why)) ++
-          Enum.map(installed, &kept_line(&1, why))
+          FileStamp.close(stamps, config.home)
+          # Once a day, the cache back under its bound. Only after a run with
+          # a verified batch: a refused one changes nothing on disk (R14). A
+          # project with nothing to check never gets here, so it never gc's
+          # a shared home; the next project that checks something does.
+          Precompiled.Cache.maybe_gc(config)
+          lines
+
+        {{:error, why}, _plans} ->
+          # No fresh batch, no verdict: installed builds stay as they are,
+          # and their line says so rather than reading as a source compile.
+          Enum.map(candidates, &revoke_line(&1, :fail, why)) ++
+            Enum.map(installed, &kept_line(&1, why))
+      end
+    after
+      FileStamp.close(stamps, config.home)
+      Supervisor.stop(sup)
     end
+  end
+
+  # Files may come from the project's own :content origins; by-sha
+  # manifest paths are used only where the signed batch says they exist.
+  defp with_batch(config, batch) do
+    config
+    |> Map.put(:content, Map.get(config, :content_override) || batch.content)
+    |> Map.put(:by_sha, is_list(batch.content))
   end
 
   # Installed builds Mix will not compile this run, as candidates (with
@@ -231,19 +267,28 @@ defmodule Precompiled.Check do
   # from the cache, so this costs no request. Not named, or no readable
   # provenance: removed, so Mix compiles it from source in this same run.
   defp recheck(installed, batch, env) do
-    Enum.reduce(installed, {[], []}, fn dep, {revoked, replaced} ->
+    Enum.reduce(sort_installed(installed, batch, env), {[], []}, fn
+      {:replace, dep}, {revoked, replaced} ->
+        {revoked, replaced ++ [dep]}
+
+      {:revoke, dep, line}, {revoked, replaced} ->
+        {revoked ++ [revoke(dep, env, line)], replaced}
+    end)
+  end
+
+  # What recheck/3 does with each installed build under `batch`, without
+  # doing it: replace (match it again) or revoke, with the line.
+  defp sort_installed(installed, batch, env) do
+    for dep <- installed do
       {sha, _path} = manifest_ref(batch, Atom.to_string(dep.name))
 
-      case recheck_one(
-             dep,
-             sha,
-             provenance_field(env.build_lib, dep.name, "manifest_sha256"),
-             env
-           ) do
-        {:replace, dep} -> {revoked, replaced ++ [dep]}
-        line -> {revoked ++ [line], replaced}
-      end
-    end)
+      recheck_one(
+        dep,
+        sha,
+        provenance_field(env.build_lib, dep.name, "manifest_sha256"),
+        env
+      )
+    end
   end
 
   # The recorded files hash only says which build to prefer; whether the
@@ -256,11 +301,11 @@ defmodule Precompiled.Check do
          installed_sha: recorded
        })}
 
-  defp recheck_one(dep, sha, nil, env) when is_binary(sha),
-    do: revoke(dep, env, revoke_line(dep, :miss, "revoked: provenance unreadable"))
+  defp recheck_one(dep, sha, nil, _env) when is_binary(sha),
+    do: {:revoke, dep, revoke_line(dep, :miss, "revoked: provenance unreadable")}
 
-  defp recheck_one(dep, _sha, _recorded, env),
-    do: revoke(dep, env, revoke_line(dep, :miss, "revoked: no longer in the current batch"))
+  defp recheck_one(dep, _sha, _recorded, _env),
+    do: {:revoke, dep, revoke_line(dep, :miss, "revoked: no longer in the current batch")}
 
   # Removes the installed build; `outcome` once it is gone, a FAIL line
   # naming the file that would not go otherwise.
@@ -326,27 +371,21 @@ defmodule Precompiled.Check do
   # Unlinked workers under a supervisor of this run: a worker that dies
   # outright (killed, or a crash one/5 cannot catch) is one FAIL line for
   # its dep, never an exit that takes the caller and the build with it.
-  defp install_lines(candidates, config, batch, env, config_fun) do
-    {:ok, sup} = Task.Supervisor.start_link()
-
-    try do
-      sup
-      |> Task.Supervisor.async_stream_nolink(
-        candidates,
-        &one(&1, config, batch, env, config_fun),
-        max_concurrency: 8,
-        timeout: :infinity,
-        ordered: true
-      )
-      |> Enum.zip(candidates)
-      |> Enum.map(fn
-        {{:ok, line}, _dep} -> line
-        {{:exit, reason}, dep} -> worker_died(dep, reason, env)
-      end)
-      |> Enum.reject(&is_nil/1)
-    after
-      Supervisor.stop(sup)
-    end
+  defp install_lines(candidates, config, batch, env, config_fun, sup, plans) do
+    sup
+    |> Task.Supervisor.async_stream_nolink(
+      candidates,
+      &one(&1, config, batch, env, config_fun, plans),
+      max_concurrency: @concurrency,
+      timeout: :infinity,
+      ordered: true
+    )
+    |> Enum.zip(candidates)
+    |> Enum.map(fn
+      {{:ok, line}, _dep} -> line
+      {{:exit, reason}, dep} -> worker_died(dep, reason, env)
+    end)
+    |> Enum.reject(&is_nil/1)
   end
 
   # Nothing of a dead worker's install may stay behind: no staging dir and
@@ -395,38 +434,191 @@ defmodule Precompiled.Check do
   # when its check is due (hourly) or when the batch stops verifying under
   # the root in use (a rotation since the last check); never offline. Root
   # and batch together get :metadata_timeout_ms of the run's deadline.
+  #
+  # fetch_batch/1 (a device) does all of that in the caller, in that order.
+  # A run of this module (fetch_batch/3) moves the root check, when due, and
+  # the batch request into one worker of `sup`, and meanwhile runs
+  # `plan_ahead` on the cached batch (see plan_ahead/6): read-only work
+  # whose results are used only where the decided batch makes them the
+  # same. The answer still goes through fetch_batch_cached/3 exactly as
+  # without the worker, after the root it may have refreshed. Offline
+  # nothing overlaps (there is no request). A worker that dies or overruns
+  # is as if there had been none: the root check and the request are made
+  # again in the caller, as fetch_batch/1 makes them.
   @doc false
   @spec fetch_batch(map()) :: {:ok, Trust.batch()} | {:error, String.t()}
   def fetch_batch(config) do
-    meta =
-      Map.update!(
-        config,
-        :deadline_at,
-        &min(
-          &1,
-          System.monotonic_time(:millisecond) + Map.get(config, :metadata_timeout_ms, 15_000)
-        )
-      )
+    {result, _plans} = fetch_batch(config, nil, nil)
+    result
+  end
 
+  defp fetch_batch(config, sup, plan_ahead) do
+    meta = metadata_deadline(config)
     offline? = Map.get(meta, :offline, false)
     fetch = &Fetch.get_conditional(meta, &1, &2)
 
-    with {:ok, root, refreshed?} <- root_in_use(meta, offline?) do
-      checked? = refreshed? or (not offline? and Trust.root_check_due?(meta))
-      root = if checked? and not refreshed?, do: refresh_root(meta, root), else: root
+    case root_in_use(meta, offline?) do
+      {:ok, root, refreshed?} ->
+        checked? = refreshed? or (not offline? and Trust.root_check_due?(meta))
+        refresh? = checked? and not refreshed?
 
-      meta
-      |> Trust.fetch_batch_cached(root, fetch)
-      |> case do
-        {:error, "batch signature invalid"} when not checked? and not offline? ->
-          Trust.fetch_batch_cached(meta, refresh_root(meta, root), fetch)
+        {meta, root, answered, plans} =
+          if offline? or sup == nil,
+            do: in_caller(meta, root, refresh?, fetch),
+            else: overlap(meta, root, refresh?, sup, plan_ahead, fetch)
 
-        other ->
-          other
-      end
-      |> source_down(config)
+        {decide(meta, root, answered, checked? or offline?, fetch) |> source_down(config), plans}
+
+      error ->
+        {error, %{}}
     end
   end
+
+  defp metadata_deadline(config) do
+    Map.update!(
+      config,
+      :deadline_at,
+      &min(
+        &1,
+        System.monotonic_time(:millisecond) + Map.get(config, :metadata_timeout_ms, 15_000)
+      )
+    )
+  end
+
+  # No worker: the root check, when due, then the request, in the caller.
+  defp in_caller(meta, root, refresh?, fetch),
+    do: {meta, if(refresh?, do: refresh_root(meta, root), else: root), fetch, %{}}
+
+  # The batch, from the answer: verified under `root`, and once more after
+  # a root check when it fails its signature and no check was made yet.
+  defp decide(meta, root, answered, checked?, fetch) do
+    case Trust.fetch_batch_cached(meta, root, answered) do
+      {:error, "batch signature invalid"} when not checked? ->
+        Trust.fetch_batch_cached(meta, refresh_root(meta, root), fetch)
+
+      other ->
+        other
+    end
+  end
+
+  # The root check (when due) and the batch request in a worker, the plans
+  # in the caller meanwhile. Returns the config to verify with (carrying
+  # what the plans' peek verified), the root to verify under, a fetch that
+  # hands back the worker's answer for exactly the request it made (else
+  # asks again), and the plans.
+  defp overlap(meta, root, refresh?, sup, plan_ahead, fetch) do
+    request = Task.Supervisor.async_nolink(sup, fn -> ask_source(meta, root, refresh?) end)
+    {plans, seen} = plan_ahead.(meta, root)
+
+    case await_source(request, meta) do
+      {:ok, {root, asked, answer}} ->
+        answered = fn url, etag ->
+          if {url, etag} == asked, do: answer, else: fetch.(url, etag)
+        end
+
+        {Map.put(meta, :seen_batch, seen), root, answered, plans}
+
+      # The worker died or overran: everything as if there had been none.
+      :error ->
+        root = if refresh?, do: refresh_root(meta, root), else: root
+        {Map.put(meta, :seen_batch, seen), root, fetch, plans}
+    end
+  end
+
+  # In the request's worker: the root when its check is due, then the
+  # conditional batch request. Returns the root to use, what was asked
+  # (URL and ETag) and the answer.
+  defp ask_source(meta, root, refresh?) do
+    root = if refresh?, do: refresh_root(meta, root), else: root
+    {url, etag} = Trust.batch_request(meta)
+    {root, {url, etag}, Fetch.get_conditional(meta, url, etag)}
+  end
+
+  # The request ends by the metadata deadline on its own; the grace only
+  # covers a worker that does not.
+  defp await_source(request, meta) do
+    wait = max(meta.deadline_at - System.monotonic_time(:millisecond), 0) + @answer_grace_ms
+
+    case Task.yield(request, wait) || Task.shutdown(request, :brutal_kill) do
+      {:ok, {_root, _asked, _answer} = answer} -> {:ok, answer}
+      _ -> :error
+    end
+  end
+
+  # While the source is asked: the cached batch, peeked at (verified, not
+  # recorded), and every dependency matched against it from the cache
+  # alone: cached manifest, cached source scan, the match. Nothing is
+  # fetched, written, installed or removed, so a refused answer leaves no
+  # trace of it. Plans are keyed by the candidate (with what recheck/3
+  # knows of an installed build) and the manifest sha and path the cached
+  # batch names; one/6 uses a plan only under the same key in the decided
+  # batch, where it would compute exactly the same thing. Whatever is not
+  # cached, or fails in any way, is simply planned once the batch is known.
+  defp plan_ahead(meta, root, sup, {candidates, installed}, env, config_fun) do
+    case Trust.peek_cached_batch(meta, root) do
+      {:ok, batch, seen} ->
+        config = with_batch(meta, batch)
+        replaced = for {:replace, dep} <- sort_installed(installed, batch, env), do: dep
+
+        plans =
+          sup
+          |> Task.Supervisor.async_stream_nolink(
+            candidates ++ replaced,
+            &plan_cached(&1, config, batch, env, config_fun),
+            max_concurrency: @concurrency,
+            timeout: :infinity,
+            ordered: false
+          )
+          |> Enum.flat_map(fn
+            {:ok, {key, {:planned, _, _} = plan}} -> [{key, plan}]
+            _ -> []
+          end)
+          |> Map.new()
+
+        {plans, seen}
+
+      :error ->
+        {%{}, nil}
+    end
+  rescue
+    _ -> {%{}, nil}
+  end
+
+  defp plan_cached(candidate, config, batch, env, config_fun) do
+    sname = Atom.to_string(candidate.name)
+    {sha, path} = manifest_ref(batch, sname)
+
+    with true <- is_binary(sha),
+         {:ok, manifest} <- Fetch.cached_manifest_only(config, sha),
+         {:ok, reads} <- cached_reads(config, env, sname, candidate.lock_entry) do
+      result = Match.select(manifest, ctx(candidate, env, config, config_fun, reads))
+      {{candidate, sha, path}, {:planned, scan_key(candidate.lock_entry), result}}
+    else
+      _ -> {nil, :deferred}
+    end
+  rescue
+    _ -> {nil, :deferred}
+  catch
+    _, _ -> {nil, :deferred}
+  end
+
+  # scan_reads/4 from the scan cache alone: no sources is nil (no rule),
+  # as there; sources not scanned yet are not planned ahead.
+  defp cached_reads(config, env, sname, {:hex, _, _, _, _, _, _, outer}) do
+    if File.dir?(Path.join(env.deps_path, sname)) do
+      case SourceScan.cached_only(config.home, outer) do
+        nil -> :error
+        reads -> {:ok, reads}
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp cached_reads(_config, _env, _sname, _lock_entry), do: {:ok, nil}
+
+  defp scan_key({:hex, _, _, _, _, _, _, outer}), do: outer
+  defp scan_key(_), do: nil
 
   # A cached batch stood in for an unreachable source: its manifests and
   # files are not asked of the source again this run.
@@ -467,7 +659,7 @@ defmodule Precompiled.Check do
     root
   end
 
-  defp one(candidate, config, batch, env, config_fun) do
+  defp one(candidate, config, batch, env, config_fun, plans) do
     %{name: name, version: version} = candidate
     sname = Atom.to_string(name)
     base = %{name: sname, version: version, bytes: 0}
@@ -484,11 +676,8 @@ defmodule Precompiled.Check do
 
       result =
         with sha when is_binary(sha) <- sha || {:miss, "not in batch"},
-             {:ok, manifest} <- Fetch.manifest(config, sname, sha, path),
-             reads = scan_reads(config, env, sname, candidate.lock_entry),
-             :ok <- scan_in_time(reads),
              {:ok, entry, _system_key} <-
-               Match.select(manifest, ctx(candidate, env, config, config_fun, reads)) do
+               planned(plans, candidate, sha, path, config, env, config_fun) do
           provenance = %{
             sha: sha,
             path: path,
@@ -515,6 +704,28 @@ defmodule Precompiled.Check do
       kind, reason when kind in [:exit, :throw] ->
         if replacing?, do: _ = remove(env.build_lib, sname)
         crashed(base, inspect(reason))
+    end
+  end
+
+  # The match plan_ahead/6 made against the cached batch, when the decided
+  # batch names the same manifest for the same candidate (its cache
+  # entries then marked used, as reading them here would have); else the
+  # match made now.
+  defp planned(plans, candidate, sha, path, config, env, config_fun) do
+    case Map.fetch(plans, {candidate, sha, path}) do
+      {:ok, {:planned, scan_key, result}} ->
+        Fetch.manifest_used(config, sha)
+        SourceScan.mark_used(config.home, scan_key)
+        result
+
+      :error ->
+        sname = Atom.to_string(candidate.name)
+
+        with {:ok, manifest} <- Fetch.manifest(config, sname, sha, path),
+             reads = scan_reads(config, env, sname, candidate.lock_entry),
+             :ok <- scan_in_time(reads) do
+          Match.select(manifest, ctx(candidate, env, config, config_fun, reads))
+        end
     end
   end
 

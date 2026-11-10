@@ -269,4 +269,22 @@ defmodule Precompiled.ConfigTest do
     System.put_env("PRECOMPILED", "0")
     assert Config.load() == nil
   end
+
+  describe "a home a run creates" do
+    @describetag :tmp_dir
+
+    test "is owner-only", %{tmp_dir: dir} do
+      home = Path.join(dir, "new-home")
+      assert {:ok, ^home} = Precompiled.Config.run_home(home, Path.join(dir, "lib"))
+      assert Precompiled.FileStamp.trusted_home?(home)
+    end
+
+    test "an existing one keeps its mode", %{tmp_dir: dir} do
+      home = Path.join(dir, "old-home")
+      File.mkdir_p!(home)
+      File.chmod!(home, 0o755)
+      assert {:ok, ^home} = Precompiled.Config.run_home(home, Path.join(dir, "lib"))
+      assert Bitwise.band(File.stat!(home).mode, 0o777) == 0o755
+    end
+  end
 end

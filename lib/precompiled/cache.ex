@@ -16,10 +16,12 @@ defmodule Precompiled.Cache do
   # whatever it points at) is neither counted nor removed.
   #
   # Runs sharing the home may gc at the same time as they read. Every read
-  # re-hashes what it reads (Fetch, and the scan cache's checksum key), so
-  # an entry evicted under a reader costs that reader a download, never a
-  # wrong build; a temp file younger than an hour is another run's write
-  # in progress and is kept.
+  # re-hashes what it reads, or finds it unchanged since it was hashed
+  # (Fetch with Precompiled.FileStamp, and the scan cache's checksum key),
+  # so an entry evicted under a reader costs that reader a download, never
+  # a wrong build; a temp file younger than an hour is another run's write
+  # in progress and is kept. The stamps file is not a cache entry: it goes
+  # whenever files were evicted, and with `clear/1`.
 
   @dirs [["files"], ["manifests"], ["scan", "v1"]]
   @tmp ~r/\.tmp-[0-9-]+\z/
@@ -46,6 +48,9 @@ defmodule Precompiled.Cache do
       end)
 
     removed = for {path, size} <- stale ++ evict, remove_regular(path) == :ok, do: size
+    # Stamps of evicted files would only ever mismatch; dropping them all
+    # keeps the stamps file bounded, at the cost of one re-hash each.
+    if evict != [], do: Precompiled.FileStamp.forget(home)
     %{removed: length(removed), bytes: Enum.sum(removed)}
   end
 
@@ -90,7 +95,7 @@ defmodule Precompiled.Cache do
         do: File.rm_rf(dir)
 
     _ = remove_regular(Path.join(home, "gc_at"))
-    :ok
+    Precompiled.FileStamp.forget(home)
   end
 
   # Each cache dir that is a plain dir all the way down from the home.

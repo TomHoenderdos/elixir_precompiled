@@ -45,9 +45,7 @@ defmodule Precompiled.SourceScan do
   # scan the run deadline cut short, or one an I/O error stopped, is not.
   @spec cached(Path.t() | nil, Path.t(), String.t(), integer() | nil) :: t()
   def cached(home, dep_dir, checksum, deadline_at \\ nil) do
-    path =
-      if is_binary(home) and is_binary(checksum) and checksum =~ @checksum,
-        do: Path.join([home, "scan", "v1", checksum <> ".term"])
+    path = cache_path(home, checksum)
 
     case path && read(path) do
       nil ->
@@ -63,6 +61,28 @@ defmodule Precompiled.SourceScan do
         _ = Precompiled.FileUtil.mark_used(path)
         hit
     end
+  end
+
+  @doc false
+  # The cached result for `checksum` alone: nil when there is none, and
+  # nothing is scanned, written or marked used.
+  @spec cached_only(Path.t() | nil, String.t()) :: t() | nil
+  def cached_only(home, checksum) do
+    if path = cache_path(home, checksum), do: read(path)
+  end
+
+  @doc false
+  # A result read by cached_only/2 and then used: marked used, as cached/4
+  # marks a hit.
+  @spec mark_used(Path.t() | nil, String.t()) :: :ok
+  def mark_used(home, checksum) do
+    if path = cache_path(home, checksum), do: _ = Precompiled.FileUtil.mark_used(path)
+    :ok
+  end
+
+  defp cache_path(home, checksum) do
+    if is_binary(home) and is_binary(checksum) and checksum =~ @checksum,
+      do: Path.join([home, "scan", "v1", checksum <> ".term"])
   end
 
   defp read(path) do

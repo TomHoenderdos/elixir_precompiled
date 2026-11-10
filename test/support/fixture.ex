@@ -203,6 +203,14 @@ defmodule Precompiled.Fixture do
   @spec corrupt_port(pos_integer() | nil) :: :ok
   def corrupt_port(port), do: put(:corrupt_port, port)
 
+  # batch.json is answered `ms` later than asked; nil answers at once.
+  @spec delay_batch(non_neg_integer() | nil) :: :ok
+  def delay_batch(ms), do: put(:batch_delay_ms, ms)
+
+  # When the last batch.json answer was sent (monotonic ms), or nil.
+  @spec batch_answered(integer()) :: :ok
+  def batch_answered(at), do: put(:batch_answered_at, at)
+
   @spec get(atom()) :: term()
   def get(key), do: Agent.get(__MODULE__, &Map.get(&1, key))
 

@@ -99,6 +99,11 @@ environment variable.
   one line says so.
 - **The source answered, but the answer was refused** (bad signature,
   older sequence, expired): it never falls back to the cache.
+- While the batch request is out, dependencies are matched against the
+  cached batch, from the cache only and without writing anything. Nothing
+  is installed or removed until the answer is verified, and a match is
+  used only where the verified batch names the same manifest. A refused
+  answer installs nothing.
 
 ## Builds you already have
 
@@ -136,6 +141,26 @@ Before anything is placed, every path in a build is checked:
 - the `.app` lists exactly the beams that ship.
 
 Cache entries are never followed through symlinks.
+
+### Cached files
+
+A cached file is hashed again before each install, unless it is exactly
+the file that was hashed before. "Exactly" means the same device, inode,
+size, mtime and ctime, read from the open file, and recorded once its
+hash matched. The kernel sets ctime on every change to a file (a write,
+`touch`, a rename over it), and no system call sets it back. So a file
+rewritten with its size and mtime restored is still hashed in full, and
+fetched again when it no longer matches. A file is recorded only when its
+times are older than the file system's clock at the start of the run, so
+a change in the same second as the record is caught too.
+
+These records are kept and used only in a cache dir that only its owner
+can enter (mode `0700`). A cache dir this library creates is made that
+way. An existing one keeps its mode: `chmod 700` it to get the same.
+Every cached file in use is hashed in full at least once a day. The
+records do not cover a change below the file system (a failing disk) or
+a clock set back by root. Files placed in `_build`, and everything on a
+device, are checked as before.
 
 ## Root rotation
 
