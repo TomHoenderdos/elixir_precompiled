@@ -55,6 +55,15 @@ jobs:
       # already sized for a slow TCG boot (10 / 5 minutes).
       - name: qemu test (TCG)
         working-directory: integration/device
+        env:
+          DEVICE_TEST_SSH_WAIT_MS: "1800000"
         run: |
           mix deps.get
           mix test --only qemu
+      - name: qemu log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-log
+          path: integration/device/_qemu/qemu.log
+          if-no-files-found: ignore

@@ -16,6 +16,8 @@ defmodule DeviceQemu do
   @here Path.expand("../..", __DIR__)
   @client_root Path.expand("../../../..", __DIR__)
   @port "10022"
+  # TCG on a CI runner can be much slower than hvf or kvm; the workflow
+  # raises it with DEVICE_TEST_SSH_WAIT_MS.
   @ssh_wait_ms if(match?({:unix, :darwin}, :os.type()), do: 120_000, else: 600_000)
   @clock_wait_ms 300_000
 
@@ -40,7 +42,7 @@ defmodule DeviceQemu do
       30_000 -> raise "qemu did not start"
     end
 
-    wait_ssh!(@ssh_wait_ms)
+    wait_ssh!(ssh_wait_ms())
     IO.puts("qemu: ssh up after #{System.monotonic_time(:millisecond) - started} ms")
     :ok
   end
@@ -200,6 +202,13 @@ defmodule DeviceQemu do
        -o IdentitiesOnly=yes -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=5)
   end
 
+  defp ssh_wait_ms() do
+    case Integer.parse(System.get_env("DEVICE_TEST_SSH_WAIT_MS", "")) do
+      {ms, ""} when ms > 0 -> ms
+      _ -> @ssh_wait_ms
+    end
+  end
+
   defp wait_ssh!(ms) do
     unless wait_until(fn -> match?({_, 0}, ssh("1", 20_000)) end, ms),
       do: raise("no ssh on the guest after #{ms} ms; see _qemu/qemu.log")
@@ -241,7 +250,7 @@ defmodule DeviceQemu do
       unless wait_until(fn -> not match?({_, 0}, ssh("1", 10_000)) end, 120_000),
         do: raise("the guest did not go down after Nerves.Runtime.reboot/0")
 
-      wait_ssh!(@ssh_wait_ms)
+      wait_ssh!(ssh_wait_ms())
       IO.puts("qemu: rebooted in #{System.monotonic_time(:millisecond) - started} ms")
     else
       boot!(offline: offline?)
