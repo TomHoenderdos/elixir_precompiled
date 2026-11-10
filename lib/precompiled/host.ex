@@ -31,6 +31,22 @@ defmodule Precompiled.Host do
           lines: [term()]
         }
 
+  @typedoc """
+  What `report/1` did. `{:sent, id, false}` is a new report and its id (what
+  retracting it needs); `{:sent, nil, true}` is one the source had already
+  received. The rest: dumped, cancelled, no report to send, an invalid `contact:`,
+  an error, no install project in this runtime, or reporting turned off.
+  """
+  @type report_outcome ::
+          {:sent, String.t() | nil, boolean()}
+          | :dumped
+          | :cancelled
+          | :no_report
+          | :invalid
+          | {:error, String.t() | :internal}
+          | :no_install
+          | :off
+
   # A process told to stop (supervisor shutdown, a linked :normal or
   # {:shutdown, _} exit) must stop, not turn into a source compile.
   defguardp stop?(reason)
@@ -218,7 +234,7 @@ defmodule Precompiled.Host do
   it; a report already received prints no id. Never raises for a reporting
   problem; returns what happened.
   """
-  @spec report(keyword()) :: Report.outcome() | :no_install | :off
+  @spec report(keyword()) :: report_outcome()
   def report(opts \\ []) when is_list(opts) do
     Install.ensure_mix!(Code.ensure_loaded?(Mix))
 

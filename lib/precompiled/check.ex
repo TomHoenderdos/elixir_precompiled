@@ -611,7 +611,7 @@ defmodule Precompiled.Check do
       dep_env: Map.get(candidate, :dep_env, "prod"),
       config: config_fun,
       prefer: Map.get(candidate, :installed_hash),
-      mix_target: Map.get(env, :mix_target, "host"),
+      mix_target: Map.get(env, :mix_target) || "host",
       reads: reads,
       manager: Map.get(method, :manager),
       overrides: Map.get(method, :overrides, []),
