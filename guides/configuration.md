@@ -4,7 +4,7 @@
 | --- | --- |
 | `:source` | The precompiled API URL. Default: `https://compatibility.nerves-project.org/api/precompiled`. `https` only (`http` on loopback). Config only. |
 | `:except` | Dependencies never installed precompiled, e.g. `[:ash]`. |
-| `:content` | Content origins (mirrors, CDNs) to fetch files and manifests from instead of the ones the signed batch names. `https` only (`http` on loopback). |
+| `:content` | Content origins (mirrors, CDNs) to fetch files and manifests from instead of the ones the signed batch names. `https` only (`http` on loopback). Config only. |
 | `:root` | A `root.json` to trust instead of the one this library ships. Config only. |
 | `:home` / `PRECOMPILED_HOME` | Cache and trust state dir. The config key beats the variable. Default: the user cache dir (`:filename.basedir(:user_cache, "precompiled")`). `PRECOMPILED_HOME=~/.nerves/precompiled` keeps using the pre-rename cache. |
 | `:deadline_seconds` | All network for one run (default 300); what is still waiting then compiles. Root and batch get 15 s together, connects 5 s. |
@@ -17,10 +17,10 @@
 | `PRECOMPILED_DEBUG=1` | Also print each dependency that was not a candidate, and why. |
 
 The keys go in `config :precompiled, ...`; `Precompiled.Host.install/2`
-also takes `:except` and `:home` as options. `:source` and `:root` are
-project config only: no option or environment variable sets them,
-because a source learns which dependencies you use and a root decides
-whose builds run (see [Trust](trust.md)). The old names (`config :nerves_precompiled`,
+also takes `:except` and `:home` as options. `:source`, `:root` and
+`:content` are project config only: no option or environment variable
+sets them, because a source or mirror learns which dependencies you use
+and a root decides whose builds run (see [Trust](trust.md)). The old names (`config :nerves_precompiled`,
 `config :nerves, :precompiled`, `NERVES_PRECOMPILED*`) are still read for
 one release, when the new ones are unset.
 

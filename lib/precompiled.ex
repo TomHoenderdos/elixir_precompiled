@@ -45,7 +45,7 @@ defmodule Precompiled do
   | Option | Default | Meaning |
   | --- | --- | --- |
   | `:source` | `config :precompiled, :device, source:`, else the official API | Per call: `file://DIR` for a bundle only. A network source (`https://...`, or `http://` on loopback only) is set in the firmware's config, never per call: a call naming one is refused with `{:source_not_allowed, source}` (see the Trust guide). The default is `https://compatibility.nerves-project.org/api/precompiled`, checked against the root this library ships. |
-  | `:content`, `:deadline_seconds` | as on the host | Same meaning as the host config keys. |
+  | `:deadline_seconds` | as on the host | Same meaning as the host config key. |
   | `:cacerts_path` | none | A PEM CA bundle to verify an `https` source with (a path). |
   | `:dir` | `/data/precompiled` | The store. Its trust state lives in `DIR/.trust`: a call with another `:dir` gets its own trust state (root chain and sequence floors), starting again from the shipped root. |
   | `:start` | `true` | Start the installed apps (`:temporary`) after loading them. |
@@ -58,7 +58,9 @@ defmodule Precompiled do
 
   Another trust anchor than the shipped `priv/precompiled/root.json` is
   set in the firmware's config only (`config :precompiled,
-  :device, root: path`), never per call.
+  :device, root: path`), never per call. So are content origins
+  (`content: [url]`, mirrors or CDNs): a call passing `:content` gets
+  `{:error, {:content_not_allowed, origins}}`.
 
   The device facts, the clock check, the trust anchor and the network
   source have test seams (`:env`, `:clock_synchronized?`, `:root`, an
@@ -91,6 +93,8 @@ defmodule Precompiled do
     * `{:error, reason}`, where `reason` is one of:
       * `{:bad_request, term}`, `{:bad_option, key}`, `{:bad_source, s}`;
       * `{:source_not_allowed, s}`, a per-call source that is not `file://`;
+      * `{:content_not_allowed, origins}`, per-call content origins (set
+        them in the firmware's `:device` config);
       * `{:clock_unsynchronized, now}`;
       * `{:missing_app, app}`, a network app the firmware leaves out;
       * `{:batch, why}`, the trust chain refused (`why` is the client's
@@ -186,7 +190,7 @@ defmodule Precompiled do
     with {:ok, requests} <- normalize(request),
          :ok <- enabled(),
          {:ok, merged} <- normalize_opts(opts, install_keys()),
-         :ok <- call_source(opts),
+         :ok <- config_only(opts),
          {:ok, config} <- Source.config(merged),
          :ok <- network_apps(config),
          :ok <- clock(config, merged) do
@@ -352,10 +356,14 @@ defmodule Precompiled do
   # names only a file:// bundle, which reads the local disk. Under
   # :test_seams (this library's own suite) a per-call network source is a
   # seam like :root, for the local fixture server.
-  defp call_source(opts) do
-    case Keyword.fetch(opts, :source) do
-      {:ok, "file://" <> _} -> :ok
-      {:ok, source} -> if seams?(), do: :ok, else: {:error, {:source_not_allowed, source}}
+  # Content origins (mirrors, CDNs) learn the same, so they are the
+  # firmware's config alone, with no seam: a bundle's empty list is set
+  # by Source, never by the caller.
+  defp config_only(opts) do
+    case {Keyword.fetch(opts, :source), Keyword.fetch(opts, :content)} do
+      {_, {:ok, content}} -> {:error, {:content_not_allowed, content}}
+      {{:ok, "file://" <> _}, _} -> :ok
+      {{:ok, source}, _} -> if seams?(), do: :ok, else: {:error, {:source_not_allowed, source}}
       _ -> :ok
     end
   end

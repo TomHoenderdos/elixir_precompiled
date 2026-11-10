@@ -7,9 +7,10 @@ defmodule Precompiled.Config do
   The client's configuration. The source defaults to the official API,
   `https://compatibility.nerves-project.org/api/precompiled`, checked
   against the root this library ships; `config :precompiled, source: url`
-  and `root: path` replace them, in the project's config only: no option,
-  call or environment variable can, since a source learns which
-  dependencies a project has and a root decides whose builds it runs.
+  and `root: path` replace them, and `content: [url]` adds mirrors, in the
+  project's config only: no option, call or environment variable can,
+  since a source or mirror learns which dependencies a project has and a
+  root decides whose builds it runs.
   `except: [dep, ...]` skips dependencies; `Precompiled.Host.install/2`
   takes `:except` and `:home` as options.
 
@@ -55,7 +56,8 @@ defmodule Precompiled.Config do
   @doc """
   The run's config, or nil when it is off (`PRECOMPILED=0`) or the
   configured source is not https. `overrides` may hold `:except` and
-  `:home` only: `:source` and `:root` come from the project's config.
+  `:home` only: `:source`, `:root` and `:content` come from the project's
+  config.
   """
   @spec load(keyword()) :: t() | nil
   def load(overrides \\ []) do
@@ -86,19 +88,21 @@ defmodule Precompiled.Config do
   end
 
   @doc false
-  # A source learns which dependencies a project has, and a root decides
-  # whose builds it runs: both are code in the project's config, never an
-  # option a pasted snippet can carry. Refused loudly, not ignored.
+  # A source or a content origin learns which dependencies a project has,
+  # and a root decides whose builds it runs: all are code in the project's
+  # config, never an option a pasted snippet can carry. Refused loudly,
+  # not ignored.
   @spec config_only!(keyword()) :: :ok
   def config_only!(opts) do
-    case Enum.find([:source, :root], &Keyword.has_key?(opts, &1)) do
+    case Enum.find([:source, :root, :content], &Keyword.has_key?(opts, &1)) do
       nil ->
         :ok
 
       key ->
         raise ArgumentError,
-              "precompiled: #{inspect(key)} is not an option; the source and root are set " <>
-                "in the project's config only (config :precompiled, source: ..., root: ...), " <>
+              "precompiled: #{inspect(key)} is not an option; source, root and content " <>
+                "are set in the project's config only " <>
+                "(config :precompiled, source: ..., root: ..., content: [...]), " <>
                 "see the Trust guide"
     end
   end

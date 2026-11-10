@@ -180,8 +180,8 @@ defmodule Precompiled.Host do
 
   Takes `Mix.install/2`'s options plus `:except` and `:home` (see
   `Precompiled.Config`). The source is the official API unless the
-  config names another; `:source` and `:root` are config only and raise
-  `ArgumentError` here (see the Trust guide). With `PRECOMPILED=0` it is a
+  config names another; `:source`, `:root` and `:content` are config only
+  and raise `ArgumentError` here (see the Trust guide). With `PRECOMPILED=0` it is a
   plain `Mix.install/2`.
 
   Needs Mix on the device (`:mix` in `extra_applications`), a writable

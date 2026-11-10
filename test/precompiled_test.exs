@@ -238,6 +238,23 @@ defmodule PrecompiledTest do
                Precompiled.install(:demo_a, plain ++ [source: "file://" <> bundle])
     end
 
+    test "a call may not name content origins; the firmware's config may", %{opts: opts} do
+      plain = Keyword.drop(opts, [:env, :root, :source])
+
+      for seams <- [true, false] do
+        Application.put_env(:precompiled, :test_seams, seams)
+
+        assert Precompiled.install(:demo_a, plain ++ [content: ["https://cdn.example.test"]]) ==
+                 {:error, {:content_not_allowed, ["https://cdn.example.test"]}}
+      end
+
+      Application.put_env(:precompiled, :test_seams, true)
+      assert Fixture.requests() == []
+
+      put_device_env(content: ["https://cdn.example.test/p/"])
+      assert {:ok, %{content_override: ["https://cdn.example.test/p"]}} = Source.config(plain)
+    end
+
     test "a cacerts_path that is not a path is refused", %{opts: opts} do
       assert Precompiled.install(:demo_a, opts ++ [cacerts_path: :system]) ==
                {:error, {:bad_option, :cacerts_path}}

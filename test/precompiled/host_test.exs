@@ -35,8 +35,8 @@ defmodule Precompiled.HostTest do
     assert Precompiled.Host.run(env: env, host?: false) == :nothing_to_do
   end
 
-  test "install/2 refuses :source and :root, never ignoring them" do
-    for key <- [:source, :root] do
+  test "install/2 refuses :source, :root and :content, never ignoring them" do
+    for key <- [:source, :root, :content] do
       e =
         assert_raise ArgumentError, fn ->
           Precompiled.Host.install([{:jason, "1.4.5"}], [{key, "https://example.test/x"}])

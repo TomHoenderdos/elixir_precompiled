@@ -33,26 +33,30 @@ file             a beam, .app or priv file
 The source is the portal's API,
 `https://compatibility.nerves-project.org/api/precompiled`, and the root
 is the `root.json` this library ships. Only code in your project can
-change them: `config :precompiled, source: ..., root: ...` on the host,
-`config :precompiled, :device, source: ..., root: ...` in a firmware.
+change them, or add mirrors: `config :precompiled, source: ..., root: ...,
+content: [...]` on the host, `config :precompiled, :device, ...` with the
+same keys in a firmware.
 No option, call or environment variable can, because a pasted snippet or
 a stray variable is easy to miss:
 
-- a source sees which dependencies you ask for, so a lookalike URL
-  (`nervs-project.org`) would learn them;
+- a source or mirror sees which dependencies you ask for, so a lookalike
+  URL (`nervs-project.org`) would learn them;
 - a root decides whose signatures count, so together with a source it
   would run someone else's code in your build.
 
-So `Precompiled.Host.install/2` raises on `:source` and `:root`, there is
-no `PRECOMPILED_SOURCE`, and on a device a call may name only a
-`file://` bundle (`{:error, {:source_not_allowed, source}}` otherwise).
+So `Precompiled.Host.install/2` raises on `:source`, `:root` and
+`:content`, there is no `PRECOMPILED_SOURCE`, and on a device a call may
+name only a `file://` bundle (`{:error, {:source_not_allowed, source}}`
+otherwise) and no content origins (`{:error, {:content_not_allowed,
+origins}}`).
 `PRECOMPILED_HOME` and `:home` move only the trust state, which starts
 again from the shipped root.
 
 ## Mirrors and redirects
 
 A batch may name content origins (a CDN) to fetch files and manifests
-from before the source itself. You can override them with `:content`.
+from before the source itself. You can override them with `:content`,
+in config only.
 
 - Everything from a mirror is checked against the hashes in the signed
   batch and manifests. A bad mirror can only cause a fallback to the
