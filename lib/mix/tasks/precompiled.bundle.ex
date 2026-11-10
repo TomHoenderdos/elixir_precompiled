@@ -53,12 +53,12 @@ defmodule Mix.Tasks.Precompiled.Bundle do
   """
   use Mix.Task
 
-  alias ElixirPrecompiled.Device.Env
-  alias ElixirPrecompiled.Device.Output
-  alias ElixirPrecompiled.Device.Plan
-  alias ElixirPrecompiled.Device.Source
-  alias ElixirPrecompiled.Fetch
-  alias ElixirPrecompiled.Trust
+  alias Precompiled.Device.Env
+  alias Precompiled.Device.Output
+  alias Precompiled.Device.Plan
+  alias Precompiled.Device.Source
+  alias Precompiled.Fetch
+  alias Precompiled.Trust
 
   @switches [
     out: :string,

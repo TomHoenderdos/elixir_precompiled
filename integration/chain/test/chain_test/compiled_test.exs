@@ -53,7 +53,7 @@ defmodule ChainTest.CompiledTest do
     results = run(lib, [{"yamerl", "0.10.0", "hit", ""}])
 
     assert %Result{class: :fail, detail: detail} = find(results, "compiled:yamerl")
-    assert detail =~ "elixir_precompiled.json"
+    assert detail =~ "precompiled.json"
   end
 
   test "a hit missing from _build is a disagreement", %{build_lib: lib} do
@@ -65,7 +65,7 @@ defmodule ChainTest.CompiledTest do
     Synthetic.dep(lib, :nerves, @beam, :elixir)
     Synthetic.dep(lib, :nerves_system_br, @beam, :scm)
     Synthetic.dep(lib, :nerves_toolchain_aarch64_nerves_linux_gnu, @beam, :scm)
-    Synthetic.dep(lib, :elixir_precompiled, @beam, :elixir)
+    Synthetic.dep(lib, :precompiled, @beam, :elixir)
     Synthetic.dep(lib, :chain_fixture, @beam, :elixir)
 
     assert %Result{class: :pass, detail: detail} = find(run(lib, []), "compiled_here")

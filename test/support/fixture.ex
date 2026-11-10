@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule ElixirPrecompiled.Fixture do
+defmodule Precompiled.Fixture do
   @moduledoc false
   # A fake signed precompiled source: keys, root, batch, manifests and files
-  # kept in an Agent that ElixirPrecompiled.TestServer serves under /precompiled.
+  # kept in an Agent that Precompiled.TestServer serves under /precompiled.
 
   @spec start_link() :: {:ok, pid()} | {:error, term()}
   def start_link(), do: Agent.start_link(fn -> %{} end, name: __MODULE__)
@@ -213,7 +213,7 @@ defmodule ElixirPrecompiled.Fixture do
   def b64(bin), do: Base.url_encode64(bin, padding: false)
 
   @spec base_url() :: String.t()
-  def base_url(), do: "http://127.0.0.1:#{ElixirPrecompiled.TestServer.port()}/precompiled"
+  def base_url(), do: "http://127.0.0.1:#{Precompiled.TestServer.port()}/precompiled"
 
   @spec reset() :: :ok
   defp reset(),

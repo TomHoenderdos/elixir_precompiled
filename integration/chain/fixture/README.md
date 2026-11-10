@@ -9,7 +9,7 @@ precompiled build:
 - pure Elixir: `jason`, `ash` (with its optional `plug`, which the portal's
   ash builds carry);
 - `nerves_pack`, which brings `nerves_ssh`, so the next run can deploy again;
-- `nerves` (the `feat/precompiled` branch) and `elixir_precompiled` (this
+- `nerves` (the `feat/precompiled` branch) and `precompiled` (this
   repository, by path), which are never installed precompiled;
 - `chain_path_dep` (`deps_local/chain_path_dep`, one module), a path dep that
   is not Nerves tooling: never installed precompiled, whatever a batch names
@@ -45,7 +45,7 @@ Without it, a target build stops with `chain fixture: no site config at
 | --- | --- |
 | `CHAIN_SOURCE` | The precompiled API the client uses (default: the production portal). |
 | `CHAIN_TARGET_CONFIG` | The operator file (default `~/.config/chain_test/target.exs`). |
-| `CHAIN_CLIENT_CONFIG` | A config file merged into `config :elixir_precompiled`; the harness writes one for a conformance case's `client_config`, for that build only. |
+| `CHAIN_CLIENT_CONFIG` | A config file merged into `config :precompiled`; the harness writes one for a conformance case's `client_config`, for that build only. |
 | `CHAIN_NERVES_PATH` | A local nerves checkout instead of the `feat/precompiled` branch. |
 
 ## The probe

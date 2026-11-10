@@ -152,12 +152,12 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
     transform: {ChainTest.Mirror.Identity, %{}},
     setup: {ChainTest.Conformance.Setup.PlantRoot, %{path: "attacker/root.json"}},
     client_env: %{
-      "ELIXIR_PRECOMPILED_ROOT" => {:home, "attacker/root.json"},
+      "PRECOMPILED_ROOT" => {:home, "attacker/root.json"},
       "NERVES_PRECOMPILED_ROOT" => {:home, "attacker/root.json"}
     },
     after: %{state_sequence: :snapshot, installed: :snapshot}
   }),
-  # Every case's home is a fresh ELIXIR_PRECOMPILED_HOME, so the reset T10
+  # Every case's home is a fresh PRECOMPILED_HOME, so the reset T10
   # and R6 describe is R1 and R2 here.
   Map.merge(accepted_previous, %{
     id: "R1.R6.T10",
@@ -469,7 +469,7 @@ accepted_previous = %{accepted | harness: %{"build/sequence" => :rerun}}
   },
   # N3 and N6 over the TLS mirror, a new certificate per case
   # (ChainTest.TestCert). TLS-T0, the control, gives the client the case's
-  # test CA through its own CA option, ELIXIR_PRECOMPILED_CACERTS_PATH, as
+  # test CA through its own CA option, PRECOMPILED_CACERTS_PATH, as
   # its only trusted one (`trust_ca: true`), and must install as T0 does; the cases
   # that need a trusted mirror are gated on it. The N3 cases that test
   # trust itself never get the CA.

@@ -41,8 +41,8 @@ defmodule ChainTest.BuildTest do
           ":"
 
         seq ->
-          "mkdir -p \"$ELIXIR_PRECOMPILED_HOME/0123456789abcdef\" && " <>
-            "printf #{seq} > \"$ELIXIR_PRECOMPILED_HOME/0123456789abcdef/state\""
+          "mkdir -p \"$PRECOMPILED_HOME/0123456789abcdef\" && " <>
+            "printf #{seq} > \"$PRECOMPILED_HOME/0123456789abcdef/state\""
       end
 
     """
@@ -129,7 +129,7 @@ defmodule ChainTest.BuildTest do
       env = File.read!(Path.join(ctx.tmp, "mix.env"))
       assert env =~ "MIX_TARGET=rpi4\n"
       assert env =~ "MIX_ENV=dev\n"
-      assert env =~ "ELIXIR_PRECOMPILED_HOME=#{ctx.home}\n"
+      assert env =~ "PRECOMPILED_HOME=#{ctx.home}\n"
       assert env =~ "CHAIN_SOURCE=http://127.0.0.1:1/api/precompiled\n"
       assert env =~ ctx.fixture
     end)
@@ -170,7 +170,7 @@ defmodule ChainTest.BuildTest do
       File.write!(path, file)
 
       assert Config.Reader.read!(path) == [
-               elixir_precompiled: [
+               precompiled: [
                  clock_offset_seconds: 90_000,
                  root: "/r/root.json",
                  source: "http://127.0.0.1:2"
@@ -192,14 +192,14 @@ defmodule ChainTest.BuildTest do
 
     test "the fixture's config merges the file over its own source", ctx do
       client = Path.join(ctx.tmp, "client.exs")
-      File.write!(client, "import Config\nconfig :elixir_precompiled, clock_offset_seconds: 5\n")
+      File.write!(client, "import Config\nconfig :precompiled, clock_offset_seconds: 5\n")
       System.put_env("CHAIN_SOURCE", "http://127.0.0.1:3")
       System.put_env("CHAIN_CLIENT_CONFIG", client)
 
       try do
         config = Config.Reader.read!(Path.join(ChainTest.CLI.root(), "fixture/config/config.exs"))
 
-        assert config[:elixir_precompiled] == [
+        assert config[:precompiled] == [
                  source: "http://127.0.0.1:3",
                  clock_offset_seconds: 5
                ]
@@ -215,19 +215,19 @@ defmodule ChainTest.BuildTest do
 
       File.write!(
         site,
-        "import Config\nconfig :elixir_precompiled, source: \"http://127.0.0.1:4\", clock_offset_seconds: 1\n"
+        "import Config\nconfig :precompiled, source: \"http://127.0.0.1:4\", clock_offset_seconds: 1\n"
       )
 
       client = Path.join(ctx.tmp, "client.exs")
-      File.write!(client, "import Config\nconfig :elixir_precompiled, clock_offset_seconds: 5\n")
+      File.write!(client, "import Config\nconfig :precompiled, clock_offset_seconds: 5\n")
       System.put_env("CHAIN_TARGET_CONFIG", site)
       System.put_env("CHAIN_CLIENT_CONFIG", client)
       Mix.target(:rpi4)
 
       try do
         config = Config.Reader.read!(Path.join(ChainTest.CLI.root(), "fixture/config/config.exs"))
-        assert config[:elixir_precompiled][:clock_offset_seconds] == 5
-        assert config[:elixir_precompiled][:source] == "http://127.0.0.1:4"
+        assert config[:precompiled][:clock_offset_seconds] == 5
+        assert config[:precompiled][:source] == "http://127.0.0.1:4"
       after
         Mix.target(:host)
         System.delete_env("CHAIN_TARGET_CONFIG")
@@ -262,8 +262,8 @@ defmodule ChainTest.BuildTest do
       copy = Path.join(ctx.tmp, "copied")
 
       grab =
-        ~s(mkdir -p '#{copy}' && cp "$ELIXIR_PRECOMPILED_CACERTS_PATH" '#{copy}/ca.pem' && ) <>
-          ~s(echo "$ELIXIR_PRECOMPILED_CACERTS_PATH" > '#{copy}/where' && ) <>
+        ~s(mkdir -p '#{copy}' && cp "$PRECOMPILED_CACERTS_PATH" '#{copy}/ca.pem' && ) <>
+          ~s(echo "$PRECOMPILED_CACERTS_PATH" > '#{copy}/where' && ) <>
           ~s(echo "${CHAIN_CLIENT_CONFIG-unset}" > '#{copy}/config'\n)
 
       FakeBin.with_stubs(%{"mix" => grab <> fake_mix(ctx, @hits, sequence: 7)}, fn _ ->
@@ -288,14 +288,14 @@ defmodule ChainTest.BuildTest do
     end
 
     test "without trust_ca the client CA option is unset, so it keeps the OS store", ctx do
-      System.put_env("ELIXIR_PRECOMPILED_CACERTS_PATH", "/operator/ca.pem")
+      System.put_env("PRECOMPILED_CACERTS_PATH", "/operator/ca.pem")
 
       try do
         {env, {:ok, file}} = client_run(ctx, %{client_config: %{clock_offset_seconds: 1}})
-        refute env =~ ~r/^ELIXIR_PRECOMPILED_CACERTS_PATH=/m
+        refute env =~ ~r/^PRECOMPILED_CACERTS_PATH=/m
         refute file =~ "cacerts_load"
       after
-        System.delete_env("ELIXIR_PRECOMPILED_CACERTS_PATH")
+        System.delete_env("PRECOMPILED_CACERTS_PATH")
       end
     end
 
@@ -333,9 +333,9 @@ defmodule ChainTest.BuildTest do
 
   describe "client_env" do
     test "passes the variables a case names to its build only", ctx do
-      env_in = %{"ELIXIR_PRECOMPILED_ROOT" => "/a/root.json"}
+      env_in = %{"PRECOMPILED_ROOT" => "/a/root.json"}
       {env, _} = client_run(ctx, %{client_env: env_in})
-      assert env =~ ~r/^ELIXIR_PRECOMPILED_ROOT=\/a\/root.json$/m
+      assert env =~ ~r/^PRECOMPILED_ROOT=\/a\/root.json$/m
       refute env =~ ~r/^NERVES_PRECOMPILED_ROOT=/m
     end
 
@@ -354,11 +354,11 @@ defmodule ChainTest.BuildTest do
 
     test "a name outside the allowed ones or a relative path raises" do
       for bad <- [
-            %{"ELIXIR_PRECOMPILED_HOME" => "/h"},
-            %{"ELIXIR_PRECOMPILED" => "0"},
-            %{"ELIXIR_PRECOMPILED_ROOT" => "root.json"},
-            %{"ELIXIR_PRECOMPILED_ROOT" => {:home, "root.json"}},
-            [{"ELIXIR_PRECOMPILED_ROOT", "/a"}]
+            %{"PRECOMPILED_HOME" => "/h"},
+            %{"PRECOMPILED" => "0"},
+            %{"PRECOMPILED_ROOT" => "root.json"},
+            %{"PRECOMPILED_ROOT" => {:home, "root.json"}},
+            [{"PRECOMPILED_ROOT", "/a"}]
           ] do
         assert_raise ArgumentError, fn ->
           Build.run(%{fixture_dir: "/nonexistent", target: "rpi4", source: "x", client_env: bad})
@@ -367,7 +367,7 @@ defmodule ChainTest.BuildTest do
     end
 
     test "the allowed names are the two root-path ones only" do
-      assert Build.client_env_names() == ["ELIXIR_PRECOMPILED_ROOT", "NERVES_PRECOMPILED_ROOT"]
+      assert Build.client_env_names() == ["PRECOMPILED_ROOT", "NERVES_PRECOMPILED_ROOT"]
     end
   end
 
@@ -536,7 +536,7 @@ defmodule ChainTest.BuildTest do
       home_of = fn ->
         [_, home] =
           Regex.run(
-            ~r/^ELIXIR_PRECOMPILED_HOME=(.*)$/m,
+            ~r/^PRECOMPILED_HOME=(.*)$/m,
             File.read!(Path.join(ctx.tmp, "mix.env"))
           )
 
@@ -633,7 +633,7 @@ defmodule ChainTest.BuildTest do
   end
 
   test "unset_env/0 names the variables the build unsets" do
-    assert "ELIXIR_PRECOMPILED" in Build.unset_env()
+    assert "PRECOMPILED" in Build.unset_env()
     assert "MIX_BUILD_PATH" in Build.unset_env()
   end
 end

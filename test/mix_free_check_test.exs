@@ -20,7 +20,7 @@ defmodule MixFreeCheckTest do
     end
   end
 
-  # ElixirPrecompiled.Output and ElixirPrecompiled.Fetch are the real
+  # Precompiled.Output and Precompiled.Fetch are the real
   # library's own modules, already loaded in this test VM. Code.compile_string
   # would redefine (reload) them under those names and then compile_into's
   # purge/delete would unload them outright, breaking every other test that
@@ -34,54 +34,54 @@ defmodule MixFreeCheckTest do
 
   test "a device module that reaches Mix through a helper fails", %{tmp_dir: dir} do
     compile_into(dir, """
-    defmodule ElixirPrecompiled.Device.Fake do
-      def go, do: ElixirPrecompiled.FakeHelper.go()
+    defmodule Precompiled.Device.Fake do
+      def go, do: Precompiled.FakeHelper.go()
     end
-    defmodule ElixirPrecompiled.FakeHelper do
+    defmodule Precompiled.FakeHelper do
       def go, do: Mix.env()
     end
     """)
 
     assert {:error, [line]} = MixFreeCheck.run(dir)
-    assert line == "Elixir.ElixirPrecompiled.FakeHelper calls Elixir.Mix.env/0"
+    assert line == "Elixir.Precompiled.FakeHelper calls Elixir.Mix.env/0"
   end
 
   test "a helper reached only through a captured fun is walked too", %{tmp_dir: dir} do
     compile_into(dir, """
-    defmodule ElixirPrecompiled.Device.FakeCapture do
-      def go, do: &ElixirPrecompiled.FakeCaptured.go/0
+    defmodule Precompiled.Device.FakeCapture do
+      def go, do: &Precompiled.FakeCaptured.go/0
     end
-    defmodule ElixirPrecompiled.FakeCaptured do
+    defmodule Precompiled.FakeCaptured do
       def go, do: Mix.env()
     end
     """)
 
     assert {:error, [line]} = MixFreeCheck.run(dir)
-    assert line == "Elixir.ElixirPrecompiled.FakeCaptured calls Elixir.Mix.env/0"
+    assert line == "Elixir.Precompiled.FakeCaptured calls Elixir.Mix.env/0"
   end
 
   test "a host-only module that calls Mix is fine when the device layer does not reach it", %{
     tmp_dir: dir
   } do
     compile_into(dir, """
-    defmodule Precompiled.Fake do
+    defmodule Precompiled.Device.FakeRoot do
       def go, do: :ok
     end
-    defmodule ElixirPrecompiled.HostOnly do
+    defmodule Precompiled.HostOnly do
       def go, do: Mix.Project.config()
     end
     """)
 
-    assert {:ok, [Precompiled.Fake]} = MixFreeCheck.run(dir)
+    assert {:ok, [Precompiled.Device.FakeRoot]} = MixFreeCheck.run(dir)
   end
 
   test "Hex calls fail too, and no roots at all fails", %{tmp_dir: dir} do
     compile_into(
       dir,
-      "defmodule Precompiled.Fake2 do\n def go, do: Hex.State.fetch!(:home)\nend\n"
+      "defmodule Precompiled.Device.Fake2 do\n def go, do: Hex.State.fetch!(:home)\nend\n"
     )
 
-    assert {:error, ["Elixir.Precompiled.Fake2 calls Elixir.Hex.State.fetch!/1"]} =
+    assert {:error, ["Elixir.Precompiled.Device.Fake2 calls Elixir.Hex.State.fetch!/1"]} =
              MixFreeCheck.run(dir)
 
     empty = Path.join(dir, "empty")
@@ -96,16 +96,16 @@ defmodule MixFreeCheckTest do
   # whichever of the two detection layers below ends up catching it.
   test "apply/3 with a literal Mix module is caught like a direct call", %{tmp_dir: dir} do
     compile_into(dir, """
-    defmodule ElixirPrecompiled.Device.FakeApplyLiteral do
-      def go, do: ElixirPrecompiled.FakeApplyLiteralHelper.go()
+    defmodule Precompiled.Device.FakeApplyLiteral do
+      def go, do: Precompiled.FakeApplyLiteralHelper.go()
     end
-    defmodule ElixirPrecompiled.FakeApplyLiteralHelper do
+    defmodule Precompiled.FakeApplyLiteralHelper do
       def go, do: apply(Mix, :env, [])
     end
     """)
 
     assert {:error, [line]} = MixFreeCheck.run(dir)
-    assert line == "Elixir.ElixirPrecompiled.FakeApplyLiteralHelper calls Elixir.Mix.env/0"
+    assert line == "Elixir.Precompiled.FakeApplyLiteralHelper calls Elixir.Mix.env/0"
   end
 
   # A module threaded through a parameter (built in one function, applied in
@@ -116,17 +116,17 @@ defmodule MixFreeCheckTest do
     tmp_dir: dir
   } do
     compile_into(dir, """
-    defmodule ElixirPrecompiled.Device.FakeApplyDyn do
-      def go, do: ElixirPrecompiled.FakeApplyDynHelper.call()
+    defmodule Precompiled.Device.FakeApplyDyn do
+      def go, do: Precompiled.FakeApplyDynHelper.call()
     end
-    defmodule ElixirPrecompiled.FakeApplyDynHelper do
+    defmodule Precompiled.FakeApplyDynHelper do
       def call, do: dispatch(Mix)
       def dispatch(m), do: apply(m, :env, [])
     end
     """)
 
     assert {:error, [line]} = MixFreeCheck.run(dir)
-    assert line == "Elixir.ElixirPrecompiled.FakeApplyDynHelper calls Elixir.Mix dynamically"
+    assert line == "Elixir.Precompiled.FakeApplyDynHelper calls Elixir.Mix dynamically"
   end
 
   # `&Mix.env/0` never appears as a call_ext or a plain atom: the compiler
@@ -136,16 +136,16 @@ defmodule MixFreeCheckTest do
     tmp_dir: dir
   } do
     compile_into(dir, """
-    defmodule ElixirPrecompiled.Device.FakeFun do
-      def go, do: ElixirPrecompiled.FakeFunHelper.fun()
+    defmodule Precompiled.Device.FakeFun do
+      def go, do: Precompiled.FakeFunHelper.fun()
     end
-    defmodule ElixirPrecompiled.FakeFunHelper do
+    defmodule Precompiled.FakeFunHelper do
       def fun, do: &Mix.env/0
     end
     """)
 
     assert {:error, [line]} = MixFreeCheck.run(dir)
-    assert line == "Elixir.ElixirPrecompiled.FakeFunHelper calls Elixir.Mix.env/0"
+    assert line == "Elixir.Precompiled.FakeFunHelper calls Elixir.Mix.env/0"
   end
 
   # The one allowed call in the real library (Output -> Mix.shell/0, guarded
@@ -157,35 +157,35 @@ defmodule MixFreeCheckTest do
     tmp_dir: dir
   } do
     compile_into(dir, """
-    defmodule ElixirPrecompiled.Device.FakeAllowed do
+    defmodule Precompiled.Device.FakeAllowed do
       def go do
-        ElixirPrecompiled.Output.go()
-        ElixirPrecompiled.Fetch.go()
+        Precompiled.Output.go()
+        Precompiled.Fetch.go()
       end
     end
     """)
 
-    compile_colliding_into(dir, ElixirPrecompiled.Output, [
-      {:attribute, 1, :module, ElixirPrecompiled.Output},
+    compile_colliding_into(dir, Precompiled.Output, [
+      {:attribute, 1, :module, Precompiled.Output},
       {:attribute, 1, :export, [go: 0]},
       {:function, 1, :go, 0,
        [{:clause, 1, [], [], [{:call, 1, {:remote, 1, {:atom, 1, Mix}, {:atom, 1, :shell}}, []}]}]}
     ])
 
-    compile_colliding_into(dir, ElixirPrecompiled.Fetch, [
-      {:attribute, 1, :module, ElixirPrecompiled.Fetch},
+    compile_colliding_into(dir, Precompiled.Fetch, [
+      {:attribute, 1, :module, Precompiled.Fetch},
       {:attribute, 1, :export, [go: 0]},
       {:function, 1, :go, 0, [{:clause, 1, [], [], [{:atom, 1, Hex.SCM}]}]}
     ])
 
     assert {:ok, mods} = MixFreeCheck.run(dir)
-    assert ElixirPrecompiled.Device.FakeAllowed in mods
+    assert Precompiled.Device.FakeAllowed in mods
   end
 
   # The device-root prefix must match on a path boundary: a module named
-  # "ElixirPrecompiled.DeviceFixture" is not under
-  # "ElixirPrecompiled.Device.", so it must never become a root by itself,
-  # while the bare "ElixirPrecompiled.Device" module (no suffix) must.
+  # "Precompiled.DeviceFixture" is not under
+  # "Precompiled.Device.", so it must never become a root by itself,
+  # while the bare "Precompiled.Device" module (no suffix) must.
   test "DeviceFixture is not mistaken for a device-layer root, but bare Device is", %{
     tmp_dir: dir
   } do
@@ -194,8 +194,8 @@ defmodule MixFreeCheckTest do
 
     # The real DeviceFixture is test support loaded in this VM: compiled
     # without touching the code server, so async tests that use it keep it.
-    compile_colliding_into(fixture_only, ElixirPrecompiled.DeviceFixture, [
-      {:attribute, 1, :module, ElixirPrecompiled.DeviceFixture},
+    compile_colliding_into(fixture_only, Precompiled.DeviceFixture, [
+      {:attribute, 1, :module, Precompiled.DeviceFixture},
       {:attribute, 1, :export, [go: 0]},
       {:function, 1, :go, 0,
        [{:clause, 1, [], [], [{:call, 1, {:remote, 1, {:atom, 1, Mix}, {:atom, 1, :env}}, []}]}]}
@@ -207,19 +207,19 @@ defmodule MixFreeCheckTest do
     File.mkdir_p!(bare_device)
 
     compile_into(bare_device, """
-    defmodule ElixirPrecompiled.Device do
+    defmodule Precompiled.Device do
       def go, do: Mix.env()
     end
     """)
 
     assert {:error, [line]} = MixFreeCheck.run(bare_device)
-    assert line == "Elixir.ElixirPrecompiled.Device calls Elixir.Mix.env/0"
+    assert line == "Elixir.Precompiled.Device calls Elixir.Mix.env/0"
   end
 
   test "the real library is Mix-free from the device layer" do
-    ebin = Path.join([Mix.Project.build_path(), "lib", "elixir_precompiled", "ebin"])
+    ebin = Path.join([Mix.Project.build_path(), "lib", "precompiled", "ebin"])
     assert {:ok, mods} = MixFreeCheck.run(ebin)
-    assert ElixirPrecompiled.Device.Env in mods
-    assert ElixirPrecompiled.Device.Rules in mods
+    assert Precompiled.Device.Env in mods
+    assert Precompiled.Device.Rules in mods
   end
 end

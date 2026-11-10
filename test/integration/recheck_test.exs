@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule ElixirPrecompiled.Integration.RecheckTest do
+defmodule Precompiled.Integration.RecheckTest do
   use ExUnit.Case, async: false
-  alias ElixirPrecompiled.ChildProject, as: C
-  alias ElixirPrecompiled.Fixture, as: F
+  alias Precompiled.ChildProject, as: C
+  alias Precompiled.Fixture, as: F
 
   @moduletag :integration
   @moduletag :tmp_dir
@@ -28,14 +28,14 @@ defmodule ElixirPrecompiled.Integration.RecheckTest do
     end
 
     defp precompiled(_args) do
-      if System.get_env("ELIXIR_PRECOMPILED") != "0" and Code.ensure_loaded?(ElixirPrecompiled),
-        do: apply(ElixirPrecompiled, :run, [[host?: false]])
+      if System.get_env("PRECOMPILED") != "0" and Code.ensure_loaded?(Precompiled.Host),
+        do: apply(Precompiled.Host, :run, [[host?: false]])
     end
   end
   """
 
   setup_all do
-    start_supervised!(ElixirPrecompiled.TestServer)
+    start_supervised!(Precompiled.TestServer)
     :ok
   end
 
@@ -50,14 +50,14 @@ defmodule ElixirPrecompiled.Integration.RecheckTest do
 
     File.write!(Path.join(proj, "config/config.exs"), """
     import Config
-    config :elixir_precompiled, source: #{inspect(F.base_url())}, root: #{inspect(f.root_path)}
+    config :precompiled, source: #{inspect(F.base_url())}, root: #{inspect(f.root_path)}
     """)
 
     F.publish(f, %{}, sequence: 1)
-    C.mix!(proj, ["deps.get"], [{"ELIXIR_PRECOMPILED", "0"}], pa: true)
+    C.mix!(proj, ["deps.get"], [{"PRECOMPILED", "0"}], pa: true)
 
     # Real jason beams, built here and then published as the portal's build.
-    C.mix!(proj, ["deps.compile", "jason"], [{"ELIXIR_PRECOMPILED", "0"}], pa: true)
+    C.mix!(proj, ["deps.compile", "jason"], [{"PRECOMPILED", "0"}], pa: true)
     lib = Path.join(proj, "_build/dev/lib/jason")
     entry = C.jason_entry(f, lib, proj)
     File.rm_rf!(lib)
@@ -66,7 +66,7 @@ defmodule ElixirPrecompiled.Integration.RecheckTest do
 
     out = C.mix!(proj, ["compile"], [], pa: true)
     assert out =~ ~r/precompiled: jason 1\.4\.5\s+HIT/, out
-    assert File.exists?(Path.join(lib, ".mix/elixir_precompiled.json"))
+    assert File.exists?(Path.join(lib, ".mix/precompiled.json"))
     refute File.exists?(Path.join(lib, ".mix/compile.elixir"))
 
     # The portal withdraws the build: the next batch no longer names jason.
@@ -79,7 +79,7 @@ defmodule ElixirPrecompiled.Integration.RecheckTest do
 
     assert out =~ ~r/==> jason/, out
     assert File.exists?(Path.join(lib, ".mix/compile.elixir"))
-    refute File.exists?(Path.join(lib, ".mix/elixir_precompiled.json"))
+    refute File.exists?(Path.join(lib, ".mix/precompiled.json"))
 
     out =
       C.mix!(proj, ["run", "-e", "IO.puts(\"encoded=\" <> Jason.encode!(%{a: 1}))"], [], pa: true)

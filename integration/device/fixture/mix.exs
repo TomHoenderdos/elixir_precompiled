@@ -35,7 +35,7 @@ defmodule DeviceFixture.MixProject do
       {:shoehorn, "~> 0.9.1"},
       {:ring_logger, "~> 0.11"},
       {:toolshed, "~> 0.4"},
-      {:elixir_precompiled, path: "../../..", targets: @all_targets},
+      {:precompiled, path: "../../..", targets: @all_targets},
       {:castore, "~> 1.0", targets: @all_targets},
       {:nerves_runtime, "~> 0.13", targets: @all_targets},
       {:nerves_pack, "~> 0.7", targets: @all_targets},

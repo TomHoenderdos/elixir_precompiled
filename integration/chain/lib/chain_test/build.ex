@@ -7,7 +7,7 @@ defmodule ChainTest.Build do
   Step 2: the precompiled step, through a real `mix firmware` of the fixture.
 
   The target's `_build/<target>_dev` is removed first and the client gets a
-  fresh `ELIXIR_PRECOMPILED_HOME`, so every hit is downloaded and verified
+  fresh `PRECOMPILED_HOME`, so every hit is downloaded and verified
   in this run. The client's `report.json` and its batch `state` file are read
   afterwards, and the build's whole output is kept as `log`.
 
@@ -17,7 +17,7 @@ defmodule ChainTest.Build do
 
   A conformance case changes two things, for its own build only: a home its
   setup prepared (`:home_prepared`, taken as it is), and `:client_config`,
-  merged into the fixture's `config :elixir_precompiled` through a config
+  merged into the fixture's `config :precompiled` through a config
   file the fixture imports from `CHAIN_CLIENT_CONFIG` (written outside the
   home, removed after the build; without a `:client_config` the variable is
   unset, so nothing reaches the next build). And `:client_env`: a few
@@ -27,7 +27,7 @@ defmodule ChainTest.Build do
 
   Two more, for the TLS and transport cases only: `:trust_ca` (a CA
   certificate, DER) makes the client trust that CA alone, through its own
-  CA option: `ELIXIR_PRECOMPILED_CACERTS_PATH` names a PEM in a private
+  CA option: `PRECOMPILED_CACERTS_PATH` names a PEM in a private
   temp dir (outside the home, removed after the build), a bundle that
   replaces the OS store for the client. That is how a user points the
   client at a private CA, and how a case shows it a TLS mirror it may
@@ -75,15 +75,15 @@ defmodule ChainTest.Build do
 
   # Variables that would point the fixture build somewhere else, or turn
   # the client off.
-  @unset ~w(ELIXIR_PRECOMPILED NERVES_PRECOMPILED NERVES_PRECOMPILED_HOME MIX_BUILD_PATH
+  @unset ~w(PRECOMPILED NERVES_PRECOMPILED NERVES_PRECOMPILED_HOME MIX_BUILD_PATH
             MIX_BUILD_ROOT MIX_DEPS_PATH MIX_EXS MIX_LOCKFILE)
 
   # T9 pins today's behaviour: the client reads no root path from the
   # environment. These are the names it would use if it did, by its own
-  # pattern (`ELIXIR_PRECOMPILED` or the old `NERVES_PRECOMPILED`, plus
+  # pattern (`PRECOMPILED` or the old `NERVES_PRECOMPILED`, plus
   # `_ROOT`), and deliberately nothing else: a case cannot turn the client
   # off or move its home through this.
-  @client_env ~w(ELIXIR_PRECOMPILED_ROOT NERVES_PRECOMPILED_ROOT)
+  @client_env ~w(PRECOMPILED_ROOT NERVES_PRECOMPILED_ROOT)
 
   @type client_config :: %{
           optional(:clock_offset_seconds) => integer(),
@@ -159,7 +159,7 @@ defmodule ChainTest.Build do
   def refusal?(_), do: false
 
   @doc """
-  Runs step 2. `home` is the client's `ELIXIR_PRECOMPILED_HOME`: a fresh
+  Runs step 2. `home` is the client's `PRECOMPILED_HOME`: a fresh
   temp dir per run when not given, removed after the run, and refused
   (check `home` fails, nothing runs) when given but not empty, unless
   `home_prepared` says the caller prepared it. `trust` is step 1's info
@@ -274,10 +274,10 @@ defmodule ChainTest.Build do
       [
         {"MIX_TARGET", target},
         {"MIX_ENV", "dev"},
-        {"ELIXIR_PRECOMPILED_HOME", home},
+        {"PRECOMPILED_HOME", home},
         {"CHAIN_SOURCE", source},
         {"CHAIN_CLIENT_CONFIG", client},
-        {"ELIXIR_PRECOMPILED_CACERTS_PATH", ca}
+        {"PRECOMPILED_CACERTS_PATH", ca}
       ] ++
         target_config(Map.get(input, :target_config)) ++
         Enum.map(@unset, &{&1, nil}) ++
@@ -335,7 +335,7 @@ defmodule ChainTest.Build do
     File.write!(
       path,
       "# A conformance case's client config, for one build.\nimport Config\n" <>
-        if(opts == "", do: "", else: "config :elixir_precompiled, #{opts}\n")
+        if(opts == "", do: "", else: "config :precompiled, #{opts}\n")
     )
 
     path

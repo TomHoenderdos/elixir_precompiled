@@ -143,7 +143,7 @@ defmodule ChainTest.IntegrityTest do
 
   defp write_provenance(ctx, sha, sequence) do
     File.write!(
-      Path.join(ctx.build_lib, "jason/.mix/elixir_precompiled.json"),
+      Path.join(ctx.build_lib, "jason/.mix/precompiled.json"),
       JSON.encode!(%{
         "manifest_sha256" => sha,
         "manifest_path" => "v2/manifests",
@@ -307,7 +307,7 @@ defmodule ChainTest.IntegrityTest do
     other = String.duplicate("d", 64)
 
     File.write!(
-      Path.join(ctx.build_lib, "jason/.mix/elixir_precompiled.json"),
+      Path.join(ctx.build_lib, "jason/.mix/precompiled.json"),
       JSON.encode!(%{
         "manifest_sha256" => other,
         "manifest_path" => "v2/manifests",
@@ -370,7 +370,7 @@ defmodule ChainTest.IntegrityTest do
     by = Map.new(results, &{&1.check, &1})
 
     assert by["unreported:jason"].class == :disagreement
-    assert by["unreported:jason"].detail =~ "elixir_precompiled.json"
+    assert by["unreported:jason"].detail =~ "precompiled.json"
     # Checked like a hit, at the locked version.
     assert by["integrity:jason"].class == :pass
     assert by["integrity:jason"].detail =~ "1.4.5"
@@ -497,7 +497,7 @@ defmodule ChainTest.IntegrityTest do
     # A miss with the client's provenance file in _build was installed anyway.
     assert Enum.any?(Integrity.run(input), &(&1.check == "unreported:jason"))
 
-    File.rm!(Path.join(ctx.build_lib, "jason/.mix/elixir_precompiled.json"))
+    File.rm!(Path.join(ctx.build_lib, "jason/.mix/precompiled.json"))
     assert [%Result{check: "integrity", class: :not_exercised}] = Integrity.run(input)
   end
 

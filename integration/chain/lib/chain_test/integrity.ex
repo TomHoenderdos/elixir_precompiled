@@ -8,11 +8,11 @@ defmodule ChainTest.Integrity do
   a manifest whose bytes hash to what step 1's verified batch names.
 
   For each hit in the client's report, and for each dep `_build` shows the
-  client installed (a `.mix/elixir_precompiled.json` provenance file) that
+  client installed (a `.mix/precompiled.json` provenance file) that
   the report does not call a hit (which is itself an `unreported:<dep>`
   `:disagreement`, and is checked at its locked version):
 
-    1. The dep's provenance file (`.mix/elixir_precompiled.json`, written by
+    1. The dep's provenance file (`.mix/precompiled.json`, written by
        the client's install) must name the manifest the verified batch
        names. A different one is checked against a fresh batch the harness
        verifies itself, newer than step 1's, that names exactly the
@@ -85,7 +85,7 @@ defmodule ChainTest.Integrity do
         result(
           "unreported:#{n}",
           :disagreement,
-          "#{Path.join([build_lib, n, ".mix", "elixir_precompiled.json"])} says the client " <>
+          "#{Path.join([build_lib, n, ".mix", "precompiled.json"])} says the client " <>
             "installed #{n}, but the client report does not call it a hit"
         )
       end
@@ -118,7 +118,7 @@ defmodule ChainTest.Integrity do
   @spec installed(Path.t()) :: [String.t()]
   def installed(build_lib) do
     build_lib
-    |> Path.join("*/.mix/elixir_precompiled.json")
+    |> Path.join("*/.mix/precompiled.json")
     |> Path.wildcard(match_dot: true)
     |> Enum.map(&(&1 |> Path.dirname() |> Path.dirname() |> Path.basename()))
     |> Enum.sort()
@@ -290,7 +290,7 @@ defmodule ChainTest.Integrity do
   # or, when a fresh newer verified batch names the one the client recorded,
   # that one, with the rerun reason.
   defp provenance(name, sha, dir, trust, ctx) do
-    path = Path.join([ctx.build_lib, name, ".mix", "elixir_precompiled.json"])
+    path = Path.join([ctx.build_lib, name, ".mix", "precompiled.json"])
 
     with {:ok, bytes} <- File.read(path),
          {:ok, %{"manifest_sha256" => recorded} = p} when is_binary(recorded) <-

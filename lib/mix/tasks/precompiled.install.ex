@@ -2,145 +2,218 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule Mix.Tasks.Precompiled.Install do
-  @shortdoc "Installs matching precompiled builds before Mix compiles the dependencies"
+if Code.ensure_loaded?(Igniter) do
+  defmodule Mix.Tasks.Precompiled.Install do
+    @shortdoc "Sets a project up to install signed precompiled dependency builds"
+    @moduledoc """
+    Run through `mix igniter.install precompiled`. Makes the
+    `precompiled` dependency `runtime: false`, adds
+    `config :precompiled, source: ...` to `config/config.exs`
+    (`--source URL`, default the public Nerves compatibility portal) and puts
+    `"deps.compile precompiled", "precompiled.deps"` at the front of
+    the project's `deps.loadpaths` alias, before any steps already there.
+    Running it again changes nothing. Not for umbrellas: add the alias to
+    the umbrella root by hand (see `mix help precompiled.deps`).
 
-  @moduledoc """
-  Installs signed precompiled builds of the dependencies Mix is about to
-  compile, and rechecks the ones installed earlier. Not meant to be run by
-  hand: add it to the project's `deps.loadpaths` alias, which every
-  `mix compile`, `test`, `run` and `release` passes through before Mix
-  compiles the dependencies:
+    `--device` is for a Nerves firmware that should be able to install on
+    the device itself (`Precompiled.install/1`, see the README's "On a
+    device"). It does three things:
 
-      def project do
-        [
-          ...,
-          aliases: [
-            "deps.loadpaths": ["deps.compile elixir_precompiled", "precompiled.install", "deps.loadpaths"]
-          ]
-        ]
-      end
+      * removes `runtime: false` from the dependency, so the library ships
+        in the firmware;
+      * adds `{:castore, "~> 1.0"}` unless the project already depends on
+        `castore`. The check looks at the dependencies only: a firmware
+        that sets `cacerts_path:` under `config :precompiled,
+        :device` still gets `castore` added, and can drop it again;
+      * adds `:inets`, `:ssl` and `:public_key` to `extra_applications`:
+        they are optional applications of this library, and an online
+        install needs them.
 
-  The first entry compiles this library so the task exists; without it
-  Mix would compile every dependency first. In an umbrella the alias goes
-  in the root `mix.exs`. Does nothing without
-  `config :elixir_precompiled, source: ...` or `ELIXIR_PRECOMPILED_SOURCE`.
-  `mix igniter.install elixir_precompiled` writes the alias and the config
-  (Elixir 1.18+, not in an umbrella).
+    Nothing else is written for the device: it is on by default and uses
+    the official signed source.
+    """
+    use Igniter.Mix.Task
 
-  `mix do clean --deps + compile` installs twice: `clean` loads paths
-  first, which runs the alias once before it deletes `_build`, and the
-  compile after it installs again. The result is correct, just one install
-  slower.
-  """
-  use Mix.Task
+    @source "https://compatibility.nerves-project.org/api/precompiled"
 
-  @impl Mix.Task
-  @spec run([String.t()]) :: :ok
-  def run(_args) do
-    # The alias ran "deps.compile elixir_precompiled" through Mix.Task.run,
-    # which marks deps.compile as done; a later `mix deps.compile` in the
-    # same VM must still work. And this task itself must run again when the
-    # alias does: `mix clean` reenables deps.loadpaths and deletes _build,
-    # so the compile after it in `mix do clean + compile` needs an install.
-    Mix.Task.reenable("deps.compile")
-    Mix.Task.reenable("precompiled.install")
-
-    if not skip?(top_level_task()) do
-      install(&ensure_compiled/0)
+    @impl Igniter.Mix.Task
+    def info(_argv, _composing_task) do
+      %Igniter.Mix.Task.Info{
+        group: :precompiled,
+        example: "mix igniter.install precompiled",
+        schema: [source: :string, device: :boolean],
+        defaults: [source: @source]
+      }
     end
 
-    :ok
-  end
+    @impl Igniter.Mix.Task
+    def igniter(igniter) do
+      source = igniter.args.options[:source]
+      device? = igniter.args.options[:device]
 
-  @doc false
-  # run/1 never raises, but if this library's own modules cannot load, its
-  # error path cannot either, and recompiling them can raise too: whatever
-  # goes wrong here, the build goes on and Mix compiles the deps.
-  @spec install((-> term())) :: :ok
-  def install(ensure_compiled) do
-    _ = ensure_compiled.()
-    _ = ElixirPrecompiled.run(allow_host: true)
-    :ok
-  rescue
-    e ->
-      Mix.shell().error(
-        "precompiled: internal error, compiling from source (#{Exception.message(e)})"
+      # The two add_alias calls compose. With no alias the first writes the
+      # whole list and the second finds its entry present. With an alias of
+      # the user's (nerves_bootstrap's, say) the first prepends
+      # "precompiled.deps" and the second "deps.compile precompiled"
+      # before it. Neither adds an entry already in the list.
+      igniter
+      |> keep_runtime(device?)
+      |> add_castore(device?)
+      |> add_network_apps(device?)
+      |> Igniter.Project.Config.configure_new(
+        "config.exs",
+        :precompiled,
+        [:source],
+        source
       )
+      |> Igniter.Project.TaskAliases.add_alias(
+        :"deps.loadpaths",
+        ["deps.compile precompiled", "precompiled.deps", "deps.loadpaths"],
+        if_exists: {:prepend, "precompiled.deps"}
+      )
+      |> Igniter.Project.TaskAliases.add_alias(
+        :"deps.loadpaths",
+        "deps.compile precompiled",
+        if_exists: {:prepend, "deps.compile precompiled"}
+      )
+      |> Igniter.add_notice("""
+      precompiled: dependencies with a matching signed build are now
+      installed instead of compiled. `mix precompiled.status` lists them;
+      PRECOMPILED=0 turns it off (and removes them).
+      """)
+      |> add_device_notice(device?)
+    end
 
-      :ok
-  end
+    # Without --device the dependency only runs at build time, as it does
+    # today. With --device it stays at runtime: the library ships in the
+    # firmware so a shell on the device can call `Precompiled.install/1`.
+    # `runtime: true` is the default, so --device only takes an existing
+    # `runtime: false` away, by editing the tuple in place: set_dep_option/4
+    # would hit the one-liner `defp deps, do: [...]` bug below.
+    defp keep_runtime(igniter, true) do
+      Igniter.update_elixir_file(igniter, "mix.exs", fn zipper ->
+        with {:ok, zipper} <- Igniter.Code.Module.move_to_module_using(zipper, Mix.Project),
+             {:ok, zipper} <- Igniter.Code.Function.move_to_defp(zipper, :deps, 0),
+             {:ok, dep} <- Igniter.Code.List.move_to_list_item(zipper, &our_dep?/1),
+             {:ok, opts} <- Igniter.Code.Tuple.tuple_elem(dep, 2),
+             {:ok, value} <- Igniter.Code.Keyword.get_key(opts, :runtime),
+             true <- Igniter.Code.Common.nodes_equal?(value, false) do
+          drop_runtime(dep, opts)
+        else
+          _ -> {:ok, zipper}
+        end
+      end)
+    end
 
-  @doc false
-  # `mix do clean + compile`: clean's own loadpaths ran this alias, which
-  # compiled this library, then clean deleted _build. Mix compiles a
-  # project at most once per VM, so the alias's "deps.compile
-  # elixir_precompiled" is now a no-op, the modules not loaded yet are gone
-  # and deps.loadpaths would stop on the missing app file. Reenable the
-  # library's compile tasks and compile it again; only when it is a dep of
-  # this project (on the code path by -pa, it is not Mix's to compile).
-  @spec ensure_compiled(term(), (-> [Mix.Dep.t()])) :: :ok | :not_a_dep | :recompiled
-  def ensure_compiled(
-        lib_dir \\ :code.lib_dir(:elixir_precompiled),
-        load_deps \\ &reload_deps/0
-      ) do
-    with dir when is_list(dir) or is_binary(dir) <- lib_dir,
-         false <- File.regular?(Path.join(dir, "ebin/elixir_precompiled.app")) do
-      case Enum.filter(load_deps.(), &(&1.app == :elixir_precompiled)) do
-        [dep] -> recompile(dep)
-        _ -> :not_a_dep
+    defp keep_runtime(igniter, _device?), do: runtime_false(igniter)
+
+    # The only option: back to the plain 2-tuple. Otherwise just that key.
+    defp drop_runtime(dep, opts) do
+      opts = Igniter.Code.Common.maybe_move_to_single_child_block(opts)
+
+      case opts.node do
+        [_only] ->
+          {:ok, name} = Igniter.Code.Tuple.tuple_elem(dep, 0)
+          {:ok, version} = Igniter.Code.Tuple.tuple_elem(dep, 1)
+          code = "{#{Sourceror.to_string(name.node)}, #{Sourceror.to_string(version.node)}}"
+          {:ok, Igniter.Code.Common.replace_code(dep, code)}
+
+        _ ->
+          Igniter.Code.Keyword.remove_keyword_key(opts, :runtime)
       end
-    else
-      _ -> :ok
-    end
-  end
-
-  defp reload_deps() do
-    Mix.Dep.clear_cached()
-    Mix.Dep.load_and_cache()
-  end
-
-  defp recompile(dep) do
-    Mix.Dep.in_dependency(dep, fn _ ->
-      tasks = ["compile", "compile.all" | Enum.map(compilers(), &"compile.#{&1}")]
-      Enum.each(tasks, &Mix.Task.reenable/1)
-    end)
-
-    # Unload the old copies, so the compile does not warn about each one
-    # it redefines; this module keeps running, so it stays.
-    for mod <- Application.spec(:elixir_precompiled, :modules) || [], mod != __MODULE__ do
-      :code.purge(mod)
-      :code.delete(mod)
     end
 
-    Mix.Task.reenable("deps.compile")
-    Mix.Task.run("deps.compile", ["elixir_precompiled"])
-    Mix.Task.reenable("deps.compile")
-    :recompiled
+    # A firmware that installs online needs the network apps in its
+    # release; they are optional applications of this library, so a
+    # firmware without them would refuse with {:missing_app, :inets}.
+    defp add_network_apps(igniter, true) do
+      Igniter.Project.MixProject.update(igniter, :application, [:extra_applications], fn
+        nil ->
+          {:ok, {:code, [:inets, :ssl, :public_key]}}
+
+        zipper ->
+          Enum.reduce_while([:inets, :ssl, :public_key], {:ok, zipper}, fn app, {:ok, z} ->
+            case Igniter.Code.List.append_new_to_list(z, app) do
+              {:ok, z} -> {:cont, {:ok, z}}
+              :error -> {:halt, :error}
+            end
+          end)
+      end)
+    end
+
+    defp add_network_apps(igniter, _device?), do: igniter
+
+    # A Nerves system's CA store may be empty, so a device install needs its
+    # own certificates. Only the deps are checked: a `cacerts_path:` in the
+    # device config is not looked for (see the moduledoc).
+    defp add_castore(igniter, true) do
+      if Igniter.Project.Deps.has_dep?(igniter, :castore) do
+        igniter
+      else
+        Igniter.Project.Deps.add_dep(igniter, {:castore, "~> 1.0"})
+      end
+    end
+
+    defp add_castore(igniter, _device?), do: igniter
+
+    defp add_device_notice(igniter, true) do
+      Igniter.add_notice(igniter, """
+      On the device: Precompiled.install(:recon). See the README, "On a device".
+      """)
+    end
+
+    defp add_device_notice(igniter, _device?), do: igniter
+
+    # Igniter.Project.Deps.set_dep_option/4 writes `:runtime => false` into
+    # a `{name, "~> x"}` tuple (invalid Elixir) when `deps` is defined as a
+    # one-liner, `defp deps, do: [...]`; the standard `defp deps do [...]
+    # end` block form is unaffected. So that one shape gets its options
+    # list here; every other shape goes through set_dep_option/4.
+    defp runtime_false(igniter) do
+      igniter
+      |> Igniter.update_elixir_file("mix.exs", fn zipper ->
+        with {:ok, zipper} <- Igniter.Code.Module.move_to_module_using(zipper, Mix.Project),
+             {:ok, zipper} <- Igniter.Code.Function.move_to_defp(zipper, :deps, 0),
+             true <- Igniter.Code.List.list?(zipper),
+             {:ok, zipper} <- Igniter.Code.List.move_to_list_item(zipper, &our_dep?/1),
+             {:ok, version} <- Igniter.Code.Tuple.tuple_elem(zipper, 1),
+             true <- Igniter.Code.String.string?(version),
+             :error <- Igniter.Code.Tuple.tuple_elem(zipper, 2) do
+          {:{}, _, [_, _, opts]} = Sourceror.parse_string!(~s({:x, "", runtime: false}))
+          Igniter.Code.Tuple.append_elem(zipper, opts)
+        else
+          _ -> {:ok, zipper}
+        end
+      end)
+      |> Igniter.Project.Deps.set_dep_option(:precompiled, :runtime, false)
+    end
+
+    defp our_dep?(zipper) do
+      with true <- Igniter.Code.Tuple.tuple?(zipper),
+           {:ok, name} <- Igniter.Code.Tuple.tuple_elem(zipper, 0) do
+        Igniter.Code.Common.nodes_equal?(name, :precompiled)
+      else
+        _ -> false
+      end
+    end
   end
+else
+  defmodule Mix.Tasks.Precompiled.Install do
+    @shortdoc "Sets a project up to install signed precompiled dependency builds"
+    @moduledoc false
+    use Mix.Task
 
-  defp compilers(), do: Mix.Project.config()[:compilers] || Mix.compilers()
+    @impl Mix.Task
+    def run(_argv) do
+      Mix.shell().error("""
+      mix precompiled.install runs through Igniter: `mix igniter.install precompiled`.
+      Without Igniter, add this to the project in mix.exs (the umbrella root in an umbrella):
 
-  @doc false
-  # Tasks that load paths without compiling deps (help), that delete the
-  # build (clean), or that inspect or undo installs; everything else may
-  # compile deps right after this.
-  @spec skip?(String.t()) :: boolean()
-  def skip?(task), do: task in ["help", "clean"] or String.starts_with?(task, "precompiled.")
+          aliases: ["deps.loadpaths": ["deps.compile precompiled", "precompiled.deps", "deps.loadpaths"]]
 
-  @doc false
-  # The task named on the command line. System.argv/0 is not it: `mix run
-  # script.exs help` rewrites it to the script's own arguments. The VM's
-  # plain arguments keep the command line, after the `mix` launcher's path
-  # or `-S mix`; `mix` alone runs `run`.
-  @spec top_level_task([charlist()]) :: String.t()
-  def top_level_task(plain \\ :init.get_plain_arguments()) do
-    plain
-    |> Enum.map(&List.to_string/1)
-    |> Enum.drop_while(&(Path.rootname(Path.basename(&1)) != "mix"))
-    |> case do
-      [_mix, task | _] -> task
-      _ -> "run"
+      and `config :precompiled, source: "https://compatibility.nerves-project.org/api/precompiled"`
+      to config/config.exs (or set PRECOMPILED_SOURCE).
+      """)
     end
   end
 end

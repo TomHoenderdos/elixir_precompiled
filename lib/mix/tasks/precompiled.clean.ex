@@ -5,7 +5,7 @@
 defmodule Mix.Tasks.Precompiled.Clean do
   @shortdoc "Removes precompiled installs (and with --cache, the download cache)"
   @moduledoc """
-  Removes every dependency `elixir_precompiled` installed in the current
+  Removes every dependency `precompiled` installed in the current
   `_build` (this `MIX_ENV` and `MIX_TARGET`), so the next `mix compile`
   compiles them from source (or installs them again, when the library is
   on). Only build dirs that carry the provenance file an install writes
@@ -17,7 +17,7 @@ defmodule Mix.Tasks.Precompiled.Clean do
   Trust state (batch sequence, adopted roots) is never removed.
   """
   use Mix.Task
-  alias ElixirPrecompiled.{Cache, Config, Status}
+  alias Precompiled.{Cache, Config, Status}
 
   @impl Mix.Task
   def run(args) do

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule ElixirPrecompiled.TestPeer do
+defmodule Precompiled.TestPeer do
   @moduledoc false
   # A peer VM shaped like a release on a device: embedded code loading (no
   # autoload), and on its code path only kernel, stdlib, compiler, crypto,
@@ -15,7 +15,7 @@ defmodule ElixirPrecompiled.TestPeer do
     # are the ones loaded below.
     dirs =
       consolidated() ++
-        Enum.map([:compile, :crypto, Kernel, Logger, ElixirPrecompiled.Device.Loader], &ebin/1)
+        Enum.map([:compile, :crypto, Kernel, Logger, Precompiled.Device.Loader], &ebin/1)
 
     pa = Enum.flat_map(dirs, &[~c"-pa", String.to_charlist(&1)])
 

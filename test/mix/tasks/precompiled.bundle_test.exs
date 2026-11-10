@@ -5,18 +5,18 @@
 defmodule Mix.Tasks.Precompiled.BundleTest do
   # Installs load into this VM, so every test removes what it loaded on exit.
   use ExUnit.Case, async: false
-  import ElixirPrecompiled.DeviceFixture
-  alias ElixirPrecompiled.Device.Source
-  alias ElixirPrecompiled.Fixture
-  alias ElixirPrecompiled.Trust
+  import Precompiled.DeviceFixture
   alias Mix.Tasks.Precompiled.Bundle
+  alias Precompiled.Device.Source
+  alias Precompiled.Fixture
+  alias Precompiled.Trust
 
   @moduletag :tmp_dir
 
   setup %{tmp_dir: dir} do
     # Other suites reset this app's env; the seams (env:, ...) need it.
-    Application.put_env(:elixir_precompiled, :test_seams, true)
-    start_supervised!(ElixirPrecompiled.TestServer)
+    Application.put_env(:precompiled, :test_seams, true)
+    start_supervised!(Precompiled.TestServer)
     Mix.shell(Mix.Shell.Process)
     store = [dir: Path.join(dir, "store"), quiet: true]
 
@@ -342,7 +342,7 @@ defmodule Mix.Tasks.Precompiled.BundleTest do
     a = publish_app(f, dir, :bun_bad, "1.0.0")
     Fixture.publish(f, %{"bun_bad" => manifest(%{"1.0.0" => [a]})})
     out = Path.join(dir, "bundle")
-    Fixture.corrupt_port(ElixirPrecompiled.TestServer.port())
+    Fixture.corrupt_port(Precompiled.TestServer.port())
 
     assert_raise Mix.Error, fn -> Bundle.run(["bun_bad" | pure_args(f, out)]) end
     refute File.exists?(out)

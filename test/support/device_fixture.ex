@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule ElixirPrecompiled.DeviceFixture do
+defmodule Precompiled.DeviceFixture do
   @moduledoc false
   # Builders for the device layer's tests: format-2 build entries and
   # manifests, a running device (Device.Env) and a Device.Rules context.
 
-  alias ElixirPrecompiled.Device.Env
+  alias Precompiled.Device.Env
 
   @base_present %{
     kernel: "10.4",
@@ -276,7 +276,7 @@ defmodule ElixirPrecompiled.DeviceFixture do
     entries = for e <- files(root), do: %{e | "mode" => 420}
 
     for e <- entries,
-        do: ElixirPrecompiled.Fixture.file(fixture, File.read!(Path.join(root, e["path"])))
+        do: Precompiled.Fixture.file(fixture, File.read!(Path.join(root, e["path"])))
 
     {ebin, priv} = Enum.split_with(entries, &String.starts_with?(&1["path"], "ebin/"))
 
@@ -319,7 +319,7 @@ defmodule ElixirPrecompiled.DeviceFixture do
   # The version a build's .app names, read back from the fixture's files.
   defp app_vsn(build) do
     app = Enum.find(build["ebin"], &String.ends_with?(&1["path"], ".app"))
-    bytes = ElixirPrecompiled.Fixture.get(:files)[app["sha256"]]
+    bytes = Precompiled.Fixture.get(:files)[app["sha256"]]
     {:ok, tokens, _} = :erl_scan.string(String.to_charlist(bytes))
     {:ok, {:application, _, props}} = :erl_parse.parse_term(tokens)
     to_string(props[:vsn])
@@ -339,7 +339,7 @@ defmodule ElixirPrecompiled.DeviceFixture do
   """
   @spec write_bundle!(map(), Path.t(), map(), keyword()) :: Path.t()
   def write_bundle!(fixture, dir, packages, opts \\ []) do
-    alias ElixirPrecompiled.Fixture
+    alias Precompiled.Fixture
 
     {own, publish_opts} =
       Keyword.split(opts, [
@@ -389,7 +389,7 @@ defmodule ElixirPrecompiled.DeviceFixture do
 
   @spec elf_header(32 | 64, atom()) :: binary()
   def elf_header(class, machine) do
-    {em, ^machine} = Enum.find(ElixirPrecompiled.Device.Elf.machines(), &(elem(&1, 1) == machine))
+    {em, ^machine} = Enum.find(Precompiled.Device.Elf.machines(), &(elem(&1, 1) == machine))
     class_byte = if class == 64, do: 2, else: 1
     # 16-byte identification, e_type 3 (shared object), e_machine, then
     # zeros to the 64-byte header size.

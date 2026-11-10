@@ -40,7 +40,7 @@ defmodule ChainFixture.MixProject do
   defp deps do
     [
       nerves_dep(),
-      {:elixir_precompiled, path: "../../..", runtime: false, override: true},
+      {:precompiled, path: "../../..", runtime: false, override: true},
       {:nerves_runtime, "~> 0.13.12"},
       {:toolshed, "~> 0.5.0"},
       # A path dep that is not Nerves tooling: never precompiled (P5).

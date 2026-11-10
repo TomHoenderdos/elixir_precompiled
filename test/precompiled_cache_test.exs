@@ -4,15 +4,15 @@
 #
 defmodule PrecompiledCacheTest do
   use ExUnit.Case, async: false
-  import ElixirPrecompiled.DeviceFixture
-  alias ElixirPrecompiled.{Device.Loader, Fixture}
+  import Precompiled.DeviceFixture
+  alias Precompiled.{Device.Loader, Fixture}
 
   @moduletag :tmp_dir
 
   setup %{tmp_dir: dir} do
     # Other suites reset this app's env; the seams (env:, ...) need it.
-    Application.put_env(:elixir_precompiled, :test_seams, true)
-    start_supervised!(ElixirPrecompiled.TestServer)
+    Application.put_env(:precompiled, :test_seams, true)
+    start_supervised!(Precompiled.TestServer)
     f = Fixture.new(dir)
 
     host =
@@ -99,7 +99,7 @@ defmodule PrecompiledCacheTest do
 
     {:ok, _} = Precompiled.install(:demo_old, opts ++ [start: false])
     :ok = Loader.deactivate(:demo_old, Path.join(opts[:dir], "demo_old-1.0.0"), true)
-    used = ElixirPrecompiled.Device.Store.used_bytes(opts[:dir])
+    used = Precompiled.Device.Store.used_bytes(opts[:dir])
     plan = Enum.sum(for e <- newer["ebin"] ++ newer["priv"], do: e["size"])
 
     assert {:ok, [%{app: :demo_new}]} =
@@ -134,7 +134,7 @@ defmodule PrecompiledCacheTest do
       sequence: 3
     )
 
-    used = ElixirPrecompiled.Device.Store.used_bytes(opts[:dir])
+    used = Precompiled.Device.Store.used_bytes(opts[:dir])
     plan = Enum.sum(for e <- newer["ebin"] ++ newer["priv"], do: e["size"])
 
     assert {:ok, [%{app: :demo_new}]} =

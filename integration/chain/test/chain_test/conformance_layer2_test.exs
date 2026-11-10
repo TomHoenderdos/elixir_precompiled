@@ -283,7 +283,7 @@ defmodule ChainTest.ConformanceLayer2Test do
 
       env =
         %{@t0 | id: "T0-env"}
-        |> Map.put(:client_env, %{"ELIXIR_PRECOMPILED_ROOT" => ctx.l2.roots.threshold_2})
+        |> Map.put(:client_env, %{"PRECOMPILED_ROOT" => ctx.l2.roots.threshold_2})
 
       cases!(ctx.opts, [named, env, @l2_t0])
       {verdicts, _} = Conformance.run(ctx.opts, steps(self(), ctx.snapshot, ctx.l2))
@@ -295,7 +295,7 @@ defmodule ChainTest.ConformanceLayer2Test do
              ] = verdicts
 
       assert d1 =~ "client config names test root"
-      assert d2 =~ "ELIXIR_PRECOMPILED_ROOT" and d2 =~ "test root"
+      assert d2 =~ "PRECOMPILED_ROOT" and d2 =~ "test root"
     end
 
     test "a real-root case whose home holds a test root's state dir fails", ctx do

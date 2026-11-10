@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# ElixirPrecompiled.install/2 inside the compatibility worker image against
+# Precompiled.Host.install/2 inside the compatibility worker image against
 # the production portal. The image's Elixir/OTP is the one the portal builds
 # with, so this is the device path with the device's exact toolchain, minus
 # the device.
@@ -14,11 +14,11 @@ IMAGE="${NCC_IMAGE:-ncc-worker:local}"
 docker run --rm --entrypoint sh \
   -v "$PWD:/src:ro" \
   -e MIX_INSTALL_DIR=/tmp/installs \
-  -e ELIXIR_PRECOMPILED_HOME=/tmp/precompiled-home \
+  -e PRECOMPILED_HOME=/tmp/precompiled-home \
   "$IMAGE" -c '
     set -e
     cp -r /src /tmp/lib && cd /tmp/lib && rm -rf _build deps
     MIX_ENV=prod mix compile
     cd /tmp
-    elixir -pa /tmp/lib/_build/prod/lib/elixir_precompiled/ebin /tmp/lib/scripts/container-check.exs
+    elixir -pa /tmp/lib/_build/prod/lib/precompiled/ebin /tmp/lib/scripts/container-check.exs
   '

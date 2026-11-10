@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule ElixirPrecompiled.Integration.InstallRecheckTest do
+defmodule Precompiled.Integration.InstallRecheckTest do
   use ExUnit.Case, async: false
-  alias ElixirPrecompiled.ChildProject, as: C
-  alias ElixirPrecompiled.Fixture, as: F
+  alias Precompiled.ChildProject, as: C
+  alias Precompiled.Fixture, as: F
 
   @moduletag :integration
   @moduletag :tmp_dir
@@ -17,13 +17,13 @@ defmodule ElixirPrecompiled.Integration.InstallRecheckTest do
   @script """
   [source, root] = System.argv()
   deps = [{:jason, "1.4.5"}]
-  ElixirPrecompiled.install(deps, source: source, root: root)
+  Precompiled.Host.install(deps, source: source, root: root)
   IO.puts("encoded=" <> Jason.encode!(%{a: 1}))
   IO.puts("mix_dir=" <> Mix.install_project_dir())
   """
 
   setup_all do
-    start_supervised!(ElixirPrecompiled.TestServer)
+    start_supervised!(Precompiled.TestServer)
     :ok
   end
 
@@ -40,7 +40,7 @@ defmodule ElixirPrecompiled.Integration.InstallRecheckTest do
     # Real jason beams, compiled by a plain Mix.install/2 in the same
     # install project, then published as the portal's build.
     F.publish(f, %{}, sequence: 1)
-    out = child!(dir, f, [{"ELIXIR_PRECOMPILED", "0"}])
+    out = child!(dir, f, [{"PRECOMPILED", "0"}])
     mix_dir = line!(out, "mix_dir")
     lib = Path.join(mix_dir, "_build/dev/lib/jason")
     entry = C.jason_entry(f, lib, mix_dir)
@@ -51,13 +51,13 @@ defmodule ElixirPrecompiled.Integration.InstallRecheckTest do
     out = child!(dir, f)
     assert out =~ ~r/precompiled: jason 1\.4\.5\s+HIT/, out
     assert out =~ ~s(encoded={"a":1}), out
-    assert File.exists?(Path.join(lib, ".mix/elixir_precompiled.json"))
+    assert File.exists?(Path.join(lib, ".mix/precompiled.json"))
     refute File.exists?(Path.join(lib, ".mix/compile.elixir"))
 
     # A run with the batch still naming it is quiet and keeps the bytes.
     out = child!(dir, f)
     refute out =~ "precompiled: jason", out
-    assert File.exists?(Path.join(lib, ".mix/elixir_precompiled.json"))
+    assert File.exists?(Path.join(lib, ".mix/precompiled.json"))
 
     # The portal withdraws the build: the next batch no longer names jason.
     F.publish(f, %{"other" => %{"versions" => %{}}}, sequence: 3)
@@ -69,7 +69,7 @@ defmodule ElixirPrecompiled.Integration.InstallRecheckTest do
 
     assert out =~ ~s(encoded={"a":1}), out
     assert File.exists?(Path.join(lib, ".mix/compile.elixir"))
-    refute File.exists?(Path.join(lib, ".mix/elixir_precompiled.json"))
+    refute File.exists?(Path.join(lib, ".mix/precompiled.json"))
 
     # And the run after that is quiet: nothing installed, nothing to recheck.
     out = child!(dir, f)
@@ -90,7 +90,7 @@ defmodule ElixirPrecompiled.Integration.InstallRecheckTest do
     env =
       [
         {"MIX_INSTALL_DIR", Path.join(dir, "installs")},
-        {"ELIXIR_PRECOMPILED_HOME", Path.join(dir, "home")},
+        {"PRECOMPILED_HOME", Path.join(dir, "home")},
         {"MIX_ENV", nil},
         {"MIX_TARGET", nil},
         {"MIX_BUILD_PATH", nil},

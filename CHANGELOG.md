@@ -2,6 +2,18 @@
 
 ## v0.2.0 - unreleased
 
+* Renamed to `precompiled` before the first Hex release: the app and
+  package `:precompiled`, modules `Precompiled.*` (the host API, `run/1`
+  and the `Mix.install/2` wrapper `install/2`, is now `Precompiled.Host`;
+  `Precompiled` itself is the device API), config `config :precompiled`,
+  environment variables `PRECOMPILED_*`, the default cache dir
+  `:filename.basedir(:user_cache, "precompiled")`, the provenance file
+  `.mix/precompiled.json` and the archive `precompiled-<vsn>.ez`. The
+  Igniter installer is `mix igniter.install precompiled`
+  (`mix precompiled.install`), and the `deps.loadpaths` step it adds is
+  now `mix precompiled.deps`. A clean break: none of the interim
+  `elixir_precompiled` names is read, and a cache under the old dir is
+  simply not used. The repository keeps its name, `elixir_precompiled`.
 * `Precompiled.install/1,2` installs signed precompiled builds into a
   running Nerves device from an IEx shell, with no Mix, Hex or compiler on
   the device: it selects the build for the device's system, OTP, Elixir,
@@ -13,7 +25,7 @@
   device".
 * On by default, with the official signed source
   (`https://compatibility.nerves-project.org/api/precompiled`) as the
-  default source; it only acts when called. `config :elixir_precompiled,
+  default source; it only acts when called. `config :precompiled,
   :device` sets `enabled: false` (no installs), `allow: [...]` (an allowlist),
   another `source`, `dir`, `max_bytes` and `cacerts_path`; `enabled` and
   `allow` cannot be overridden by a call.
@@ -32,7 +44,7 @@
 * `mix precompiled.bundle PKG[@REQ]... --out DIR` writes a bundle on a
   host with network, planned from the device's facts (flags, or a dry
   run's `--device-report`), with every byte checked before it is written.
-* `mix igniter.install elixir_precompiled --device` keeps the dependency
+* `mix igniter.install precompiled --device` keeps the dependency
   at runtime so it ships in the firmware, and adds `castore` unless the
   project already depends on it.
 * `:inets`, `:ssl` and `:public_key` are optional applications; `:crypto`
@@ -40,7 +52,7 @@
   online call returns `{:error, {:missing_app, app}}`).
 * `cacerts_path:` (an option of `Precompiled.install/2` and a `:device`
   config key) names a PEM CA bundle for a device install. Without one (and
-  without `ELIXIR_PRECOMPILED_CACERTS_PATH`/`HEX_CACERTS_PATH`),
+  without `PRECOMPILED_CACERTS_PATH`/`HEX_CACERTS_PATH`),
   an empty or missing OS certificate store now falls back to the `castore`
   package's bundle when that is loaded. With no certificates at all the
   error now reads `no CA certificates` (before: `no CA certificate store on
@@ -56,13 +68,13 @@
 
 ## v0.1.0 - unreleased
 
-* Any Mix project can use it: `mix precompiled.install`, reached through a
-  `deps.loadpaths` alias (`mix igniter.install elixir_precompiled` adds it),
+* Any Mix project can use it: `mix precompiled.deps`, reached through a
+  `deps.loadpaths` alias (`mix igniter.install precompiled` adds it),
   installs builds before Mix compiles dependencies in plain projects,
   umbrellas and Phoenix apps, and for Nerves with released nerves too,
   where only `pure_elixir` builds match: system (target) builds need the
   Nerves fork's `Nerves.build_plan/0` to name the system.
-  `ElixirPrecompiled.run/1` for the nerves hook is unchanged. The Igniter
+  `Precompiled.Host.run/1` for the nerves hook is unchanged. The Igniter
   installer sets the dependency `runtime: false`, `:source` in
   `config/config.exs` and the alias, prepended to an existing one; Igniter
   is an optional dependency, declared only on Elixir 1.18+.
@@ -73,7 +85,7 @@
   then the batch itself is downloaded again; manifests and files still come
   from the cache); the root is checked at most once an hour; manifests are
   cached by SHA-256; files of a dependency download in parallel.
-  `ELIXIR_PRECOMPILED_OFFLINE=1` works from the cache; a run has a network
+  `PRECOMPILED_OFFLINE=1` works from the cache; a run has a network
   deadline (`:deadline_seconds`, 300; root and batch 15 s). When the source
   cannot be reached, a cached batch that still passes every check is used;
   a refused response never falls back. A source that failed to connect is
@@ -95,7 +107,7 @@
   time are matched on them (README, rule 8).
 * `nerves`' own dependencies are recognised from Mix's dependency data, so a
   git or path `nerves` keeps them out.
-* `ELIXIR_PRECOMPILED=0`, or no source configured, now removes installed
+* `PRECOMPILED=0`, or no source configured, now removes installed
   builds (Mix compiles them in that run). Only the `_build` of the run's
   own env and target is touched: under Nerves a run on `host` removes the
   host installs, never a device target's.
@@ -106,13 +118,13 @@
   that fails a check is still reported by the check alone (`batch stale`,
   `batch signature invalid`, ...).
 * Lower-case proxy variables, `NO_PROXY`, and a CA bundle
-  (`ELIXIR_PRECOMPILED_CACERTS_PATH` or `HEX_CACERTS_PATH`). The bundle
+  (`PRECOMPILED_CACERTS_PATH` or `HEX_CACERTS_PATH`). The bundle
   replaces the OS store, as Hex's does: verification stays on and only its
   CAs are trusted.
-* `ELIXIR_PRECOMPILED_SOURCE` opts in without a config change; it wins over
+* `PRECOMPILED_SOURCE` opts in without a config change; it wins over
   app config, an explicit `source:` option wins over it. An empty value
   counts as unset.
-* `ElixirPrecompiled.install/2` on Elixir 1.17 and 1.18 installs into the
+* `Precompiled.Host.install/2` on Elixir 1.17 and 1.18 installs into the
   dir `Mix.install/2` uses there (`elixir-<vsn>-erts-<vsn>`); before, its
   installs landed beside it and Mix compiled everything.
 * CI runs Elixir 1.17 to 1.20.
@@ -120,7 +132,7 @@
   future, valid for more than 30 days, or read against a local clock
   earlier than this library's build time, is refused; the run falls back
   to compiling, same as an expired or rolled-back batch.
-* Every run, `ElixirPrecompiled.install/2` included, rechecks
+* Every run, `Precompiled.Host.install/2` included, rechecks
   dependencies an earlier run installed (in a Mix project's `_build` or
   the `Mix.install/2` project) against the current batch: one the batch no longer names, or one newly listed in
   `:except`, is removed and compiled from source; one whose manifest
@@ -140,12 +152,12 @@
 * On a device, the Nerves system is read from `/usr/lib/os-release`; the
   loaded-application lookup never matched because systems are `runtime:
   false`, so devices only got pure-Elixir hits.
-* Extracted from nerves PR #1220: `ElixirPrecompiled.run/1` is the build-time
+* Extracted from nerves PR #1220: `Precompiled.Host.run/1` is the build-time
   step `nerves` calls; `Config`, `Match`, `Trust` and `Fetch` moved unchanged
   apart from their HTTP client and output.
-* New: `ElixirPrecompiled.install/2`, `Mix.install/2` with the precompiled
+* New: `Precompiled.Host.install/2`, `Mix.install/2` with the precompiled
   step in front of it, for use on a device.
-* Config moved to `config :elixir_precompiled, source: ...`; the
+* Config moved to `config :precompiled, source: ...`; the
   `config :nerves, :precompiled` form still works.
 * On a device, a dependency already compiled in the `Mix.install/2` project
   is no candidate again: a second boot with a cached install re-places
@@ -154,8 +166,8 @@
 * Every HTTP request has an overall deadline (300 s by default) on top of
   the inactivity timer, so a server that keeps dripping data cannot hold a
   build or a boot open.
-* `elixir_precompiled` never installs a portal build of itself.
-* Renamed to `elixir_precompiled`; old config keys and `NERVES_PRECOMPILED*`
+* `precompiled` never installs a portal build of itself.
+* Renamed to `precompiled`; old config keys and `NERVES_PRECOMPILED*`
   variables still work for one release.
 * Reads manifest format 2: a version lists its builds, each with a target
   (`pure_elixir` or a Nerves system) and the toolchain it was made with.
@@ -169,10 +181,10 @@
 * `report.json` carries `"format": 1`.
 * Ships as a Mix archive (`mix archive.install github
   TomHoenderdos/elixir_precompiled`) so Livebook and scripts can call
-  `ElixirPrecompiled.install/2` in place of `Mix.install/2`; CI builds it.
+  `Precompiled.Host.install/2` in place of `Mix.install/2`; CI builds it.
 * The file cache moved from `~/.nerves/precompiled` to the user cache dir
-  (`:filename.basedir(:user_cache, "elixir_precompiled")`,
-  `~/Library/Caches/elixir_precompiled` on macOS, `~/.cache/elixir_precompiled`
+  (`:filename.basedir(:user_cache, "precompiled")`,
+  `~/Library/Caches/precompiled` on macOS, `~/.cache/precompiled`
   on Linux). The old directory is not migrated, so the first run after
   upgrading downloads everything again; set
-  `ELIXIR_PRECOMPILED_HOME=~/.nerves/precompiled` to keep using the old one.
+  `PRECOMPILED_HOME=~/.nerves/precompiled` to keep using the old one.

@@ -55,15 +55,15 @@ defmodule Mix.Tasks.Precompiled.CleanTest do
     tmp_dir: dir
   } do
     home = Path.join(dir, "home")
-    System.put_env("ELIXIR_PRECOMPILED_HOME", home)
-    on_exit(fn -> System.delete_env("ELIXIR_PRECOMPILED_HOME") end)
+    System.put_env("PRECOMPILED_HOME", home)
+    on_exit(fn -> System.delete_env("PRECOMPILED_HOME") end)
     put(Path.join(home, "files/" <> String.duplicate("a", 64)))
     put(Path.join(home, "batch.json"))
 
     in_project(dir, fn ->
       lib = Path.join(Mix.Project.build_path(), "lib")
       put(Path.join(lib, "jason/ebin/jason.app"), ~s({application, jason, [{vsn, "1.4.5"}]}.\n))
-      put(Path.join(lib, "jason/.mix/elixir_precompiled.json"), ~s({"batch_sequence":3}))
+      put(Path.join(lib, "jason/.mix/precompiled.json"), ~s({"batch_sequence":3}))
       put(Path.join(lib, "decimal/ebin/decimal.app"))
 
       Mix.Tasks.Precompiled.Status.run([])
@@ -90,14 +90,14 @@ defmodule Mix.Tasks.Precompiled.CleanTest do
   } do
     in_project(dir, fn ->
       lib = Path.join(Mix.Project.build_path(), "lib")
-      prov = Path.join(lib, "rebuilt/.mix/elixir_precompiled.json")
+      prov = Path.join(lib, "rebuilt/.mix/precompiled.json")
       put(Path.join(lib, "rebuilt/ebin/rebuilt.app"))
       put(prov, ~s({"batch_sequence":3}))
       File.touch!(prov, 1_000)
       put(Path.join(lib, "rebuilt/.mix/compile.elixir"), "m")
       File.touch!(Path.join(lib, "rebuilt/.mix/compile.elixir"), 2_000)
       put(Path.join(lib, "jason/ebin/jason.app"))
-      put(Path.join(lib, "jason/.mix/elixir_precompiled.json"), ~s({"batch_sequence":3}))
+      put(Path.join(lib, "jason/.mix/precompiled.json"), ~s({"batch_sequence":3}))
 
       Mix.Tasks.Precompiled.Clean.run([])
       assert_received {:mix_shell, :info, ["precompiled: removed 1 installed build (jason)"]}
@@ -111,12 +111,12 @@ defmodule Mix.Tasks.Precompiled.CleanTest do
     configured = Path.join(dir, "configured")
     other = Path.join(dir, "other")
     # Lower precedence than the app env, as in a run; stands in for the default.
-    System.put_env("ELIXIR_PRECOMPILED_HOME", other)
-    Application.put_env(:elixir_precompiled, :home, configured)
+    System.put_env("PRECOMPILED_HOME", other)
+    Application.put_env(:precompiled, :home, configured)
 
     on_exit(fn ->
-      System.delete_env("ELIXIR_PRECOMPILED_HOME")
-      Application.delete_env(:elixir_precompiled, :home)
+      System.delete_env("PRECOMPILED_HOME")
+      Application.delete_env(:precompiled, :home)
     end)
 
     put(Path.join(configured, "files/" <> String.duplicate("a", 64)))

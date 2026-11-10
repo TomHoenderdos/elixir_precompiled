@@ -44,7 +44,7 @@ defmodule Precompiled do
 
   | Option | Default | Meaning |
   | --- | --- | --- |
-  | `:source` | `config :elixir_precompiled, :device, source:`, else the official API | The API root (`https://...`, or `http://` on loopback only), or `file://DIR` for a bundle. The default is `https://compatibility.nerves-project.org/api/precompiled`, checked against the root this library ships. Any other source must be configured or passed. |
+  | `:source` | `config :precompiled, :device, source:`, else the official API | The API root (`https://...`, or `http://` on loopback only), or `file://DIR` for a bundle. The default is `https://compatibility.nerves-project.org/api/precompiled`, checked against the root this library ships. Any other source must be configured or passed. |
   | `:content`, `:deadline_seconds` | as on the host | Same meaning as the host config keys. |
   | `:cacerts_path` | none | A PEM CA bundle to verify an `https` source with (a path). |
   | `:dir` | `/data/precompiled` | The store. Its trust state lives in `DIR/.trust`: a call with another `:dir` gets its own trust state (root chain and sequence floors), starting again from the shipped root. |
@@ -57,7 +57,7 @@ defmodule Precompiled do
   | `:lock_retries` | 60 | For tests: how often to retry a store another call holds. |
 
   Another trust anchor than the shipped `priv/precompiled/root.json` is
-  set in the firmware's config only (`config :elixir_precompiled,
+  set in the firmware's config only (`config :precompiled,
   :device, root: path`), never per call.
 
   The device facts, the clock check and the trust anchor have test seams
@@ -66,7 +66,7 @@ defmodule Precompiled do
   otherwise they are refused as unknown options, and the firmware's
   `:device` config never sets them.
 
-  `config :elixir_precompiled, :device, enabled: false` in the firmware
+  `config :precompiled, :device, enabled: false` in the firmware
   disables `install/2` (`{:error, :disabled}`); `list/1`, `uninstall/2`
   and `clean/1` keep working, so what is installed can still be removed.
   `allow: [app]` limits installs to those apps, closure members included.
@@ -126,17 +126,17 @@ defmodule Precompiled do
   `{:error, :busy}`.
   """
 
-  alias ElixirPrecompiled.Check
-  alias ElixirPrecompiled.CompileEnv
-  alias ElixirPrecompiled.Device.Elf
-  alias ElixirPrecompiled.Device.Env
-  alias ElixirPrecompiled.Device.Loader
-  alias ElixirPrecompiled.Device.Output
-  alias ElixirPrecompiled.Device.Plan
-  alias ElixirPrecompiled.Device.Source
-  alias ElixirPrecompiled.Device.Store
-  alias ElixirPrecompiled.Fetch
-  alias ElixirPrecompiled.Match
+  alias Precompiled.Check
+  alias Precompiled.CompileEnv
+  alias Precompiled.Device.Elf
+  alias Precompiled.Device.Env
+  alias Precompiled.Device.Loader
+  alias Precompiled.Device.Output
+  alias Precompiled.Device.Plan
+  alias Precompiled.Device.Source
+  alias Precompiled.Device.Store
+  alias Precompiled.Fetch
+  alias Precompiled.Match
 
   @defaults [
     start: true,
@@ -344,7 +344,7 @@ defmodule Precompiled do
   defp device_config(), do: Source.device_config()
 
   defp install_keys() do
-    if Application.get_env(:elixir_precompiled, :test_seams) == true,
+    if Application.get_env(:precompiled, :test_seams) == true,
       do: @install_keys ++ @seam_keys,
       else: @install_keys
   end

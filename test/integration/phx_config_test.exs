@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-defmodule ElixirPrecompiled.Integration.PhxConfigTest do
+defmodule Precompiled.Integration.PhxConfigTest do
   # A real child project in dev, test and prod, whose config is phx_new's
   # (1.8.16) or a --no-html app's, against a build whose compile_env records
   # LiveView's compile-time keys as the portal does for a LiveView-compiling
@@ -10,15 +10,15 @@ defmodule ElixirPrecompiled.Integration.PhxConfigTest do
   # compile_env items generically, whatever package they come on.
   use ExUnit.Case, async: false
 
-  alias ElixirPrecompiled.ChildProject, as: C
-  alias ElixirPrecompiled.Fixture, as: F
+  alias Precompiled.ChildProject, as: C
+  alias Precompiled.Fixture, as: F
 
   @moduletag :integration
   @moduletag :tmp_dir
   @moduletag timeout: 600_000
 
   setup_all do
-    start_supervised!(ElixirPrecompiled.TestServer)
+    start_supervised!(Precompiled.TestServer)
     :ok
   end
 
@@ -37,7 +37,7 @@ defmodule ElixirPrecompiled.Integration.PhxConfigTest do
   defp write_config!(proj, f, phx?) do
     head = """
     import Config
-    config :elixir_precompiled, source: #{inspect(F.base_url())}, root: #{inspect(f.root_path)}
+    config :precompiled, source: #{inspect(F.base_url())}, root: #{inspect(f.root_path)}
     """
 
     lv = if phx?, do: ~s(config :phoenix_live_view, root_tag_attribute: "phx-r"\n), else: ""

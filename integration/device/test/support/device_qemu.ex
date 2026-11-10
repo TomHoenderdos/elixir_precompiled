@@ -215,7 +215,7 @@ defmodule DeviceQemu do
   @spec wait_online!() :: :ok
   def wait_online!() do
     probe =
-      ~s|host = URI.parse(ElixirPrecompiled.Device.Source.official()).host; | <>
+      ~s|host = URI.parse(Precompiled.Device.Source.official()).host; | <>
         ~s|IO.inspect({NervesTime.synchronized?(), | <>
         ~s|match?({:ok, _}, :inet.gethostbyname(String.to_charlist(host)))})|
 
