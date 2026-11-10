@@ -5,7 +5,7 @@
 defmodule Precompiled.MixProject do
   use Mix.Project
 
-  @version "0.3.1"
+  @version "0.3.2"
   @source_url "https://github.com/TomHoenderdos/elixir_precompiled"
 
   @otp_release :erlang.system_info(:otp_release) |> List.to_integer()

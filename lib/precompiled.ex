@@ -467,6 +467,8 @@ defmodule Precompiled do
       do: apply(NervesTime, :synchronized?, []) == true,
       else: true
   rescue
+    # Catches everything: a NervesTime that raises or exits counts as not
+    # synchronized, an error the caller can report, never a crash.
     _ -> false
   catch
     _, _ -> false

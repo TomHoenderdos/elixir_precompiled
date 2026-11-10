@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.3.2 - 2026-11-10
+
+### Security
+
+* Recorded compile_env values are decoded with size, compression and term
+  kind limits. A value over 64 KiB, a compressed one, or one holding a
+  fun, pid, port or reference anywhere is never decoded into a usable
+  term: it differs from the project's value, so that build misses with
+  `compile_env differs: ...` and the dependency compiles from source.
+  Before, a small compressed value was inflated in full while it was
+  read. A value that is not valid base64 is a miss too, never a raise.
+  The local source-scan cache is read with the same limits; an entry
+  outside them is rescanned.
+
 ## v0.3.1 - 2026-11-10
 
 * New matching rule 9, build method. A dependency whose `deps` entry sets

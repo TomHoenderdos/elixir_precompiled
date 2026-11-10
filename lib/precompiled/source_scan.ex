@@ -65,10 +65,17 @@ defmodule Precompiled.SourceScan do
     end
   end
 
+  # Entries are tiny: a real cache's largest is 55 bytes, and one listing
+  # a thousand variable names would still be under 40 KiB. An entry over
+  # the cap is only a miss, and the dep is scanned again.
+  @max_entry_bytes 65_536
+
   defp read(path) do
-    with {:ok, %File.Stat{type: :regular}} <- File.lstat(path),
-         {:ok, bin} <- File.read(path) do
-      valid(:erlang.binary_to_term(bin, [:safe]))
+    with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_entry_bytes <-
+           File.lstat(path),
+         {:ok, bin} <- File.read(path),
+         {:ok, term} <- Precompiled.SafeTerm.decode(bin, @max_entry_bytes) do
+      valid(term)
     else
       _ -> nil
     end

@@ -264,6 +264,24 @@ defmodule Precompiled.Device.RulesTest do
                Rules.check(build(compile_env: [present_item]), "x", bad)
     end
 
+    test "a compressed or fun-bearing recorded value refuses, even if equal" do
+      value = :binary.copy("x", 1000)
+      compressed = :erlang.term_to_binary({:ok, value}, [:compressed])
+      assert <<131, 80, _::binary>> = compressed
+      packed = Base.url_encode64(compressed, padding: false)
+
+      for {enc_value, config_value} <- [
+            {packed, value},
+            {enc({:ok, &Enum.map/2}), &Enum.map/2}
+          ] do
+        item = %{"app" => "logger", "path" => ["level"], "value" => enc_value}
+        ctx = ctx(config: fn "logger", ["level"] -> {:ok, config_value} end)
+
+        assert {:miss, "compile_env differs: logger [:level]", 8} =
+                 Rules.check(build(compile_env: [item]), "x", ctx)
+      end
+    end
+
     test "a key that is not set on a loaded app refuses against a recorded value" do
       item = %{"app" => "logger", "path" => ["nope"], "value" => enc({:ok, :info})}
       ctx = ctx(config: fn "logger", ["nope"] -> :error end)

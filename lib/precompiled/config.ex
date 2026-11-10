@@ -224,6 +224,7 @@ defmodule Precompiled.Config do
       do: nil,
       else: to_string(:filename.basedir(:user_cache, "precompiled"))
   rescue
+    # Catches everything: no usable home is the _build fallback, never a crash.
     _ -> nil
   catch
     _, _ -> nil
