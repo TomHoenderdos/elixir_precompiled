@@ -14,7 +14,11 @@ here="$(cd "$(dirname "$0")" && pwd)"
 fw="$here/fixture/_build/qemu_aarch64_dev/nerves/images/device_fixture.fw"
 img="$here/_qemu/disk.img"
 # Where build_firmware.sh's Nerves home unpacks the system artifact.
-loader="$here/_qemu/home/.nerves/artifacts/nerves_system_qemu_aarch64-portable-0.5.1/images/little_loader.elf"
+# build_firmware.sh (Docker) keeps the system artifact under _qemu/home; a
+# native build (CI) uses Nerves' own artifacts dir.
+system="nerves_system_qemu_aarch64-portable-0.5.1/images/little_loader.elf"
+loader="$here/_qemu/home/.nerves/artifacts/$system"
+[ -f "$loader" ] || loader="${NERVES_ARTIFACTS_DIR:-$HOME/.nerves/artifacts}/$system"
 
 [ -f "$fw" ] || { echo "no firmware at $fw; run build_firmware.sh" >&2; exit 1; }
 [ -f "$loader" ] || { echo "no little_loader.elf at $loader" >&2; exit 1; }
