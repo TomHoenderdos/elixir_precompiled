@@ -77,7 +77,23 @@ defmodule Precompiled.MixProject do
       main: "readme",
       source_ref: "v#{@version}",
       source_url: @source_url,
-      extras: ["README.md", "CHANGELOG.md"]
+      extras: [
+        "README.md",
+        "guides/setup.md",
+        "guides/nerves.md",
+        "guides/device.md",
+        "guides/configuration.md",
+        "guides/matching.md",
+        "guides/trust.md",
+        "guides/troubleshooting.md",
+        "CHANGELOG.md"
+      ],
+      groups_for_extras: [
+        "Getting started": ["guides/setup.md", "guides/nerves.md", "guides/device.md"],
+        Reference: ["guides/configuration.md", "guides/matching.md"],
+        Explanation: ["guides/trust.md"],
+        Troubleshooting: ["guides/troubleshooting.md"]
+      ]
     ]
   end
 
@@ -85,6 +101,8 @@ defmodule Precompiled.MixProject do
     [
       files: [
         "CHANGELOG.md",
+        "CONTRIBUTING.md",
+        "guides",
         "lib",
         "LICENSE",
         "LICENSES/*",

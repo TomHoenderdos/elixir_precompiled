@@ -8,7 +8,7 @@ defmodule Mix.Tasks.Precompiled.DepsTest do
 
   test "only tasks that never compile deps skip the install" do
     # mix format with plugins calls loadpaths, which compiles every dep:
-    # installing first is the point (README, Phoenix).
+    # installing first is the point (guides/setup.md, Phoenix).
     for task <- ~w(compile test run format release phx.server deps.loadpaths),
         do: refute(Deps.skip?(task))
 

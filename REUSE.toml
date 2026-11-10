@@ -4,7 +4,7 @@
 version = 1
 
 [[annotations]]
-path = ["NOTICE", "LICENSE", "mix.lock", ".tool-versions", ".gitignore", "priv/precompiled/root.json", "integration/chain/priv/root.json", "integration/chain/fixture/mix.lock", "integration/chain/fixture/README.md", "integration/chain/fixture/rel/vm.args.eex", "integration/chain/fixture/rootfs_overlay/etc/iex.exs", "integration/device/README.md", "integration/device/fixture/mix.lock", "integration/device/fixture/rel/vm.args.eex", "integration/device/fixture/rootfs_overlay/etc/iex.exs", "README.md", "CHANGELOG.md", ".github/**"]
+path = ["NOTICE", "LICENSE", "mix.lock", ".tool-versions", ".gitignore", "priv/precompiled/root.json", "integration/chain/priv/root.json", "integration/chain/fixture/mix.lock", "integration/chain/fixture/README.md", "integration/chain/fixture/rel/vm.args.eex", "integration/chain/fixture/rootfs_overlay/etc/iex.exs", "integration/device/README.md", "integration/device/fixture/mix.lock", "integration/device/fixture/rel/vm.args.eex", "integration/device/fixture/rootfs_overlay/etc/iex.exs", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "guides/**", ".github/**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "None"
 SPDX-License-Identifier = "CC0-1.0"

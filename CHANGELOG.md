@@ -21,8 +21,8 @@
   loads and starts it with its absent runtime dependencies, and rolls the
   whole call back on any failure. Nothing present is ever replaced.
   `Precompiled.list/1`, `Precompiled.uninstall/2` and `dry_run: true`
-  (with `report:` for a bundle) come with it. See the README's "On a
-  device".
+  (with `report:` for a bundle) come with it. See the "On a
+  device" guide.
 * On by default, with the official signed source
   (`https://compatibility.nerves-project.org/api/precompiled`) as the
   default source; it only acts when called. `config :precompiled,

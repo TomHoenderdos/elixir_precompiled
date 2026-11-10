@@ -16,8 +16,8 @@ if Code.ensure_loaded?(Igniter) do
     the umbrella root by hand (see `mix help precompiled.deps`).
 
     `--device` is for a Nerves firmware that should be able to install on
-    the device itself (`Precompiled.install/1`, see the README's "On a
-    device"). It does three things:
+    the device itself (`Precompiled.install/1`, see the "On a device"
+    guide). It does three things:
 
       * removes `runtime: false` from the dependency, so the library ships
         in the firmware;
@@ -158,7 +158,7 @@ if Code.ensure_loaded?(Igniter) do
 
     defp add_device_notice(igniter, true) do
       Igniter.add_notice(igniter, """
-      On the device: Precompiled.install(:recon). See the README, "On a device".
+      On the device: Precompiled.install(:recon). See the "On a device" guide.
       """)
     end
 
