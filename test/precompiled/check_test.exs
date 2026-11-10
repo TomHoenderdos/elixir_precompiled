@@ -313,6 +313,12 @@ defmodule Precompiled.CheckTest do
     assert_received {:report, {:ok, %{fails: 1}}}
     assert out =~ ~r/ash 3\.5\.2\s+FAIL\s+downloaded \.app: compile_env differs: ash \[:mode\]/
     refute File.exists?(Path.join(lib, "ash"))
+
+    # The code carries the applications whose compile_env differs.
+    report_file = Path.join(lib, ".precompiled/report.json") |> File.read!() |> :json.decode()
+
+    assert %{"status" => "fail", "reason_code" => "compile_env_differs", "reason_args" => ["ash"]} =
+             Enum.find(report_file["lines"], &(&1["name"] == "ash"))
   end
 
   test "a pure_elixir build of a dep that reads Mix.target is not served to a device", %{
@@ -765,10 +771,18 @@ defmodule Precompiled.CheckTest do
       F.clear_requests()
 
       out = run_capturing(Map.put(config, :offline, true), env)
-      assert_received {:report, {:ok, %{lines: [%{name: "ash", status: :fail}]}}}
+
+      assert_received {:report,
+                       {:ok,
+                        %{lines: [%{name: "ash", status: :fail, reason: {:fetch_failed, []}}]}}}
 
       assert out =~
                ~r/ash 3\.5\.2\s+KEPT\s+offline: manifest not cached; installed build kept, not rechecked/
+
+      report_file = Path.join(lib, ".precompiled/report.json") |> File.read!() |> :json.decode()
+
+      assert [%{"name" => "ash", "status" => "fail", "reason_code" => "fetch_failed"}] =
+               report_file["lines"]
 
       assert F.requests() == []
       assert File.exists?(Path.join(lib, "ash/ebin/Elixir.X.beam"))

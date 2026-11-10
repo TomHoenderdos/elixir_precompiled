@@ -767,7 +767,7 @@ defmodule Precompiled.Check do
     with :ok <- app_identity(app_path, name, version) do
       case Match.compile_env_from_app(app_path) do
         nil -> {:fail, "staged .app unreadable"}
-        items -> Match.compile_env_ok(items, config_fun) |> as_fail()
+        items -> Match.compile_env_reason(items, config_fun) |> as_fail()
       end
     end
   end
@@ -788,7 +788,9 @@ defmodule Precompiled.Check do
   end
 
   defp as_fail(:ok), do: :ok
-  defp as_fail({:miss, why}), do: {:fail, "downloaded .app: " <> why}
+
+  defp as_fail({:miss, %Reason{} = r}), do: {:fail, %{r | text: "downloaded .app: " <> r.text}}
+  defp as_fail({:miss, why}) when is_binary(why), do: {:fail, "downloaded .app: " <> why}
 
   defp candidates(deps, lock, except, tooling) do
     {c, s} = Enum.reduce(deps, {[], []}, &sort_candidate(&1, &2, lock, except, tooling))
@@ -884,7 +886,7 @@ defmodule Precompiled.Check do
     %{
       "elixir" => elixir,
       "otp" => otp,
-      "target" => Map.get(env, :mix_target, "host"),
+      "target" => env.mix_target || "host",
       "system" => system,
       "system_version" => system_version
     }

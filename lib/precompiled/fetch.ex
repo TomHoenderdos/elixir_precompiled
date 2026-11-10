@@ -590,7 +590,7 @@ defmodule Precompiled.Fetch do
   """
   @spec install(map(), atom(), map(), tuple(), Path.t(), keyword()) ::
           {:ok, %{files: non_neg_integer(), bytes: non_neg_integer(), cached: non_neg_integer()}}
-          | {:fail, String.t()}
+          | {:fail, String.t() | Precompiled.Reason.t()}
   def install(config, dep, entry, lock_entry, build_lib, opts \\ []) do
     staging = staging_path(build_lib, dep)
     dest = Path.join(build_lib, Atom.to_string(dep))
@@ -634,7 +634,7 @@ defmodule Precompiled.Fetch do
   """
   @spec stage_verified(map(), atom(), map(), Path.t(), keyword()) ::
           {:ok, %{files: non_neg_integer(), bytes: non_neg_integer(), cached: non_neg_integer()}}
-          | {:fail, String.t()}
+          | {:fail, String.t() | Precompiled.Reason.t()}
   def stage_verified(config, dep, entry, staging, opts) do
     files = (entry["ebin"] || []) ++ (entry["priv"] || [])
     verify_app = Keyword.get(opts, :verify_app, fn _ -> :ok end)
