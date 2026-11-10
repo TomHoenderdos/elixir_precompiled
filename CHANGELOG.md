@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.4.0 - unreleased
+
+* New `mix precompiled.report` and `Precompiled.Host.report/1`: send the
+  last build's HIT/MISS/FAIL report to the configured source, after
+  showing exactly what will be sent and asking first (`--yes` for CI,
+  `--dump` to only look). Lines go as stable reason codes with package
+  names and versions, and only the project's public Hex lock entries go
+  with them; a Nerves system that is not a public Hex package, and any
+  reason that would name it or the target, is sent as `custom` instead.
+  Sending the same report twice answers "already received" and no id,
+  since the source hands an id out only once; the id from a first send
+  is the only way to retract it (`DELETE <source>/reports/<id>`).
+  Nothing is ever sent during a build, and the task always exits 0.
+* `report.json` lines gain `reason_code` and `reason_args`, and the
+  report gains `built_at` and the build's `context` (Elixir, OTP,
+  target, Nerves system). Existing fields are unchanged. A build with
+  no candidate dependencies does not write a new `report.json`; the
+  previous one, and whatever it reports, stays in place.
+* `mix precompiled.report` (and `Precompiled.Host.report/1`) need a
+  `report.json` written by this release: one from an earlier release
+  lacks the fields above, and the command says so and sends nothing
+  rather than guessing.
+
 ## v0.3.2 - 2026-11-10
 
 ### Security
