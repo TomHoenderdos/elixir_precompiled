@@ -307,9 +307,9 @@ calls, and ignore them.
 - **An unset clock.** An online call refuses before any request until the
   clock is synchronized (`NervesTime.synchronized?/0` when `nerves_time` is
   in the firmware): `{:error, {:clock_unsynchronized, now}}`. Set the
-  clock or wait for NTP, then retry. A bundle without `offline.json` needs
-  the clock too (its batch expires); one with a signed `offline.json`
-  does not.
+  clock or wait for NTP, then retry. A bundle needs no NTP: one without
+  `offline.json` is judged by its batch's expiry against the device clock,
+  which must be sane; one with a signed `offline.json` needs no clock.
 
 ### The cache
 

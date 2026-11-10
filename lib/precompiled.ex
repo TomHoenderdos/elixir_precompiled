@@ -79,8 +79,8 @@ defmodule Precompiled do
   An online call needs a synchronized clock: on an unsynchronized one it
   refuses before any request. A `file://` bundle with a signed
   `offline.json` needs no clock and no network at all; one without it is
-  bounded by its batch's own expiry and needs a synchronized clock too,
-  checked once its batch is read.
+  bounded by its batch's own expiry, judged against the device clock (no
+  NTP needed, but a clock before this library's build is refused).
 
   ## Return values
 
@@ -415,16 +415,14 @@ defmodule Precompiled do
     end
   end
 
-  # A bundle is gated once its batch is read (bundle_clock/2): only a
-  # signed offline.json is free of the clock.
+  # A bundle is not gated on NTP: a device reading one is usually offline,
+  # and NervesTime reports unsynchronized without a network. Trust still
+  # judges a bundle's batch.json against the clock (its expiry, a future
+  # issue time, a clock before this library's build), so a batch.json
+  # bundle needs a sane clock; only a signed offline.json needs none.
   defp clock(%{bundle: true}, _opts), do: :ok
 
-  defp clock(_config, opts), do: clock_set(opts)
-
-  defp bundle_clock(%{offline: true}, _opts), do: :ok
-  defp bundle_clock(_batch, opts), do: clock_set(opts)
-
-  defp clock_set(opts) do
+  defp clock(_config, opts) do
     synchronized? = Keyword.get(opts, :clock_synchronized?, &nerves_time_synced?/0)
 
     if synchronized?.() == true do
@@ -476,8 +474,7 @@ defmodule Precompiled do
     active = active(entries)
 
     with :ok <- not_present(requests, env, active),
-         {:ok, batch} <- Source.batch(config),
-         :ok <- if(config.bundle, do: bundle_clock(batch, opts), else: :ok) do
+         {:ok, batch} <- Source.batch(config) do
       config = Source.with_batch(config, batch)
       ctx = ctx(env, config, entries, active, memo, opts)
 
