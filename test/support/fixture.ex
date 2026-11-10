@@ -193,6 +193,28 @@ defmodule Precompiled.Fixture do
   @spec clear_requests() :: :ok
   def clear_requests(), do: Agent.update(__MODULE__, &Map.put(&1, :requests, []))
 
+  # Miss reports POSTed to the fixture server, oldest first, and the answer
+  # it gives them.
+  @default_report_response {201, ~s({"id":"5b2c6f0e-8d1a-4c39-9a57-2f0f3f0f9b11"})}
+
+  @spec report_posts() :: [map()]
+  def report_posts(), do: get(:report_posts) || []
+
+  @spec record_report_post(map()) :: :ok
+  def record_report_post(post), do: put(:report_posts, report_posts() ++ [post])
+
+  @spec set_report_response({pos_integer(), binary()} | nil) :: :ok
+  def set_report_response(response), do: put(:report_response, response)
+
+  @spec report_response() :: {pos_integer(), binary()}
+  def report_response(), do: get(:report_response) || @default_report_response
+
+  @spec clear_reports() :: :ok
+  def clear_reports() do
+    put(:report_posts, [])
+    put(:report_response, nil)
+  end
+
   # false: root and batch are served without an ETag and never as 304, as
   # the production portal did until it learned If-None-Match.
   @spec set_etags(boolean()) :: :ok
