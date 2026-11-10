@@ -16,7 +16,7 @@ defmodule Precompiled.Host do
   `_build/<target>_<env>/lib/.precompiled/report.json`.
   """
 
-  alias Precompiled.{Check, Config, Env, Fetch, Install}
+  alias Precompiled.{Check, Config, Env, Fetch, Install, Output, Report}
 
   @typedoc """
   What a run did: counts of hits, misses and failures, the bytes
@@ -195,4 +195,66 @@ defmodule Precompiled.Host do
     {ours, mix_opts} = Keyword.split(opts, [:except, :home])
     Install.run(deps, mix_opts, Config.load(ours))
   end
+
+  @doc """
+  `mix precompiled.report` for `Mix.install/2` and Livebook: sends the report
+  of the most recent `install/2` in this runtime's install project, after
+  showing it and asking. Every install in that project overwrites the same
+  report, so after two installs the second one's is sent.
+
+  It works only after `Mix.install/2` (through `install/2`) has run in this
+  runtime: the install project is known only then. After a restart, run the
+  notebook's `install/2` cell again first; otherwise it returns
+  `:no_install` and sends nothing.
+
+  Options: `yes: true` skips the question, `contact:` adds a handle for
+  follow-up questions (at most 100 characters), `dump: true` prints the exact
+  JSON and `dump: path` writes it, sending nothing. Without `yes: true` only
+  `y` or `yes` sends; anything else, and a stdin that is not interactive,
+  counts as no. A new report prints its id, the one thing needed to retract
+  it; a report already received prints no id. Never raises for a reporting
+  problem; returns what happened.
+  """
+  @spec report(keyword()) :: Report.outcome() | :no_install | :off
+  def report(opts \\ []) when is_list(opts) do
+    Install.ensure_mix!(Code.ensure_loaded?(Mix))
+
+    if Mix.installed?() do
+      report_installed(Config.load(), opts)
+    else
+      Output.info(
+        "precompiled: no Mix.install/2 in this runtime; run Precompiled.Host.install/2 first"
+      )
+
+      :no_install
+    end
+  end
+
+  defp report_installed(nil, _opts) do
+    Output.info("precompiled: off; nothing to report")
+    :off
+  end
+
+  defp report_installed(config, opts) do
+    dir = Mix.install_project_dir()
+    env = Atom.to_string(Mix.env())
+
+    Report.run(
+      %{
+        build_lib: Path.join([dir, "_build", env, "lib"]),
+        lock: Mix.Dep.Lock.read(Path.join(dir, "mix.lock")),
+        config: config,
+        project_dir: dir,
+        env: env,
+        target: "host"
+      },
+      yes: Keyword.get(opts, :yes, false),
+      contact: Keyword.get(opts, :contact),
+      dump: report_dump(Keyword.get(opts, :dump))
+    )
+  end
+
+  defp report_dump(true), do: :stdout
+  defp report_dump(path) when is_binary(path), do: path
+  defp report_dump(_), do: nil
 end
