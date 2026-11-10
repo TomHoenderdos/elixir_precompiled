@@ -1151,7 +1151,7 @@ defmodule PrecompiledTest do
       assert {:ok, [%{app: :demo_rx2}]} = Precompiled.install(:demo_rx2, opts)
     end
 
-    test "a bundle without offline.json needs a set clock; one with it does not", %{
+    test "a bundle is never gated on NTP: its batch's own expiry decides", %{
       fixture: f,
       opts: opts,
       tmp_dir: dir
@@ -1161,18 +1161,10 @@ defmodule PrecompiledTest do
       plain = write_bundle!(f, Path.join(dir, "p"), packages)
       unset = [clock_synchronized?: fn -> false end]
 
-      assert {:error, {:clock_unsynchronized, _}} =
-               Precompiled.install(
-                 :demo_bclk,
-                 Keyword.put(opts, :source, "file://" <> plain) ++ unset
-               )
-
-      signed = write_bundle!(f, Path.join(dir, "s"), packages, offline: true)
-
       assert {:ok, [_]} =
                Precompiled.install(
                  :demo_bclk,
-                 Keyword.put(opts, :source, "file://" <> signed) ++ unset
+                 Keyword.put(opts, :source, "file://" <> plain) ++ unset
                )
     end
 
