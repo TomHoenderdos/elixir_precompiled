@@ -20,6 +20,7 @@ defmodule Precompiled.Report do
 
   @max_lines 500
   @max_lock 1000
+  @max_contact 100
   @response_bytes 16_384
   @timeout_ms 15_000
   @min_needle 4
@@ -34,6 +35,155 @@ defmodule Precompiled.Report do
           required(:target) => String.t(),
           optional(:host_name) => String.t() | nil
         }
+
+  @type outcome ::
+          {:sent, String.t() | nil, boolean()}
+          | :dumped
+          | :cancelled
+          | :no_report
+          | :invalid
+          | {:error, String.t()}
+
+  @doc false
+  # Shows the redacted payload, then dumps it or asks and sends it. The id
+  # of `{:sent, id, false}` is the report's retract capability; a duplicate
+  # (`{:sent, nil, true}`) gets none, because the source hands an id out
+  # only once. Never raises for a reporting problem.
+  @spec run(where(), keyword()) :: outcome()
+  def run(where, opts \\ []) do
+    contact = Keyword.get(opts, :contact)
+
+    with :ok <- contact_ok(contact),
+         {:ok, report} <- read(where.build_lib) do
+      body = where |> payload(report, contact) |> redact_payload(needles(where))
+      output(summary(body, report, where))
+      deliver(body, where, opts)
+    else
+      {:error, :contact} ->
+        Output.info(
+          "precompiled: --contact is at most #{@max_contact} printable characters; nothing sent"
+        )
+
+        :invalid
+
+      {:error, _no_or_old} ->
+        Output.info(
+          "precompiled: no report for #{where.env}/#{where.target}; run a build first " <>
+            "(with precompiled 0.4.0 or later, and the same MIX_ENV and MIX_TARGET)"
+        )
+
+        :no_report
+    end
+  end
+
+  defp contact_ok(nil), do: :ok
+
+  defp contact_ok(c) when is_binary(c) do
+    if String.valid?(c) and String.length(c) <= @max_contact and String.printable?(c) and
+         not String.contains?(c, ["\n", "\r", "\t"]),
+       do: :ok,
+       else: {:error, :contact}
+  end
+
+  defp contact_ok(_), do: {:error, :contact}
+
+  defp deliver(body, where, opts) do
+    json = body |> :json.encode() |> IO.iodata_to_binary()
+
+    case Keyword.get(opts, :dump) do
+      nil -> confirm_and_send(json, where, opts)
+      :stdout -> dump_stdout(json)
+      path when is_binary(path) -> dump_file(json, path)
+    end
+  end
+
+  defp dump_stdout(json) do
+    Output.info(json)
+    :dumped
+  end
+
+  defp dump_file(json, path) do
+    case File.write(path, json) do
+      :ok ->
+        Output.info("precompiled: report written to #{path}; nothing sent")
+        :dumped
+
+      {:error, reason} ->
+        Output.warning("precompiled: could not write #{path}: #{:file.format_error(reason)}")
+        {:error, "could not write #{path}"}
+    end
+  end
+
+  defp confirm_and_send(json, where, opts) do
+    host = URI.parse(Map.get(where.config, :source)).host
+
+    if Keyword.get(opts, :yes, false) or yes?(opts, "Send this report to #{host}? [y/N] ") do
+      json |> post_report(where.config) |> answer() |> announce()
+    else
+      Output.info("precompiled: not sent")
+      :cancelled
+    end
+  end
+
+  # Anything but y or yes is a no; so is non-interactive stdin (IO.gets
+  # answering :eof) and a read error.
+  defp yes?(opts, prompt) do
+    gets = Keyword.get(opts, :gets, &IO.gets/1)
+
+    case gets.(prompt) do
+      answer when is_binary(answer) -> String.downcase(String.trim(answer)) in ["y", "yes"]
+      _ -> false
+    end
+  end
+
+  # 201 carries the new report's id; 200 is a duplicate and carries none.
+  defp answer({:ok, 201, body}) do
+    case decode(body) do
+      %{"id" => id} when is_binary(id) and id != "" -> {:sent, id, false}
+      _ -> {:error, "unexpected answer"}
+    end
+  end
+
+  defp answer({:ok, 200, body}) do
+    case decode(body) do
+      %{"duplicate" => true} -> {:sent, nil, true}
+      _ -> {:error, "unexpected answer"}
+    end
+  end
+
+  defp answer({:ok, 429, _body}), do: {:error, "rate limited (429); try again later"}
+
+  # The source names each refused field; the first one says enough.
+  defp answer({:ok, 422, body}) do
+    case decode(body) do
+      %{"details" => [first | _]} when is_binary(first) ->
+        {:error, "refused (422): #{String.slice(first, 0, 200)}"}
+
+      _ ->
+        {:error, "refused (status 422)"}
+    end
+  end
+
+  defp answer({:ok, status, _body}), do: {:error, "refused (status #{status})"}
+  defp answer({:error, {:too_large, n}}), do: {:error, "answer larger than #{n} bytes"}
+  defp answer({:error, :redirect}), do: {:error, "the source answered with a redirect"}
+  defp answer({:error, why}) when is_binary(why), do: {:error, why}
+  defp answer({:error, why}), do: {:error, inspect(why)}
+
+  defp announce({:sent, nil, true} = sent) do
+    Output.info("precompiled: already received (the id was printed when it was first sent)")
+    sent
+  end
+
+  defp announce({:sent, id, false} = sent) do
+    Output.info("precompiled: report #{id}")
+    sent
+  end
+
+  defp announce({:error, why} = error) do
+    Output.warning("precompiled: report not sent: #{why}")
+    error
+  end
 
   @spec read(Path.t()) :: {:ok, map()} | {:error, :no_report | :old_report}
   def read(build_lib) do
