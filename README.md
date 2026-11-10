@@ -10,7 +10,7 @@ instead of compiling them. Builds come from the
 which builds selected Hex packages for the host (`pure_elixir`) and for
 Nerves systems, signs a batch index every 15 minutes, and serves files by
 SHA-256. A dependency is installed only when a build matches the project on
-every rule in [What matches](guides/matching.md);
+every rule in [What matches](https://hexdocs.pm/precompiled/matching.html);
 everything else compiles as before, and nothing this library does can fail
 your build.
 
@@ -68,26 +68,26 @@ Precompiled.install(:recon)
 
 Getting started:
 
-- [Setup](guides/setup.md): any Mix project,
+- [Setup](https://hexdocs.pm/precompiled/setup.html): any Mix project,
   umbrellas, Phoenix, CI, `Mix.install` and Livebook
-- [Nerves](guides/nerves.md)
-- [On a device](guides/device.md), including
+- [Nerves](https://hexdocs.pm/precompiled/nerves.html)
+- [On a device](https://hexdocs.pm/precompiled/device.html), including
   bundles for devices with no network
 
 Reference:
 
-- [Configuration](guides/configuration.md):
+- [Configuration](https://hexdocs.pm/precompiled/configuration.html):
   every key and variable, turning it off, seeing what happened
-- [What matches](guides/matching.md)
+- [What matches](https://hexdocs.pm/precompiled/matching.html)
 
 Explanation:
 
-- [Trust](guides/trust.md): the signed chain, on
+- [Trust](https://hexdocs.pm/precompiled/trust.html): the signed chain, on
   the host and on the device, and CA certificates
 
 Troubleshooting:
 
-- [Troubleshooting](guides/troubleshooting.md),
+- [Troubleshooting](https://hexdocs.pm/precompiled/troubleshooting.html),
   with the known limitations
 
 The guides are also in
@@ -100,14 +100,14 @@ To work on the library, see
 Elixir 1.17 or later on OTP 27 or later; the Igniter installer needs
 Elixir 1.18. Builds serve only the toolchains the portal builds with
 (today Elixir 1.19.3 and 1.20.3 on OTP 28 and 29); see
-[Supported versions](guides/setup.md#supported-versions).
+[Supported versions](https://hexdocs.pm/precompiled/setup.html#supported-versions).
 
 ## Names
 
 The package is `precompiled`; the repository keeps its old name,
 `elixir_precompiled`. This library was called `nerves_precompiled` until
 v0.1.0; those old config keys and environment variables still work for
-one release (see [Configuration](guides/configuration.md)).
+one release (see [Configuration](https://hexdocs.pm/precompiled/configuration.html)).
 The interim `elixir_precompiled` names (app, modules,
 `ELIXIR_PRECOMPILED_*` variables, the cache dir) were never released and
 are not read.
