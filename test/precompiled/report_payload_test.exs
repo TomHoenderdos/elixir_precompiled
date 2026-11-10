@@ -16,13 +16,15 @@ defmodule Precompiled.ReportPayloadTest do
   @secret {:hex, :acme_secret, "0.1.0", "i", [:mix],
            [{:telemetry, "~> 1.0", [hex: :telemetry, repo: "hexpm", optional: false]}],
            "hexpm:acme", String.duplicate("f", 64)}
+  @rpi4 {:hex, :nerves_system_rpi4, "1.31.0", "i", [:mix], [], "hexpm", String.duplicate("9", 64)}
   @gitdep {:git, "https://git.acme.example/x.git", "abc", []}
   @lock %{
     jason: @jason,
     decimal: @decimal,
     telemetry: @telemetry,
     acme_secret: @secret,
-    gitdep: @gitdep
+    gitdep: @gitdep,
+    nerves_system_rpi4: @rpi4
   }
 
   setup do
@@ -336,5 +338,155 @@ defmodule Precompiled.ReportPayloadTest do
     assert text =~ "lock entries: 3"
     assert text =~ "contact: @me"
     assert text =~ "https://pkgs.acme.example/api/precompiled/reports"
+  end
+
+  test "a partial report.json line without a name, version or known status is dropped",
+       %{tmp_dir: dir} do
+    good = l("jason", "miss", "not_built_version", ["1.0.0"])
+
+    rep =
+      report([
+        good,
+        Map.delete(l("telemetry", "miss", "not_in_batch", []), "version"),
+        Map.delete(l("telemetry", "miss", "not_in_batch", []), "name"),
+        %{l("telemetry", "miss", "not_in_batch", []) | "version" => ""},
+        %{l("telemetry", "miss", "not_in_batch", []) | "version" => 1},
+        %{l("telemetry", "miss", "not_in_batch", []) | "status" => "kept"},
+        Map.delete(l("telemetry", "fail", "internal", []), "status"),
+        "not a line"
+      ])
+
+    payload = Report.payload(where(dir), rep, nil)
+    assert [%{"name" => "jason", "version" => "1.0.0", "status" => "miss"}] = payload["lines"]
+    json = payload |> :json.encode() |> IO.iodata_to_binary()
+    refute json =~ "nil"
+    refute json =~ "null"
+  end
+
+  test "reason_args are trimmed to the code's placeholders", %{tmp_dir: dir} do
+    rep =
+      report([
+        l("jason", "miss", "fetch_failed", ["build-laptop", "10.0.0.1"]),
+        l("telemetry", "miss", "not_built_version", ["1.0.0", "build-laptop"]),
+        l("decimal", "fail", "no_such_code", ["build-laptop"]),
+        l("jason", "miss", "compile_env_differs", ["logger", "jason", "telemetry"])
+      ])
+
+    lock = Map.put(@lock, :decimal, @decimal)
+    payload = Report.payload(where(dir, %{lock: lock}), rep, nil)
+
+    assert [
+             %{"reason_code" => "fetch_failed", "reason_args" => []},
+             %{"reason_code" => "not_built_version", "reason_args" => ["1.0.0"]},
+             %{"reason_code" => "internal", "reason_args" => []},
+             %{
+               "reason_code" => "compile_env_differs",
+               "reason_args" => ["logger", "jason", "telemetry"]
+             }
+           ] = payload["lines"]
+
+    refute payload |> :json.encode() |> IO.iodata_to_binary() =~ "build-laptop"
+  end
+
+  test "contact is redacted case-insensitively, with the app, directory and user names",
+       %{tmp_dir: dir} do
+    w = where(dir, %{app: :acme_secret_app, project_dir: Path.join(dir, "Widget-Box")})
+    user = System.get_env("USER") || System.get_env("USERNAME")
+
+    contact =
+      "BUILD-LAPTOP, Acme_Secret_App in widget-box, PKGS.ACME.EXAMPLE" <>
+        if(user && String.length(user) >= 3, do: " by #{String.upcase(user)}", else: "")
+
+    payload =
+      w
+      |> Report.payload(report([l("jason", "miss", "not_built_version", ["1.0.0"])]), contact)
+      |> Report.redact(w)
+
+    for needle <- ["build-laptop", "acme_secret_app", "widget-box", "pkgs.acme.example"] do
+      refute String.downcase(payload["contact"]) =~ needle
+    end
+
+    if user && String.length(user) >= 3,
+      do: refute(String.downcase(payload["contact"]) =~ String.downcase(user))
+
+    # The contact-only names never touch a line, even one that names them.
+    assert %{"name" => "jason", "reason" => "not built for 1.0.0"} = hd(payload["lines"])
+  end
+
+  test "the app, directory and user names apply to contact only", %{tmp_dir: dir} do
+    w = where(dir, %{app: :jason, project_dir: Path.join(dir, "jason")})
+    rep = report([l("jason", "miss", "not_built_target", ["nerves_system_rpi4", "1.31.0"])])
+    lock = Map.put(@lock, :nerves_system_rpi4, @rpi4)
+    w = %{w | lock: lock}
+
+    payload = w |> Report.payload(rep, "Jason here") |> Report.redact(w)
+
+    assert payload["contact"] == "<redacted> here"
+
+    assert %{
+             "name" => "jason",
+             "reason" => "not built for nerves_system_rpi4 1.31.0"
+           } = hd(payload["lines"])
+  end
+
+  test "a system that is not a public Hex package is sent as custom", %{tmp_dir: dir} do
+    rep =
+      report([
+        l("jason", "miss", "not_built_target", ["acme_system_board", "2.0.0"]),
+        l("telemetry", "miss", "rule8_target", ["acme_board", "acme_board_v2"])
+      ])
+      |> put_in(["context", "system"], "acme_system_board")
+      |> put_in(["context", "system_version"], "2.0.0")
+      |> put_in(["context", "target"], "acme_board")
+
+    # In the lock, but from a private organisation: still custom.
+    private =
+      {:hex, :acme_system_board, "2.0.0", "i", [:mix], [], "hexpm:acme",
+       String.duplicate("b", 64)}
+
+    for lock <- [@lock, Map.put(@lock, :acme_system_board, private)] do
+      payload = Report.payload(where(dir, %{lock: lock, target: "acme_board"}), rep, nil)
+      json = payload |> :json.encode() |> IO.iodata_to_binary()
+
+      assert payload["system"] == "custom"
+      assert payload["target"] == "custom"
+      refute Map.has_key?(payload, "system_version")
+
+      assert [
+               %{
+                 "reason_args" => ["custom", "custom"],
+                 "reason" => "not built for custom custom"
+               },
+               %{"reason_args" => ["custom", "custom"]}
+             ] = payload["lines"]
+
+      refute json =~ "acme"
+    end
+  end
+
+  test "a public Hex system and its target are sent as they are", %{tmp_dir: dir} do
+    rep =
+      report([l("jason", "miss", "not_built_target", ["nerves_system_rpi4", "1.31.0"])])
+
+    payload =
+      Report.payload(where(dir, %{lock: Map.put(@lock, :nerves_system_rpi4, @rpi4)}), rep, nil)
+
+    assert %{
+             "system" => "nerves_system_rpi4",
+             "system_version" => "1.31.0",
+             "target" => "rpi4"
+           } = payload
+
+    assert [%{"reason_args" => ["nerves_system_rpi4", "1.31.0"]}] = payload["lines"]
+  end
+
+  test "a host build keeps its host target", %{tmp_dir: dir} do
+    rep =
+      report([])
+      |> put_in(["context", "system"], :null)
+      |> put_in(["context", "system_version"], :null)
+      |> put_in(["context", "target"], "host")
+
+    assert %{"target" => "host"} = Report.payload(where(dir, %{target: "host"}), rep, nil)
   end
 end
