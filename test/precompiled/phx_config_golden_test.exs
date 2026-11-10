@@ -17,10 +17,13 @@ defmodule Precompiled.PhxConfigGoldenTest do
   @phx_config """
   import Config
   config :phoenix_live_view, root_tag_attribute: "phx-r"
+  config :phoenix, :json_library, Jason
   import_config "\#{config_env()}.exs"
   """
   @phx_dev """
   import Config
+  config :phoenix, :stacktrace_depth, 20
+  config :phoenix, :plug_init_mode, :runtime
   config :phoenix_live_view,
     debug_heex_annotations: true,
     debug_attributes: true,
@@ -28,10 +31,14 @@ defmodule Precompiled.PhxConfigGoldenTest do
   """
   @phx_test """
   import Config
+  config :phoenix, :plug_init_mode, :runtime
   config :phoenix_live_view, enable_expensive_runtime_checks: true
+  config :phoenix,
+    sort_verified_routes_query_params: true
   """
   @no_html_config """
   import Config
+  config :phoenix, :json_library, Jason
   import_config "\#{config_env()}.exs"
   """
   @empty "import Config\n"
@@ -40,26 +47,26 @@ defmodule Precompiled.PhxConfigGoldenTest do
     do: Base.url_encode64(:erlang.term_to_binary(term, [:deterministic]), padding: false)
 
   defp items(values) do
-    for {key, value} <- values,
-        do: %{"app" => "phoenix_live_view", "path" => [key], "value" => enc(value)}
+    for {app, key, value} <- values,
+        do: %{"app" => app, "path" => [key], "value" => enc(value)}
   end
 
   # A LiveView-compiling package's default build: none of the keys set.
   defp default(),
     do:
       items([
-        {"debug_attributes", :error},
-        {"debug_heex_annotations", :error},
-        {"root_tag_attribute", :error}
+        {"phoenix_live_view", "debug_attributes", :error},
+        {"phoenix_live_view", "debug_heex_annotations", :error},
+        {"phoenix_live_view", "root_tag_attribute", :error}
       ])
 
   # Its variant built with the root_tag_attribute phx_new sets in every env.
   defp phx_prod(),
     do:
       items([
-        {"debug_attributes", :error},
-        {"debug_heex_annotations", :error},
-        {"root_tag_attribute", {:ok, "phx-r"}}
+        {"phoenix_live_view", "debug_attributes", :error},
+        {"phoenix_live_view", "debug_heex_annotations", :error},
+        {"phoenix_live_view", "root_tag_attribute", {:ok, "phx-r"}}
       ])
 
   @outer "outer-checksum"
@@ -177,6 +184,64 @@ defmodule Precompiled.PhxConfigGoldenTest do
                select(dir, @no_html, :prod, builds),
              order
     end
+  end
+
+  @lv4 ~w(debug_attributes debug_heex_annotations enable_expensive_runtime_checks root_tag_attribute)
+
+  # What every LiveView-closure build records (reads over the whole closure),
+  # valued as each variant's overlay sets them.
+  defp closure_env(set) do
+    # As production records them (polymorphic_embed 5.0.6): the four
+    # LiveView keys, no :phoenix key.
+    items(
+      for k <- @lv4,
+          do: {"phoenix_live_view", k, Map.get(set, {"phoenix_live_view", k}, :error)}
+    )
+  end
+
+  defp v(name, set), do: put_in(build(name, closure_env(set)), ["build", "config_variant"], name)
+
+  @prod_set %{{"phoenix_live_view", "root_tag_attribute"} => {:ok, "phx-r"}}
+  @test_set Map.put(
+              @prod_set,
+              {"phoenix_live_view", "enable_expensive_runtime_checks"},
+              {:ok, true}
+            )
+  @dev_set Map.merge(@test_set, %{
+             {"phoenix_live_view", "debug_heex_annotations"} => {:ok, true},
+             {"phoenix_live_view", "debug_attributes"} => {:ok, true}
+           })
+
+  defp four(),
+    do: [
+      put_in(build("default", closure_env(%{})), ["build", "run_id"], "default"),
+      v("phx_prod", @prod_set),
+      v("phx_test", @test_set),
+      v("phx_dev", @dev_set)
+    ]
+
+  test "with all four variants listed, every env takes its own, in any order", %{tmp_dir: dir} do
+    for builds <- [four(), Enum.reverse(four()), Enum.shuffle(four())] do
+      for {env, want} <- [dev: "phx_dev", test: "phx_test", prod: "phx_prod"] do
+        assert {:ok, %{"build" => %{"run_id" => ^want}}, _} = select(dir, @phx, env, builds),
+               "#{env}"
+      end
+
+      assert {:ok, %{"build" => %{"run_id" => "default"}}, _} =
+               select(dir, @no_html, :prod, builds)
+    end
+  end
+
+  test "a dev app without debug_attributes takes no variant", %{tmp_dir: dir} do
+    edited =
+      List.keyreplace(
+        @phx,
+        "dev.exs",
+        0,
+        {"dev.exs", String.replace(@phx_dev, "debug_attributes: true,", "")}
+      )
+
+    assert {:miss, "compile_env differs: " <> _} = select(dir, edited, :dev, four())
   end
 
   test "a value the client cannot decode is a miss, never a hit", %{tmp_dir: dir} do
