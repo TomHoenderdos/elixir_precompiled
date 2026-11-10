@@ -13,7 +13,6 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 fw="$here/fixture/_build/qemu_aarch64_dev/nerves/images/device_fixture.fw"
 img="$here/_qemu/disk.img"
-# Where build_firmware.sh's Nerves home unpacks the system artifact.
 # build_firmware.sh (Docker) keeps the system artifact under _qemu/home; a
 # native build (CI) uses Nerves' own artifacts dir.
 system="nerves_system_qemu_aarch64-portable-0.5.1/images/little_loader.elf"
