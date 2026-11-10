@@ -103,7 +103,7 @@ defmodule PrecompiledCacheTest do
     plan = Enum.sum(for e <- newer["ebin"] ++ newer["priv"], do: e["size"])
 
     assert {:ok, [%{app: :demo_new}]} =
-             Precompiled.install(:demo_new, opts ++ [max_bytes: used + 2 * plan - 1])
+             Precompiled.install(:demo_new, opts ++ [max_bytes: used + plan - 1])
 
     apps = Precompiled.list(opts) |> Enum.map(& &1.app) |> Enum.sort()
     assert :demo_cache in apps
@@ -140,7 +140,7 @@ defmodule PrecompiledCacheTest do
     assert {:ok, [%{app: :demo_new}]} =
              Precompiled.install(
                :demo_new,
-               opts ++ [start: false, max_bytes: used + 2 * plan - 1]
+               opts ++ [start: false, max_bytes: used + plan - 1]
              )
 
     apps = Precompiled.list(opts) |> Enum.map(& &1.app) |> Enum.sort()
@@ -193,7 +193,7 @@ defmodule PrecompiledCacheTest do
         send(self(), {:result, Precompiled.list(Keyword.put(loud, :bogus, 1))})
       end)
 
-    assert_received {:result, []}
+    assert_received {:result, {:error, {:bad_option, :bogus}}}
     assert out =~ "bad_option"
     assert out =~ "bogus"
   end

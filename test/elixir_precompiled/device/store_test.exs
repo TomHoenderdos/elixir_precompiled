@@ -478,10 +478,33 @@ defmodule ElixirPrecompiled.Device.StoreTest do
       put_entry(dir, :jason, "1.4.5", :binary.copy("b", 400), 200)
       used = Store.used_bytes(dir)
 
-      assert {:error, {:too_big, 500, _free}} =
+      assert {:error, {:too_big, 250, _free}} =
                Store.make_room(dir, 250, used + 100, %{recon: "2.5.6"}, [:jason])
 
       assert length(Store.list(dir)) == 2
+    end
+
+    test "a plan of 60% of max_bytes fits an empty store: staging is renamed, not copied",
+         %{tmp_dir: dir} do
+      used = Store.used_bytes(dir)
+      assert {:ok, []} = Store.room(dir, 60, used + 100, %{}, [])
+      assert {:error, {:too_big, 160, 100}} = Store.room(dir, 160, used + 100, %{}, [])
+    end
+
+    test "a store dir reached through a symlink is the same store", %{tmp_dir: dir} do
+      {path, _} = put_entry(dir, :recon, "2.5.6", :binary.copy("a", 400), 100)
+      ebin = String.to_charlist(Path.join(path, "ebin"))
+      true = :code.add_pathz(ebin)
+      on_exit(fn -> :code.del_path(ebin) end)
+      # /data -> /root on Nerves: a parent of the store is the link.
+      parent = Path.dirname(dir)
+      link = parent <> "-link-#{System.unique_integer([:positive])}"
+      File.ln_s!(parent, link)
+      on_exit(fn -> File.rm(link) end)
+      via_link = Path.join(link, Path.basename(dir))
+
+      assert %{removed: [], kept: [:recon]} = Store.clean(via_link, %{})
+      assert [%{path: ^path}] = Store.list(via_link)
     end
 
     test "a plan that fits evicts nothing", %{tmp_dir: dir} do
@@ -492,7 +515,7 @@ defmodule ElixirPrecompiled.Device.StoreTest do
 
     test "free is never reported below zero", %{tmp_dir: dir} do
       put_entry(dir, :recon, "2.5.6", "a", 100)
-      assert {:error, {:too_big, 20, 0}} = Store.make_room(dir, 10, 1, %{recon: "2.5.6"}, [])
+      assert {:error, {:too_big, 10, 0}} = Store.make_room(dir, 10, 1, %{recon: "2.5.6"}, [])
     end
 
     test "an entry whose ebin is on the code path is in use and never evicted",
