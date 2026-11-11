@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.0 - unreleased
+## v0.4.0 - 2026-11-11
 
 * New `mix precompiled.report` and `Precompiled.Host.report/1`: send the
   last build's HIT/MISS/FAIL report to the configured source, after
