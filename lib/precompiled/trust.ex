@@ -419,7 +419,8 @@ defmodule Precompiled.Trust do
           required(:sequence) => integer(),
           required(:manifests) => %{String.t() => String.t()},
           required(:manifests_v2) => %{String.t() => String.t()} | nil,
-          required(:content) => [String.t()] | nil
+          required(:content) => [String.t()] | nil,
+          required(:systems) => String.t() | nil
         }
 
   @type conditional_fetch ::
@@ -585,7 +586,7 @@ defmodule Precompiled.Trust do
 
     with {:ok, payload} <- verify_envelope(body, keys, t) |> or_error("batch signature invalid"),
          {:ok, decoded} <- safe_decode(payload) |> or_error("batch malformed"),
-         {:ok, seq, issued, exp, manifests, v2, content} <- batch_fields(decoded),
+         {:ok, seq, issued, exp, manifests, v2, extra} <- batch_fields(decoded),
          now = now(config),
          :ok <- sane_clock(now),
          {:ok, issued_at} <- parse_instant(issued),
@@ -596,7 +597,7 @@ defmodule Precompiled.Trust do
          :ok <- not_expired(expires_at, now),
          :ok <- monotonic(dir, seq),
          :ok <- write_state(dir, seq) do
-      {:ok, %{sequence: seq, manifests: manifests, manifests_v2: v2, content: content}}
+      {:ok, Map.merge(%{sequence: seq, manifests: manifests, manifests_v2: v2}, extra)}
     end
   end
 
@@ -656,6 +657,7 @@ defmodule Precompiled.Trust do
 
   # "manifests" names format-1 documents; "manifests_v2", when present,
   # names format-2 ones under v2/manifests. Both live in a version-1 batch.
+  # "content" and "systems" are optional; a key not named here is ignored.
   defp batch_fields(
          %{
            "version" => 1,
@@ -668,7 +670,12 @@ defmodule Precompiled.Trust do
        when is_integer(seq) and is_binary(issued) and is_binary(exp) and is_map(manifests) do
     case Map.get(decoded, "manifests_v2") do
       v2 when is_map(v2) or is_nil(v2) ->
-        {:ok, seq, issued, exp, manifests, v2, content(Map.get(decoded, "content"))}
+        extra = %{
+          content: content(Map.get(decoded, "content")),
+          systems: systems(Map.get(decoded, "systems"))
+        }
+
+        {:ok, seq, issued, exp, manifests, v2, extra}
 
       _ ->
         {:error, "batch malformed"}
@@ -685,6 +692,12 @@ defmodule Precompiled.Trust do
     do: for(o <- list, https_origin?(o), do: String.trim_trailing(o, "/"))
 
   defp content(_), do: nil
+
+  # The sha256 of the systems document (Fetch.systems/2). A value of any
+  # other shape is ignored rather than refusing the batch: the table only
+  # widens matching, and a batch without one still installs exact builds.
+  defp systems(sha) when is_binary(sha), do: if(sha =~ ~r/\A[0-9a-f]{64}\z/, do: sha)
+  defp systems(_), do: nil
 
   defp https_origin?(o) when is_binary(o) do
     match?(%URI{scheme: "https", host: h} when is_binary(h) and h != "", URI.parse(o))
@@ -708,7 +721,8 @@ defmodule Precompiled.Trust do
   is held to its own sequence floor, `offline_state` in the state dir, apart
   from the batch sequence, and the floor is raised to its sequence.
 
-  Returns the batch shape, with `content: nil` and `offline: true`.
+  Returns the batch shape, with `content: nil`, `systems: nil` and
+  `offline: true`.
 
   Refused outright when `config.source` is not a `file://` URL: a bundle's
   `offline.json` is honoured only from a source the user named as a bundle,
@@ -756,7 +770,15 @@ defmodule Precompiled.Trust do
          {:ok, seq, manifests, v2} <- offline_fields(safe_decode(payload)),
          {:ok, dir} <- trusted_dir(config),
          :ok <- offline_floor(dir, seq) do
-      {:ok, %{sequence: seq, manifests: manifests, manifests_v2: v2, content: nil, offline: true}}
+      {:ok,
+       %{
+         sequence: seq,
+         manifests: manifests,
+         manifests_v2: v2,
+         content: nil,
+         systems: nil,
+         offline: true
+       }}
     end
   end
 

@@ -1479,6 +1479,136 @@ defmodule Precompiled.FetchTest do
     end
   end
 
+  describe "systems/2" do
+    # nil is written as JSON null, as the portal writes a missing value.
+    defp systems_doc(table) do
+      %{"format" => 1, "systems" => table}
+      |> :json.encode(fn
+        nil, _encode -> "null"
+        other, encode -> :json.encode_value(other, encode)
+      end)
+      |> IO.iodata_to_binary()
+    end
+
+    @table %{
+      "nerves_system_rpi4" => %{
+        "2.2.2" => %{
+          "libs" => nil,
+          "otp" => "29.1.2",
+          "toolchain" => %{"package" => "t", "series" => "15.3", "version" => "15.3.1"}
+        }
+      }
+    }
+
+    defp systems_cache(config), do: Path.join(config.home, "systems")
+
+    test "returns the decoded table from the source and caches it", %{config: config} do
+      sha = F.systems(systems_doc(@table))
+      F.clear_requests()
+      assert {:ok, @table} = Fetch.systems(config, sha)
+      assert [%{path: "/precompiled/systems/by-sha/" <> _}] = F.requests()
+      assert File.read!(Path.join(systems_cache(config), sha <> ".json")) == systems_doc(@table)
+
+      # Cached: no request, and offline too.
+      F.clear_requests()
+      assert {:ok, @table} = Fetch.systems(Map.put(config, :offline, true), sha)
+      assert F.requests() == []
+    end
+
+    test "a cached copy is re-hashed on read", %{config: config} do
+      sha = F.systems(systems_doc(@table))
+      File.mkdir_p!(systems_cache(config))
+      File.write!(Path.join(systems_cache(config), sha <> ".json"), systems_doc(%{}))
+      assert {:ok, @table} = Fetch.systems(config, sha)
+    end
+
+    test "a cache entry that is not a regular file is left as it is", %{
+      config: config,
+      tmp_dir: dir
+    } do
+      sha = F.systems(systems_doc(@table))
+      target = Path.join(dir, "elsewhere")
+      File.write!(target, systems_doc(@table))
+      File.mkdir_p!(systems_cache(config))
+      link = Path.join(systems_cache(config), sha <> ".json")
+      File.ln_s!(target, link)
+      F.clear_requests()
+      assert :none = Fetch.systems(config, sha)
+      assert F.requests() == []
+      assert {:ok, %File.Stat{type: :symlink}} = File.lstat(link)
+    end
+
+    test "bytes with a wrong hash give :none and are not cached", %{config: config} do
+      sha = F.systems(systems_doc(@table), String.duplicate("0", 64))
+      assert :none = Fetch.systems(config, sha)
+      assert File.ls(systems_cache(config)) in [{:ok, []}, {:error, :enoent}]
+    end
+
+    test "bytes of the wrong shape give :none", %{config: config} do
+      for doc <- [
+            %{"format" => 2, "systems" => %{}},
+            %{"format" => 1, "systems" => []},
+            %{"format" => 1}
+          ] do
+        bytes = doc |> :json.encode() |> IO.iodata_to_binary()
+        assert :none = Fetch.systems(config, F.systems(bytes))
+      end
+
+      assert :none = Fetch.systems(config, F.systems("not json"))
+      assert :none = Fetch.systems(config, F.systems(systems_doc(%{}) <> " x"))
+    end
+
+    test "an offline config with nothing cached gives :none", %{config: config} do
+      sha = F.systems(systems_doc(@table))
+      F.clear_requests()
+      assert :none = Fetch.systems(Map.put(config, :offline, true), sha)
+      assert F.requests() == []
+    end
+
+    test "a sha that is not 64 hex gives :none", %{config: config} do
+      F.clear_requests()
+      assert :none = Fetch.systems(config, "../../etc")
+      assert :none = Fetch.systems(config, nil)
+      assert F.requests() == []
+    end
+
+    test "a body over 4 MiB is refused and nothing is cached", %{config: config} do
+      pad = String.duplicate("a", 4 * 1_048_576 + 1 - byte_size(systems_doc(%{"x" => ""})))
+      bytes = systems_doc(%{"x" => pad})
+      assert byte_size(bytes) == 4 * 1_048_576 + 1
+      sha = F.systems(bytes)
+      assert :none = Fetch.systems(config, sha)
+      assert File.ls(systems_cache(config)) in [{:ok, []}, {:error, :enoent}]
+    end
+
+    test "a content origin serves it first; the source when the origin fails", %{
+      config: config
+    } do
+      cdn_port = Precompiled.TestServer.port() + 2
+      start_supervised!({Precompiled.TestServer, port: cdn_port})
+      config = Map.put(config, :content, ["http://127.0.0.1:#{cdn_port}/precompiled"])
+      sha = F.systems(systems_doc(@table))
+
+      F.clear_requests()
+      assert {:ok, @table} = Fetch.systems(config, sha)
+      assert [%{port: ^cdn_port}] = F.requests()
+
+      File.rm_rf!(systems_cache(config))
+      F.corrupt_port(cdn_port)
+      on_exit(fn -> F.corrupt_port(nil) end)
+      F.clear_requests()
+      assert {:ok, @table} = Fetch.systems(config, sha)
+      assert [%{port: ^cdn_port}, %{port: source}] = F.requests()
+      assert source == Precompiled.TestServer.port()
+    end
+
+    test "cache: false neither reads nor writes the home", %{config: config} do
+      sha = F.systems(systems_doc(@table))
+      assert {:ok, @table} = Fetch.systems(Map.put(config, :cache, false), sha)
+      refute File.exists?(systems_cache(config))
+    end
+  end
+
   defp replace_app(ebin, f, app) do
     Enum.map(ebin, fn
       %{"path" => "ebin/ash.app"} -> file_entry(F.file(f, app), byte_size(app), "ebin/ash.app")

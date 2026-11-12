@@ -184,8 +184,16 @@ defmodule Precompiled.Check do
           |> Map.put(:by_sha, is_list(batch.content))
 
         {revoked, replaced} = recheck(installed, batch, env)
+        todo = candidates ++ replaced
 
-        lines = revoked ++ install_lines(candidates ++ replaced, config, batch, env, config_fun)
+        # The systems table is read once per run, and only when a candidate
+        # will be matched against it.
+        config =
+          if todo == [],
+            do: config,
+            else: Map.put(config, :systems_table, systems_table(config, batch))
+
+        lines = revoked ++ install_lines(todo, config, batch, env, config_fun)
         # Once a day, the cache back under its bound. Only after a run with
         # a verified batch: a refused one changes nothing on disk (R14). A
         # project with nothing to check never gets here, so it never gc's
@@ -591,7 +599,25 @@ defmodule Precompiled.Check do
         reason: {:internal, []}
       })
 
-  defp ctx(candidate, env, config, config_fun, reads) do
+  @doc false
+  # The systems table the batch names, or nil: none named, or one that
+  # could not be fetched and verified (Fetch.systems/2). Never an error.
+  # `config` carries the batch's content origins.
+  @spec systems_table(map(), Trust.batch()) :: map() | nil
+  def systems_table(config, batch) do
+    with sha when is_binary(sha) <- Map.get(batch, :systems),
+         {:ok, table} <- Fetch.systems(config, sha) do
+      table
+    else
+      _ -> nil
+    end
+  end
+
+  @doc false
+  # What Match reads for one candidate. `config.systems_table` is the
+  # run's systems table (systems_table/2), nil without one.
+  @spec ctx(map(), Env.t(), map(), function(), term()) :: Match.ctx()
+  def ctx(candidate, env, config, config_fun, reads) do
     {elixir, otp} = config.toolchain
 
     method =
@@ -615,7 +641,8 @@ defmodule Precompiled.Check do
       reads: reads,
       manager: Map.get(method, :manager),
       overrides: Map.get(method, :overrides, []),
-      build_method_unknown: Map.get(method, :unknown)
+      build_method_unknown: Map.get(method, :unknown),
+      systems: Map.get(config, :systems_table)
     }
   end
 

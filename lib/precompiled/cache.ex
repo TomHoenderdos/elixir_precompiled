@@ -5,7 +5,7 @@
 defmodule Precompiled.Cache do
   @moduledoc false
   # The content-addressed cache under the home (files/, manifests/,
-  # scan/v1/): bounded by size, least recently used first (a hit touches
+  # systems/, scan/v1/): bounded by size, least recently used first (a hit touches
   # its entry), and temp files of killed runs dropped after an hour. Trust
   # state (batch.json, batch.etag, the per-root state and roots) is never
   # touched: only regular files directly inside those cache dirs are.
@@ -21,7 +21,7 @@ defmodule Precompiled.Cache do
   # wrong build; a temp file younger than an hour is another run's write
   # in progress and is kept.
 
-  @dirs [["files"], ["manifests"], ["scan", "v1"]]
+  @dirs [["files"], ["manifests"], ["systems"], ["scan", "v1"]]
   @tmp ~r/\.tmp-[0-9-]+\z/
   @day 86_400
   @tmp_age 3600
@@ -84,7 +84,7 @@ defmodule Precompiled.Cache do
   # inside a plain one, File.rm_rf/1 removes links as links.
   @spec clear(Path.t()) :: :ok
   def clear(home) do
-    for top <- ["files", "manifests", "scan"],
+    for top <- ["files", "manifests", "systems", "scan"],
         dir = Path.join(home, top),
         match?({:ok, %File.Stat{type: :directory}}, File.lstat(dir)),
         do: File.rm_rf(dir)

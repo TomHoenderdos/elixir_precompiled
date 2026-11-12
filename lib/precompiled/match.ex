@@ -22,6 +22,8 @@ defmodule Precompiled.Match do
           optional(:manager) => String.t() | nil,
           optional(:overrides) => [atom()],
           optional(:build_method_unknown) => String.t() | nil,
+          # The batch's systems table (Fetch.systems/2), nil without one.
+          optional(:systems) => map() | nil,
           name: String.t(),
           version: String.t(),
           lock_entry: tuple(),

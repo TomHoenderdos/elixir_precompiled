@@ -505,7 +505,7 @@ defmodule Precompiled do
     with :ok <- not_present(requests, env, active),
          {:ok, batch} <- Source.batch(config) do
       config = Source.with_batch(config, batch)
-      ctx = ctx(env, config, entries, active, memo, opts)
+      ctx = ctx(env, config, batch, entries, active, memo, opts)
 
       plan_opts = [
         manifest: Source.manifest_fun(config, batch),
@@ -534,7 +534,7 @@ defmodule Precompiled do
     end)
   end
 
-  defp ctx(env, config, entries, active, memo, opts) do
+  defp ctx(env, config, batch, entries, active, memo, opts) do
     %{
       env: env,
       app_spec:
@@ -546,7 +546,8 @@ defmodule Precompiled do
       installed: Map.new(entries, &{&1.app, &1.provenance["files_sha256"]}),
       active: active,
       config: &CompileEnv.lookup/2,
-      pin: nil
+      pin: nil,
+      systems: Check.systems_table(config, batch)
     }
   end
 

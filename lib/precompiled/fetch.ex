@@ -34,6 +34,8 @@ defmodule Precompiled.Fetch do
   @max_body_bytes 8_388_608
   # 64 MiB: manifests of packages with many versions and systems run past 8 MiB
   @max_manifest_bytes 67_108_864
+  # 4 MiB: the systems table, every release of every Nerves system
+  @max_systems_bytes 4_194_304
   @ok_modes [0o644, 0o755, 0o100644, 0o100755]
   @provenance_file "precompiled.json"
   @file_concurrency 8
@@ -410,6 +412,92 @@ defmodule Precompiled.Fetch do
     end
   end
 
+  @doc """
+  The systems table the batch names by `sha`: the `"systems"` map of a
+  `{"format": 1, "systems": {...}}` document, which says what each release
+  of a Nerves system ships (its OTP, toolchain and libraries).
+
+  Looked up, in order: the cache (`<home>/systems/<sha>.json`, re-hashed on
+  every read), then `<origin>/systems/by-sha/<sha>.json` for each content
+  origin and last the source. Bytes are used only when they hash to `sha`,
+  are at most 4 MiB and decode to that shape; only then are they cached.
+  JSON `null` (a release's `"libs"` or `"otp"`) comes back as `nil`.
+
+  The table only widens matching, so nothing about it is an error: a
+  malformed sha, an offline run with nothing cached, a refused cache dir,
+  a network failure or bytes that do not verify are all `:none`.
+  """
+  @spec systems(map(), String.t()) :: {:ok, map()} | :none
+  def systems(config, sha) do
+    with true <- sha256?(sha),
+         {:ok, _dir} <- cache_dir(config, "systems"),
+         {:ok, table} <- cached_systems(config, sha) do
+      {:ok, table}
+    else
+      :absent -> uncached_systems(config, sha)
+      _ -> :none
+    end
+  end
+
+  # A cache entry that is not a regular file is left as it is and the
+  # table not used, as read_cached/2 refuses it for a manifest.
+  defp cached_systems(config, sha) do
+    path = systems_cache_path(config, sha)
+
+    with true <- cache?(config),
+         {:ok, bytes} <- read_cached(path, @max_systems_bytes),
+         ^sha <- sha256(bytes),
+         {:ok, table} <- decode_systems(bytes) do
+      used(path, {:ok, table})
+    else
+      {:fail, _} -> :none
+      _ -> :absent
+    end
+  end
+
+  defp uncached_systems(config, sha) do
+    if Map.get(config, :offline, false) do
+      :none
+    else
+      content = Map.get(config, :content)
+      origins = if(is_list(content), do: content, else: []) ++ [config.source]
+
+      Enum.find_value(
+        origins,
+        :none,
+        &try_systems(config, "#{&1}/systems/by-sha/#{sha}.json", sha)
+      )
+    end
+  end
+
+  # Any failure here (unreachable, 404, too large, wrong bytes) only moves on.
+  defp try_systems(config, url, sha) do
+    with {:ok, bytes} <- get_body(url, [max_bytes: @max_systems_bytes] ++ content_opts(config)),
+         ^sha <- sha256(bytes),
+         {:ok, table} <- decode_systems(bytes) do
+      if cache?(config), do: _ = FileUtil.write_atomic(systems_cache_path(config, sha), bytes)
+      {:ok, table}
+    else
+      _ -> nil
+    end
+  end
+
+  # JSON null decodes to nil here: a release's "libs" and "otp" may be
+  # null. Anything after the document but whitespace refuses it.
+  defp decode_systems(bytes) do
+    case :json.decode(bytes, :ok, %{null: nil}) do
+      {%{"format" => 1, "systems" => table}, :ok, rest} when is_map(table) ->
+        if rest =~ ~r/\A[ \t\r\n]*\z/, do: {:ok, table}, else: :none
+
+      _ ->
+        :none
+    end
+  rescue
+    _ -> :none
+  end
+
+  defp systems_cache_path(config, sha), do: Path.join([config.home, "systems", sha <> ".json"])
+
   defp decode_manifest(bytes), do: with({:ok, map} <- decode(bytes), do: Manifest.normalize(map))
 
   defp cached_manifest(config, sha) do
@@ -547,7 +635,7 @@ defmodule Precompiled.Fetch do
 
   @doc """
   Removes the temp files (`*.tmp-*`) that runs killed mid-write left in
-  the cache's `files` and `manifests` dirs, when last modified before
+  the cache's `files`, `manifests` and `systems` dirs, when last modified before
   `cutoff` (Unix seconds). Another run sharing the home may be writing its
   own right now, so the cutoff is well before this run started. Only
   regular files directly in a plain cache dir are removed, and a failure
@@ -555,7 +643,7 @@ defmodule Precompiled.Fetch do
   """
   @spec sweep_tmp(map(), integer()) :: :ok
   def sweep_tmp(config, cutoff) do
-    for name <- ["files", "manifests"],
+    for name <- ["files", "manifests", "systems"],
         dir = Path.join(config.home, name),
         match?({:ok, %File.Stat{type: :directory}}, File.lstat(dir)),
         {:ok, entries} <- [File.ls(dir)],

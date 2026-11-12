@@ -32,8 +32,8 @@ one release, when the new ones are unset.
   own env and target: a run on `host` removes host installs, never a
   device target's.
 - `mix precompiled.clean` removes this `_build`'s installs.
-  `--cache` also empties the download cache (files, manifests and source
-  scans), from the same cache dir a run uses.
+  `--cache` also empties the download cache (files, manifests, systems
+  tables and source scans), from the same cache dir a run uses.
 - `:except` keeps listed dependencies compiled from source; an earlier
   install of one is removed.
 

@@ -882,6 +882,46 @@ defmodule Precompiled.TrustTest do
     assert {:ok, %{content: nil}} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
   end
 
+  test "a batch's systems table is read as a sha, and a malformed one is ignored", %{
+    config: config,
+    f: f
+  } do
+    sha = String.duplicate("ab", 32)
+    F.publish(f, %{}, batch_extra: %{"systems" => sha})
+    {:ok, root} = Trust.load_root(config)
+    assert {:ok, %{systems: ^sha}} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    F.publish(f, %{}, sequence: 2, batch_extra: %{"systems" => 42})
+
+    assert {:ok, %{sequence: 2, systems: nil}} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    F.publish(f, %{}, sequence: 3, batch_extra: %{"systems" => String.upcase(sha)})
+
+    assert {:ok, %{sequence: 3, systems: nil}} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    F.publish(f, %{}, sequence: 4)
+
+    assert {:ok, %{sequence: 4, systems: nil}} =
+             Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+  end
+
+  test "a batch with an unknown extra key parses unchanged", %{config: config, f: f} do
+    {:ok, root} = Trust.load_root(config)
+    F.publish(f, %{"demo" => %{"versions" => %{}}}, sequence: 1)
+    {:ok, plain} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    F.publish(f, %{"demo" => %{"versions" => %{}}},
+      sequence: 2,
+      batch_extra: %{"future" => %{}}
+    )
+
+    {:ok, extra} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    assert extra.sequence == 2
+    assert Map.delete(extra, :sequence) == Map.delete(plain, :sequence)
+  end
+
   test "the root is due for a check until a fetch of it is stamped", %{
     config: config,
     fetch: fetch

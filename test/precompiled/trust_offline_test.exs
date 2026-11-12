@@ -97,7 +97,8 @@ defmodule Precompiled.TrustOfflineTest do
                 sequence: 10,
                 manifests: %{},
                 manifests_v2: %{"recon" => @sha},
-                content: nil
+                content: nil,
+                systems: nil
               }} = Trust.verify_offline(c, root, body)
 
       # Years later, a skewed clock changes nothing.

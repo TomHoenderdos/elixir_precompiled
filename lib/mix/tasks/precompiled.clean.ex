@@ -12,7 +12,7 @@ defmodule Mix.Tasks.Precompiled.Clean do
   are removed; a dependency Mix compiled is never touched.
 
       mix precompiled.clean           # this build's installs
-      mix precompiled.clean --cache   # also the downloaded files, manifests and scans
+      mix precompiled.clean --cache   # also the downloaded files, manifests, systems tables and scans
 
   Trust state (batch sequence, adopted roots) is never removed.
   """

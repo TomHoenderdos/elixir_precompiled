@@ -127,6 +127,82 @@ defmodule Precompiled.CheckTest do
              report_file["lines"]
   end
 
+  describe "the systems table" do
+    @table %{"nerves_system_rpi4" => %{"1.31.0" => %{"libs" => nil, "otp" => "28.1"}}}
+
+    # nil is written as JSON null, as the portal writes a missing value.
+    defp systems_doc(table) do
+      %{"format" => 1, "systems" => table}
+      |> :json.encode(fn
+        nil, _encode -> "null"
+        other, encode -> :json.encode_value(other, encode)
+      end)
+      |> IO.iodata_to_binary()
+    end
+
+    defp systems_requests(),
+      do: for(%{path: "/precompiled/systems/" <> _ = p} <- F.requests(), do: p)
+
+    defp ash_build(f),
+      do: %{
+        "ash" => %{"versions" => %{"3.5.2" => %{"builds" => [good_entry(f, "ash", "1.31.0")]}}}
+      }
+
+    test "a batch without one: ctx.systems is nil and an exact build still installs", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      F.publish(f, ash_build(f))
+      F.clear_requests()
+      run_capturing(config, env)
+      assert_received {:report, {:ok, %{hits: 1}}}
+      assert systems_requests() == []
+
+      assert {:ok, batch} = Check.fetch_batch(Check.with_deadline(config))
+      assert batch.systems == nil
+      assert Check.systems_table(config, batch) == nil
+      assert ctx_of(config, env).systems == nil
+    end
+
+    test "a batch naming one: it is fetched once, cached, and reaches ctx.systems", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      sha = F.systems(systems_doc(@table))
+      F.publish(f, ash_build(f), batch_extra: %{"systems" => sha})
+      F.clear_requests()
+      run_capturing(config, env)
+      assert_received {:report, {:ok, %{hits: 1}}}
+      assert systems_requests() == ["/precompiled/systems/by-sha/#{sha}.json"]
+      assert File.exists?(Path.join([config.home, "systems", sha <> ".json"]))
+
+      assert {:ok, batch} = Check.fetch_batch(Check.with_deadline(config))
+      assert Check.systems_table(config, batch) == @table
+      assert ctx_of(Map.put(config, :systems_table, @table), env).systems == @table
+    end
+
+    test "a table that does not verify is nil, and the build still installs", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      sha = F.systems(systems_doc(@table), String.duplicate("1", 64))
+      F.publish(f, ash_build(f), batch_extra: %{"systems" => sha})
+      run_capturing(config, env)
+      assert_received {:report, {:ok, %{hits: 1}}}
+      assert {:ok, batch} = Check.fetch_batch(Check.with_deadline(config))
+      assert Check.systems_table(config, batch) == nil
+    end
+  end
+
+  defp ctx_of(config, env) do
+    [candidate | _] = env.candidates
+    config = Map.put_new(config, :toolchain, {System.version(), "28"})
+    Check.ctx(candidate, env, config, fn _, _ -> :error end, nil)
+  end
+
   test "a dep's build overrides and manager reach the rules (rule 9)", %{
     f: f,
     config: config,

@@ -361,6 +361,31 @@ defmodule PrecompiledTest do
   end
 
   describe "online installs" do
+    test "a systems table the batch names is fetched and never cached in the store", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      table = %{"nerves_system_rpi4" => %{"1.0.0" => %{"libs" => :null, "otp" => :null}}}
+      doc = %{"format" => 1, "systems" => table} |> :json.encode() |> IO.iodata_to_binary()
+      sha = Fixture.systems(doc)
+      build = publish_app(f, dir, :demo_sys, "1.0.0")
+
+      Fixture.publish(f, %{"demo_sys" => manifest(%{"1.0.0" => [build]})},
+        batch_extra: %{"systems" => sha}
+      )
+
+      Fixture.clear_requests()
+
+      assert {:ok, [%Precompiled.Installed{app: :demo_sys}]} =
+               Precompiled.install(:demo_sys, opts)
+
+      assert ["/precompiled/systems/by-sha/#{sha}.json"] ==
+               for(%{path: "/precompiled/systems/" <> _ = p} <- Fixture.requests(), do: p)
+
+      assert Path.wildcard(Path.join([opts[:dir], "**", "systems"]), match_dot: true) == []
+    end
+
     test "installs, loads and starts a pure app; a second call is idempotent", %{
       fixture: f,
       opts: opts,

@@ -155,6 +155,15 @@ defmodule Precompiled.Fixture do
     s
   end
 
+  # A systems document served at systems/by-sha/<sha>.json: under its own
+  # sha, or under `sha` when given (bytes that do not hash to their name).
+  @spec systems(binary(), String.t() | nil) :: String.t()
+  def systems(bytes, sha \\ nil) do
+    s = sha || sha(bytes)
+    put_in_map(:systems, s, bytes)
+    s
+  end
+
   @spec tamper_manifest(map(), String.t()) :: :ok
   def tamper_manifest(_fixture, name) do
     store =
@@ -239,7 +248,10 @@ defmodule Precompiled.Fixture do
 
   @spec reset() :: :ok
   defp reset(),
-    do: Agent.update(__MODULE__, fn _ -> %{manifests: %{}, manifests_v2: %{}, files: %{}} end)
+    do:
+      Agent.update(__MODULE__, fn _ ->
+        %{manifests: %{}, manifests_v2: %{}, files: %{}, systems: %{}}
+      end)
 
   @spec put(atom(), term()) :: :ok
   defp put(k, v), do: Agent.update(__MODULE__, &Map.put(&1, k, v))

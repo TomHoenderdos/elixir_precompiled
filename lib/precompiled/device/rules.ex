@@ -31,6 +31,8 @@ defmodule Precompiled.Device.Rules do
           required(:active) => %{atom() => String.t()},
           required(:config) => (String.t(), [String.t()] -> {:ok, term()} | :error),
           required(:pin) => nil | %{version: String.t(), checksum: String.t()},
+          # The batch's systems table (Fetch.systems/2), nil without one.
+          optional(:systems) => map() | nil,
           optional(:loaded) => [{atom(), charlist(), charlist()}]
         }
 
