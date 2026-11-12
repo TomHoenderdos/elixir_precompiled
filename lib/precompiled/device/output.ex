@@ -60,10 +60,15 @@ defmodule Precompiled.Device.Output do
   def size(bytes), do: kb(bytes)
 
   @doc false
-  # The store cannot hold the plan's downloads, even after eviction.
-  @spec too_big(non_neg_integer(), non_neg_integer(), Path.t(), nil | map()) :: String.t()
-  def too_big(needed, free, dir, largest) do
-    head = "precompiled: not enough space: needs #{size(needed)}, #{size(free)} free in #{dir}"
+  # The store cannot hold the plan's downloads, even after eviction. Free
+  # is room under the store's own limit (max_bytes, Store.room/5), not on
+  # the disk: a full disk is {:enospc, path} instead.
+  @spec too_big(non_neg_integer(), non_neg_integer(), non_neg_integer(), Path.t(), nil | map()) ::
+          String.t()
+  def too_big(needed, free, limit, dir, largest) do
+    head =
+      "precompiled: not enough space: needs #{size(needed)}, #{size(free)} free " <>
+        "under the store limit of #{size(limit)} in #{dir}"
 
     case largest do
       %{app: app, version: vsn, bytes: bytes} ->

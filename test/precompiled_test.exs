@@ -1101,7 +1101,8 @@ defmodule PrecompiledTest do
       kb = "#{round(needed / 1024)} KB"
 
       assert out =~
-               "precompiled: not enough space: needs #{kb}, 0 KB free in #{opts[:dir]}; " <>
+               "precompiled: not enough space: needs #{kb}, 0 KB free under the store limit " <>
+                 "of 0 KB in #{opts[:dir]}; " <>
                  "largest: demo_d 1.0.0 (#{kb})\n"
 
       refute out =~ "{:too_big"
@@ -1677,12 +1678,13 @@ defmodule PrecompiledTest do
     test "the not-enough-space line" do
       largest = %{app: :evision, version: "1.1.0", bytes: 214_958_080}
 
-      assert Output.too_big(226_501_678, 66_909_302, "/data/precompiled", largest) ==
-               "precompiled: not enough space: needs 216.0 MB, 63.8 MB free in " <>
-                 "/data/precompiled; largest: evision 1.1.0 (205.0 MB)"
+      assert Output.too_big(226_501_678, 66_909_302, 67_108_864, "/data/precompiled", largest) ==
+               "precompiled: not enough space: needs 216.0 MB, 63.8 MB free under the " <>
+                 "store limit of 64.0 MB in /data/precompiled; largest: evision 1.1.0 (205.0 MB)"
 
-      assert Output.too_big(2048, 0, "/d", nil) ==
-               "precompiled: not enough space: needs 2 KB, 0 KB free in /d"
+      assert Output.too_big(2048, 0, 10, "/d", nil) ==
+               "precompiled: not enough space: needs 2 KB, 0 KB free under the store " <>
+                 "limit of 0 KB in /d"
     end
   end
 end

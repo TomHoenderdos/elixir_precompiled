@@ -115,8 +115,9 @@ defmodule Precompiled do
       * `{:module_loaded | :module_conflict, mod, path}`;
       * `{:noexec, mount}`;
       * `{:conflict, app, [vsn]}`, two versions of one app in one call;
-      * `{:too_big, needed, free}` (in bytes; the line printed names the
-        store and the largest build), `{:too_many, n, max}`;
+      * `{:too_big, needed, free}` (in bytes, `free` under `max_bytes`; the
+        line printed names the store and the largest build),
+        `{:too_many, n, max}`;
       * `{:enospc, path}`, a full disk while staging or committing;
       * `{:unsafe_store, why}`;
       * `{:rename, posix}`, `{:bad_staging, path}`, or a posix atom such
@@ -603,7 +604,8 @@ defmodule Precompiled do
   defp too_big_said({:error, {:too_big, needed, free}} = error, checked, state) do
     misses = for {install, :miss} <- checked, do: install
     largest = Enum.max_by(misses, & &1.bytes, fn -> nil end)
-    say(state.opts, Output.too_big(needed, free, state.config.dir, largest))
+    limit = state.opts[:max_bytes]
+    say(state.opts, Output.too_big(needed, free, limit, state.config.dir, largest))
     error
   end
 
