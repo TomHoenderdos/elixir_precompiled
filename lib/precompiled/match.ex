@@ -373,12 +373,20 @@ defmodule Precompiled.Match do
     {a ++ List.duplicate(0, n - length(a)), b ++ List.duplicate(0, n - length(b))}
   end
 
-  defp libs(_b, %{"libs" => libs}, t, project) when not is_map(libs),
-    do: {:miss, Reason.new(:system_unknown, [t, project])}
+  # A release without a library table is not known well enough to judge.
+  # A native build with no ELF facts says nothing about the libraries it
+  # needs, so it cannot be judged against another release either: a miss,
+  # as for any other field a build predates. An empty `needs` is a fact (it
+  # needs nothing) and passes.
+  defp libs(b, proj, t, project) do
+    case {proj, b["elf"]} do
+      {%{"libs" => libs}, %{} = elf} when is_map(libs) -> needs_met(elf["needs"] || %{}, libs)
+      {%{"libs" => libs}, _} when is_map(libs) -> {:miss, Reason.new(:build_predates, ["elf"])}
+      _ -> {:miss, Reason.new(:system_unknown, [t, project])}
+    end
+  end
 
-  defp libs(b, %{"libs" => libs}, _t, _project) do
-    needs = get_in(b, ["elf", "needs"]) || %{}
-
+  defp needs_met(needs, libs) do
     Enum.reduce_while(needs, :ok, fn {soname, versions}, :ok ->
       case Map.fetch(libs, soname) do
         :error ->
@@ -392,8 +400,6 @@ defmodule Precompiled.Match do
       end
     end)
   end
-
-  defp libs(_b, _proj, t, project), do: {:miss, Reason.new(:system_unknown, [t, project])}
 
   defp target_reason("pure_elixir", _, _), do: :ok
   defp target_reason(t, built, {t, project}) when built == project, do: :ok

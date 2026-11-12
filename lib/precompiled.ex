@@ -781,8 +781,9 @@ defmodule Precompiled do
 
   # A native build's needed libraries, against the device's own: every
   # native build, the exact release included, before the rename. The needs
-  # come from the signed manifest; a build without `elf` predates them and
-  # is not checked. Reads are memoised in the run's table.
+  # come from the signed manifest; an exact-release build without `elf`
+  # predates them and is not checked (one for another release never gets
+  # here: Match misses it). Reads are memoised in the run's table.
   defp libs(install, state) do
     case install.build["build"] do
       %{"native" => true, "elf" => elf} when not is_nil(elf) ->

@@ -965,8 +965,19 @@ defmodule Precompiled.MatchTest do
     test "a native build needing nothing hits given the series and OTP" do
       build = xbuild("2.1.0", %{"elf" => %{"needs" => %{}}})
       assert {:ok, _, _} = Match.select(doc([build]), xctx("2.2.0"))
+    end
 
-      no_elf = xbuild("2.1.0", %{"elf" => nil})
+    test "a native build for another release without elf facts misses" do
+      for elf <- [nil, "junk", []] do
+        no_elf = xbuild("2.1.0", %{"elf" => elf})
+        result = Match.select_reason(doc([no_elf]), xctx("2.2.0"))
+        assert code_of(result) == {:build_predates, ["elf"]}
+        assert {:miss, "build predates elf"} = Reason.textual(result)
+      end
+    end
+
+    test "an exact-release native build without elf facts still hits" do
+      no_elf = xbuild("2.2.0", %{"elf" => nil})
       assert {:ok, _, _} = Match.select(doc([no_elf]), xctx("2.2.0"))
     end
 

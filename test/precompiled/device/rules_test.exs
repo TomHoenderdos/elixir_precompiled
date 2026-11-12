@@ -498,6 +498,28 @@ defmodule Precompiled.Device.RulesTest do
                )
     end
 
+    test "a native build for another release without elf facts misses" do
+      no_elf = update_in(xbuild("2.2.0")["build"], &Map.delete(&1, "elf"))
+
+      assert {:miss, "build predates elf", 0} =
+               Rules.check(no_elf, "x", ctx(systems: @systems))
+
+      assert {:miss, "build predates elf", 0} =
+               Rules.check(xbuild("2.2.0", %{"elf" => nil}), "x", ctx(systems: @systems))
+
+      assert {:ok, _} =
+               Rules.check(
+                 xbuild("2.2.0", %{"elf" => %{"needs" => %{}}}),
+                 "x",
+                 ctx(systems: @systems)
+               )
+    end
+
+    test "an exact-release native build without elf facts passes" do
+      no_elf = update_in(xbuild("2.2.1")["build"], &Map.delete(&1, "elf"))
+      assert {:ok, _} = Rules.check(no_elf, "x", ctx(systems: @systems))
+    end
+
     test "a native build that is not portable stays exact-release only" do
       b = xbuild("2.2.0", %{"portable" => false})
 
