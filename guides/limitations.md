@@ -1,9 +1,9 @@
 # Known limitations
 
 What `precompiled` does not do yet, or does not protect against. Each
-item says what happens and what to do about it. Apart from the first item
-under Matching, none of them can make Mix use a wrong build: the worst
-case is a dependency that compiles anyway.
+item says what happens and what to do about it. Apart from the two items
+under Matching, none of them can make Mix (or a device) use a wrong
+build: the worst case is a dependency that compiles anyway.
 
 ## Matching
 
@@ -16,6 +16,14 @@ values. Variables set in your shell and a global
 `Mix.install(deps, system_env: ...)` count the same. Rule 8 refuses only
 the case it can see: an env read at module level in `lib/`.
 *Fix:* list such a dependency in `:except`.
+
+**A device does not scan sources.** On a device, a beam-only build made on
+another release of the device's Nerves system is accepted without the
+source scan the build machine runs, so a dependency that reads the Nerves
+system at compile time (`Nerves.Env`) is not detected there. Its beams may
+carry the other release's version or settings.
+*Fix:* ship such a dependency in the firmware instead of installing it on
+the device.
 
 ## Trust
 

@@ -142,10 +142,13 @@ calls, and ignore them.
 - **Other systems.** A system build serves only the Nerves system it was
   made for, matched by name (read from `/usr/lib/os-release`); builds are
   made for official Nerves systems. It must be for the device's exact
-  system version, or for another release of that system that the batch's
-  systems table says has the same toolchain series, an OTP no older than
-  the build's and every library the build needs; the exact version wins,
-  then the closest older release, then the lowest newer one. A
+  system version, or for another release of that system: a beam-only
+  build always (without the source scan a build machine runs, see
+  [Known limitations](limitations.md#matching)), a native one when the
+  batch's systems table says the device's release has the same toolchain
+  series, an OTP no older than the build's and every library the build
+  needs ([What matches](matching.md#the-fine-print)). The exact version
+  wins, then the closest older release, then the lowest newer one. A
   `pure_elixir` build serves any device, and a device whose system is not
   known takes `pure_elixir` builds only. When both kinds match, the system
   build wins. A native library made for another CPU is refused

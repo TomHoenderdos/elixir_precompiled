@@ -92,7 +92,9 @@ Reference:
 
 - [Configuration](https://hexdocs.pm/precompiled/configuration.html):
   every key and variable, turning it off, seeing what happened
-- [What matches](https://hexdocs.pm/precompiled/matching.html)
+- [What matches](https://hexdocs.pm/precompiled/matching.html): every
+  rule, and which builds made on another release of your Nerves system
+  still match
 
 Explanation:
 

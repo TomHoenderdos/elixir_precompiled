@@ -21,7 +21,7 @@ A build of a candidate is installed only when **every** rule holds.
 
 | # | Rule | The build must… | Why |
 | --- | --- | --- | --- |
-| 1 | Target | be `pure_elixir`, or be made for your Nerves system at the exact system version in `mix.lock` | native code only runs where it was built for |
+| 1 | Target | be `pure_elixir`, or be made for your Nerves system: on the system version in `mix.lock`, or on another release of that system that provides what the build needs (see below) | native code only runs where its libraries, toolchain and OTP are |
 | 2 | Elixir | have the same major.minor as your Elixir, and a version no newer than yours | compiled Elixir runs forward within a minor, not backward |
 | 3 | OTP | have the same OTP major | record layouts from OTP headers are inlined at compile time |
 | 4 | Dependency env | be compiled in the env the dependency compiles in here (`prod`, unless your `deps` entry sets `env:`) | env changes what gets compiled |
@@ -32,6 +32,59 @@ A build of a candidate is installed only when **every** rule holds.
 | 9 | Build method | be built the way Mix builds the dependency here: no declaration of it (yours or a package's) sets any of `:manager`, `:compile` or `:system_env`, and a manager the build records is the one Mix uses here | an override, or another manager, builds other files |
 
 ### The fine print
+
+**Rule 1, another release of your system.** A build made for your Nerves
+system, but on another release of it (say `nerves_system_rpi4` 2.1.0
+while your `mix.lock` has 2.2.0), can still stand in. Which ones can
+depends on what is in the build:
+
+- **Beam-only builds** (no native code) are used on any release of the
+  system. Beams do not depend on the system's libraries or toolchain.
+  The one exception is a dependency whose sources read the Nerves system
+  at compile time (`Nerves.Env`), which can bake the system's version or
+  settings into its beams: it misses with
+  `reads the Nerves system at compile time`, and gets only a build made
+  on your exact release.
+- **Builds with native code** (NIFs, ports) are used on another release
+  only when the build's native files are ordinary shared objects or
+  executables, and your release, as the batch's systems table describes
+  it, has everything they were linked against:
+  - **Toolchain.** The same Nerves toolchain package, in the same
+    `major.minor` series (toolchain 15.3.1 and 15.3.2 are both series
+    15.3; 15.4.0 is not). Within a series the compiler and C library
+    keep their ABI.
+  - **OTP.** The same OTP major, and the OTP the build was made on no
+    newer than your release's: OTP 28.1.0 code runs on OTP 28.2.0, not
+    the other way round. Versions compare part by part, so 27.3.4.1 is
+    older than 27.3.4.3.
+  - **Libraries.** Every shared library the native code needs (its
+    `DT_NEEDED` entries, such as `libc.so.6` or `libstdc++.so.6`) is in
+    your release.
+  - **Symbol versions.** Every versioned symbol it needs from those
+    libraries (`GLIBC_2.38`, `GLIBCXX_3.4.32`, `OPENSSL_3.0.0`) is
+    defined there by that exact name. A library keeps every older
+    version it ever defined, so a newer library still provides them.
+    Names that carry no version number, such as `GLIBC_PRIVATE`, are
+    not checked.
+
+  A native build that does not record which libraries it needs (one
+  made before that was recorded) is used on its own release only, and
+  misses elsewhere with `build predates elf`.
+- **Anything else** is used on its own release only. That includes a
+  build whose native files are something other than shared objects or
+  executables (a kernel module, an object file), and any build made
+  before the portal recorded what is in it.
+
+When your release is not in the systems table yet, or its libraries
+have not been recorded, only builds made on that exact release match
+(`... not yet known to the portal`). The portal records a new release
+of a system soon after it appears. Without a systems table in the batch
+(an older source), every system build needs your exact release, as
+before.
+
+On a device, the same rules choose the build, using the systems table,
+and then the device checks its own libraries too: see
+[On a device](device.md#what-it-refuses) and below.
 
 **Rule 2, versions.** Versions compare as versions:
 
@@ -94,13 +147,51 @@ Such a dependency can be served a build made with other values.
 
 ## When several builds match
 
-The first that applies wins:
+First the release: among the system builds that pass, only those made
+on the release closest to yours are kept:
+
+1. your exact system version;
+2. else the highest version below yours;
+3. else the lowest version above it.
+
+`pure_elixir` builds count as made on your exact version. Then the first
+of these that applies wins:
 
 1. the build that is already installed (its bytes stay as they are);
 2. the build made on your exact Elixir patch;
 3. the closest older patch;
 4. `pure_elixir` before a system build;
 5. the newest run.
+
+An installed build is preferred only among the builds of the closest
+release: when a build for a closer release appears, it replaces the
+installed one.
+
+## Every run checks again
+
+Builds already installed are matched again on every run, against the
+current batch and your project as it is now. When you move your project
+to another release of its system, a build installed for the old one is
+kept only if it still matches; otherwise it is removed, the line says
+why (for example `built for nerves_system_rpi4 2.1.0 (toolchain 15.3),
+project has 2.3.0 (toolchain 15.4)`), and the dependency compiles from
+source.
+
+## On a device
+
+`Precompiled.install/2` chooses builds by the same rules and the same
+release order. Before it installs any build with native code, for your
+exact release or another one, it also looks up every library the build
+needs in the device's own `/lib` and `/usr/lib`, and checks the symbol
+versions there. The systems table describes the release as built; this
+check describes the device as it is running. A build that needs
+something the device lacks is refused.
+
+One difference: the device has no dependency sources to scan, so it
+cannot tell whether a beam-only build's dependency reads the Nerves
+system at compile time. On a device, a beam-only build made on another
+release of your system is accepted without that check. On your build
+machine the check does run.
 
 ## When nothing matches
 

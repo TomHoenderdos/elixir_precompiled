@@ -249,6 +249,28 @@ A `MISS` line names the rule that the closest build broke; see
 | `MISS  build method unknown (deps did not load: ...)` | Rule 9: `Precompiled.Host.install/2` could not load the dependencies through Mix (the warning above names why), so no build can be confirmed. Everything compiles from source. |
 | `MISS  built with rebar3, project's manager for it is unknown` | Rule 9: Mix resolved no manager for the dependency here (often: its sources are not fetched yet), so the build's cannot be confirmed. It compiles from source. |
 
+### Builds from another release of your system
+
+These lines come from rule 1, when the only builds are for other
+releases of your Nerves system (see
+[What matches](matching.md#the-fine-print)). Each one leaves the
+dependency compiling from source; the code in brackets is the
+`reason_code` a report carries.
+
+| Line | Meaning | What to do |
+| --- | --- | --- |
+| `MISS  built for nerves_system_rpi4 2.1.0 (toolchain 15.3), project has 2.3.0 (toolchain 15.4)` (`system_version_abi`) | The build has native code, and was made with another toolchain series (or another toolchain package) than your release uses. A `?` means that toolchain's series is not known. | Nothing to fix: a build for your release, or for one on the same series, will match once the portal has one. |
+| `MISS  built on OTP 28.2.0, release has 28.1.0` (`toolchain_otp_minor`) | The native build was made on a newer OTP than your release ships, or another OTP major. A `?` means one of the two is not recorded. | Nothing to fix; a build made on your OTP, or an older one of the same major, will match. Moving to a newer system release often helps. |
+| `MISS  libssl.so.3 missing on target` (`needed_lib_missing`) | The native code needs a shared library your release does not have. On a device, the device itself lacks it. | Use a system release that includes the library, or let it compile from source. On a device, check the firmware's system. |
+| `MISS  libstdc++.so.6 lacks GLIBCXX_3.4.32` (`symbol_version_missing`) | Your release (or on a device, the device) has the library, but an older one that does not define a symbol version the native code needs. | As above: a newer system release, or a build made on yours. |
+| `MISS  nerves_system_rpi4 2.4.0 not yet known to the portal` (`system_unknown`) | The batch's systems table has no entry for your release, or not yet its libraries or OTP, so no native build from another release can be checked against it. | Wait: the portal records new releases of a system after they appear, and native builds start to match then. Builds made on your exact release still match now. |
+| `MISS  reads the Nerves system at compile time` (`system_bound_compile`) | A beam-only build from another release, of a dependency whose sources read the Nerves system (`Nerves.Env`) at compile time, so its beams may carry the system's version or settings. | Nothing to fix: only a build made on your exact release matches it. |
+| `MISS  build predates elf` (`build_predates`) | A native build from another release that does not record which libraries it needs, so it cannot be checked against your release. | Nothing to fix; newer builds record it. |
+
+On a device, `needed_lib_missing` and `symbol_version_missing` also come
+from the check against the device's own libraries, for builds of your
+exact release too: `{:error, {:libs, app, reason}}`.
+
 ## A bug
 
 | Line | Meaning | What to do |
