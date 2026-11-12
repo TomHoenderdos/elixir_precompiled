@@ -9,6 +9,13 @@
   package: `install(:axon)` skips `kino` and the like unless the device
   has them or the call asks for them (`install([:axon, :kino])`), prints
   one line per skipped dependency, and prefers a build locked without them.
+* On a device, an online install no longer waits for NTP: it goes ahead
+  with the clock as it is and lets the batch's own time checks decide.
+  Only when one of them fails before NTP has answered does it say to wait
+  for NTP (still `{:error, {:clock_unsynchronized, now}}`).
+* On a device, a store too small for an install prints one readable line
+  with the sizes, the store directory and the largest build, instead of
+  the raw `{:too_big, needed, free}` (the returned error is unchanged).
 
 ## v0.5.0 - 2026-11-12
 
