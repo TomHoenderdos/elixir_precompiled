@@ -183,7 +183,8 @@ source.
 release order. Before it installs any build with native code, for your
 exact release or another one, it also looks up every library the build
 needs in the device's own `/lib` and `/usr/lib`, and checks the symbol
-versions there. The systems table describes the release as built; this
+versions there. (A build for your exact release made before builds
+recorded their libraries has nothing to check, and installs as before.) The systems table describes the release as built; this
 check describes the device as it is running. A build that needs
 something the device lacks is refused.
 
