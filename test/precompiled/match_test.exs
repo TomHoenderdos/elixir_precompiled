@@ -817,8 +817,20 @@ defmodule Precompiled.MatchTest do
           "otp" => "28.2.0",
           "libs" => @libs
         },
+        # As the portal publishes a release it knows only from Hex: its
+        # toolchain requirement's series, no version, OTP or library table.
         "2.5.0" => %{
-          "toolchain" => %{"package" => @tc, "version" => "15.3.2", "series" => "15.3"},
+          "toolchain" => %{"package" => @tc, "version" => nil, "series" => "15.3"},
+          "otp" => nil,
+          "libs" => nil
+        },
+        "2.7.0" => %{
+          "toolchain" => %{"package" => @tc, "version" => nil, "series" => "15.4"},
+          "otp" => nil,
+          "libs" => nil
+        },
+        "2.8.0" => %{
+          "toolchain" => %{"package" => @tc, "version" => "15.3.1", "series" => "15.3"},
           "otp" => "28.2.0",
           "libs" => nil
         },
@@ -944,12 +956,50 @@ defmodule Precompiled.MatchTest do
       assert code_of(result) == {:symbol_version_missing, ["libstdc++.so.6", "GLIBCXX_3.4.32"]}
     end
 
-    test "a project release the portal does not know misses" do
+    test "a project release the portal has no row for misses as unknown" do
       unknown = Match.select_reason(doc([xbuild("2.1.0")]), xctx("2.4.0"))
       assert code_of(unknown) == {:system_unknown, ["nerves_system_rpi4", "2.4.0"]}
+    end
 
-      no_libs = Match.select_reason(doc([xbuild("2.1.0")]), xctx("2.5.0"))
-      assert code_of(no_libs) == {:system_unknown, ["nerves_system_rpi4", "2.5.0"]}
+    test "a release the portal knows only from Hex misses as unknown, not on OTP" do
+      # Its series is the build's: OTP would be the first rule to fail.
+      same = Match.select_reason(doc([xbuild("2.1.0")]), xctx("2.5.0"))
+      assert code_of(same) == {:system_unknown, ["nerves_system_rpi4", "2.5.0"]}
+
+      # Even a series the build does not share is not judged yet.
+      other = Match.select_reason(doc([xbuild("2.1.0")]), xctx("2.7.0"))
+      assert code_of(other) == {:system_unknown, ["nerves_system_rpi4", "2.7.0"]}
+
+      # A beam-only build needs no row at all.
+      assert {:ok, _, _} = Match.select(doc([beam_only("2.1.0")]), xctx("2.5.0"))
+    end
+
+    test "a release with OTP but no library table misses as unknown" do
+      no_libs = Match.select_reason(doc([xbuild("2.1.0")]), xctx("2.8.0"))
+      assert code_of(no_libs) == {:system_unknown, ["nerves_system_rpi4", "2.8.0"]}
+    end
+
+    test "an ebin-only build as the portal renders it hits on another release" do
+      # The build fields of a target build with ebin files and an empty priv:
+      # not native, portable, no elf, its toolchain and OTP recorded.
+      build =
+        entry(%{
+          "build" =>
+            entry()["build"]
+            |> Map.merge(%{
+              "otp" => "28",
+              "system_version" => "2.1.0",
+              "run_id" => "r-ebin-only",
+              "native" => false,
+              "portable" => true,
+              "otp_full" => "28.1.0",
+              "toolchain" => %{"package" => @tc, "version" => "15.3.1"}
+            })
+            |> Map.delete("elf")
+        })
+
+      assert {:ok, %{"build" => %{"system_version" => "2.1.0"}}, "nerves_system_rpi4"} =
+               Match.select(doc([build]), xctx("2.3.0"))
     end
 
     test "a native build that is not portable misses as on another release" do

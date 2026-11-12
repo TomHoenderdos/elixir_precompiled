@@ -305,17 +305,21 @@ defmodule Precompiled.Match do
     end
   end
 
+  # A release the portal knows only from Hex (its toolchain requirement's
+  # series, no OTP or library table yet) is not known well enough to judge,
+  # whatever its series: unknown, before the series and OTP are compared.
   defp abi_match(t, b, project, systems) do
-    proj = get_in(systems, [t, project])
+    case get_in(systems, [t, project]) do
+      %{"otp" => otp, "libs" => libs} = proj when not is_nil(otp) and not is_nil(libs) ->
+        with :ok <- same_series(t, b, project, proj),
+             :ok <- otp_minor(b["otp_full"], proj["otp"]) do
+          libs(b, proj, t, project)
+        end
 
-    with :ok <- same_series(t, b, project, proj),
-         :ok <- otp_minor(b["otp_full"], proj["otp"]) do
-      libs(b, proj, t, project)
+      _ ->
+        {:miss, Reason.new(:system_unknown, [t, project])}
     end
   end
-
-  defp same_series(t, _b, project, nil),
-    do: {:miss, Reason.new(:system_unknown, [t, project])}
 
   defp same_series(t, b, project, proj) do
     {built_pkg, built_series} = toolchain_series(b["toolchain"])
