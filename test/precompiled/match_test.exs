@@ -894,6 +894,36 @@ defmodule Precompiled.MatchTest do
       assert code_of(result) == {:toolchain_otp_minor, ["28.2.0", "28.1.0"]}
     end
 
+    for {built, release, expect} <- [
+          {"27.3.4.1", "27.3.4.3", :hit},
+          {"27.3.4.3", "27.3.4.1", :miss},
+          {"27.3.4", "27.3.4.1", :hit},
+          {"28.10.0", "28.9.0", :miss},
+          {"28.1", "29.0", :miss},
+          {"junk", "28.2.0", :miss}
+        ] do
+      test "OTP #{built} built, release #{release}: #{expect}" do
+        built = unquote(built)
+        release = unquote(release)
+        systems = put_in(@systems, ["nerves_system_rpi4", "2.2.0", "otp"], release)
+        build = xbuild("2.1.0", %{"otp_full" => built})
+        result = Match.select_reason(doc([build]), xctx("2.2.0", systems: systems))
+
+        case unquote(expect) do
+          :hit -> assert {:ok, _, _} = result
+          :miss -> assert code_of(result) == {:toolchain_otp_minor, [built, release]}
+        end
+      end
+    end
+
+    test "an exact-release build of a dep that reads the system at compile time hits" do
+      assert {:ok, %{"build" => %{"system_version" => "2.2.0"}}, _} =
+               Match.select(
+                 doc([xbuild("2.2.0")]),
+                 xctx("2.2.0", reads: %{target: false, env: [], system: true})
+               )
+    end
+
     test "a native build with no recorded OTP release misses" do
       build = xbuild("2.1.0", %{"otp_full" => nil})
       result = Match.select_reason(doc([build]), xctx("2.2.0"))

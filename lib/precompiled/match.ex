@@ -286,6 +286,7 @@ defmodule Precompiled.Match do
   defp cross_release(t, b, {t, project}, ctx) do
     cond do
       b["native"] == false ->
+        # No scan result (reads nil) is accepted, as compile_inputs_ok/3 does.
         if match?(%{system: true}, Map.get(ctx, :reads)),
           do: {:miss, Reason.new(:system_bound_compile, [])},
           else: :ok
@@ -336,26 +337,35 @@ defmodule Precompiled.Match do
   defp toolchain_series(_), do: {nil, nil}
 
   # The OTP the build was made on must be the release's major, at or below
-  # its minor and patch: newer OTP releases load older code, not the reverse.
+  # its version: newer OTP releases load older code, not the reverse. OTP
+  # maintenance releases have four parts (27.3.4.1), so versions compare as
+  # integer lists padded with zeros to the same length.
   defp otp_minor(built, running) do
-    with {:ok, b} <- otp_version(built),
-         {:ok, r} <- otp_version(running),
-         true <- b.major == r.major and Version.compare(b, r) != :gt do
+    with {:ok, [bmaj | _] = b} <- otp_parts(built),
+         {:ok, [rmaj | _] = r} <- otp_parts(running),
+         true <- bmaj == rmaj,
+         {b, r} = pad(b, r),
+         true <- b <= r do
       :ok
     else
       _ -> {:miss, Reason.new(:toolchain_otp_minor, [built || "?", running || "?"])}
     end
   end
 
-  defp otp_version(v) when is_binary(v) do
-    case String.split(v, ".") do
-      [_] -> Version.parse(v <> ".0.0")
-      [_, _] -> Version.parse(v <> ".0")
-      _ -> Version.parse(v)
-    end
+  defp otp_parts(v) when is_binary(v) do
+    parts = String.split(v, ".")
+
+    if Enum.all?(parts, &(&1 =~ ~r/\A\d+\z/)),
+      do: {:ok, Enum.map(parts, &String.to_integer/1)},
+      else: :error
   end
 
-  defp otp_version(_), do: :error
+  defp otp_parts(_), do: :error
+
+  defp pad(a, b) do
+    n = max(length(a), length(b))
+    {a ++ List.duplicate(0, n - length(a)), b ++ List.duplicate(0, n - length(b))}
+  end
 
   defp libs(_b, %{"libs" => libs}, t, project) when not is_map(libs),
     do: {:miss, Reason.new(:system_unknown, [t, project])}
