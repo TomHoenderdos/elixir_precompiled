@@ -1061,8 +1061,23 @@ defmodule PrecompiledTest do
     } do
       build = publish_app(f, dir, :demo_d, "1.0.0")
       Fixture.publish(f, %{"demo_d" => manifest(%{"1.0.0" => [build]})})
-      assert {:error, {:too_big, _, 10}} = Precompiled.install(:demo_d, opts ++ [max_bytes: 10])
+      call = Keyword.put(opts, :quiet, false) ++ [max_bytes: 10]
+
+      out =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert {:error, {:too_big, needed, 10}} = Precompiled.install(:demo_d, call)
+          send(self(), {:needed, needed})
+        end)
+
+      assert_received {:needed, needed}
       assert files_requested() == [app_sha(build)]
+      kb = "#{round(needed / 1024)} KB"
+
+      assert out =~
+               "precompiled: not enough space: needs #{kb}, 0 KB free in #{opts[:dir]}; " <>
+                 "largest: demo_d 1.0.0 (#{kb})\n"
+
+      refute out =~ "{:too_big"
     end
 
     test "an optional dependency absent from the device is skipped, with one line", %{
@@ -1630,6 +1645,17 @@ defmodule PrecompiledTest do
                "precompiled: circuits_gpio 2.3.1   PLAN  nerves_system_rpi4 2.2.1, 198 KB"
 
       assert Output.summary(1, 202_752, 2100) == "precompiled: 1 installed, 198 KB, 2.1 s"
+    end
+
+    test "the not-enough-space line" do
+      largest = %{app: :evision, version: "1.1.0", bytes: 214_958_080}
+
+      assert Output.too_big(226_501_678, 66_909_302, "/data/precompiled", largest) ==
+               "precompiled: not enough space: needs 216.0 MB, 63.8 MB free in " <>
+                 "/data/precompiled; largest: evision 1.1.0 (205.0 MB)"
+
+      assert Output.too_big(2048, 0, "/d", nil) ==
+               "precompiled: not enough space: needs 2 KB, 0 KB free in /d"
     end
   end
 end

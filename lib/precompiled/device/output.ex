@@ -51,6 +51,30 @@ defmodule Precompiled.Device.Output do
   def kb(bytes), do: "#{round(bytes / 1024)} KB"
 
   @doc false
+  # A size: KB as the plan lines print it, and MB with one decimal (as the
+  # host's lines print it) from 1 MB up.
+  @spec size(non_neg_integer()) :: String.t()
+  def size(bytes) when bytes >= 1_048_576,
+    do: "#{:erlang.float_to_binary(bytes / 1_048_576, decimals: 1)} MB"
+
+  def size(bytes), do: kb(bytes)
+
+  @doc false
+  # The store cannot hold the plan's downloads, even after eviction.
+  @spec too_big(non_neg_integer(), non_neg_integer(), Path.t(), nil | map()) :: String.t()
+  def too_big(needed, free, dir, largest) do
+    head = "precompiled: not enough space: needs #{size(needed)}, #{size(free)} free in #{dir}"
+
+    case largest do
+      %{app: app, version: vsn, bytes: bytes} ->
+        "#{head}; largest: #{app} #{vsn} (#{size(bytes)})"
+
+      nil ->
+        head
+    end
+  end
+
+  @doc false
   # Prints `line` unless the call is quiet.
   @spec put(String.t(), boolean()) :: :ok
   def put(_line, true), do: :ok

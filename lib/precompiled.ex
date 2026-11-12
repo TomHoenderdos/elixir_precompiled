@@ -115,7 +115,8 @@ defmodule Precompiled do
       * `{:module_loaded | :module_conflict, mod, path}`;
       * `{:noexec, mount}`;
       * `{:conflict, app, [vsn]}`, two versions of one app in one call;
-      * `{:too_big, needed, free}`, `{:too_many, n, max}`;
+      * `{:too_big, needed, free}` (in bytes; the line printed names the
+        store and the largest build), `{:too_many, n, max}`;
       * `{:enospc, path}`, a full disk while staging or committing;
       * `{:unsafe_store, why}`;
       * `{:rename, posix}`, `{:bad_staging, path}`, or a posix atom such
@@ -604,6 +605,15 @@ defmodule Precompiled do
       :code.lib_dir(entry.app) == String.to_charlist(entry.path)
   end
 
+  defp too_big_said({:error, {:too_big, needed, free}} = error, checked, state) do
+    misses = for {install, :miss} <- checked, do: install
+    largest = Enum.max_by(misses, & &1.bytes, fn -> nil end)
+    say(state.opts, Output.too_big(needed, free, state.config.dir, largest))
+    error
+  end
+
+  defp too_big_said(result, _checked, _state), do: result
+
   ## Dry run
 
   defp dry_run(plan, env, opts) do
@@ -665,7 +675,9 @@ defmodule Precompiled do
     keep = for {install, {:hit, _path}} <- checked, do: install.app
 
     with {:ok, victims} <-
-           Store.room(config.dir, plan_bytes, opts[:max_bytes], state.active, keep),
+           config.dir
+           |> Store.room(plan_bytes, opts[:max_bytes], state.active, keep)
+           |> too_big_said(checked, state),
          :ok <- noexec(plan.installs, state),
          # Room first: on a nearly full /data a stale cache must go before
          # the download, or staging hits ENOSPC. Only unloaded, unused
@@ -1098,6 +1110,9 @@ defmodule Precompiled do
 
       # Already said where it happened, in words.
       {kind, _} when kind == :clock_unsynchronized ->
+        :ok
+
+      {:too_big, _needed, _free} ->
         :ok
 
       _ ->
