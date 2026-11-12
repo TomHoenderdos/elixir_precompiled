@@ -11,7 +11,8 @@ defmodule Precompiled.Device.Plan do
   # installs come out dependencies first, in load order. Anything that
   # cannot be planned fails the whole call. An optional dependency a build
   # skips (Rules) is not walked; the plan names it once per package, unless
-  # the call ends up with that app anyway. No Mix, no Hex.
+  # the call ends up with that app anyway: then it must be the version that
+  # package's lock has, and it loads before that package. No Mix, no Hex.
 
   alias Precompiled.Device.Rules
 
@@ -25,12 +26,18 @@ defmodule Precompiled.Device.Plan do
   @spec build([request()], Rules.ctx(), keyword()) ::
           {:ok, Precompiled.Plan.t()} | {:error, term()}
   def build(requests, ctx, opts) do
-    state = %{chosen: %{}, order: [], present: [], warnings: [], skipped: []}
+    state = %{chosen: %{}, order: [], present: [], warnings: [], skipped: [], needs: %{}}
     queue = Enum.map(requests, fn {app, req} -> {app, req, nil, :requested} end)
     ctx = Map.put(ctx, :requested, Enum.map(requests, &elem(&1, 0)))
 
-    with {:ok, state} <- walk(queue, ctx, opts, state) do
-      installs = state.order |> Enum.reverse() |> Enum.map(&state.chosen[&1])
+    with {:ok, state} <- walk(queue, ctx, opts, state),
+         :ok <- skipped_versions(state) do
+      installs =
+        state.order
+        |> Enum.reverse()
+        |> skipped_first(locked_skips(state), state.needs)
+        |> Enum.map(&state.chosen[&1])
+
       had = Map.keys(state.chosen) ++ Enum.map(state.present, &elem(&1, 0))
 
       {:ok,
@@ -203,8 +210,58 @@ defmodule Precompiled.Device.Plan do
       state
       | chosen: Map.put(state.chosen, install.app, install),
         warnings: state.warnings ++ named,
-        skipped: state.skipped ++ Enum.map(verdict.skipped, &{install.app, &1})
+        skipped: state.skipped ++ Enum.map(verdict.skipped, &{install.app, &1}),
+        needs: Map.put(state.needs, install.app, Enum.map(verdict.needs, & &1.app))
     }
+  end
+
+  # A skipped optional app that another package of this call installs:
+  # the skipping package was built against its lock's version, as a device
+  # that has the app must have that exact version.
+  defp skipped_versions(state) do
+    Enum.find_value(locked_skips(state), :ok, fn {app, dep, locked} ->
+      chosen = state.chosen[dep].version
+
+      if chosen != locked,
+        do:
+          no_build(
+            Atom.to_string(app),
+            "built against #{dep} #{locked}, this call installs #{dep} #{chosen}"
+          )
+    end)
+  end
+
+  # {app, dep, locked version} for each skipped dep the call installs and
+  # the app's lock has.
+  defp locked_skips(state) do
+    for {app, dep} <- state.skipped,
+        Map.has_key?(state.chosen, dep),
+        %{"version" => v} <- [state.chosen[app].build["build"]["deps"][Atom.to_string(dep)]],
+        do: {app, dep, v}
+  end
+
+  # Moves each such dep, with what it needs that comes after the app, to
+  # just before the app, keeping their order; anything else stays put.
+  defp skipped_first(order, pairs, needs) do
+    Enum.reduce(pairs, order, fn {app, dep, _v}, order ->
+      i = Enum.find_index(order, &(&1 == app))
+      {before, rest} = Enum.split(order, i)
+
+      if dep in before do
+        order
+      else
+        moving = reach([dep], MapSet.new(), needs, MapSet.new(rest) |> MapSet.delete(app))
+        before ++ Enum.filter(rest, &(&1 in moving)) ++ Enum.reject(rest, &(&1 in moving))
+      end
+    end)
+  end
+
+  defp reach([], seen, _needs, _within), do: seen
+
+  defp reach([app | rest], seen, needs, within) do
+    if app in seen or app not in within,
+      do: reach(rest, seen, needs, within),
+      else: reach(Map.get(needs, app, []) ++ rest, MapSet.put(seen, app), needs, within)
   end
 
   defp bound(state, max) do

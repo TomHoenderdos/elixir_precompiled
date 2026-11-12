@@ -365,6 +365,58 @@ defmodule Precompiled.Device.PlanTest do
       assert plan.skipped == [{:axon, :kino}]
     end
 
+    test "a skipped dep another package installs: same version, it loads first" do
+      m =
+        manifests(%{
+          "axon" => manifest(%{"0.9.0" => [build(run_id: "a", deps: @kino)]}),
+          "bee" => manifest(%{"1.0.0" => [build(run_id: "b", deps: @kino)]}),
+          "kino" => manifest(%{"0.19.1" => [build(run_id: "k", checksum: "ksum")]})
+        })
+
+      spec = fn b ->
+        case b["build"]["run_id"] do
+          "a" -> {:ok, [applications: [:kernel, :kino], optional_applications: [:kino]]}
+          "b" -> {:ok, [applications: [:kernel, :kino]]}
+          _ -> {:ok, [applications: [:kernel]]}
+        end
+      end
+
+      assert {:ok, plan} =
+               Plan.build([{:axon, nil}, {:bee, nil}], ctx(app_spec: spec), manifest: m)
+
+      assert [:kino, :axon, :bee] = Enum.map(plan.installs, & &1.app)
+      assert plan.skipped == []
+    end
+
+    test "a skipped dep another package installs at another version: a miss" do
+      m =
+        manifests(%{
+          "axon" => manifest(%{"0.9.0" => [build(run_id: "a", deps: @kino)]}),
+          "bee" =>
+            manifest(%{
+              "1.0.0" => [
+                build(
+                  run_id: "b",
+                  deps: %{"kino" => %{"version" => "0.20.0", "checksum" => "k20"}}
+                )
+              ]
+            }),
+          "kino" => manifest(%{"0.20.0" => [build(run_id: "k", checksum: "k20")]})
+        })
+
+      spec = fn b ->
+        case b["build"]["run_id"] do
+          "a" -> {:ok, [applications: [:kernel, :kino], optional_applications: [:kino]]}
+          "b" -> {:ok, [applications: [:kernel, :kino]]}
+          _ -> {:ok, [applications: [:kernel]]}
+        end
+      end
+
+      assert {:error,
+              {:no_build, "axon", "built against kino 0.19.1, this call installs kino 0.20.0"}} =
+               Plan.build([{:axon, nil}, {:bee, nil}], ctx(app_spec: spec), manifest: m)
+    end
+
     test "a required dep with no build is still a miss" do
       m = manifests(%{"axon" => manifest(%{"0.9.0" => [build(run_id: "a", deps: @kino)]})})
       ctx = ctx(app_spec: spec(%{"a" => [:kernel, :kino]}))
