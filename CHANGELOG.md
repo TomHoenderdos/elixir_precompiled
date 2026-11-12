@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.5.1 - 2026-11-12
+
+* On a device, an optional dependency (such as `:rustler` for
+  `rustler_precompiled`) no longer blocks an install when this target has
+  no build of it: the package installs without it.
+* On a device, optional dependencies are no longer installed along with a
+  package: `install(:axon)` skips `kino` and the like unless the device
+  has them or the call asks for them (`install([:axon, :kino])`), prints
+  one line per skipped dependency, and prefers a build locked without them.
+
 ## v0.5.0 - 2026-11-12
 
 * Target builds now match across releases of the same Nerves system:
