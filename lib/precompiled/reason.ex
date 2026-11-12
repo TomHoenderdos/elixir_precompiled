@@ -45,7 +45,13 @@ defmodule Precompiled.Reason do
     fetch_failed: "download failed",
     verify_failed: "verification failed",
     install_failed: "install failed",
-    internal: "internal error"
+    internal: "internal error",
+    system_version_abi: "built for {0} {1} (toolchain {2}), project has {3} (toolchain {4})",
+    toolchain_otp_minor: "built on OTP {0}, release has {1}",
+    needed_lib_missing: "{0} missing on target",
+    symbol_version_missing: "{0} lacks {1}",
+    system_unknown: "{0} {1} not yet known to the portal",
+    system_bound_compile: "reads the Nerves system at compile time"
   ]
 
   @codes Keyword.keys(@templates)

@@ -5,8 +5,9 @@
 defmodule Precompiled.SourceScan do
   @moduledoc false
   # What a dependency's own sources read at compile time that no build
-  # records: Mix.target() (module level in lib/, anywhere in mix.exs) and
-  # module-level env reads (System.get_env/fetch_env/fetch_env!,
+  # records: Mix.target() and Nerves.Env.* calls (module level in lib/,
+  # anywhere in mix.exs; the latter mean the build depends on the exact
+  # Nerves system release) and module-level env reads (System.get_env/fetch_env/fetch_env!,
   # :os.getenv) in lib/. Function bodies run at runtime and are skipped;
   # macro bodies are walked (code outside their quote runs when the caller
   # compiles); quoted code runs in its caller and is skipped. The sources
@@ -28,7 +29,9 @@ defmodule Precompiled.SourceScan do
   # - unquote fragments inside a module-level quote, and code a macro from
   #   another package injects.
 
-  @type t :: %{target: boolean(), env: [String.t()]} | {:unscannable, String.t()}
+  @type t ::
+          %{target: boolean(), env: [String.t()], system: boolean()}
+          | {:unscannable, String.t()}
 
   @skipped_defs ~w(def defp defguard defguardp defdelegate defn defnp)
   @env_funs ~w(get_env fetch_env fetch_env!)
@@ -83,7 +86,9 @@ defmodule Precompiled.SourceScan do
     _ -> nil
   end
 
-  defp valid(%{target: t, env: e} = hit) when is_boolean(t) and is_list(e) do
+  # An entry written before `system` was recorded lacks it: scanned again.
+  defp valid(%{target: t, env: e, system: s} = hit)
+       when is_boolean(t) and is_list(e) and is_boolean(s) do
     if Enum.all?(e, &is_binary/1), do: hit
   end
 
@@ -125,6 +130,7 @@ defmodule Precompiled.SourceScan do
   defp summarize({lib, mix, _total}) do
     {%{
        target: :target in lib or :target in mix,
+       system: :system in lib or :system in mix,
        env: lib |> Enum.flat_map(&env_name/1) |> Enum.uniq() |> Enum.sort()
      }, true}
   end
@@ -190,6 +196,7 @@ defmodule Precompiled.SourceScan do
        when is_list(args) do
     case {alias_name(mod), fun, args} do
       {"Mix", "target", _} -> [:target | acc]
+      {"Nerves.Env", _, _} -> [:system | walk(args, acc, mode)]
       {"System", f, []} when f in @env_funs -> [{:env, "(all variables)"} | acc]
       {"System", f, [name | _]} when f in @env_funs -> [env_read(name) | walk(args, acc, mode)]
       _ -> walk_node(node, acc, mode)
@@ -216,7 +223,8 @@ defmodule Precompiled.SourceScan do
 
   defp walk_node(_other, acc, _mode), do: acc
 
-  defp alias_name([{:ep_atom, "Elixir"}, {:ep_atom, name}]), do: name
+  defp alias_name([{:ep_atom, "Elixir"} | rest]), do: alias_name(rest)
+  defp alias_name([{:ep_atom, "Nerves"}, {:ep_atom, "Env"}]), do: "Nerves.Env"
   defp alias_name([{:ep_atom, name}]), do: name
   defp alias_name(_), do: nil
 

@@ -12,10 +12,29 @@ defmodule Precompiled.ReasonTest do
              dep_env_differs checksum_differs closure_mismatch closure_checksum closure_absent
              closure_without compile_env_differs excepted revoked_provenance
              revoked_not_in_batch remove_failed deadline_passed fetch_failed verify_failed
-             install_failed internal)a
+             install_failed internal system_version_abi toolchain_otp_minor
+             needed_lib_missing symbol_version_missing system_unknown system_bound_compile)a
 
   test "the codes are exactly the table shared with the portal" do
     assert Reason.codes() == @shared
+    assert length(Reason.codes()) == 36
+  end
+
+  test "the codes for matching across releases render their templates" do
+    for {code, args, text} <- [
+          {:system_version_abi, ["nerves_system_rpi4", "2.1.0", "15.3", "2.3.0", "15.4"],
+           "built for nerves_system_rpi4 2.1.0 (toolchain 15.3), project has 2.3.0 (toolchain 15.4)"},
+          {:toolchain_otp_minor, ["28.2.0", "28.1.0"], "built on OTP 28.2.0, release has 28.1.0"},
+          {:needed_lib_missing, ["libssl.so.3"], "libssl.so.3 missing on target"},
+          {:symbol_version_missing, ["libstdc++.so.6", "GLIBCXX_3.4.32"],
+           "libstdc++.so.6 lacks GLIBCXX_3.4.32"},
+          {:system_unknown, ["nerves_system_rpi4", "2.4.0"],
+           "nerves_system_rpi4 2.4.0 not yet known to the portal"},
+          {:system_bound_compile, [], "reads the Nerves system at compile time"}
+        ] do
+      assert Reason.render(code, args) == text
+      assert Reason.new(code, args).text == text
+    end
   end
 
   test "templates render args and never the text a reason was made from" do

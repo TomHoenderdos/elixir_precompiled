@@ -29,7 +29,7 @@ defmodule Precompiled.SourceScanTest do
       """
     })
 
-    assert SourceScan.scan(dir) == %{target: true, env: ["A_PORT"]}
+    assert SourceScan.scan(dir) == %{target: true, env: ["A_PORT"], system: false}
   end
 
   test "mix.exs counts Mix.target anywhere and ignores its env reads", %{tmp_dir: dir} do
@@ -43,7 +43,47 @@ defmodule Precompiled.SourceScanTest do
       "lib/b.ex" => "defmodule B do\n  def f(), do: :ok\nend\n"
     })
 
-    assert SourceScan.scan(dir) == %{target: true, env: []}
+    assert SourceScan.scan(dir) == %{target: true, env: [], system: false}
+  end
+
+  test "a module-level Nerves.Env call reads the system", %{tmp_dir: dir} do
+    dep(dir, %{
+      "lib/s.ex" => """
+      defmodule S do
+        @system Nerves.Env.system()
+        def f(), do: Nerves.Env.board_config()
+      end
+      """
+    })
+
+    assert SourceScan.scan(dir) == %{target: false, env: [], system: true}
+  end
+
+  test "a Nerves.Env call only inside a function does not", %{tmp_dir: dir} do
+    dep(dir, %{"lib/s.ex" => "defmodule S do\n  def f(), do: Nerves.Env.system()\nend\n"})
+    assert SourceScan.scan(dir) == %{target: false, env: [], system: false}
+  end
+
+  test "mix.exs counts Nerves.Env anywhere", %{tmp_dir: dir} do
+    dep(dir, %{
+      "mix.exs" => """
+      defmodule S.MixProject do
+        use Mix.Project
+        def project, do: [app: :s, version: "1.0.0", make_env: make_env()]
+        defp make_env, do: %{"SYS" => Nerves.Env.system().path}
+      end
+      """
+    })
+
+    assert SourceScan.scan(dir) == %{target: false, env: [], system: true}
+  end
+
+  test "NERVES_SDK_SYSROOT at module level stays an env read", %{tmp_dir: dir} do
+    dep(dir, %{
+      "lib/s.ex" => ~s|defmodule S do\n  @root System.get_env("NERVES_SDK_SYSROOT")\nend\n|
+    })
+
+    assert SourceScan.scan(dir) == %{target: false, env: ["NERVES_SDK_SYSROOT"], system: false}
   end
 
   test "MIX_TARGET through System.get_env is a target read", %{tmp_dir: dir} do
@@ -52,7 +92,7 @@ defmodule Precompiled.SourceScanTest do
         ~s|defmodule C do\n  if System.get_env("MIX_TARGET") == "host", do: def(f(), do: 1)\nend\n|
     })
 
-    assert SourceScan.scan(dir) == %{target: true, env: []}
+    assert SourceScan.scan(dir) == %{target: true, env: [], system: false}
   end
 
   test "a computed env var name is reported as such", %{tmp_dir: dir} do
@@ -60,7 +100,7 @@ defmodule Precompiled.SourceScanTest do
       "lib/c.ex" => ~s|defmodule C do\n  @v System.fetch_env!("X_" <> "Y")\nend\n|
     })
 
-    assert SourceScan.scan(dir) == %{target: false, env: ["(computed name)"]}
+    assert SourceScan.scan(dir) == %{target: false, env: ["(computed name)"], system: false}
   end
 
   test "a clean dep reads nothing; an unparsable one is not scannable", %{
@@ -69,7 +109,7 @@ defmodule Precompiled.SourceScanTest do
     clean =
       dep(Path.join(dir, "clean"), %{"lib/d.ex" => "defmodule D do\n  def f(), do: 1\nend\n"})
 
-    assert SourceScan.scan(clean) == %{target: false, env: []}
+    assert SourceScan.scan(clean) == %{target: false, env: [], system: false}
     broken = dep(Path.join(dir, "broken"), %{"lib/e.ex" => "defmodule E do\n  def f( do\n"})
     assert SourceScan.scan(broken) == {:unscannable, "lib/e.ex does not parse"}
   end
@@ -100,6 +140,21 @@ defmodule Precompiled.SourceScanTest do
     File.ln_s!(planted, Path.join([home, "scan", "v1", key <> ".term"]))
 
     assert %{target: true} = SourceScan.cached(home, d, key)
+  end
+
+  test "an entry cached before the system read was recorded is scanned again", %{tmp_dir: dir} do
+    d =
+      dep(Path.join(dir, "dep"), %{
+        "lib/a.ex" => "defmodule A do\n  @s Nerves.Env.system()\nend\n"
+      })
+
+    home = Path.join(dir, "home")
+    key = String.duplicate("aa", 32)
+    entry = Path.join([home, "scan", "v1", key <> ".term"])
+    File.mkdir_p!(Path.dirname(entry))
+    File.write!(entry, :erlang.term_to_binary(%{target: false, env: []}))
+
+    assert %{system: true} = SourceScan.cached(home, d, key)
   end
 
   test "a compressed, fun-bearing or oversized cache entry is a miss", %{tmp_dir: dir} do
@@ -136,18 +191,18 @@ defmodule Precompiled.SourceScanTest do
       """
     })
 
-    assert SourceScan.scan(dir) == %{target: true, env: []}
+    assert SourceScan.scan(dir) == %{target: true, env: [], system: false}
   end
 
   test "other spellings of an env or target read", %{tmp_dir: dir} do
     cases = [
-      {~s|@all System.get_env()|, %{target: false, env: ["(all variables)"]}},
-      {~s|@a :os.getenv('A_VAR')|, %{target: false, env: ["A_VAR"]}},
-      {~s|@b :os.getenv(~c"B_VAR")|, %{target: false, env: ["B_VAR"]}},
-      {~s|@c :os.getenv()|, %{target: false, env: ["(all variables)"]}},
-      {~s|@t :os.getenv('MIX_TARGET')|, %{target: true, env: []}},
-      {~s|@t Elixir.Mix.target()|, %{target: true, env: []}},
-      {~s|@e Elixir.System.fetch_env("E_VAR")|, %{target: false, env: ["E_VAR"]}}
+      {~s|@all System.get_env()|, %{target: false, env: ["(all variables)"], system: false}},
+      {~s|@a :os.getenv('A_VAR')|, %{target: false, env: ["A_VAR"], system: false}},
+      {~s|@b :os.getenv(~c"B_VAR")|, %{target: false, env: ["B_VAR"], system: false}},
+      {~s|@c :os.getenv()|, %{target: false, env: ["(all variables)"], system: false}},
+      {~s|@t :os.getenv('MIX_TARGET')|, %{target: true, env: [], system: false}},
+      {~s|@t Elixir.Mix.target()|, %{target: true, env: [], system: false}},
+      {~s|@e Elixir.System.fetch_env("E_VAR")|, %{target: false, env: ["E_VAR"], system: false}}
     ]
 
     for {{line, expected}, i} <- Enum.with_index(cases) do

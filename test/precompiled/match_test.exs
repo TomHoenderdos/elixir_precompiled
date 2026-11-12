@@ -4,7 +4,7 @@
 #
 defmodule Precompiled.MatchTest do
   use ExUnit.Case, async: true
-  alias Precompiled.Match
+  alias Precompiled.{Match, Reason}
 
   @spark {:hex, :spark, "2.7.8", "inner", [:mix], [], "hexpm", "SPARKOUTER"}
   @ash {:hex, :ash, "3.5.2", "inner", [:mix],
@@ -790,6 +790,189 @@ defmodule Precompiled.MatchTest do
 
       assert {:miss, "built on OTP 28, running 29"} =
                Match.select(doc([pe(build)]), ctx(manager: "mix"))
+    end
+  end
+
+  describe "across releases of the same system" do
+    @tc "nerves_toolchain_aarch64_nerves_linux_gnu"
+    @glibc for(n <- 17..41, do: "GLIBC_2.#{n}")
+    @libs %{
+      "libc.so.6" => @glibc,
+      "libstdc++.so.6" => for(n <- 29..31, do: "GLIBCXX_3.4.#{n}")
+    }
+    @systems %{
+      "nerves_system_rpi4" => %{
+        "2.1.0" => %{
+          "toolchain" => %{"package" => @tc, "version" => "15.3.1", "series" => "15.3"},
+          "otp" => "28.1.0",
+          "libs" => @libs
+        },
+        "2.2.0" => %{
+          "toolchain" => %{"package" => @tc, "version" => "15.3.1", "series" => "15.3"},
+          "otp" => "28.2.0",
+          "libs" => @libs
+        },
+        "2.3.0" => %{
+          "toolchain" => %{"package" => @tc, "version" => "15.4.0", "series" => "15.4"},
+          "otp" => "28.2.0",
+          "libs" => @libs
+        },
+        "2.5.0" => %{
+          "toolchain" => %{"package" => @tc, "version" => "15.3.2", "series" => "15.3"},
+          "otp" => "28.2.0",
+          "libs" => nil
+        },
+        "2.6.0" => %{
+          "toolchain" => %{"package" => @tc, "version" => nil, "series" => nil},
+          "otp" => "28.2.0",
+          "libs" => @libs
+        }
+      }
+    }
+
+    defp xctx(project, over \\ []),
+      do: ctx([system: {"nerves_system_rpi4", project}, otp: "28", systems: @systems] ++ over)
+
+    # A build for another release; native ones need libc GLIBC_2.17.
+    defp xbuild(version, over \\ %{}) do
+      base = %{
+        "otp" => "28",
+        "system_version" => version,
+        "run_id" => "r" <> version,
+        "native" => true,
+        "portable" => true,
+        "otp_full" => "28.1.0",
+        "toolchain" => %{"package" => @tc, "version" => "15.3.1"},
+        "elf" => %{"needs" => %{"libc.so.6" => ["GLIBC_2.17", "GLIBC_PRIVATE"]}}
+      }
+
+      entry(%{"build" => entry()["build"] |> Map.merge(base) |> Map.merge(over)})
+    end
+
+    defp beam_only(version), do: xbuild(version, %{"native" => false, "portable" => true})
+
+    defp code_of({:miss, %Precompiled.Reason{code: code, args: args}}), do: {code, args}
+
+    test "a beam-only build for another release hits" do
+      assert {:ok, %{"build" => %{"system_version" => "2.1.0"}}, "nerves_system_rpi4"} =
+               Match.select(doc([beam_only("2.1.0")]), xctx("2.2.0"))
+    end
+
+    test "a beam-only build of a dep that reads the system at compile time misses" do
+      result =
+        Match.select_reason(
+          doc([beam_only("2.1.0")]),
+          xctx("2.2.0", reads: %{target: false, env: [], system: true})
+        )
+
+      assert code_of(result) == {:system_bound_compile, []}
+      assert {:miss, "reads the Nerves system at compile time"} = Reason.textual(result)
+    end
+
+    test "a native build hits on a release with the same series, OTP and libraries" do
+      assert {:ok, %{"build" => %{"system_version" => "2.1.0"}}, _} =
+               Match.select(doc([xbuild("2.1.0")]), xctx("2.2.0"))
+    end
+
+    test "a native build misses on a release with another toolchain series" do
+      result = Match.select_reason(doc([xbuild("2.1.0")]), xctx("2.3.0"))
+
+      assert code_of(result) ==
+               {:system_version_abi, ["nerves_system_rpi4", "2.1.0", "15.3", "2.3.0", "15.4"]}
+    end
+
+    test "a release whose series is unknown misses on the series" do
+      result = Match.select_reason(doc([xbuild("2.1.0")]), xctx("2.6.0"))
+
+      assert code_of(result) ==
+               {:system_version_abi, ["nerves_system_rpi4", "2.1.0", "15.3", "2.6.0", "?"]}
+    end
+
+    test "a native build on a newer OTP than the release misses" do
+      build = xbuild("2.2.0", %{"otp_full" => "28.2.0"})
+      result = Match.select_reason(doc([build]), xctx("2.1.0"))
+      assert code_of(result) == {:toolchain_otp_minor, ["28.2.0", "28.1.0"]}
+    end
+
+    test "a native build with no recorded OTP release misses" do
+      build = xbuild("2.1.0", %{"otp_full" => nil})
+      result = Match.select_reason(doc([build]), xctx("2.2.0"))
+      assert code_of(result) == {:toolchain_otp_minor, ["?", "28.2.0"]}
+    end
+
+    test "a needed library the release lacks misses" do
+      build = xbuild("2.1.0", %{"elf" => %{"needs" => %{"libssl.so.3" => ["OPENSSL_3.0.0"]}}})
+      result = Match.select_reason(doc([build]), xctx("2.2.0"))
+      assert code_of(result) == {:needed_lib_missing, ["libssl.so.3"]}
+    end
+
+    test "a needed symbol version the release lacks misses" do
+      build =
+        xbuild("2.1.0", %{"elf" => %{"needs" => %{"libstdc++.so.6" => ["GLIBCXX_3.4.32"]}}})
+
+      result = Match.select_reason(doc([build]), xctx("2.2.0"))
+      assert code_of(result) == {:symbol_version_missing, ["libstdc++.so.6", "GLIBCXX_3.4.32"]}
+    end
+
+    test "a project release the portal does not know misses" do
+      unknown = Match.select_reason(doc([xbuild("2.1.0")]), xctx("2.4.0"))
+      assert code_of(unknown) == {:system_unknown, ["nerves_system_rpi4", "2.4.0"]}
+
+      no_libs = Match.select_reason(doc([xbuild("2.1.0")]), xctx("2.5.0"))
+      assert code_of(no_libs) == {:system_unknown, ["nerves_system_rpi4", "2.5.0"]}
+    end
+
+    test "a native build that is not portable misses as on another release" do
+      build = xbuild("2.1.0", %{"portable" => false})
+
+      assert Match.select(doc([build]), xctx("2.2.0")) ==
+               {:miss, "built for nerves_system_rpi4 2.1.0, project has 2.2.0"}
+
+      assert code_of(Match.select_reason(doc([build]), xctx("2.2.0"))) ==
+               {:not_built_target, ["nerves_system_rpi4", "2.2.0"]}
+    end
+
+    test "a native build needing nothing hits given the series and OTP" do
+      build = xbuild("2.1.0", %{"elf" => %{"needs" => %{}}})
+      assert {:ok, _, _} = Match.select(doc([build]), xctx("2.2.0"))
+
+      no_elf = xbuild("2.1.0", %{"elf" => nil})
+      assert {:ok, _, _} = Match.select(doc([no_elf]), xctx("2.2.0"))
+    end
+
+    test "the highest release below the project's wins, an exact one before it" do
+      builds = [xbuild("2.0.0"), xbuild("2.3.0"), xbuild("2.1.0")]
+
+      assert {:ok, %{"build" => %{"system_version" => "2.1.0"}}, _} =
+               Match.select(doc(builds), xctx("2.2.0"))
+
+      assert {:ok, %{"build" => %{"system_version" => "2.2.0"}}, _} =
+               Match.select(doc(builds ++ [xbuild("2.2.0")]), xctx("2.2.0"))
+
+      assert {:ok, %{"build" => %{"system_version" => "2.3.0"}}, _} =
+               Match.select(doc([xbuild("2.4.0"), xbuild("2.3.0")]), xctx("2.2.0"))
+    end
+
+    test "an unparseable release orders last and does not crash" do
+      builds = [beam_only("junk"), beam_only("2.3.0")]
+
+      assert {:ok, %{"build" => %{"system_version" => "2.3.0"}}, _} =
+               Match.select(doc(builds), xctx("2.2.0"))
+
+      assert {:ok, %{"build" => %{"system_version" => "junk"}}, _} =
+               Match.select(doc([beam_only("junk")]), xctx("2.2.0"))
+    end
+
+    test "without a systems table a native build for another release misses as before" do
+      ctx = xctx("2.2.0", systems: nil)
+
+      assert Match.select(doc([xbuild("2.1.0")]), ctx) ==
+               {:miss, "built for nerves_system_rpi4 2.1.0, project has 2.2.0"}
+    end
+
+    test "the device rule still needs the exact release" do
+      assert Match.target_ok("nerves_system_rpi4", "2.1.0", {"nerves_system_rpi4", "2.2.0"}) ==
+               {:miss, "built for nerves_system_rpi4 2.1.0, project has 2.2.0"}
     end
   end
 

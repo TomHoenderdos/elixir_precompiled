@@ -103,11 +103,49 @@ defmodule Precompiled.Match do
             {:miss, furthest_reason(results, system, system_version)}
 
           ok ->
-            {build, _} = Enum.min_by(ok, fn {b, _} -> rank(b, ctx) end)
+            {build, _} =
+              ok |> nearest_release(system_version) |> Enum.min_by(fn {b, _} -> rank(b, ctx) end)
+
             {:ok, build, build["target"]}
         end
     end
   end
+
+  # The passing builds made for the release closest to the project's: the
+  # exact release (and pure_elixir builds, which have none), else the
+  # highest release below it, else the lowest above it, else one whose
+  # release does not parse, in manifest order. Builds for another release
+  # pass only through cross_release/4, so without one this keeps them all.
+  defp nearest_release(ok, project) do
+    keyed = ok |> Enum.with_index() |> Enum.map(fn {r, i} -> {release_key(r, project, i), r} end)
+    {best, _} = Enum.min_by(keyed, &elem(&1, 0), &key_le?/2)
+    for {key, r} <- keyed, key_eq?(key, best), do: r
+  end
+
+  defp release_key({%{"target" => "pure_elixir"}, _}, _project, _i), do: {0, nil}
+
+  defp release_key({build, _}, project, i) do
+    built = (build["build"] || %{})["system_version"]
+
+    with false <- built == project,
+         {:ok, b} <- parse_version(built),
+         {:ok, p} <- parse_version(project) do
+      if Version.compare(b, p) == :lt, do: {1, b}, else: {2, b}
+    else
+      true -> {0, nil}
+      _ -> {3, i}
+    end
+  end
+
+  defp key_le?({g, a}, {g, b}) when g in [1, 2] do
+    order = Version.compare(a, b)
+    if g == 1, do: order != :lt, else: order != :gt
+  end
+
+  defp key_le?(a, b), do: a <= b
+
+  defp key_eq?({g, a}, {g, b}) when g in [1, 2], do: Version.compare(a, b) == :eq
+  defp key_eq?(a, b), do: a == b
 
   @doc """
   The identity of a build's bytes: sha256 over its files' path, sha256 and
@@ -205,7 +243,7 @@ defmodule Precompiled.Match do
     {:hex, _, _, _, _, _, _, outer} = ctx.lock_entry
 
     [
-      fn -> target_reason(build["target"], b["system_version"], ctx.system) end,
+      fn -> target_reason(build["target"], b, ctx.system, ctx) end,
       fn -> build_method_ok(b, ctx) end,
       fn -> compile_inputs_ok(build["target"], b, ctx) end,
       fn -> toolchain_reason(b) end,
@@ -231,6 +269,115 @@ defmodule Precompiled.Match do
   @doc false
   @spec target_ok(String.t(), term(), {String.t(), term()}) :: :ok | {:miss, String.t()}
   def target_ok(t, built, system), do: t |> target_reason(built, system) |> Reason.textual()
+
+  # On the host a build for another release of the same system may still
+  # stand in: one with no native code unless its sources read the system at
+  # compile time, and a portable native one whose toolchain, OTP and needed
+  # libraries the project's release (in the batch's systems table) provides.
+  # Anything else is judged exactly as the device judges it.
+  defp target_reason(t, b, {t, project} = system, ctx) when t != "pure_elixir" do
+    if b["system_version"] == project,
+      do: :ok,
+      else: cross_release(t, b, system, ctx)
+  end
+
+  defp target_reason(t, b, system, _ctx), do: target_reason(t, b["system_version"], system)
+
+  defp cross_release(t, b, {t, project}, ctx) do
+    cond do
+      b["native"] == false ->
+        if match?(%{system: true}, Map.get(ctx, :reads)),
+          do: {:miss, Reason.new(:system_bound_compile, [])},
+          else: :ok
+
+      b["native"] == true and b["portable"] == true and is_map(ctx[:systems]) ->
+        abi_match(t, b, project, ctx.systems)
+
+      true ->
+        target_reason(t, b["system_version"], {t, project})
+    end
+  end
+
+  defp abi_match(t, b, project, systems) do
+    proj = get_in(systems, [t, project])
+
+    with :ok <- same_series(t, b, project, proj),
+         :ok <- otp_minor(b["otp_full"], proj["otp"]) do
+      libs(b, proj, t, project)
+    end
+  end
+
+  defp same_series(t, _b, project, nil),
+    do: {:miss, Reason.new(:system_unknown, [t, project])}
+
+  defp same_series(t, b, project, proj) do
+    {built_pkg, built_series} = toolchain_series(b["toolchain"])
+    proj_pkg = get_in(proj, ["toolchain", "package"])
+    proj_series = get_in(proj, ["toolchain", "series"])
+
+    if is_binary(built_pkg) and built_pkg == proj_pkg and is_binary(built_series) and
+         built_series == proj_series,
+       do: :ok,
+       else:
+         {:miss,
+          Reason.new(:system_version_abi, [
+            t,
+            b["system_version"],
+            built_series || "?",
+            project,
+            proj_series || "?"
+          ])}
+  end
+
+  defp toolchain_series(%{"package" => pkg, "version" => v}) when is_binary(v),
+    do: {pkg, Precompiled.Elf.series_from_version(v)}
+
+  defp toolchain_series(%{"package" => pkg}), do: {pkg, nil}
+  defp toolchain_series(_), do: {nil, nil}
+
+  # The OTP the build was made on must be the release's major, at or below
+  # its minor and patch: newer OTP releases load older code, not the reverse.
+  defp otp_minor(built, running) do
+    with {:ok, b} <- otp_version(built),
+         {:ok, r} <- otp_version(running),
+         true <- b.major == r.major and Version.compare(b, r) != :gt do
+      :ok
+    else
+      _ -> {:miss, Reason.new(:toolchain_otp_minor, [built || "?", running || "?"])}
+    end
+  end
+
+  defp otp_version(v) when is_binary(v) do
+    case String.split(v, ".") do
+      [_] -> Version.parse(v <> ".0.0")
+      [_, _] -> Version.parse(v <> ".0")
+      _ -> Version.parse(v)
+    end
+  end
+
+  defp otp_version(_), do: :error
+
+  defp libs(_b, %{"libs" => libs}, t, project) when not is_map(libs),
+    do: {:miss, Reason.new(:system_unknown, [t, project])}
+
+  defp libs(b, %{"libs" => libs}, _t, _project) do
+    needs = get_in(b, ["elf", "needs"]) || %{}
+
+    Enum.reduce_while(needs, :ok, fn {soname, versions}, :ok ->
+      case Map.fetch(libs, soname) do
+        :error ->
+          {:halt, {:miss, Reason.new(:needed_lib_missing, [soname])}}
+
+        {:ok, defined} ->
+          case Precompiled.Elf.satisfied?(versions, defined) do
+            :ok -> {:cont, :ok}
+            {:missing, v} -> {:halt, {:miss, Reason.new(:symbol_version_missing, [soname, v])}}
+          end
+      end
+    end)
+  end
+
+  defp libs(_b, _proj, t, project), do: {:miss, Reason.new(:system_unknown, [t, project])}
 
   defp target_reason("pure_elixir", _, _), do: :ok
   defp target_reason(t, built, {t, project}) when built == project, do: :ok
