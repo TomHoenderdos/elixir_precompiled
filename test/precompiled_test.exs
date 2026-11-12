@@ -289,6 +289,32 @@ defmodule PrecompiledTest do
         end)
 
       assert out =~ @ntp_line
+      assert files_requested() == []
+    end
+
+    test "an unsynchronized clock and a stale batch: wait for NTP", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      build = publish_app(f, dir, :demo_stale, "1.0.0")
+      # Issued two days ago and not expired: only the 24 h rule refuses it.
+      Fixture.publish(
+        f,
+        %{"demo_stale" => manifest(%{"1.0.0" => [build]})},
+        ago(2 * 86_400, -86_400)
+      )
+
+      call = Keyword.put(opts, :quiet, false) ++ [clock_synchronized?: fn -> false end]
+
+      out =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert {:error, {:clock_unsynchronized, %DateTime{}}} =
+                   Precompiled.install(:demo_stale, call)
+        end)
+
+      assert out =~ @ntp_line
+      assert files_requested() == []
     end
 
     test "an unsynchronized clock and a batch issued in the future: wait for NTP", %{
@@ -307,6 +333,7 @@ defmodule PrecompiledTest do
         end)
 
       assert out =~ @ntp_line
+      assert files_requested() == []
     end
 
     test "a synchronized clock and an expired batch fail as a batch refusal", %{

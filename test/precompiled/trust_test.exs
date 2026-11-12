@@ -138,8 +138,10 @@ defmodule Precompiled.TrustTest do
     F.publish(f, %{}, signers: [other])
     {:ok, root} = Trust.load_root(config)
 
-    assert {:error, "batch signature invalid"} =
+    assert {:error, "batch signature invalid" = why} =
              Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+
+    refute Trust.clock_refusal?(why)
   end
 
   test "a newer root signed by the current root is adopted and cached", %{
@@ -267,8 +269,9 @@ defmodule Precompiled.TrustTest do
       home: Path.join(dir, "home")
     }
 
-    assert {:error, "root document at " <> rest} = Trust.load_root(config)
+    assert {:error, "root document at " <> rest = why} = Trust.load_root(config)
     assert rest =~ "expired at 2020-01-01T00:00:00Z"
+    assert Trust.clock_refusal?(why)
   end
 
   test "a served root with a higher version but expired is ignored, never raises", %{
@@ -460,7 +463,10 @@ defmodule Precompiled.TrustTest do
       root_env(k3, 3, "2020-01-01T00:00:00Z", [k2, k3])
     ])
 
-    assert {:error, "cached root expired at 2020-01-01T00:00:00Z"} = Trust.load_root(config)
+    assert {:error, "cached root expired at 2020-01-01T00:00:00Z" = why} =
+             Trust.load_root(config)
+
+    assert Trust.clock_refusal?(why)
   end
 
   test "an expired intermediate not signed by the previous root still stops the chain", %{
@@ -633,12 +639,14 @@ defmodule Precompiled.TrustTest do
                &cond_fetch/2
              )
 
-    assert {:error, "batch stale" <> _} =
+    assert {:error, "batch stale" <> _ = why} =
              Trust.fetch_batch_cached(
                Map.put(config, :clock_offset_seconds, 25 * 3600),
                root,
                &cond_fetch/2
              )
+
+    assert Trust.clock_refusal?(why)
   end
 
   test "R9: issued an hour in the future is refused as clock", %{
@@ -647,7 +655,8 @@ defmodule Precompiled.TrustTest do
   } do
     F.publish(f, %{}, issued: iso(DateTime.add(DateTime.utc_now(), 3600, :second)))
     {:ok, root} = Trust.load_root(config)
-    assert {:error, "clock" <> _} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    assert {:error, "clock" <> _ = why} = Trust.fetch_batch_cached(config, root, &cond_fetch/2)
+    assert Trust.clock_refusal?(why)
   end
 
   test "R10: issued 2 minutes in the future is accepted", %{config: config, f: f} do
@@ -664,12 +673,14 @@ defmodule Precompiled.TrustTest do
     {:ok, root} = Trust.load_root(config)
     behind = DateTime.diff(Trust.clock_floor(), DateTime.utc_now(), :second) - 86_400
 
-    assert {:error, "clock" <> _} =
+    assert {:error, "clock is before " <> _ = why} =
              Trust.fetch_batch_cached(
                Map.put(config, :clock_offset_seconds, behind),
                root,
                &cond_fetch/2
              )
+
+    assert Trust.clock_refusal?(why)
   end
 
   test "R13: a clock a year ahead sees an expired batch", %{config: config, f: f} do
@@ -1121,16 +1132,20 @@ defmodule Precompiled.TrustTest do
     source = bundle_with_batch(Path.join(dir, "b2"))
     bundle = %{bundle | source: source}
 
-    assert {:error, "batch expired at " <> _} =
+    assert {:error, "batch expired at " <> _ = why} =
              Trust.fetch_batch_cached(bundle, root, file_fetch(bundle))
+
+    assert Trust.clock_refusal?(why)
 
     # The other checks still hold for a bundle: a lifetime over 30 days.
     long = DateTime.utc_now() |> DateTime.add(40 * 86_400) |> DateTime.to_iso8601()
     F.publish(f, %{}, issued: issued, expires: long, sequence: 3)
     bundle = %{bundle | source: bundle_with_batch(Path.join(dir, "b3"))}
 
-    assert {:error, "batch lifetime over 30 days" <> _} =
+    assert {:error, "batch lifetime over 30 days" <> _ = why} =
              Trust.fetch_batch_cached(bundle, root, file_fetch(bundle))
+
+    refute Trust.clock_refusal?(why)
   end
 
   test "Check.fetch_batch/1 is the run's batch fetch, with the run's deadline", %{

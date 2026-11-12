@@ -22,6 +22,29 @@ defmodule Precompiled.Trust do
 
   alias Precompiled.Output
 
+  # The refusals a wrong clock explains, each built from its prefix here so
+  # clock_refusal?/1 cannot drift from the text.
+  @root_expired "expired at "
+  @clock_before "clock is before "
+  @issued_ahead "clock: batch issued at "
+  @stale "batch stale: issued "
+  @batch_expired "batch expired at "
+
+  @doc false
+  # True for a refusal the clock explains: an expired batch or root, a
+  # batch issued in the future or more than 24 h ago, a clock before this
+  # library's build. A device whose clock is not NTP-synchronized names
+  # the clock for these.
+  @spec clock_refusal?(String.t()) :: boolean()
+  def clock_refusal?(why) when is_binary(why) do
+    String.starts_with?(why, [@clock_before, @issued_ahead, @stale, @batch_expired]) or
+      String.starts_with?(why, "cached root " <> @root_expired) or
+      (String.starts_with?(why, "root document at ") and
+         String.contains?(why, " " <> @root_expired))
+  end
+
+  def clock_refusal?(_why), do: false
+
   @type root :: map()
 
   @spec verify_envelope(map() | binary(), %{String.t() => binary()}, pos_integer()) ::
@@ -177,10 +200,10 @@ defmodule Precompiled.Trust do
         {:ok, root}
 
       :error when adopted == [] ->
-        {:error, "root document at #{config.root_path} expired at #{expires_of(root)}"}
+        {:error, "root document at #{config.root_path} #{@root_expired}#{expires_of(root)}"}
 
       :error ->
-        {:error, "cached root expired at #{expires_of(root)}"}
+        {:error, "cached root #{@root_expired}#{expires_of(root)}"}
     end
   end
 
@@ -605,7 +628,7 @@ defmodule Precompiled.Trust do
     if DateTime.compare(now, @clock_floor) == :lt,
       do:
         {:error,
-         "clock is before #{DateTime.to_iso8601(@clock_floor)}, when this library was built"},
+         "#{@clock_before}#{DateTime.to_iso8601(@clock_floor)}, when this library was built"},
       else: :ok
   end
 
@@ -618,7 +641,7 @@ defmodule Precompiled.Trust do
 
   defp not_from_future(issued, now) do
     if DateTime.diff(issued, now, :second) > @max_future_skew_seconds,
-      do: {:error, "clock: batch issued at #{DateTime.to_iso8601(issued)} is in the future"},
+      do: {:error, "#{@issued_ahead}#{DateTime.to_iso8601(issued)} is in the future"},
       else: :ok
   end
 
@@ -636,7 +659,7 @@ defmodule Precompiled.Trust do
 
   defp fresh(issued, now, _bundle?) do
     if DateTime.diff(now, issued, :second) > @max_age_seconds,
-      do: {:error, "batch stale: issued #{DateTime.to_iso8601(issued)}, more than 24 h ago"},
+      do: {:error, "#{@stale}#{DateTime.to_iso8601(issued)}, more than 24 h ago"},
       else: :ok
   end
 
@@ -844,7 +867,7 @@ defmodule Precompiled.Trust do
   defp not_expired(expires_at, now) do
     if DateTime.compare(expires_at, now) == :gt,
       do: :ok,
-      else: {:error, "batch expired at #{DateTime.to_iso8601(expires_at)}"}
+      else: {:error, "#{@batch_expired}#{DateTime.to_iso8601(expires_at)}"}
   end
 
   defp safe_parse_iso8601(exp) when is_binary(exp) do

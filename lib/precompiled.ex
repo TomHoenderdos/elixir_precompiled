@@ -158,6 +158,7 @@ defmodule Precompiled do
   alias Precompiled.Device.Store
   alias Precompiled.Fetch
   alias Precompiled.Match
+  alias Precompiled.Trust
 
   @defaults [
     start: true,
@@ -473,7 +474,7 @@ defmodule Precompiled do
   defp clock_refusal({:error, {:batch, why}} = error, _config, opts) when is_binary(why) do
     synchronized? = Keyword.get(opts, :clock_synchronized?, &nerves_time_synced?/0)
 
-    if batch_time?(why) and synchronized?.() != true do
+    if Trust.clock_refusal?(why) and synchronized?.() != true do
       say(
         opts,
         "precompiled: the batch looks expired or not yet valid, and the clock is " <>
@@ -487,12 +488,6 @@ defmodule Precompiled do
   end
 
   defp clock_refusal(result, _config, _opts), do: result
-
-  # Trust's refusals that a wrong clock explains.
-  defp batch_time?(why) do
-    String.starts_with?(why, ["batch expired at ", "batch stale: ", "clock"]) or
-      why =~ "root expired at" or why =~ ~r/^root document .* expired at /
-  end
 
   # NervesTime is not a dependency of this library: called through apply/3
   # only when it is loaded. Without it the clock is taken as set.
@@ -1109,7 +1104,7 @@ defmodule Precompiled do
         Output.put(Output.line(pkg, "NO", why), quiet?)
 
       # Already said where it happened, in words.
-      {kind, _} when kind == :clock_unsynchronized ->
+      {:clock_unsynchronized, _} ->
         :ok
 
       {:too_big, _needed, _free} ->
