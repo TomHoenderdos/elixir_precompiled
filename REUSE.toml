@@ -4,7 +4,23 @@
 version = 1
 
 [[annotations]]
-path = ["NOTICE", "LICENSE", "mix.lock", ".tool-versions", ".gitignore", "priv/precompiled/root.json", "integration/chain/priv/root.json", "integration/chain/fixture/mix.lock", "integration/chain/fixture/README.md", "integration/chain/fixture/rel/vm.args.eex", "integration/chain/fixture/rootfs_overlay/etc/iex.exs", "integration/device/README.md", "integration/device/fixture/mix.lock", "integration/device/fixture/rel/vm.args.eex", "integration/device/fixture/rootfs_overlay/etc/iex.exs", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "guides/**", ".github/**"]
+path = ["NOTICE", "LICENSE", "mix.lock", ".tool-versions", ".gitignore", "priv/precompiled/root.json", "integration/chain/priv/root.json", "integration/chain/fixture/mix.lock", "integration/chain/fixture/README.md", "integration/chain/fixture/rel/vm.args.eex", "integration/chain/fixture/rootfs_overlay/etc/iex.exs", "integration/device/README.md", "integration/device/fixture/mix.lock", "integration/device/fixture/rel/vm.args.eex", "integration/device/fixture/rootfs_overlay/etc/iex.exs", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "guides/**", ".github/**", "test/fixtures/elf/README"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "None"
 SPDX-License-Identifier = "CC0-1.0"
+
+[[annotations]]
+# priv/gpio_nif.so built from the circuits_gpio Hex package, and the
+# derived ELF test fixtures: an ET_REL variant and two copies with their
+# section header table zeroed.
+path = ["test/fixtures/elf/nif_aarch64.so", "test/fixtures/elf/nif_armv6.so", "test/fixtures/elf/nif_x86_64.so", "test/fixtures/elf/rel_aarch64.o", "test/fixtures/elf/noshdr_aarch64.so", "test/fixtures/elf/shnum0_aarch64.so"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Frank Hunleth and the circuits_gpio contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+# libz.so.1 from a Nerves rpi4 system image.
+path = ["test/fixtures/elf/libz_aarch64.so.1"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "1995-2024 Jean-loup Gailly and Mark Adler"
+SPDX-License-Identifier = "Zlib"
