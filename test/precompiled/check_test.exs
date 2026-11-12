@@ -917,6 +917,74 @@ defmodule Precompiled.CheckTest do
       refute File.exists?(Path.join(lib, "ash"))
     end
 
+    test "a native build for another release is removed when the project moves off its series",
+         %{f: f, config: config, env: env, lib: lib} do
+      otp = to_string(:erlang.system_info(:otp_release))
+      tc = "nerves_toolchain_aarch64_nerves_linux_gnu"
+      libs = %{"libc.so.6" => ["GLIBC_2.17"]}
+
+      release = fn series ->
+        %{
+          "toolchain" => %{"package" => tc, "version" => series <> ".0", "series" => series},
+          "otp" => otp <> ".9",
+          "libs" => libs
+        }
+      end
+
+      table = %{
+        "nerves_system_rpi4" => %{
+          "2.1.0" => release.("15.3"),
+          "2.2.0" => release.("15.3"),
+          "2.3.0" => release.("15.4")
+        }
+      }
+
+      sha =
+        F.systems(%{"format" => 1, "systems" => table} |> :json.encode() |> IO.iodata_to_binary())
+
+      native =
+        update_in(
+          good_entry(f, "ash", "2.1.0")["build"],
+          &Map.merge(&1, %{
+            "native" => true,
+            "portable" => true,
+            "otp_full" => otp <> ".0",
+            "toolchain" => %{"package" => tc, "version" => "15.3.1"},
+            "elf" => %{"needs" => %{"libc.so.6" => ["GLIBC_2.17"]}}
+          })
+        )
+
+      packages = %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [native]}}}}
+      F.publish(f, packages, sequence: 1, batch_extra: %{"systems" => sha})
+
+      # The project is on 2.2.0 (series 15.3): the build for 2.1.0 installs.
+      on_22 = %{env | system: {"nerves_system_rpi4", "2.2.0"}, candidates: [hd(env.candidates)]}
+      run_capturing(config, on_22)
+      assert_received {:report, {:ok, %{hits: 1}}}
+      assert File.exists?(Path.join(lib, "ash/ebin/Elixir.X.beam"))
+
+      # Same batch; the project moves to 2.3.0 (series 15.4). The installed
+      # build is matched again, removed, and reported.
+      on_23 = %{env | system: {"nerves_system_rpi4", "2.3.0"}, candidates: [], installed: [:ash]}
+      out = run_capturing(config, on_23)
+
+      assert_received {:report,
+                       {:ok, %{misses: 1, lines: [%{name: "ash", status: :miss} = line]}}}
+
+      assert line.reason ==
+               {:system_version_abi, ["nerves_system_rpi4", "2.1.0", "15.3", "2.3.0", "15.4"]}
+
+      assert out =~
+               ~r/ash 3\.5\.2\s+MISS\s+built for nerves_system_rpi4 2\.1\.0 \(toolchain 15\.3\), project has 2\.3\.0 \(toolchain 15\.4\)/
+
+      refute File.exists?(Path.join(lib, "ash"))
+
+      report_file = Path.join(lib, ".precompiled/report.json") |> File.read!() |> :json.decode()
+
+      assert [%{"name" => "ash", "status" => "miss", "reason_code" => "system_version_abi"}] =
+               report_file["lines"]
+    end
+
     test "a build whose manifest changed is matched again, never kept as the old bytes", %{
       f: f,
       config: config,
