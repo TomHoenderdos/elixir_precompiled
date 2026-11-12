@@ -13,11 +13,11 @@ defmodule Precompiled.Device.Rules do
   # only); the package checksum present, and equal to the lock of the build
   # that needs it when it is a closure member; the runtime closure read from
   # the build's .app, matched against the apps present by name and exact
-  # version, where an optional dependency (the .app's optional_applications
-  # or the build's declared) counts only when the device has it or the
-  # call asked for it, and is skipped otherwise, never installed because a
-  # build was locked with it; declared optional dependencies as ranking,
-  # never as a refusal;
+  # version, where an optional dependency (the .app's optional_applications;
+  # an app the .app requires stays required whatever declared says) counts
+  # only when the device has it or the call asked for it, and is skipped
+  # otherwise, never installed because a build was locked with it; declared
+  # optional dependencies as ranking, never as a refusal;
   # compile_env compared now for loaded apps and later for the rest.
   # Anything missing or malformed is a miss: nothing here guesses. No Mix,
   # no Hex.
@@ -51,6 +51,7 @@ defmodule Precompiled.Device.Rules do
           needs: [need()],
           uncovered: [atom()],
           skipped: [atom()],
+          locked_optional: non_neg_integer(),
           warnings: [String.t()],
           deferred_env: [map()]
         }
@@ -62,7 +63,15 @@ defmodule Precompiled.Device.Rules do
   def check(build, name, ctx) do
     b = build["build"] || %{}
     if not is_map(b) or not lists_in_place?(build), do: throw(:malformed)
-    acc = %{needs: [], uncovered: [], skipped: [], warnings: [], deferred_env: []}
+
+    acc = %{
+      needs: [],
+      uncovered: [],
+      skipped: [],
+      locked_optional: 0,
+      warnings: [],
+      deferred_env: []
+    }
 
     [
       fn acc -> build["target"] |> target(b, ctx) |> with_acc(acc) end,
@@ -163,7 +172,8 @@ defmodule Precompiled.Device.Rules do
     with :ok <- Match.present(b, "deps"),
          :ok <- deps_well_formed(b["deps"]),
          {:ok, props} <- app_props(ctx.app_spec.(build)) do
-      {required, skipped} = closure(props, name, b, ctx)
+      {required, skipped, locked_optional} = closure(props, name, b, ctx)
+      acc = %{acc | locked_optional: locked_optional}
       Enum.reduce_while(required, {:ok, %{acc | skipped: skipped}}, &walk(&1, &2, b["deps"], ctx))
     end
   end
@@ -196,13 +206,16 @@ defmodule Precompiled.Device.Rules do
 
   defp atoms?(list), do: is_list(list) and Enum.all?(list, &is_atom/1)
 
-  # {apps to check, optional apps skipped}. An optional app that is not
-  # named in applications, included_applications or the lock was never part
-  # of this build and is not reported as skipped.
+  # {apps to check, optional apps skipped, how many locked optional deps
+  # this device goes without}. Only the .app's optional_applications makes
+  # an app it lists optional: an app it requires stays required whatever
+  # the build's declared says. An optional app that is not named in
+  # applications, included_applications or the lock was never part of this
+  # build and is not reported as skipped. The count, for ranking, adds the
+  # locked deps declared optional that the .app does not list at all.
   defp closure(props, name, b, ctx) do
     deps = b["deps"]
     listed = Keyword.get(props, :optional_applications, [])
-    optional = MapSet.new(Enum.map(listed, &Atom.to_string/1) ++ declared_optional(b))
 
     named =
       Keyword.get(props, :applications, []) ++ Keyword.get(props, :included_applications, [])
@@ -211,13 +224,23 @@ defmodule Precompiled.Device.Rules do
       (named ++ listed)
       |> Enum.uniq()
       |> Enum.reject(&(Atom.to_string(&1) == name))
-      |> Enum.split_with(fn app ->
-        not MapSet.member?(optional, Atom.to_string(app)) or device_vsn(app, ctx) != nil or
-          app in Map.get(ctx, :requested, [])
+      |> Enum.split_with(&(&1 not in listed or wanted?(&1, ctx)))
+
+    skipped = Enum.filter(skip, &(&1 in named or Map.has_key?(deps, Atom.to_string(&1))))
+    known = MapSet.new(named ++ listed, &Atom.to_string/1)
+
+    unlisted =
+      Enum.count(declared_optional(b), fn app ->
+        Map.has_key?(deps, app) and not MapSet.member?(known, app) and
+          not wanted?(existing_atom(app), ctx)
       end)
 
-    {keep, Enum.filter(skip, &(&1 in named or Map.has_key?(deps, Atom.to_string(&1))))}
+    locked = Enum.count(skipped, &Map.has_key?(deps, Atom.to_string(&1)))
+    {keep, skipped, locked + unlisted}
   end
+
+  defp wanted?(nil, _ctx), do: false
+  defp wanted?(app, ctx), do: device_vsn(app, ctx) != nil or app in Map.get(ctx, :requested, [])
 
   # Read leniently here: rule 8 refuses a malformed declared field.
   defp declared_optional(%{"declared" => items}) when is_list(items),
@@ -471,10 +494,7 @@ defmodule Precompiled.Device.Rules do
     installed = if hash != nil and ctx.installed[existing_atom(name)] == hash, do: 0, else: 1
     system = if build["target"] == "pure_elixir", do: 1, else: 0
 
-    locked_skips =
-      Enum.count(verdict.skipped, &Map.has_key?(build["build"]["deps"], Atom.to_string(&1)))
-
-    {installed, locked_skips, length(verdict.needs), length(verdict.uncovered),
+    {installed, verdict.locked_optional, length(verdict.needs), length(verdict.uncovered),
      run_patch - built_patch, system, Match.inverted(build["build"]["run_id"])}
   end
 end

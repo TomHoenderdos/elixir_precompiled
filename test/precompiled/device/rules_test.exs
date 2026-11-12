@@ -215,13 +215,39 @@ defmodule Precompiled.Device.RulesTest do
                )
     end
 
-    test "a dep the build's declared marks optional is skipped too" do
+    test "an app the .app requires stays required, whatever declared says" do
       declared = [%{"app" => "decimal", "name" => "decimal", "optional" => true}]
       deps = %{"decimal" => %{"version" => "2.3.0", "checksum" => "d"}}
       spec = app_spec([:kernel, :decimal])
 
-      assert {:ok, %{needs: [], skipped: [:decimal]}} =
+      assert {:ok, %{needs: [%{app: :decimal, version: "2.3.0"}], skipped: []}} =
                Rules.check(build(declared: declared, deps: deps), "x", ctx(app_spec: spec))
+    end
+
+    test "an app in optional_applications is skipped, declared or not" do
+      declared = [%{"app" => "decimal", "name" => "decimal", "optional" => true}]
+      deps = %{"decimal" => %{"version" => "2.3.0", "checksum" => "d"}}
+      spec = app_spec([:kernel, :decimal], optional: [:decimal])
+
+      for b <- [build(declared: declared, deps: deps), build(deps: deps)] do
+        assert {:ok, %{needs: [], skipped: [:decimal]}} = Rules.check(b, "x", ctx(app_spec: spec))
+      end
+    end
+
+    test "a locked dep declared optional but not in the .app ranks a build lower" do
+      declared = [%{"app" => "decimal", "name" => "decimal", "optional" => true}]
+      deps = %{"decimal" => %{"version" => "2.3.0", "checksum" => "d"}}
+
+      m =
+        manifest(%{
+          "1.0.0" => [
+            build(run_id: "r1", declared: declared, deps: %{}),
+            build(run_id: "r2", declared: declared, deps: deps)
+          ]
+        })
+
+      assert {:ok, "1.0.0", %{"build" => %{"run_id" => "r1"}}, %{needs: [], skipped: []}} =
+               Rules.select(m, "x", nil, ctx())
     end
 
     test "a compile_env item of a skipped optional app never refuses the build" do
