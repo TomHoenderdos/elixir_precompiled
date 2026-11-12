@@ -181,8 +181,19 @@ each file by hash and size.
 3. The beams are loaded from those verified bytes.
 
 Nothing unsigned is ever loaded, nothing is compiled, and no fallback
-skips a check. An online batch must pass the batch checks above, which is
-why the device clock must be set.
+skips a check. An online batch must pass the batch checks above, judged
+against the device clock.
+
+A device does not wait for NTP before an online install: right after
+boot, NervesTime's saved or estimated time is usually close, and the
+checks above decide. That is a trade-off. While the clock is not
+NTP-synchronized and runs behind, a batch that has already expired in
+real time can still be accepted. The 24 hour freshness rule bounds how
+old such a batch can be against the device's own clock, and the sequence
+floor keeps it from being older than one this device already saw. When a check does refuse the batch
+before NTP has answered, the call says to wait for NTP and returns
+`{:error, {:clock_unsynchronized, now}}`. A synchronized clock keeps the
+full protection.
 
 ## CA certificates
 
