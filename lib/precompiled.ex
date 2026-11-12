@@ -64,7 +64,9 @@ defmodule Precompiled do
 
   The device facts, the clock check, the trust anchor and the network
   source have test seams (`:env`, `:clock_synchronized?`, `:root`, an
-  `https` or loopback `:source`). A call may pass them only while this
+  `https` or loopback `:source`), and so do the directories the device's
+  libraries are looked up in (`:lib_roots`, `/lib` and `/usr/lib`
+  otherwise). A call may pass them only while this
   library's application env has `test_seams: true`, as its own test suite sets;
   otherwise they are refused as unknown options, and the firmware's
   `:device` config never sets them.
@@ -114,6 +116,11 @@ defmodule Precompiled do
         as `:eacces`, when the store refuses a commit;
       * `{:fetch, pkg, why}`, a file that did not verify;
       * `{:elf, why}`, a native library built for another CPU;
+      * `{:libs, app, reason}`, a native build needs a library the device
+        does not have, or a symbol version its library does not define.
+        `reason.code` is `:needed_lib_missing` or `:symbol_version_missing`
+        (`:malformed_entry` for needs that do not read), `reason.args` its
+        soname and version, and `reason.text` the line;
       * `{:on_load_failed, mod, reason}`;
       * `{:start_failed, app, reason}`;
       * `{:in_use, mod, pids}`, `{:in_use_by, [app]}`, `{:not_installed, app}`;
@@ -136,6 +143,7 @@ defmodule Precompiled do
   alias Precompiled.CompileEnv
   alias Precompiled.Device.Elf
   alias Precompiled.Device.Env
+  alias Precompiled.Device.Libs
   alias Precompiled.Device.Loader
   alias Precompiled.Device.Output
   alias Precompiled.Device.Plan
@@ -174,7 +182,9 @@ defmodule Precompiled do
   # are unknown options.
   # :root swaps the trust anchor: per call only as a seam, otherwise the
   # firmware's :device config sets it.
-  @seam_keys [:env, :clock_synchronized?, :root]
+  # :lib_roots replaces /lib and /usr/lib, where the device's libraries
+  # are looked up.
+  @seam_keys [:env, :clock_synchronized?, :root, :lib_roots]
   @uninstall_keys @common_keys ++ [:force, :cascade, :remove]
   @network_apps [:ssl, :inets, :public_key]
 
@@ -408,7 +418,7 @@ defmodule Precompiled do
   end
 
   @required [:dir, :start, :closure, :dry_run, :quiet, :max_closure, :max_bytes, :lock_retries]
-  @optional [:report, :clock_synchronized?, :allow, :env]
+  @optional [:report, :clock_synchronized?, :allow, :env, :lib_roots]
 
   defp valid_opts(opts) do
     bad =
@@ -426,6 +436,7 @@ defmodule Precompiled do
   defp ok?(:clock_synchronized?, v), do: is_function(v, 0)
   defp ok?(:allow, v), do: is_nil(v) or (is_list(v) and Enum.all?(v, &is_atom/1))
   defp ok?(:env, v), do: is_struct(v, Env)
+  defp ok?(:lib_roots, v), do: is_list(v) and Enum.all?(v, &is_binary/1)
 
   ## The checks before the lock
 
@@ -517,7 +528,17 @@ defmodule Precompiled do
       with {:ok, plan} <- Plan.build(requests, ctx, plan_opts) do
         for i <- plan.installs, do: say(opts, plan_line(i))
         for w <- plan.warnings, do: say(opts, Output.line("", "WARN", w))
-        state = %{env: env, config: config, batch: batch, active: active, opts: opts, memo: memo}
+
+        state = %{
+          env: env,
+          config: config,
+          batch: batch,
+          active: active,
+          opts: opts,
+          memo: memo,
+          lib_roots: ctx.lib_roots
+        }
+
         if opts[:dry_run], do: dry_run(plan, env, opts), else: apply_plan(plan, state)
       end
     end
@@ -547,7 +568,8 @@ defmodule Precompiled do
       active: active,
       config: &CompileEnv.lookup/2,
       pin: nil,
-      systems: Check.systems_table(config, batch)
+      systems: Check.systems_table(config, batch),
+      lib_roots: Keyword.get_lazy(opts, :lib_roots, &Libs.default_roots/0)
     }
   end
 
@@ -734,6 +756,7 @@ defmodule Precompiled do
   defp verify_placed(placed, state) do
     Enum.find_value(placed, :ok, fn {install, {_kind, path}} ->
       with :ok <- elf(install, path, state.env.cpu),
+           :ok <- libs(install, state),
            :ok <- conflicts(install, path) do
         nil
       end
@@ -754,6 +777,25 @@ defmodule Precompiled do
         {:fail, why} -> {:error, {:elf, why}}
       end
     end)
+  end
+
+  # A native build's needed libraries, against the device's own: every
+  # native build, the exact release included, before the rename. The needs
+  # come from the signed manifest; a build without `elf` predates them and
+  # is not checked. Reads are memoised in the run's table.
+  defp libs(install, state) do
+    case install.build["build"] do
+      %{"native" => true, "elf" => elf} when not is_nil(elf) ->
+        needs = if is_map(elf), do: elf["needs"] || %{}, else: :malformed
+
+        case Libs.check(needs, state.lib_roots, memo: state.memo) do
+          :ok -> :ok
+          {:miss, reason} -> {:error, {:libs, install.app, reason}}
+        end
+
+      _ ->
+        :ok
+    end
   end
 
   defp head(path) do

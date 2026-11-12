@@ -116,7 +116,10 @@ defmodule Precompiled.Match do
   # highest release below it, else the lowest above it, else one whose
   # release does not parse, in manifest order. Builds for another release
   # pass only through cross_release/4, so without one this keeps them all.
-  defp nearest_release(ok, project) do
+  # `ok` is a list of `{build, result}` pairs; the device's rules use it too.
+  @doc false
+  @spec nearest_release([{map(), term()}, ...], term()) :: [{map(), term()}, ...]
+  def nearest_release(ok, project) do
     keyed = ok |> Enum.with_index() |> Enum.map(fn {r, i} -> {release_key(r, project, i), r} end)
     {best, _} = Enum.min_by(keyed, &elem(&1, 0), &key_le?/2)
     for {key, r} <- keyed, key_eq?(key, best), do: r
@@ -274,14 +277,17 @@ defmodule Precompiled.Match do
   # stand in: one with no native code unless its sources read the system at
   # compile time, and a portable native one whose toolchain, OTP and needed
   # libraries the project's release (in the batch's systems table) provides.
-  # Anything else is judged exactly as the device judges it.
-  defp target_reason(t, b, {t, project} = system, ctx) when t != "pure_elixir" do
+  # Anything else is judged exactly as before: the exact release only. The
+  # device's rules call this too, with the same systems table.
+  @doc false
+  @spec target_reason(term(), map(), term(), map()) :: :ok | {:miss, reason()}
+  def target_reason(t, b, {t, project} = system, ctx) when t != "pure_elixir" do
     if b["system_version"] == project,
       do: :ok,
       else: cross_release(t, b, system, ctx)
   end
 
-  defp target_reason(t, b, system, _ctx), do: target_reason(t, b["system_version"], system)
+  def target_reason(t, b, system, _ctx), do: target_reason(t, b["system_version"], system)
 
   defp cross_release(t, b, {t, project}, ctx) do
     cond do

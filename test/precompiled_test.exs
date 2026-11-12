@@ -54,6 +54,84 @@ defmodule PrecompiledTest do
   defp app_sha(build),
     do: Enum.find(build["ebin"], &String.ends_with?(&1["path"], ".app"))["sha256"]
 
+  @tc "nerves_toolchain_aarch64_nerves_linux_gnu"
+  @libz Path.expand("fixtures/elf/libz_aarch64.so.1", __DIR__)
+
+  # The batch's systems table: nerves_system_rpi4 2.2.0 on this OTP major.
+  defp systems_table(otp, libs) do
+    %{
+      "nerves_system_rpi4" => %{
+        "2.2.0" => %{
+          "toolchain" => %{"package" => @tc, "version" => "15.3.2", "series" => "15.3"},
+          "otp" => "#{otp}.9",
+          "libs" => libs
+        }
+      }
+    }
+  end
+
+  # A fake device root: lib/libz.so.1.3.2 and its symlink lib/libz.so.1,
+  # and an empty usr/lib.
+  defp device_root(dir) do
+    lib = Path.join([dir, "device", "lib"])
+    usr = Path.join([dir, "device", "usr", "lib"])
+    File.mkdir_p!(lib)
+    File.mkdir_p!(usr)
+    File.cp!(@libz, Path.join(lib, "libz.so.1.3.2"))
+    File.ln_s!("libz.so.1.3.2", Path.join(lib, "libz.so.1"))
+    [lib, usr]
+  end
+
+  defp host_machine(opts),
+    do: if(String.starts_with?(opts[:env].cpu, "aarch64"), do: :aarch64, else: :x86_64)
+
+  # A portable native build of the rpi4 system at `release`.
+  defp native_for(build, release, otp, needs) do
+    %{
+      build
+      | "target" => "nerves_system_rpi4",
+        "build" =>
+          Map.merge(build["build"], %{
+            "system_version" => release,
+            "native" => true,
+            "portable" => true,
+            "otp_full" => "#{otp}.0",
+            "toolchain" => %{"package" => @tc, "version" => "15.3.1"},
+            "elf" => %{"needs" => needs}
+          })
+    }
+  end
+
+  defp report_where(app) do
+    sum = String.duplicate("a", 64)
+    %{lock: %{app => {:hex, app, "1.0.0", "i", [:mix], [], "hexpm", sum}}}
+  end
+
+  # A report.json with the device's miss as its one line.
+  defp report_of(%Precompiled.Reason{} = reason) do
+    %{
+      "format" => 1,
+      "built_at" => "2026-11-12T12:00:00Z",
+      "context" => %{
+        "elixir" => System.version(),
+        "otp" => System.otp_release(),
+        "target" => "rpi4",
+        "system" => "nerves_system_rpi4",
+        "system_version" => "2.2.0"
+      },
+      "lines" => [
+        %{
+          "name" => "demo_ssl",
+          "version" => "1.0.0",
+          "status" => "miss",
+          "detail" => reason.text,
+          "reason_code" => Atom.to_string(reason.code),
+          "reason_args" => reason.args
+        }
+      ]
+    }
+  end
+
   # The code path, the loaded apps and every name in the store but the
   # trust state and the (empty) staging dir.
   defp snapshot(opts) do
@@ -756,6 +834,129 @@ defmodule PrecompiledTest do
 
       assert {:error, {:elf, "priv/demo.so is " <> _}} = Precompiled.install(:demo_so, opts)
       assert snapshot(opts) == before
+    end
+
+    test "rootfs versus device: a library the table lists but the device lacks", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      otp = System.otp_release()
+      table = systems_table(otp, %{"libssl.so.3" => ["OPENSSL_3.0.0"], "libz.so.1" => []})
+      doc = %{"format" => 1, "systems" => table} |> :json.encode() |> IO.iodata_to_binary()
+      sha = Fixture.systems(doc)
+      roots = device_root(dir)
+
+      build =
+        f
+        |> publish_app(dir, :demo_ssl, "1.0.0",
+          priv: [{"priv/demo.so", elf_header(64, host_machine(opts))}]
+        )
+        |> native_for("2.1.0", otp, %{"libssl.so.3" => ["OPENSSL_3.0.0"]})
+
+      # The host's target rule: the table makes this build match 2.2.0.
+      assert Precompiled.Match.target_reason(
+               "nerves_system_rpi4",
+               build["build"],
+               {"nerves_system_rpi4", "2.2.0"},
+               %{systems: table}
+             ) == :ok
+
+      env = %{opts[:env] | system: {"nerves_system_rpi4", "2.2.0"}}
+      opts = Keyword.merge(opts, env: env, lib_roots: roots)
+
+      # Without the table the build for 2.1.0 is never planned.
+      Fixture.publish(f, %{"demo_ssl" => manifest(%{"1.0.0" => [build]})})
+
+      assert {:error, {:no_build, "demo_ssl", "built for nerves_system_rpi4 2.1.0, " <> _}} =
+               Precompiled.install(:demo_ssl, opts)
+
+      Fixture.publish(f, %{"demo_ssl" => manifest(%{"1.0.0" => [build]})},
+        batch_extra: %{"systems" => sha}
+      )
+
+      :ok = Store.ensure_root(opts[:dir])
+      before = snapshot(opts)
+
+      assert {:error, {:libs, :demo_ssl, %Precompiled.Reason{} = reason}} =
+               Precompiled.install(:demo_ssl, opts)
+
+      assert {reason.code, reason.args} == {:needed_lib_missing, ["libssl.so.3"]}
+      assert reason.text == "libssl.so.3 missing on target"
+      assert snapshot(opts) == before
+
+      # The report built from that miss carries the code.
+      payload = Precompiled.Report.payload(report_where(:demo_ssl), report_of(reason), nil)
+
+      assert [
+               %{
+                 "name" => "demo_ssl",
+                 "status" => "miss",
+                 "reason_code" => "needed_lib_missing",
+                 "reason_args" => ["libssl.so.3"],
+                 "reason" => "libssl.so.3 missing on target"
+               }
+             ] = payload["lines"]
+    end
+
+    test "the device's libraries are checked for an exact-release native build too", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      otp = System.otp_release()
+      roots = device_root(dir)
+
+      build =
+        f
+        |> publish_app(dir, :demo_zv, "1.0.0",
+          priv: [{"priv/demo.so", elf_header(64, host_machine(opts))}]
+        )
+        |> native_for("2.2.0", otp, %{"libz.so.1" => ["ZLIB_1.2.9", "ZLIB_9.9"]})
+
+      Fixture.publish(f, %{"demo_zv" => manifest(%{"1.0.0" => [build]})})
+      env = %{opts[:env] | system: {"nerves_system_rpi4", "2.2.0"}}
+      opts = Keyword.merge(opts, env: env, lib_roots: roots)
+      :ok = Store.ensure_root(opts[:dir])
+      before = snapshot(opts)
+
+      assert {:error, {:libs, :demo_zv, %Precompiled.Reason{code: :symbol_version_missing} = r}} =
+               Precompiled.install(:demo_zv, opts)
+
+      assert r.args == ["libz.so.1", "ZLIB_9.9"]
+      assert snapshot(opts) == before
+    end
+
+    test "a native build whose needs the device has installs; one with no elf is not checked",
+         %{fixture: f, opts: opts, tmp_dir: dir} do
+      otp = System.otp_release()
+      roots = device_root(dir)
+      so = [{"priv/demo.so", elf_header(64, host_machine(opts))}]
+
+      ok =
+        f
+        |> publish_app(dir, :demo_zok, "1.0.0", priv: so)
+        |> native_for("2.2.0", otp, %{"libz.so.1" => ["ZLIB_1.2.9", "GLIBC_PRIVATE"]})
+
+      no_elf =
+        f
+        |> publish_app(dir, :demo_znoelf, "1.0.0", priv: so)
+        |> native_for("2.2.0", otp, %{"libnothere.so.1" => []})
+        |> update_in(["build"], &Map.delete(&1, "elf"))
+
+      Fixture.publish(f, %{
+        "demo_zok" => manifest(%{"1.0.0" => [ok]}),
+        "demo_znoelf" => manifest(%{"1.0.0" => [no_elf]})
+      })
+
+      env = %{opts[:env] | system: {"nerves_system_rpi4", "2.2.0"}}
+      opts = Keyword.merge(opts, env: env, lib_roots: roots)
+
+      assert {:ok, [%Precompiled.Installed{app: :demo_zok}]} =
+               Precompiled.install(:demo_zok, opts)
+
+      assert {:ok, [%Precompiled.Installed{app: :demo_znoelf}]} =
+               Precompiled.install(:demo_znoelf, opts)
     end
 
     test "a noexec store refuses a plan with a .so before any download", %{

@@ -140,12 +140,22 @@ calls, and ignore them.
   `{:module_conflict, mod, path}`), and so do two versions of one app in
   one call (`{:conflict, app, vsns}`).
 - **Other systems.** A system build serves only the Nerves system it was
-  made for, matched by name and exact version (read from
-  `/usr/lib/os-release`); builds are made for official Nerves systems. A
+  made for, matched by name (read from `/usr/lib/os-release`); builds are
+  made for official Nerves systems. It must be for the device's exact
+  system version, or for another release of that system that the batch's
+  systems table says has the same toolchain series, an OTP no older than
+  the build's and every library the build needs; the exact version wins,
+  then the closest older release, then the lowest newer one. A
   `pure_elixir` build serves any device, and a device whose system is not
   known takes `pure_elixir` builds only. When both kinds match, the system
   build wins. A native library made for another CPU is refused
   (`{:elf, why}`).
+- **Missing libraries.** Before a native build is installed, every library
+  it needs is looked up in the device's own `/lib` and `/usr/lib`, and
+  must define the symbol versions the build needs. This holds for the
+  exact system version too. A build that needs something the device does
+  not have is refused (`{:libs, app, reason}`, with `reason.code`
+  `:needed_lib_missing` or `:symbol_version_missing`).
 - **noexec.** A build with native code is refused when the store is on a
   `noexec` mount (`{:noexec, mount}`).
 - **An unset clock.** An online call refuses before any request until the

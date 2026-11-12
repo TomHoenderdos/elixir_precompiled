@@ -6,6 +6,7 @@ defmodule Precompiled.Device.RulesTest do
   use ExUnit.Case, async: true
   import Precompiled.DeviceFixture
   alias Precompiled.Device.Rules
+  alias Precompiled.Match
 
   describe "build method (host rule 9)" do
     test "a recorded manager is not compared on a device" do
@@ -415,6 +416,139 @@ defmodule Precompiled.Device.RulesTest do
 
       assert {:ok, _, %{"build" => %{"run_id" => "a"}}, _} =
                Rules.select(manifest(%{"1.0.0" => [b, a]}), "x", nil, ctx)
+    end
+  end
+
+  describe "rule 1 across releases (the batch's systems table in ctx.systems)" do
+    @tc "nerves_toolchain_aarch64_nerves_linux_gnu"
+    @systems %{
+      "nerves_system_rpi4" => %{
+        "2.2.1" => %{
+          "toolchain" => %{"package" => @tc, "version" => "15.3.2", "series" => "15.3"},
+          "otp" => "29.1",
+          "libs" => %{"libc.so.6" => ["GLIBC_2.17", "GLIBC_2.38"]}
+        },
+        "2.4.0" => %{
+          "toolchain" => %{"package" => @tc, "version" => "15.4.0", "series" => "15.4"},
+          "otp" => "29.1",
+          "libs" => %{"libc.so.6" => ["GLIBC_2.17"]}
+        }
+      }
+    }
+
+    # A portable native build for `version` of the device's system.
+    defp xbuild(version, over \\ %{}) do
+      b = build(target: "nerves_system_rpi4", system_version: version, run_id: "r" <> version)
+
+      update_in(
+        b["build"],
+        &Map.merge(
+          &1,
+          Map.merge(
+            %{
+              "native" => true,
+              "portable" => true,
+              "otp_full" => "29.0.2",
+              "toolchain" => %{"package" => @tc, "version" => "15.3.1"},
+              "elf" => %{"needs" => %{"libc.so.6" => ["GLIBC_2.17"]}}
+            },
+            over
+          )
+        )
+      )
+    end
+
+    test "a native build for another release passes only through the table" do
+      b = xbuild("2.2.0")
+
+      assert {:miss, "built for nerves_system_rpi4 2.2.0, project has 2.2.1", 0} =
+               Rules.check(b, "circuits_gpio", ctx())
+
+      assert {:miss, "built for nerves_system_rpi4 2.2.0, project has 2.2.1", 0} =
+               Rules.check(b, "circuits_gpio", ctx(systems: nil))
+
+      assert {:ok, _} = Rules.check(b, "circuits_gpio", ctx(systems: @systems))
+    end
+
+    test "the table's toolchain series, OTP and libraries decide, as on the host" do
+      ctx = ctx(systems: @systems)
+
+      assert {:miss, "built for nerves_system_rpi4 2.2.0 (toolchain 15.4), " <> _, 0} =
+               Rules.check(
+                 xbuild("2.2.0", %{"toolchain" => %{"package" => @tc, "version" => "15.4.0"}}),
+                 "x",
+                 ctx
+               )
+
+      assert {:miss, "built on OTP 29.2, release has 29.1", 0} =
+               Rules.check(xbuild("2.2.0", %{"otp_full" => "29.2"}), "x", ctx)
+
+      assert {:miss, "libssl.so.3 missing on target", 0} =
+               Rules.check(
+                 xbuild("2.2.0", %{"elf" => %{"needs" => %{"libssl.so.3" => []}}}),
+                 "x",
+                 ctx
+               )
+
+      assert {:miss, "nerves_system_rpi4 2.2.1 not yet known to the portal", 0} =
+               Rules.check(
+                 xbuild("2.2.0"),
+                 "x",
+                 ctx(systems: %{"nerves_system_rpi4" => %{}})
+               )
+    end
+
+    test "a native build that is not portable stays exact-release only" do
+      b = xbuild("2.2.0", %{"portable" => false})
+
+      assert {:miss, "built for nerves_system_rpi4 2.2.0, project has 2.2.1", 0} =
+               Rules.check(b, "x", ctx(systems: @systems))
+    end
+
+    test "the exact release passes with or without a table" do
+      b = xbuild("2.2.1", %{"elf" => %{"needs" => %{"libnothere.so.1" => []}}})
+      assert {:ok, _} = Rules.check(b, "x", ctx())
+      assert {:ok, _} = Rules.check(b, "x", ctx(systems: @systems))
+    end
+
+    test "selection takes the exact release, else the closest older, else the lowest newer" do
+      ctx = ctx(systems: @systems)
+      select = fn builds -> Rules.select(manifest(%{"1.0.0" => builds}), "x", nil, ctx) end
+
+      assert {:ok, _, %{"build" => %{"system_version" => "2.2.1"}}, _} =
+               select.([xbuild("2.2.0"), xbuild("2.2.1"), xbuild("2.3.0")])
+
+      assert {:ok, _, %{"build" => %{"system_version" => "2.2.0"}}, _} =
+               select.([xbuild("2.1.0"), xbuild("2.3.0"), xbuild("2.2.0")])
+
+      assert {:ok, _, %{"build" => %{"system_version" => "2.3.0"}}, _} =
+               select.([xbuild("2.5.0"), xbuild("2.3.0")])
+
+      # An installed build is preferred only among the nearest release.
+      installed = ctx(systems: @systems, installed: %{x: Match.files_hash(xbuild("2.1.0"))})
+
+      assert {:ok, _, %{"build" => %{"system_version" => "2.2.0"}}, _} =
+               Rules.select(
+                 manifest(%{"1.0.0" => [xbuild("2.1.0"), xbuild("2.2.0")]}),
+                 "x",
+                 nil,
+                 installed
+               )
+    end
+
+    test "a release that is not semver is ordered last and never crashes selection" do
+      ctx = ctx(systems: @systems)
+
+      assert {:ok, _, %{"build" => %{"system_version" => "junk"}}, _} =
+               Rules.select(manifest(%{"1.0.0" => [xbuild("junk")]}), "x", nil, ctx)
+
+      assert {:ok, _, %{"build" => %{"system_version" => "2.3.0"}}, _} =
+               Rules.select(
+                 manifest(%{"1.0.0" => [xbuild("junk"), xbuild("2.3.0")]}),
+                 "x",
+                 nil,
+                 ctx
+               )
     end
   end
 

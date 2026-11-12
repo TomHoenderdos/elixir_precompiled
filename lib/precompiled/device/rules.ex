@@ -7,14 +7,16 @@ defmodule Precompiled.Device.Rules do
   # Which build of a package a running device may load, and which version.
   # The host's rules where they hold on a device (Match, so the lines read
   # the same), and the device's own for the rest: a system build only for
-  # the device's own system at exactly its version (a null system version,
-  # or a device with no known system, gets pure_elixir only); the package
-  # checksum present, and equal to the lock of the build that needs it when
-  # it is a closure member; the runtime closure read from the build's .app,
-  # matched against the apps present by name and exact version; declared
-  # optional dependencies as ranking, never as a refusal; compile_env
-  # compared now for loaded apps and later for the rest. Anything missing or
-  # malformed is a miss: nothing here guesses. No Mix, no Hex.
+  # the device's own system, at exactly its version or at another release
+  # the systems table says it matches, the nearest release first (a null
+  # system version, or a device with no known system, gets pure_elixir
+  # only); the package checksum present, and equal to the lock of the build
+  # that needs it when it is a closure member; the runtime closure read from
+  # the build's .app, matched against the apps present by name and exact
+  # version; declared optional dependencies as ranking, never as a refusal;
+  # compile_env compared now for loaded apps and later for the rest.
+  # Anything missing or malformed is a miss: nothing here guesses. No Mix,
+  # no Hex.
   #
   # The host's build-method rule (rule 9 in the matching guide; this
   # module's own numbering differs) has no device side: a device declares
@@ -23,6 +25,7 @@ defmodule Precompiled.Device.Rules do
   # what that default resolved to and is not compared here.
 
   alias Precompiled.Match
+  alias Precompiled.Reason
 
   @type ctx :: %{
           required(:env) => Precompiled.Device.Env.t(),
@@ -54,7 +57,7 @@ defmodule Precompiled.Device.Rules do
     acc = %{needs: [], uncovered: [], warnings: [], deferred_env: []}
 
     [
-      fn acc -> build["target"] |> target(b, ctx.env) |> with_acc(acc) end,
+      fn acc -> build["target"] |> target(b, ctx) |> with_acc(acc) end,
       fn acc -> b |> Match.toolchain_present() |> with_acc(acc) end,
       fn acc -> b["elixir"] |> Match.elixir_ok(ctx.env.elixir) |> with_acc(acc) end,
       fn acc -> b["otp"] |> Match.otp_ok(ctx.env.otp) |> with_acc(acc) end,
@@ -91,22 +94,30 @@ defmodule Precompiled.Device.Rules do
   defp warn(acc, warning), do: %{acc | warnings: acc.warnings ++ [warning]}
 
   # Rule 1. A system row without a version matches nothing, and a device
-  # whose system is unknown takes pure_elixir builds only.
-  defp target("pure_elixir", _b, _env), do: :ok
-  defp target(t, _b, _env) when not is_binary(t), do: @malformed
+  # whose system is unknown takes pure_elixir builds only. A build for
+  # another release of the device's system passes as it does on the host
+  # (Match.target_reason/4): through the batch's systems table, which the
+  # device has in ctx.systems. A device has no sources to scan, so nothing
+  # here reads as a compile-time read of the system. The needed libraries
+  # are checked again against the device's own before the install
+  # (Device.Libs).
+  defp target("pure_elixir", _b, _ctx), do: :ok
+  defp target(t, _b, _ctx) when not is_binary(t), do: @malformed
 
-  defp target(t, b, env) do
-    case b["system_version"] do
-      v when not is_binary(v) -> {:miss, "build has no system version"}
-      v -> target_known(t, v, env)
-    end
+  defp target(t, b, ctx) do
+    if is_binary(b["system_version"]),
+      do: target_known(t, b, ctx),
+      else: {:miss, "build has no system version"}
   end
 
-  defp target_known(t, _v, %{system: nil}), do: {:miss, "not built for this system (#{t})"}
+  defp target_known(t, _b, %{env: %{system: nil}}),
+    do: {:miss, "not built for this system (#{t})"}
 
-  defp target_known(t, v, env) do
-    case Match.target_ok(t, v, env.system) do
-      :ok -> platform_note(t, env)
+  defp target_known(t, b, ctx) do
+    rule_ctx = %{systems: Map.get(ctx, :systems)}
+
+    case t |> Match.target_reason(b, ctx.env.system, rule_ctx) |> Reason.textual() do
+      :ok -> platform_note(t, ctx.env)
       miss -> miss
     end
   end
@@ -392,10 +403,17 @@ defmodule Precompiled.Device.Rules do
         {:miss, furthest(results)}
 
       ok ->
-        {build, verdict} = Enum.min_by(ok, fn {b, v} -> rank(b, v, name, ctx) end)
+        {build, verdict} =
+          ok
+          |> Match.nearest_release(device_release(ctx.env))
+          |> Enum.min_by(fn {b, v} -> rank(b, v, name, ctx) end)
+
         {:ok, build, verdict}
     end
   end
+
+  defp device_release(%{system: {_name, vsn}}), do: vsn
+  defp device_release(_env), do: nil
 
   # The build that passed the most rules explains the miss best; ties keep
   # the first.
