@@ -319,9 +319,9 @@ defmodule Precompiled.HostTest do
   end
 
   describe "the application" do
-    test "is 0.4.0 and needs only crypto and logger to start" do
+    test "is 0.5.0 and needs only crypto and logger to start" do
       Application.load(:precompiled)
-      assert Application.spec(:precompiled, :vsn) == ~c"0.4.0"
+      assert Application.spec(:precompiled, :vsn) == ~c"0.5.0"
       apps = Application.spec(:precompiled, :applications)
       assert :crypto in apps and :logger in apps
       optional = Application.spec(:precompiled, :optional_applications)

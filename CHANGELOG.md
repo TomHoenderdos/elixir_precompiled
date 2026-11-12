@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.0 - 2026-11-12
+
+* Target builds now match across releases of the same Nerves system:
+  beam-only builds always, NIF builds when the toolchain series, OTP
+  version and needed libraries line up (checked on the host against the
+  portal's systems table and on the device against its own libraries).
+* On a device, every native build, for the exact release too, is checked
+  against the device's own `/lib` and `/usr/lib` before it is installed.
 ## v0.4.0 - 2026-11-11
 
 * New `mix precompiled.report` and `Precompiled.Host.report/1`: send the
