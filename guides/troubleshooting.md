@@ -228,6 +228,7 @@ See [Trust](trust.md#batch-checks) for every batch check.
 | --- | --- | --- |
 | `clock is before ...` | The machine's clock is wrong, typically a device before NTP. | Set the clock. Nothing installs until then. |
 | `clock: ...` | A batch claims to be from the future. | Check the clock. |
+| `the batch looks expired or not yet valid, and the clock is not NTP-synchronized yet; ...` | On a device: one of the checks above refused the batch before NTP answered. | Wait for NTP, then retry. |
 
 ## Cache
 

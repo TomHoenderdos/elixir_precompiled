@@ -161,10 +161,17 @@ calls, and ignore them.
   `:needed_lib_missing` or `:symbol_version_missing`).
 - **noexec.** A build with native code is refused when the store is on a
   `noexec` mount (`{:noexec, mount}`).
-- **An unset clock.** An online call refuses before any request until the
-  clock is synchronized (`NervesTime.synchronized?/0` when `nerves_time` is
-  in the firmware): `{:error, {:clock_unsynchronized, now}}`. Set the
-  clock or wait for NTP, then retry. A bundle needs no NTP: one without
+- **An unset clock.** An online call does not wait for NTP: right after
+  boot, NervesTime's saved or estimated time is usually close enough, and
+  the batch's own time checks decide (expiry, a future issue time, a clock
+  before this library's build). When one of them refuses the batch while
+  the clock is not synchronized yet (`NervesTime.synchronized?/0` when
+  `nerves_time` is in the firmware), the call prints `the batch looks
+  expired or not yet valid, and the clock is not NTP-synchronized yet;
+  wait for NTP, then retry` and returns
+  `{:error, {:clock_unsynchronized, now}}`. Wait for NTP, then retry. With
+  a synchronized clock, an expired batch is refused as such. A bundle
+  needs no NTP: one without
   `offline.json` is judged by its batch's expiry against the device clock,
   which must be sane; one with a signed `offline.json` needs no clock.
 

@@ -81,8 +81,13 @@ defmodule Precompiled do
   `max_bytes`, `max_closure`, `start`, `closure` and `quiet`; any other key
   there is ignored.
 
-  An online call needs a synchronized clock: on an unsynchronized one it
-  refuses before any request. A `file://` bundle with a signed
+  An online call does not wait for NTP: it goes ahead with the clock as it
+  is, and the batch's own time checks (expiry, a future issue time, a
+  clock before this library's build) decide. When one of them refuses the
+  batch and the clock is not synchronized yet (`NervesTime.synchronized?/0`,
+  when `nerves_time` is in the firmware), the call says to wait for NTP
+  and returns `{:error, {:clock_unsynchronized, now}}`; with a
+  synchronized clock it is the batch refusal. A `file://` bundle with a signed
   `offline.json` needs no clock and no network at all; one without it is
   bounded by its batch's own expiry, judged against the device clock (no
   NTP needed, but a clock before this library's build is refused).
@@ -97,7 +102,8 @@ defmodule Precompiled do
       * `{:source_not_allowed, s}`, a per-call source that is not `file://`;
       * `{:content_not_allowed, origins}`, per-call content origins (set
         them in the firmware's `:device` config);
-      * `{:clock_unsynchronized, now}`;
+      * `{:clock_unsynchronized, now}`, the batch's times do not hold and
+        the clock is not NTP-synchronized yet;
       * `{:missing_app, app}`, a network app the firmware leaves out;
       * `{:batch, why}`, the trust chain refused (`why` is the client's
         batch refusal text);
@@ -202,8 +208,7 @@ defmodule Precompiled do
          {:ok, merged} <- normalize_opts(opts, install_keys()),
          :ok <- config_only(opts),
          {:ok, config} <- Source.config(merged),
-         :ok <- network_apps(config),
-         :ok <- clock(config, merged) do
+         :ok <- network_apps(config) do
       Store.with_lock(fn -> locked_install(requests, config, merged) end, merged[:lock_retries])
     end
     |> said(opts)
@@ -453,22 +458,39 @@ defmodule Precompiled do
     end
   end
 
-  # A bundle is not gated on NTP: a device reading one is usually offline,
-  # and NervesTime reports unsynchronized without a network. Trust still
-  # judges a bundle's batch.json against the clock (its expiry, a future
-  # issue time, a clock before this library's build), so a batch.json
-  # bundle needs a sane clock; only a signed offline.json needs none.
-  defp clock(%{bundle: true}, _opts), do: :ok
+  # No call waits for NTP: right after boot NervesTime's saved or estimated
+  # time is usually close enough, and the batch's own time checks (expiry,
+  # a future issue time, staleness, a clock before this library's build)
+  # decide. Only when one of them refuses an online batch and NTP has not
+  # answered yet is the clock named as the likely cause. A bundle is never
+  # gated on NTP: a device reading one is usually offline, and NervesTime
+  # reports unsynchronized without a network.
+  defp clock_refusal({:error, {:batch, why}} = error, %{bundle: true}, _opts)
+       when is_binary(why),
+       do: error
 
-  defp clock(_config, opts) do
+  defp clock_refusal({:error, {:batch, why}} = error, _config, opts) when is_binary(why) do
     synchronized? = Keyword.get(opts, :clock_synchronized?, &nerves_time_synced?/0)
 
-    if synchronized?.() == true do
-      :ok
-    else
-      say(opts, "precompiled: clock not synchronized; set the clock or wait for NTP, then retry")
+    if batch_time?(why) and synchronized?.() != true do
+      say(
+        opts,
+        "precompiled: the batch looks expired or not yet valid, and the clock is " <>
+          "not NTP-synchronized yet; wait for NTP, then retry"
+      )
+
       {:error, {:clock_unsynchronized, DateTime.utc_now()}}
+    else
+      error
     end
+  end
+
+  defp clock_refusal(result, _config, _opts), do: result
+
+  # Trust's refusals that a wrong clock explains.
+  defp batch_time?(why) do
+    String.starts_with?(why, ["batch expired at ", "batch stale: ", "clock"]) or
+      why =~ "root expired at" or why =~ ~r/^root document .* expired at /
   end
 
   # NervesTime is not a dependency of this library: called through apply/3
@@ -514,7 +536,7 @@ defmodule Precompiled do
     active = active(entries)
 
     with :ok <- not_present(requests, env, active),
-         {:ok, batch} <- Source.batch(config) do
+         {:ok, batch} <- config |> Source.batch() |> clock_refusal(config, opts) do
       config = Source.with_batch(config, batch)
       ctx = ctx(env, config, batch, entries, active, memo, opts)
 
@@ -1073,6 +1095,10 @@ defmodule Precompiled do
     case reason do
       {:no_build, pkg, why} when is_binary(pkg) and is_binary(why) ->
         Output.put(Output.line(pkg, "NO", why), quiet?)
+
+      # Already said where it happened, in words.
+      {kind, _} when kind == :clock_unsynchronized ->
+        :ok
 
       _ ->
         Output.put("precompiled: " <> inspect(reason), quiet?)
