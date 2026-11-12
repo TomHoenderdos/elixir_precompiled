@@ -997,6 +997,37 @@ defmodule PrecompiledTest do
       assert files_requested() == [app_sha(build)]
     end
 
+    test "an optional dependency absent from the device is skipped, with one line", %{
+      fixture: f,
+      opts: opts,
+      tmp_dir: dir
+    } do
+      # demo_rustler has no build at all, as rustler has none for rpi4.
+      rustler = publish_app(f, dir, :demo_rustler, "0.38.0")
+      kino = publish_app(f, dir, :demo_kino, "0.19.1")
+
+      top =
+        publish_app(f, dir, :demo_axon, "0.9.0",
+          deps: [demo_rustler: rustler, demo_kino: kino],
+          optional: [:demo_rustler, :demo_kino]
+        )
+
+      Fixture.publish(f, %{
+        "demo_kino" => manifest(%{"0.19.1" => [kino]}),
+        "demo_axon" => manifest(%{"0.9.0" => [top]})
+      })
+
+      out =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert {:ok, [%{app: :demo_axon, role: :requested}]} =
+                   Precompiled.install(:demo_axon, Keyword.put(opts, :quiet, false))
+        end)
+
+      assert out =~ "precompiled: demo_axon: skipped optional demo_rustler (not on this device)\n"
+      assert out =~ "precompiled: demo_axon: skipped optional demo_kino (not on this device)\n"
+      assert :code.is_loaded(DemoKino) == false
+    end
+
     test "allowlist covers closure members", %{fixture: f, opts: opts, tmp_dir: dir} do
       dep = publish_app(f, dir, :demo_x, "1.0.0")
       top = publish_app(f, dir, :demo_y, "1.0.0", deps: [demo_x: dep])

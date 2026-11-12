@@ -304,4 +304,73 @@ defmodule Precompiled.Device.PlanTest do
     assert [{:pong, :dependency}, {:ping, :requested}] =
              Enum.map(plan.installs, &{&1.app, &1.role})
   end
+
+  describe "optional dependencies" do
+    @kino %{"kino" => %{"version" => "0.19.1", "checksum" => "ksum"}}
+
+    defp opt_spec(optional),
+      do: fn b ->
+        {:ok,
+         [
+           applications: [:kernel | Map.get(optional, b["build"]["run_id"], [])],
+           optional_applications: Map.get(optional, b["build"]["run_id"], [])
+         ]}
+      end
+
+    test "an optional dep absent from the device is skipped, and the plan says so" do
+      m =
+        manifests(%{
+          "axon" => manifest(%{"0.9.0" => [build(run_id: "a", deps: @kino)]}),
+          "kino" => manifest(%{"0.19.1" => [build(run_id: "k", checksum: "ksum")]})
+        })
+
+      ctx = ctx(app_spec: opt_spec(%{"a" => [:kino]}))
+      assert {:ok, plan} = Plan.build([{:axon, nil}], ctx, manifest: m)
+      assert [%{app: :axon, role: :requested}] = plan.installs
+      assert plan.skipped == [{:axon, :kino}]
+    end
+
+    test "an optional dep the user asked for is installed, pinned to the lock" do
+      m =
+        manifests(%{
+          "axon" => manifest(%{"0.9.0" => [build(run_id: "a", deps: @kino)]}),
+          "kino" => manifest(%{"0.19.1" => [build(run_id: "k", checksum: "ksum")]})
+        })
+
+      ctx = ctx(app_spec: opt_spec(%{"a" => [:kino]}))
+      assert {:ok, plan} = Plan.build([{:axon, nil}, {:kino, nil}], ctx, manifest: m)
+
+      assert [{:kino, "0.19.1"}, {:axon, "0.9.0"}] =
+               Enum.map(plan.installs, &{&1.app, &1.version})
+
+      assert plan.skipped == []
+    end
+
+    test "a build locked without the absent optional dep is preferred" do
+      # The newer run would win on its own; the lock without kino ranks first.
+      m =
+        manifests(%{
+          "axon" =>
+            manifest(%{
+              "0.9.0" => [
+                build(run_id: "r1-without", deps: %{}),
+                build(run_id: "r2-with", deps: @kino)
+              ]
+            })
+        })
+
+      ctx = ctx(app_spec: opt_spec(%{"r2-with" => [:kino], "r1-without" => [:kino]}))
+      assert {:ok, plan} = Plan.build([{:axon, nil}], ctx, manifest: m)
+      assert [%{app: :axon, build: %{"build" => %{"run_id" => "r1-without"}}}] = plan.installs
+      assert plan.skipped == [{:axon, :kino}]
+    end
+
+    test "a required dep with no build is still a miss" do
+      m = manifests(%{"axon" => manifest(%{"0.9.0" => [build(run_id: "a", deps: @kino)]})})
+      ctx = ctx(app_spec: spec(%{"a" => [:kernel, :kino]}))
+
+      assert {:error, {:no_build, "kino", "not in batch"}} =
+               Plan.build([{:axon, nil}], ctx, manifest: m)
+    end
+  end
 end

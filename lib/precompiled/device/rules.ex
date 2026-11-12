@@ -13,7 +13,11 @@ defmodule Precompiled.Device.Rules do
   # only); the package checksum present, and equal to the lock of the build
   # that needs it when it is a closure member; the runtime closure read from
   # the build's .app, matched against the apps present by name and exact
-  # version; declared optional dependencies as ranking, never as a refusal;
+  # version, where an optional dependency (the .app's optional_applications
+  # or the build's declared) counts only when the device has it or the
+  # call asked for it, and is skipped otherwise, never installed because a
+  # build was locked with it; declared optional dependencies as ranking,
+  # never as a refusal;
   # compile_env compared now for loaded apps and later for the rest.
   # Anything missing or malformed is a miss: nothing here guesses. No Mix,
   # no Hex.
@@ -34,6 +38,9 @@ defmodule Precompiled.Device.Rules do
           required(:active) => %{atom() => String.t()},
           required(:config) => (String.t(), [String.t()] -> {:ok, term()} | :error),
           required(:pin) => nil | %{version: String.t(), checksum: String.t()},
+          # The apps the call asked for (Plan.build/3 sets it): an optional
+          # dependency among them is installed rather than skipped.
+          optional(:requested) => [atom()],
           # The batch's systems table (Fetch.systems/2), nil without one.
           optional(:systems) => map() | nil,
           optional(:loaded) => [{atom(), charlist(), charlist()}]
@@ -43,6 +50,7 @@ defmodule Precompiled.Device.Rules do
   @type verdict :: %{
           needs: [need()],
           uncovered: [atom()],
+          skipped: [atom()],
           warnings: [String.t()],
           deferred_env: [map()]
         }
@@ -54,7 +62,7 @@ defmodule Precompiled.Device.Rules do
   def check(build, name, ctx) do
     b = build["build"] || %{}
     if not is_map(b) or not lists_in_place?(build), do: throw(:malformed)
-    acc = %{needs: [], uncovered: [], warnings: [], deferred_env: []}
+    acc = %{needs: [], uncovered: [], skipped: [], warnings: [], deferred_env: []}
 
     [
       fn acc -> build["target"] |> target(b, ctx) |> with_acc(acc) end,
@@ -148,13 +156,15 @@ defmodule Precompiled.Device.Rules do
 
   # Rule 7. The runtime closure comes from the build's own .app; a build-time
   # tool in deps that the .app does not name is already baked into the files.
+  # An optional dependency the device lacks and the call did not ask for is
+  # skipped: the package runs without that integration, so the build stays
+  # installable, whether or not its lock has the dependency.
   defp runtime_deps(build, name, b, ctx, acc) do
     with :ok <- Match.present(b, "deps"),
          :ok <- deps_well_formed(b["deps"]),
          {:ok, props} <- app_props(ctx.app_spec.(build)) do
-      props
-      |> closure(name, b["deps"], ctx)
-      |> Enum.reduce_while({:ok, acc}, &walk(&1, &2, b["deps"], ctx))
+      {required, skipped} = closure(props, name, b, ctx)
+      Enum.reduce_while(required, {:ok, %{acc | skipped: skipped}}, &walk(&1, &2, b["deps"], ctx))
     end
   end
 
@@ -186,17 +196,34 @@ defmodule Precompiled.Device.Rules do
 
   defp atoms?(list), do: is_list(list) and Enum.all?(list, &is_atom/1)
 
-  defp closure(props, name, deps, ctx) do
-    optional =
-      for app <- Keyword.get(props, :optional_applications, []),
-          device_vsn(app, ctx) != nil or Map.has_key?(deps, Atom.to_string(app)),
-          do: app
+  # {apps to check, optional apps skipped}. An optional app that is not
+  # named in applications, included_applications or the lock was never part
+  # of this build and is not reported as skipped.
+  defp closure(props, name, b, ctx) do
+    deps = b["deps"]
+    listed = Keyword.get(props, :optional_applications, [])
+    optional = MapSet.new(Enum.map(listed, &Atom.to_string/1) ++ declared_optional(b))
 
-    (Keyword.get(props, :applications, []) ++
-       Keyword.get(props, :included_applications, []) ++ optional)
-    |> Enum.uniq()
-    |> Enum.reject(&(Atom.to_string(&1) == name))
+    named =
+      Keyword.get(props, :applications, []) ++ Keyword.get(props, :included_applications, [])
+
+    {keep, skip} =
+      (named ++ listed)
+      |> Enum.uniq()
+      |> Enum.reject(&(Atom.to_string(&1) == name))
+      |> Enum.split_with(fn app ->
+        not MapSet.member?(optional, Atom.to_string(app)) or device_vsn(app, ctx) != nil or
+          app in Map.get(ctx, :requested, [])
+      end)
+
+    {keep, Enum.filter(skip, &(&1 in named or Map.has_key?(deps, Atom.to_string(&1))))}
   end
+
+  # Read leniently here: rule 8 refuses a malformed declared field.
+  defp declared_optional(%{"declared" => items}) when is_list(items),
+    do: for(%{"app" => app, "optional" => true} when is_binary(app) <- items, do: app)
+
+  defp declared_optional(_b), do: []
 
   defp closure_app(app, deps, ctx, acc) do
     case {deps[Atom.to_string(app)], device_vsn(app, ctx)} do
@@ -272,8 +299,12 @@ defmodule Precompiled.Device.Rules do
       later = MapSet.new([name | Enum.map(acc.needs, &Atom.to_string(&1.app))])
       loaded = loaded_apps(ctx)
 
+      skipped = MapSet.new(acc.skipped, &Atom.to_string/1)
+      # A skipped app is never loaded here, so its items have nothing to say.
+      items = Enum.reject(b["compile_env"], &MapSet.member?(skipped, &1["app"]))
+
       {deferred, now} =
-        Enum.split_with(b["compile_env"], fn %{"app" => app} ->
+        Enum.split_with(items, fn %{"app" => app} ->
           MapSet.member?(later, app) or waiting_to_load?(app, loaded, ctx)
         end)
 
@@ -427,7 +458,9 @@ defmodule Precompiled.Device.Rules do
   end
 
   # Smaller is better (spec 1.3, device order): the build already in the
-  # cache (no download, Q5), the fewest closure installs, rule 8 coverage,
+  # cache (no download, Q5), the fewest optional dependencies locked in but
+  # skipped here (a build made without them is the coherent one), the
+  # fewest closure installs, rule 8 coverage,
   # exact Elixir patch then the closest older one, a system build over
   # pure_elixir (it was built on this system's own OTP and ERTS, Q6), and
   # the newest run.
@@ -438,7 +471,10 @@ defmodule Precompiled.Device.Rules do
     installed = if hash != nil and ctx.installed[existing_atom(name)] == hash, do: 0, else: 1
     system = if build["target"] == "pure_elixir", do: 1, else: 0
 
-    {installed, length(verdict.needs), length(verdict.uncovered), run_patch - built_patch, system,
-     Match.inverted(build["build"]["run_id"])}
+    locked_skips =
+      Enum.count(verdict.skipped, &Map.has_key?(build["build"]["deps"], Atom.to_string(&1)))
+
+    {installed, locked_skips, length(verdict.needs), length(verdict.uncovered),
+     run_patch - built_patch, system, Match.inverted(build["build"]["run_id"])}
   end
 end

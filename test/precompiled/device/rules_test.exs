@@ -175,14 +175,70 @@ defmodule Precompiled.Device.RulesTest do
                Rules.check(build(), "x", ctx)
     end
 
-    test "optional_applications count only when present or locked" do
+    test "optional_applications count only when present or requested, never because locked" do
       spec = fn _ -> {:ok, [applications: [:kernel], optional_applications: [:jason]]} end
-      assert {:ok, %{needs: []}} = Rules.check(build(), "x", ctx(app_spec: spec))
+      assert {:ok, %{needs: [], skipped: []}} = Rules.check(build(), "x", ctx(app_spec: spec))
 
       locked = build(deps: %{"jason" => %{"version" => "1.4.4", "checksum" => "j"}})
 
-      assert {:ok, %{needs: [%{app: :jason, version: "1.4.4"}]}} =
+      assert {:ok, %{needs: [], skipped: [:jason]}} =
                Rules.check(locked, "x", ctx(app_spec: spec))
+
+      assert {:ok, %{needs: [%{app: :jason, version: "1.4.4"}], skipped: []}} =
+               Rules.check(locked, "x", ctx(app_spec: spec, requested: [:jason]))
+    end
+
+    test "an app in both applications and optional_applications is optional" do
+      # rustler_precompiled's .app: Mix lists an optional dep in both.
+      spec = app_spec([:kernel, :rustler], optional: [:rustler])
+
+      assert {:ok, %{needs: [], skipped: [:rustler]}} =
+               Rules.check(build(), "x", ctx(app_spec: spec))
+    end
+
+    test "an optional app the device has is checked as a required one" do
+      spec = app_spec([:kernel, :rustler], optional: [:rustler])
+      locked = build(deps: %{"rustler" => %{"version" => "0.38.0", "checksum" => "r"}})
+
+      assert {:ok, %{needs: [], skipped: []}} =
+               Rules.check(
+                 locked,
+                 "x",
+                 ctx(app_spec: spec, env: env(present: %{rustler: "0.38.0"}))
+               )
+
+      assert {:miss, "built against rustler 0.38.0, device has 0.37.0", 6} =
+               Rules.check(
+                 locked,
+                 "x",
+                 ctx(app_spec: spec, env: env(present: %{rustler: "0.37.0"}))
+               )
+    end
+
+    test "a dep the build's declared marks optional is skipped too" do
+      declared = [%{"app" => "decimal", "name" => "decimal", "optional" => true}]
+      deps = %{"decimal" => %{"version" => "2.3.0", "checksum" => "d"}}
+      spec = app_spec([:kernel, :decimal])
+
+      assert {:ok, %{needs: [], skipped: [:decimal]}} =
+               Rules.check(build(declared: declared, deps: deps), "x", ctx(app_spec: spec))
+    end
+
+    test "a compile_env item of a skipped optional app never refuses the build" do
+      deps = %{"kino" => %{"version" => "0.19.1", "checksum" => "k"}}
+      item = %{"app" => "kino", "path" => ["mode"], "value" => enc({:ok, :live})}
+      b = build(deps: deps, compile_env: [item])
+      spec = app_spec([:kernel, :kino], optional: [:kino])
+
+      assert {:ok, %{needs: [], skipped: [:kino], deferred_env: []}} =
+               Rules.check(b, "x", ctx(app_spec: spec))
+    end
+
+    test "a required app missing is still a miss, whatever is optional" do
+      spec = app_spec([:kernel, :ssl, :jason], optional: [:jason])
+
+      assert {:miss, "needs ssl, which this firmware does not include", 6} =
+               Rules.check(build(), "x", ctx(app_spec: spec, env: env(present: %{})))
     end
 
     test "included_applications are part of the closure" do

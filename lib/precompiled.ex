@@ -49,7 +49,7 @@ defmodule Precompiled do
   | `:cacerts_path` | none | A PEM CA bundle to verify an `https` source with (a path). |
   | `:dir` | `/data/precompiled` | The store. Its trust state lives in `DIR/.trust`: a call with another `:dir` gets its own trust state (root chain and sequence floors), starting again from the shipped root. |
   | `:start` | `true` | Start the installed apps (`:temporary`) after loading them. |
-  | `:closure` | `true` | Install absent runtime dependencies. `false` refuses with `{:needs, [...]}` instead. |
+  | `:closure` | `true` | Install absent runtime dependencies. An optional one (in the `.app`'s `optional_applications` or marked optional in the build's `declared`) is installed only when it is in the request, as in `install([:axon, :kino])`; otherwise the build installs without it and a line names it, and a build locked without it is preferred. `false` refuses with `{:needs, [...]}` instead. |
   | `:max_closure`, `:max_bytes` | 25, 64 MB | Bounds on the apps of one call and on the store's size. |
   | `:dry_run` | `false` | Select and plan, verify the trust chain, fetch the manifests and `.app` files only. Returns the plan. It writes no entry, staging dir or eviction: only the trust state in `DIR/.trust`, and the store dir and its marker when they do not exist yet. |
   | `:report` | none | With `dry_run: true`, write the device facts and the plan as JSON to this path (for `mix precompiled.bundle --device-report`). |
@@ -528,6 +528,7 @@ defmodule Precompiled do
       with {:ok, plan} <- Plan.build(requests, ctx, plan_opts) do
         for i <- plan.installs, do: say(opts, plan_line(i))
         for w <- plan.warnings, do: say(opts, Output.line("", "WARN", w))
+        for {app, dep} <- plan.skipped, do: say(opts, Output.skipped_optional(app, dep))
 
         state = %{
           env: env,

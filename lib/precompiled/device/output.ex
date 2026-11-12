@@ -36,6 +36,12 @@ defmodule Precompiled.Device.Output do
   end
 
   @doc false
+  # An optional dependency a package's build was not given on this device.
+  @spec skipped_optional(atom(), atom()) :: String.t()
+  def skipped_optional(app, dep),
+    do: "precompiled: #{app}: skipped optional #{dep} (not on this device)"
+
+  @doc false
   @spec summary(non_neg_integer(), non_neg_integer(), non_neg_integer()) :: String.t()
   def summary(n, bytes, ms),
     do: "precompiled: #{n} installed, #{kb(bytes)}, #{Float.round(ms / 1000, 1)} s"

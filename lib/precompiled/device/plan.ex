@@ -9,7 +9,9 @@ defmodule Precompiled.Device.Plan do
   # checksum of that build's lock. A worklist, bounded by the builds' own
   # deps and by :max_closure; it chooses no versions for dependencies. The
   # installs come out dependencies first, in load order. Anything that
-  # cannot be planned fails the whole call. No Mix, no Hex.
+  # cannot be planned fails the whole call. An optional dependency a build
+  # skips (Rules) is not walked; the plan names it once per package, unless
+  # the call ends up with that app anyway. No Mix, no Hex.
 
   alias Precompiled.Device.Rules
 
@@ -23,17 +25,20 @@ defmodule Precompiled.Device.Plan do
   @spec build([request()], Rules.ctx(), keyword()) ::
           {:ok, Precompiled.Plan.t()} | {:error, term()}
   def build(requests, ctx, opts) do
-    state = %{chosen: %{}, order: [], present: [], warnings: []}
+    state = %{chosen: %{}, order: [], present: [], warnings: [], skipped: []}
     queue = Enum.map(requests, fn {app, req} -> {app, req, nil, :requested} end)
+    ctx = Map.put(ctx, :requested, Enum.map(requests, &elem(&1, 0)))
 
     with {:ok, state} <- walk(queue, ctx, opts, state) do
       installs = state.order |> Enum.reverse() |> Enum.map(&state.chosen[&1])
+      had = Map.keys(state.chosen) ++ Enum.map(state.present, &elem(&1, 0))
 
       {:ok,
        %Precompiled.Plan{
          installs: installs,
          present: Enum.reverse(state.present),
          warnings: state.warnings,
+         skipped: state.skipped |> Enum.reject(fn {_app, dep} -> dep in had end) |> Enum.uniq(),
          bytes: installs |> Enum.map(& &1.bytes) |> Enum.sum()
        }}
     end
@@ -197,7 +202,8 @@ defmodule Precompiled.Device.Plan do
     %{
       state
       | chosen: Map.put(state.chosen, install.app, install),
-        warnings: state.warnings ++ named
+        warnings: state.warnings ++ named,
+        skipped: state.skipped ++ Enum.map(verdict.skipped, &{install.app, &1})
     }
   end
 

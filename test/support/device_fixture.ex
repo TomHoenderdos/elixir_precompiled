@@ -241,6 +241,8 @@ defmodule Precompiled.DeviceFixture do
     * `:description` - the `.app`'s description (to get distinct bytes).
     * `:included` - dependency apps listed as `included_applications`
       rather than `applications`.
+    * `:optional` - dependency apps also listed as `optional_applications`,
+      as Mix lists an optional dependency.
   """
   @spec publish_app(map(), Path.t(), atom(), String.t(), keyword()) :: map()
   def publish_app(fixture, dir, app, vsn, opts \\ []) do
@@ -265,6 +267,10 @@ defmodule Precompiled.DeviceFixture do
         |> Keyword.update!(:applications, &(&1 -- included))
         |> Keyword.put(:included_applications, included)
       end)
+    end
+
+    if optional = opts[:optional] do
+      rewrite_app(root, app, &Keyword.put(&1, :optional_applications, optional))
     end
 
     for {path, bytes} <- Keyword.get(opts, :priv, []) do
