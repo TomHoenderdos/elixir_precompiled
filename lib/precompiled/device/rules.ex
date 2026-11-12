@@ -224,7 +224,7 @@ defmodule Precompiled.Device.Rules do
       (named ++ listed)
       |> Enum.uniq()
       |> Enum.reject(&(Atom.to_string(&1) == name))
-      |> Enum.split_with(&(&1 not in listed or wanted?(&1, ctx)))
+      |> Enum.split_with(&(&1 not in listed or wanted?(&1, deps, ctx)))
 
     skipped = Enum.filter(skip, &(&1 in named or Map.has_key?(deps, Atom.to_string(&1))))
     known = MapSet.new(named ++ listed, &Atom.to_string/1)
@@ -232,15 +232,22 @@ defmodule Precompiled.Device.Rules do
     unlisted =
       Enum.count(declared_optional(b), fn app ->
         Map.has_key?(deps, app) and not MapSet.member?(known, app) and
-          not wanted?(existing_atom(app), ctx)
+          not wanted?(existing_atom(app), deps, ctx)
       end)
 
     locked = Enum.count(skipped, &Map.has_key?(deps, Atom.to_string(&1)))
     {keep, skipped, locked + unlisted}
   end
 
-  defp wanted?(nil, _ctx), do: false
-  defp wanted?(app, ctx), do: device_vsn(app, ctx) != nil or app in Map.get(ctx, :requested, [])
+  # An optional app is checked when the device has it, or when the call
+  # requested it and the lock has it (pinned to that version). Requested
+  # but not locked, it installs on its own, not tied to this build.
+  defp wanted?(nil, _deps, _ctx), do: false
+
+  defp wanted?(app, deps, ctx) do
+    device_vsn(app, ctx) != nil or
+      (app in Map.get(ctx, :requested, []) and Map.has_key?(deps, Atom.to_string(app)))
+  end
 
   # Read leniently here: rule 8 refuses a malformed declared field.
   defp declared_optional(%{"declared" => items}) when is_list(items),

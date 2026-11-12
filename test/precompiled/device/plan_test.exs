@@ -346,6 +346,22 @@ defmodule Precompiled.Device.PlanTest do
       assert plan.skipped == []
     end
 
+    test "a requested optional dep the lock lacks installs on its own" do
+      m =
+        manifests(%{
+          "axon" => manifest(%{"0.9.0" => [build(run_id: "a", deps: %{})]}),
+          "kino" => manifest(%{"0.19.1" => [build(run_id: "k", checksum: "ksum")]})
+        })
+
+      ctx = ctx(app_spec: opt_spec(%{"a" => [:kino]}))
+      assert {:ok, plan} = Plan.build([{:axon, nil}, {:kino, nil}], ctx, manifest: m)
+
+      assert [{:axon, :requested}, {:kino, :requested}] =
+               Enum.map(plan.installs, &{&1.app, &1.role})
+
+      assert plan.skipped == []
+    end
+
     test "a build locked without the absent optional dep is preferred" do
       # The newer run would win on its own; the lock without kino ranks first.
       m =
