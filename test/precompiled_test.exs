@@ -453,7 +453,15 @@ defmodule PrecompiledTest do
         batch_extra: %{"systems" => sha}
       )
 
+      # A device that is not on a Nerves system never fetches it.
       Fixture.clear_requests()
+
+      assert {:ok, _plan} = Precompiled.install(:demo_sys, Keyword.put(opts, :dry_run, true))
+
+      assert [] == for(%{path: "/precompiled/systems/" <> _ = p} <- Fixture.requests(), do: p)
+
+      Fixture.clear_requests()
+      opts = Keyword.put(opts, :env, %{opts[:env] | system: {"nerves_system_rpi4", "1.0.0"}})
 
       assert {:ok, [%Precompiled.Installed{app: :demo_sys}]} =
                Precompiled.install(:demo_sys, opts)

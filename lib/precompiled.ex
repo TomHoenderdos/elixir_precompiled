@@ -568,7 +568,7 @@ defmodule Precompiled do
       active: active,
       config: &CompileEnv.lookup/2,
       pin: nil,
-      systems: Check.systems_table(config, batch),
+      systems: if(Check.nerves_system?(env.system), do: Check.systems_table(config, batch)),
       lib_roots: Keyword.get_lazy(opts, :lib_roots, &Libs.default_roots/0)
     }
   end

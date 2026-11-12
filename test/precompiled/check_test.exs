@@ -183,6 +183,25 @@ defmodule Precompiled.CheckTest do
       assert ctx_of(Map.put(config, :systems_table, @table), env).systems == @table
     end
 
+    test "a host project never fetches it", %{f: f, config: config, env: env} do
+      sha = F.systems(systems_doc(@table))
+
+      pe = good_entry(f, "ash", nil, "pure_elixir")
+
+      F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [pe]}}}},
+        batch_extra: %{"systems" => sha}
+      )
+
+      F.clear_requests()
+      run_capturing(config, %{env | system: nil})
+      assert_received {:report, {:ok, %{hits: 1}}}
+      assert systems_requests() == []
+
+      refute Check.nerves_system?(nil)
+      refute Check.nerves_system?({"host", ""})
+      assert Check.nerves_system?({"nerves_system_rpi4", "1.31.0"})
+    end
+
     test "a table that does not verify is nil, and the build still installs", %{
       f: f,
       config: config,

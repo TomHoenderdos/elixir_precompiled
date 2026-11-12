@@ -187,9 +187,10 @@ defmodule Precompiled.Check do
         todo = candidates ++ replaced
 
         # The systems table is read once per run, and only when a candidate
-        # will be matched against it.
+        # will be matched against it on a Nerves system: a host project
+        # never needs it.
         config =
-          if todo == [],
+          if todo == [] or not nerves_system?(env.system),
             do: config,
             else: Map.put(config, :systems_table, systems_table(config, batch))
 
@@ -612,6 +613,13 @@ defmodule Precompiled.Check do
       _ -> nil
     end
   end
+
+  @doc false
+  # Whether a project's or device's system is a Nerves system, the only kind
+  # the systems table describes.
+  @spec nerves_system?(term()) :: boolean()
+  def nerves_system?({"nerves_system_" <> _, _version}), do: true
+  def nerves_system?(_system), do: false
 
   @doc false
   # What Match reads for one candidate. `config.systems_table` is the
