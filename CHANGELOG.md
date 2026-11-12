@@ -8,6 +8,8 @@
   portal's systems table and on the device against its own libraries).
 * On a device, every native build, for the exact release too, is checked
   against the device's own `/lib` and `/usr/lib` before it is installed.
+* Beam-only builds with no priv files match across releases too.
+
 ## v0.4.0 - 2026-11-11
 
 * New `mix precompiled.report` and `Precompiled.Host.report/1`: send the
