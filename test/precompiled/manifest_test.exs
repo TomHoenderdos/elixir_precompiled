@@ -75,4 +75,19 @@ defmodule Precompiled.ManifestTest do
 
     assert [%{"target" => "pure_elixir", "build" => "x"}] = m["versions"]["1.0.0"]["builds"]
   end
+
+  test "format 2 accepts builds_with_inputs beside builds, and refuses a non-list" do
+    ok = %{
+      "format" => 2,
+      "versions" => %{"1.0.0" => %{"builds" => [], "builds_with_inputs" => []}}
+    }
+
+    assert {:ok, ^ok} = Manifest.normalize(ok)
+
+    plain = %{"format" => 2, "versions" => %{"1.0.0" => %{"builds" => []}}}
+    assert {:ok, ^plain} = Manifest.normalize(plain)
+
+    bad = put_in(ok, ["versions", "1.0.0", "builds_with_inputs"], %{})
+    assert {:fail, "manifest malformed"} = Manifest.normalize(bad)
+  end
 end

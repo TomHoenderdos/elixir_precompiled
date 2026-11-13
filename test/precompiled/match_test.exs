@@ -1092,4 +1092,97 @@ defmodule Precompiled.MatchTest do
       assert Match.inverted("b") < Match.inverted("a")
     end
   end
+
+  describe "compile inputs" do
+    defp ienc(term),
+      do: term |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
+
+    defp host_item(name, value),
+      do: %{"kind" => "env", "name" => name, "value" => value, "set_by" => "host"}
+
+    defp inputs_doc(items) do
+      %{
+        "format" => 2,
+        "versions" => %{
+          "3.5.2" => %{
+            "builds" => [],
+            "builds_with_inputs" => [pe(Map.put(@build, "compile_inputs", items))]
+          }
+        }
+      }
+    end
+
+    test "a host env item matches the same value, unset or set" do
+      unset = host_item("GITHUB_ACTIONS", ienc(:error))
+
+      assert {:ok, _, _} =
+               Match.select(inputs_doc([unset]), ctx(getenv: fn "GITHUB_ACTIONS" -> nil end))
+
+      assert {:miss, "built with a different GITHUB_ACTIONS"} =
+               Match.select(inputs_doc([unset]), ctx(getenv: fn _ -> "true" end))
+
+      set = host_item("GITHUB_ACTIONS", ienc({:ok, "true"}))
+      assert {:ok, _, _} = Match.select(inputs_doc([set]), ctx(getenv: fn _ -> "true" end))
+      assert {:miss, _} = Match.select(inputs_doc([set]), ctx(getenv: fn _ -> nil end))
+    end
+
+    test "the user's value and the builder's value are never in the reason" do
+      item = host_item("GITHUB_ACTIONS", ienc({:ok, "builder-value"}))
+
+      assert {:miss, %Reason{code: :env_differs, args: ["GITHUB_ACTIONS"], text: text}} =
+               Match.select_reason(inputs_doc([item]), ctx(getenv: fn _ -> "user-secret-123" end))
+
+      refute text =~ "user-secret-123"
+      refute text =~ "builder-value"
+    end
+
+    test "build-set items: recorded inputs are not compared, unknown ones miss" do
+      own = %{"kind" => "env", "name" => "B", "value" => ienc({:ok, "x"}), "set_by" => "build"}
+
+      assert {:ok, _, _} =
+               Match.select(
+                 inputs_doc([Map.put(own, "inputs", "recorded")]),
+                 ctx(getenv: fn _ -> "y" end)
+               )
+
+      assert {:miss, "built with a different B"} =
+               Match.select(
+                 inputs_doc([Map.put(own, "inputs", "unknown")]),
+                 ctx(getenv: fn _ -> "x" end)
+               )
+    end
+
+    test "env_all, config_unrecorded, unrecordable values and unknown kinds miss" do
+      assert {:miss, "reads the whole environment at compile time"} =
+               Match.select(inputs_doc([%{"kind" => "env_all"}]), ctx())
+
+      assert {:miss, "compile-time config reads not recorded"} =
+               Match.select(inputs_doc([%{"kind" => "config_unrecorded"}]), ctx())
+
+      assert {:miss, "built with a different X"} =
+               Match.select(
+                 inputs_doc([host_item("X", "unrecordable")]),
+                 ctx(getenv: fn _ -> nil end)
+               )
+
+      assert {:miss, "malformed entry"} =
+               Match.select(inputs_doc([%{"kind" => "teleport"}]), ctx())
+
+      assert {:miss, "malformed entry"} = Match.select(inputs_doc(%{}), ctx())
+    end
+
+    test "builds and builds_with_inputs are both read" do
+      doc = put_in(inputs_doc([]), ["versions", "3.5.2", "builds"], [pe(@build)])
+      assert {:ok, _, _} = Match.select(doc, ctx())
+      assert {:ok, _, _} = Match.select(inputs_doc([]), ctx())
+    end
+
+    test "rule 8's env scan is skipped for a build that carries compile_inputs" do
+      reads = %{target: false, env: ["FOO_URL"]}
+      assert {:ok, _, _} = Match.select(inputs_doc([]), ctx(reads: reads))
+
+      assert {:miss, "reads FOO_URL at compile time, which no build records"} =
+               Match.select(doc([pe(@build)]), ctx(reads: reads))
+    end
+  end
 end

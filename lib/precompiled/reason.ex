@@ -51,7 +51,13 @@ defmodule Precompiled.Reason do
     needed_lib_missing: "{0} missing on target",
     symbol_version_missing: "{0} lacks {1}",
     system_unknown: "{0} {1} not yet known to the portal",
-    system_bound_compile: "reads the Nerves system at compile time"
+    system_bound_compile: "reads the Nerves system at compile time",
+    env_differs: "built with a different {0}",
+    env_set_at_build:
+      "built with {0} set at compile time; a device cannot check its firmware's build environment",
+    env_all: "reads the whole environment at compile time",
+    config_unrecorded: "compile-time config reads not recorded",
+    config_order_differs: "compile-time config {0} {1} would differ in this project"
   ]
 
   @codes Keyword.keys(@templates)

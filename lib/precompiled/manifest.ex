@@ -15,10 +15,13 @@ defmodule Precompiled.Manifest do
   # ...) names the manager Mix built it with. It is not checked here, as no
   # other build field is: Match judges it per build, and a value that is
   # not a string makes that build a malformed entry, not the manifest.
+  #
+  # A format-2 version may also hold builds_with_inputs (0.6.0): builds
+  # whose compile_inputs Match checks.
 
   @spec normalize(map()) :: {:ok, map()} | {:fail, String.t()}
   def normalize(%{"format" => 2, "versions" => versions} = doc) when is_map(versions) do
-    if Enum.all?(versions, fn {_, v} -> match?(%{"builds" => b} when is_list(b), v) end),
+    if Enum.all?(versions, fn {_, v} -> version_ok?(v) end),
       do: {:ok, doc},
       else: {:fail, "manifest malformed"}
   end
@@ -42,6 +45,13 @@ defmodule Precompiled.Manifest do
   end
 
   def normalize(_), do: {:fail, "manifest malformed"}
+
+  # `builds_with_inputs` (0.6.0) holds builds whose compile_inputs a client
+  # checks; a client before 0.6.0 reads `builds` alone.
+  defp version_ok?(%{"builds" => b} = v) when is_list(b),
+    do: is_list(Map.get(v, "builds_with_inputs", []))
+
+  defp version_ok?(_v), do: false
 
   defp builds(entries) do
     for {target, entry} <- entries do

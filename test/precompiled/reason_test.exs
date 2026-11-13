@@ -13,11 +13,12 @@ defmodule Precompiled.ReasonTest do
              closure_without compile_env_differs excepted revoked_provenance
              revoked_not_in_batch remove_failed deadline_passed fetch_failed verify_failed
              install_failed internal system_version_abi toolchain_otp_minor
-             needed_lib_missing symbol_version_missing system_unknown system_bound_compile)a
+             needed_lib_missing symbol_version_missing system_unknown system_bound_compile
+             env_differs env_set_at_build env_all config_unrecorded config_order_differs)a
 
   test "the codes are exactly the table shared with the portal" do
     assert Reason.codes() == @shared
-    assert length(Reason.codes()) == 36
+    assert length(Reason.codes()) == 41
   end
 
   test "the codes for matching across releases render their templates" do
@@ -139,5 +140,19 @@ defmodule Precompiled.ReasonTest do
     assert {:miss, "x"} = Reason.textual({:miss, Reason.new(:internal, [], "x")})
     assert :ok = Reason.textual(:ok)
     assert {:ok, %{}, "t"} = Reason.textual({:ok, %{}, "t"})
+  end
+
+  test "the compile-input codes render their templates" do
+    for {code, args, text} <- [
+          {:env_differs, ["GITHUB_ACTIONS"], "built with a different GITHUB_ACTIONS"},
+          {:env_set_at_build, ["CI"],
+           "built with CI set at compile time; a device cannot check its firmware's build environment"},
+          {:env_all, [], "reads the whole environment at compile time"},
+          {:config_unrecorded, [], "compile-time config reads not recorded"},
+          {:config_order_differs, ["phoenix_view", "template_engines"],
+           "compile-time config phoenix_view template_engines would differ in this project"}
+        ] do
+      assert Reason.new(code, args).text == text
+    end
   end
 end

@@ -24,6 +24,8 @@ defmodule Precompiled.Match do
           optional(:build_method_unknown) => String.t() | nil,
           # The batch's systems table (Fetch.systems/2), nil without one.
           optional(:systems) => map() | nil,
+          # The environment a compile here sees (System.get_env/1 when absent).
+          optional(:getenv) => (String.t() -> String.t() | nil),
           name: String.t(),
           version: String.t(),
           lock_entry: tuple(),
@@ -91,7 +93,7 @@ defmodule Precompiled.Match do
   def select_reason(manifest, ctx) do
     {system, system_version} = ctx.system
 
-    case get_in(manifest, ["versions", ctx.version, "builds"]) || [] do
+    case builds(manifest, ctx.version) do
       [] ->
         {:miss, Reason.new(:not_built_version, [ctx.version], "not built for #{ctx.version}")}
 
@@ -109,6 +111,13 @@ defmodule Precompiled.Match do
             {:ok, build, build["target"]}
         end
     end
+  end
+
+  # Both lists: builds_with_inputs holds the builds whose compile_inputs need
+  # a check here, which clients before 0.6.0 never see.
+  defp builds(manifest, version) do
+    v = get_in(manifest, ["versions", version]) || %{}
+    List.wrap(v["builds"]) ++ List.wrap(v["builds_with_inputs"])
   end
 
   # The passing builds made for the release closest to the project's: the
@@ -264,7 +273,13 @@ defmodule Precompiled.Match do
       fn -> deps_ok(b["deps"], ctx.lock) end,
       fn -> declared_deps_ok(ctx.lock_entry, b["deps"], ctx.lock) end,
       fn -> present_reason(b, "compile_env") end,
-      fn -> compile_env_reason(b["compile_env"], ctx.config) end
+      fn -> compile_env_reason(b["compile_env"], ctx.config) end,
+      fn ->
+        Precompiled.CompileInputs.host(
+          b["compile_inputs"],
+          Map.get(ctx, :getenv, &System.get_env/1)
+        )
+      end
     ]
   end
 
@@ -480,13 +495,17 @@ defmodule Precompiled.Match do
   # it; one that reads Mix.target() must have been built for this project's
   # target name: the one the build records, else its system's conventional
   # name (nerves_system_rpi4 -> rpi4; pure_elixir builds are made on host).
-  # Sources that could not be scanned could read anything.
+  # Sources that could not be scanned could read anything. A build that
+  # carries compile_inputs recorded its env reads itself: the env scan does
+  # not apply to it (the compile_inputs rule does).
   defp compile_inputs_ok(target, build, ctx) do
+    inputs = build["compile_inputs"]
+
     case Map.get(ctx, :reads) do
       {:unscannable, why} ->
         {:miss, Reason.new(:rule8_unscannable, [], "source not scannable: #{why}")}
 
-      %{env: [var | _]} ->
+      %{env: [var | _]} when not is_list(inputs) ->
         {:miss,
          Reason.new(:rule8_env, [], "reads #{var} at compile time, which no build records")}
 

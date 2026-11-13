@@ -644,6 +644,7 @@ defmodule Precompiled.Check do
       otp: otp,
       dep_env: Map.get(candidate, :dep_env, "prod"),
       config: config_fun,
+      getenv: &System.get_env/1,
       prefer: Map.get(candidate, :installed_hash),
       mix_target: Map.get(env, :mix_target) || "host",
       reads: reads,
