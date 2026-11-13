@@ -18,7 +18,14 @@ defmodule Precompiled.Device.Rules do
   # only when the device has it or the call asked for it, and is skipped
   # otherwise, never installed because a build was locked with it; declared
   # optional dependencies as ranking, never as a refusal;
-  # compile_env compared now for loaded apps and later for the rest.
+  # compile_env compared now for loaded apps and later for the rest. A
+  # build's compile_inputs: an environment variable recorded unset is
+  # accepted, one recorded set is a miss naming it (no build environment of
+  # the firmware is here to compare), as is reading the whole environment or
+  # unrecorded config. A config_order item is decided only when the app's
+  # .app gives the key no default, so that no compile order changes what its
+  # reader saw, only the config does; it is then a compile_env item with the
+  # value its reader saw, and any other config_order item is a miss.
   # Anything missing or malformed is a miss: nothing here guesses. No Mix,
   # no Hex.
   #
@@ -28,6 +35,7 @@ defmodule Precompiled.Device.Rules do
   # Mix makes by default, as it takes dep_env "prod". A build's manager is
   # what that default resolved to and is not compared here.
 
+  alias Precompiled.CompileInputs
   alias Precompiled.Match
   alias Precompiled.Reason
 
@@ -82,7 +90,13 @@ defmodule Precompiled.Device.Rules do
       fn acc -> b |> checksum(ctx) |> with_acc(acc) end,
       fn acc -> runtime_deps(build, name, b, ctx, acc) end,
       fn acc -> declared(b, ctx, acc) end,
-      fn acc -> compile_env(b, name, ctx, acc) end
+      fn acc -> compile_env(b, name, ctx, acc) end,
+      fn acc ->
+        b["compile_inputs"]
+        |> CompileInputs.device(&order_decidable?/1)
+        |> Reason.textual()
+        |> with_acc(acc)
+      end
     ]
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, acc}, fn {rule, n}, {:ok, acc} ->
@@ -330,8 +344,10 @@ defmodule Precompiled.Device.Rules do
       loaded = loaded_apps(ctx)
 
       skipped = MapSet.new(acc.skipped, &Atom.to_string/1)
+      ordered = CompileInputs.as_compile_env(b["compile_inputs"], &order_decidable?/1)
+
       # A skipped app is never loaded here, so its items have nothing to say.
-      items = Enum.reject(b["compile_env"], &MapSet.member?(skipped, &1["app"]))
+      items = Enum.reject(b["compile_env"] ++ ordered, &MapSet.member?(skipped, &1["app"]))
 
       {deferred, now} =
         Enum.split_with(items, fn %{"app" => app} ->
@@ -344,6 +360,12 @@ defmodule Precompiled.Device.Rules do
       end
     end
   end
+
+  # A config_order item a device can decide: with no .app default the
+  # compile order cannot change what the reader saw, only the config can,
+  # wherever the two apps are. It is then a compile_env item (compile_env/4,
+  # by CompileInputs.as_compile_env/2); the rest miss.
+  defp order_decidable?(%{"default" => default}), do: CompileInputs.no_default?(default)
 
   defp items_well_formed(items) when is_list(items) do
     if Enum.all?(items, &env_item?/1), do: :ok, else: @malformed
@@ -447,12 +469,20 @@ defmodule Precompiled.Device.Rules do
     end)
   end
 
+  # Both lists: builds_with_inputs holds builds whose compile_inputs are
+  # checked here (CompileInputs.device/2).
   defp builds_of(manifest, v) do
     case manifest["versions"][v] do
-      %{"builds" => builds} when is_list(builds) -> builds
-      _ -> []
+      %{"builds" => builds} = version when is_list(builds) ->
+        builds ++ with_inputs(version["builds_with_inputs"])
+
+      _ ->
+        []
     end
   end
+
+  defp with_inputs(list) when is_list(list), do: list
+  defp with_inputs(_other), do: []
 
   defp best_build([], _name, _ctx), do: {:miss, "no builds published"}
 

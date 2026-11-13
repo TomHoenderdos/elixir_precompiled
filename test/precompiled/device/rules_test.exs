@@ -656,5 +656,136 @@ defmodule Precompiled.Device.RulesTest do
     end
   end
 
+  describe "compile inputs on a device" do
+    defp with_inputs(items), do: put_in(build(), ["build", "compile_inputs"], items)
+
+    defp env_item(name, value),
+      do: %{"kind" => "env", "name" => name, "value" => value, "set_by" => "host"}
+
+    defp with_config(ctx, value), do: %{ctx | config: fn "fx_order_app", ["k"] -> value end}
+
+    test "an env item recorded unset is accepted" do
+      assert {:ok, _} = Rules.check(with_inputs([env_item("FX", enc(:error))]), "recon", ctx())
+    end
+
+    test "an env item recorded set misses, naming the variable and never the value" do
+      assert {:miss, text, 9} =
+               Rules.check(
+                 with_inputs([env_item("FX", enc({:ok, "builder-value"}))]),
+                 "recon",
+                 ctx()
+               )
+
+      assert text ==
+               "built with FX set at compile time; a device cannot check its firmware's build environment"
+
+      refute text =~ "builder-value"
+    end
+
+    test "build-set items: recorded inputs accepted, unknown ones miss" do
+      own = %{"kind" => "env", "name" => "B", "value" => enc({:ok, "x"}), "set_by" => "build"}
+
+      assert {:ok, _} =
+               Rules.check(with_inputs([Map.put(own, "inputs", "recorded")]), "recon", ctx())
+
+      assert {:miss, "built with B set at compile time" <> _, 9} =
+               Rules.check(with_inputs([Map.put(own, "inputs", "unknown")]), "recon", ctx())
+    end
+
+    test "env_all and config_unrecorded miss; a build without the field has no rule" do
+      assert {:miss, "reads the whole environment at compile time", 9} =
+               Rules.check(with_inputs([%{"kind" => "env_all"}]), "recon", ctx())
+
+      assert {:miss, "compile-time config reads not recorded", 9} =
+               Rules.check(with_inputs([%{"kind" => "config_unrecorded"}]), "recon", ctx())
+
+      assert {:ok, _} = Rules.check(build(), "recon", ctx())
+    end
+
+    test "a malformed compile_inputs misses" do
+      assert {:miss, "malformed entry", 9} = Rules.check(with_inputs("nope"), "recon", ctx())
+
+      assert {:miss, "malformed entry", 9} =
+               Rules.check(with_inputs([%{"kind" => "nope"}]), "recon", ctx())
+    end
+
+    test "builds_with_inputs are read" do
+      manifest = %{
+        "format" => 2,
+        "versions" => %{"1.0.0" => %{"builds" => [], "builds_with_inputs" => [with_inputs([])]}}
+      }
+
+      assert {:ok, "1.0.0", _, _} = Rules.select(manifest, "recon", nil, ctx())
+
+      odd = put_in(manifest, ["versions", "1.0.0", "builds_with_inputs"], "nope")
+      assert {:miss, "no builds published"} = Rules.select(odd, "recon", nil, ctx())
+    end
+
+    defp order_item(default, seen, app \\ "fx_order_app", reader \\ "fx_order_reader") do
+      %{
+        "kind" => "config_order",
+        "app" => app,
+        "path" => ["k"],
+        "reader" => reader,
+        "default" => default,
+        "seen" => seen
+      }
+    end
+
+    @both_loaded [{:fx_order_app, ~c"fx", ~c"1.0.0"}, {:fx_order_reader, ~c"fx", ~c"1.0.0"}]
+
+    test "config_order without a .app default, both apps loaded: checked as a compile_env item" do
+      b = with_inputs([order_item(enc(:error), enc({:ok, 1}))])
+      assert {:ok, _} = Rules.check(b, "recon", with_config(ctx(loaded: @both_loaded), {:ok, 1}))
+
+      assert {:miss, "compile_env differs: fx_order_app [:k]", 8} =
+               Rules.check(b, "recon", with_config(ctx(loaded: @both_loaded), {:ok, 2}))
+    end
+
+    test "config_order with a .app default misses" do
+      text = "compile-time config fx_order_app k would differ in this project"
+      with_default = with_inputs([order_item(enc({:ok, 1}), enc({:ok, 1}))])
+
+      assert {:miss, ^text, 9} =
+               Rules.check(
+                 with_default,
+                 "recon",
+                 with_config(ctx(loaded: @both_loaded), {:ok, 1})
+               )
+
+      unrecordable = with_inputs([order_item("unrecordable", enc({:ok, 1}))])
+
+      assert {:miss, ^text, 9} =
+               Rules.check(
+                 unrecordable,
+                 "recon",
+                 with_config(ctx(loaded: @both_loaded), {:ok, 1})
+               )
+    end
+
+    # Without a .app default only the config decides what the reader saw,
+    # wherever the two apps are: one here, or neither.
+    test "config_order without a .app default is decided with one app here, or none" do
+      no_default = with_inputs([order_item(enc(:error), enc({:ok, 1}))])
+
+      for loaded <- [[hd(@both_loaded)], tl(@both_loaded), []] do
+        assert {:ok, _} =
+                 Rules.check(no_default, "recon", with_config(ctx(loaded: loaded), {:ok, 1}))
+
+        assert {:miss, "compile_env differs: fx_order_app [:k]", 8} =
+                 Rules.check(no_default, "recon", with_config(ctx(loaded: loaded), :error))
+      end
+    end
+
+    test "config_order for apps being installed waits for application:load/1" do
+      item = order_item(enc(:error), enc({:ok, 1}), "telemetry", "x")
+      b = put_in(build(deps: @tel), ["build", "compile_inputs"], [item])
+      ctx = ctx(app_spec: app_spec([:kernel, :telemetry]), loaded: [{:kernel, ~c"", ~c"10.4"}])
+
+      assert {:ok, %{deferred_env: [deferred]}} = Rules.check(b, "x", ctx)
+      assert deferred == %{"app" => "telemetry", "path" => ["k"], "value" => enc({:ok, 1})}
+    end
+  end
+
   defp enc(term), do: Base.url_encode64(:erlang.term_to_binary(term), padding: false)
 end

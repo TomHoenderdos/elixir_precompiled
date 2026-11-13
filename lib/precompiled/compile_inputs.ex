@@ -36,10 +36,35 @@ defmodule Precompiled.CompileInputs do
 
   # A device has no build environment of its firmware to compare with: an
   # item recorded unset is accepted, one recorded set is a miss that says so.
-  @spec device(term()) :: :ok | {:miss, Reason.t()}
-  def device(nil), do: :ok
-  def device(items) when is_list(items), do: first_miss(items, &device_item/1)
-  def device(_items), do: malformed()
+  # Nor has it the firmware's compile order: a config_order item the caller
+  # cannot decide (decidable?) is a miss, and a decidable one is checked as
+  # a compile_env item (as_compile_env/2) instead.
+  @spec device(term(), (map() -> boolean())) :: :ok | {:miss, Reason.t()}
+  def device(items, decidable? \\ fn _ -> false end)
+  def device(nil, _decidable?), do: :ok
+
+  def device(items, decidable?) when is_list(items),
+    do: first_miss(items, &device_item(&1, decidable?))
+
+  def device(_items, _decidable?), do: malformed()
+
+  @doc false
+  # The decidable config_order items as the compile_env items a device
+  # checks: the value the reader saw, against the device's config.
+  @spec as_compile_env(term(), (map() -> boolean())) :: [map()]
+  def as_compile_env(items, decidable?) when is_list(items) do
+    for %{"kind" => "config_order", "app" => app, "path" => [key], "seen" => seen} = item <- items,
+        is_binary(app) and is_binary(key) and is_binary(seen),
+        decidable?.(item),
+        do: %{"app" => app, "path" => [key], "value" => seen}
+  end
+
+  def as_compile_env(_items, _decidable?), do: []
+
+  @doc false
+  # Whether the app's .app gives the key no value, as the build recorded it.
+  @spec no_default?(term()) :: boolean()
+  def no_default?(default), do: is_binary(default) and decode(default) == {:ok, :error}
 
   defp first_miss(items, check) do
     Enum.reduce_while(items, :ok, fn item, :ok ->
@@ -131,15 +156,28 @@ defmodule Precompiled.CompileInputs do
     ArgumentError -> :none
   end
 
-  defp device_item(%{"kind" => "env", "name" => name, "value" => value, "set_by" => "host"})
+  defp device_item(
+         %{"kind" => "env", "name" => name, "value" => value, "set_by" => "host"},
+         _decidable?
+       )
        when is_binary(name) and is_binary(value) do
     if recorded?(value, :error), do: :ok, else: set_at_build(name)
   end
 
-  defp device_item(%{"kind" => "env", "set_by" => "build"} = item),
+  defp device_item(%{"kind" => "env", "set_by" => "build"} = item, _decidable?),
     do: build_set(item, &set_at_build/1)
 
-  defp device_item(item), do: whole(item)
+  # Decidable ones are checked as compile_env items (as_compile_env/2),
+  # which takes exactly the items this clause accepts.
+  defp device_item(
+         %{"kind" => "config_order", "app" => app, "path" => [key], "seen" => seen} = item,
+         decidable?
+       )
+       when is_binary(app) and is_binary(key) and is_binary(seen) do
+    if decidable?.(item), do: :ok, else: {:miss, Reason.new(:config_order_differs, [app, key])}
+  end
+
+  defp device_item(item, _decidable?), do: whole(item)
 
   # Set by an earlier write in the same build: its value follows from the
   # build's own inputs, which are checked as items of their own.

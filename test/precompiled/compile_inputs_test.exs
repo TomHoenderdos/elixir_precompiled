@@ -33,6 +33,70 @@ defmodule Precompiled.CompileInputsTest do
     assert :ok = CompileInputs.device(nil)
   end
 
+  describe "on a device" do
+    defp env_item(value),
+      do: %{"kind" => "env", "name" => @name, "value" => value, "set_by" => "host"}
+
+    defp dev_order(default, seen \\ rec({:ok, 1})),
+      do: %{
+        "kind" => "config_order",
+        "app" => "a",
+        "path" => ["k"],
+        "reader" => "r",
+        "default" => default,
+        "seen" => seen
+      }
+
+    test "an env item recorded unset is accepted, whatever this VM's environment holds" do
+      assert :ok = CompileInputs.device([env_item(rec(:error))])
+
+      System.put_env(@name, "here")
+      assert :ok = CompileInputs.device([env_item(rec(:error))])
+    end
+
+    test "an env item recorded set misses with env_set_at_build, naming only the variable" do
+      assert {:miss, %{code: :env_set_at_build, args: [@name]}} =
+               CompileInputs.device([env_item(rec({:ok, "builder-value"}))])
+
+      System.put_env(@name, "builder-value")
+
+      assert {:miss, %{code: :env_set_at_build, args: [@name]}} =
+               CompileInputs.device([env_item(rec({:ok, "builder-value"}))])
+    end
+
+    test "a config_order item misses unless the caller can decide it" do
+      item = dev_order(rec(:error))
+
+      assert {:miss, %{code: :config_order_differs, args: ["a", "k"]}} =
+               CompileInputs.device([item])
+
+      assert {:miss, %{code: :config_order_differs, args: ["a", "k"]}} =
+               CompileInputs.device([item], fn _ -> false end)
+
+      assert :ok = CompileInputs.device([item], fn ^item -> true end)
+    end
+
+    test "decidable config_order items become compile_env items with the value seen" do
+      seen = rec({:ok, 1})
+      yes = dev_order(rec(:error), seen)
+      no = %{dev_order(rec({:ok, 2}), seen) | "app" => "b"}
+      decidable? = &CompileInputs.no_default?(&1["default"])
+
+      assert [%{"app" => "a", "path" => ["k"], "value" => ^seen}] =
+               CompileInputs.as_compile_env([env_item(rec(:error)), yes, no], decidable?)
+
+      assert [] = CompileInputs.as_compile_env(nil, decidable?)
+      assert [] = CompileInputs.as_compile_env([%{yes | "seen" => 1}], decidable?)
+    end
+
+    test "no_default? holds only for a recorded unset default" do
+      assert CompileInputs.no_default?(rec(:error))
+      refute CompileInputs.no_default?(rec({:ok, 1}))
+      refute CompileInputs.no_default?("unrecordable")
+      refute CompileInputs.no_default?(nil)
+    end
+  end
+
   describe "config_order on the host" do
     alias Precompiled.CompileOrder
 
