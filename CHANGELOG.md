@@ -14,7 +14,8 @@
   the same way, as does one whose directory cannot be searched. Mix
   dependencies and devices are not affected.
 * On your build machine, nothing matches while `ERL_COMPILER_OPTIONS` is
-  set, while `ERL_FLAGS`, `ERL_AFLAGS` or `ERL_ZFLAGS` carry an argument
+  set, while `ERL_LIBS` is set, while `ERL_FLAGS`, `ERL_AFLAGS`,
+  `ERL_ZFLAGS` or `ELIXIR_ERL_OPTIONS` carry an argument
   that can set it, run code or change the code loaded (`-env`, `-eval`,
   `-pa`, ...), or while a `.erlang` file sits in your home or Erlang's
   user config directory. Each changes every compile, Elixir modules

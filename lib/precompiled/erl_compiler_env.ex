@@ -24,6 +24,17 @@ defmodule Precompiled.ErlCompilerEnv do
   #   app env, and `-extra` passes arguments on. Any of those is a miss;
   #   other flags (`-kernel shell_history enabled`, `+S 4`, `-name`) are
   #   left alone.
+  # - ELIXIR_ERL_OPTIONS: the `elixir` script passes it to `erl` as is, so
+  #   the same flags count.
+  # - ERL_LIBS: the code server adds every app under it to the code path
+  #   at boot, where a dependency's mix.exs or compile can find it
+  #   (`:code.lib_dir/1`, `Code.ensure_loaded?/1`). Mix prunes paths it
+  #   did not load only inside compile.all, after the dep's mix.exs is
+  #   evaluated, keeps any listed app the code path resolves (an
+  #   `extra_applications` entry shadowed under ERL_LIBS), and does not
+  #   prune at all under Mix.install (`prune_code_paths: false`). Mix
+  #   replaces ERL_LIBS only for rebar3 and make subprocesses. So set,
+  #   it is a miss.
   # - `.erlang`: the default boot script runs c:erlangrc/0 at every start,
   #   `-noshell` included, which evaluates the first `.erlang` in HOME or
   #   filename:basedir(user_config, "erlang"). It can do anything, so its
@@ -34,7 +45,7 @@ defmodule Precompiled.ErlCompilerEnv do
   alias Precompiled.FileUtil
   alias Precompiled.Reason
 
-  @flag_vars ~w(ERL_FLAGS ERL_AFLAGS ERL_ZFLAGS)
+  @flag_vars ~w(ERL_FLAGS ERL_AFLAGS ERL_ZFLAGS ELIXIR_ERL_OPTIONS)
   @unsafe ~w(-eval -s -run -S -pa -pz -path -env -args_file -boot -boot_var -config
              -code_path_choice -compiler -elixir -mix -stdlib -extra)
 
@@ -44,6 +55,7 @@ defmodule Precompiled.ErlCompilerEnv do
   @spec check(getenv()) :: :ok | {:miss, Reason.t()}
   def check(getenv) do
     with :ok <- compiler_options(getenv),
+         :ok <- erl_libs(getenv),
          :ok <- flags(getenv) do
       erlangrc(getenv)
     end
@@ -59,6 +71,18 @@ defmodule Precompiled.ErlCompilerEnv do
               "ERL_COMPILER_OPTIONS",
               "ERL_COMPILER_OPTIONS is set, which changes every compile"
             )
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp erl_libs(getenv) do
+    case getenv.("ERL_LIBS") do
+      v when is_binary(v) ->
+        if String.trim(v) == "",
+          do: :ok,
+          else: miss("ERL_LIBS", "ERL_LIBS is set, which can change every compile")
 
       _ ->
         :ok

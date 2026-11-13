@@ -81,7 +81,7 @@ defmodule Precompiled.ErlCompilerEnvTest do
   end
 
   describe "ERL_FLAGS, ERL_AFLAGS, ERL_ZFLAGS" do
-    for var <- ~w(ERL_FLAGS ERL_AFLAGS ERL_ZFLAGS) do
+    for var <- ~w(ERL_FLAGS ERL_AFLAGS ERL_ZFLAGS ELIXIR_ERL_OPTIONS) do
       test "#{var} with only runtime flags is fine", %{tmp_dir: dir} do
         env = %{
           "HOME" => dir,
@@ -112,6 +112,28 @@ defmodule Precompiled.ErlCompilerEnvTest do
       env = %{"HOME" => dir, "ERL_AFLAGS" => "-env ERL_COMPILER_OPTIONS [no_line_info]"}
 
       assert {:miss, "ERL_AFLAGS has -env, which can change every compile"} =
+               Match.select(doc(@build), ctx(env, manager: "mix"))
+    end
+  end
+
+  describe "ERL_LIBS" do
+    test "unset or blank is fine", %{tmp_dir: dir} do
+      assert :ok = check(%{"HOME" => dir})
+      assert :ok = check(%{"HOME" => dir, "ERL_LIBS" => " "})
+    end
+
+    test "set is a miss naming the variable, never the value", %{tmp_dir: dir} do
+      assert {:miss, reason} = check(%{"HOME" => dir, "ERL_LIBS" => "/secret/libs"})
+      assert reason.code == :erl_compiler_options
+      assert reason.args == ["ERL_LIBS"]
+      assert reason.text == "ERL_LIBS is set, which can change every compile"
+      refute reason.text =~ "secret"
+    end
+
+    test "it misses in the host check", %{tmp_dir: dir} do
+      env = %{"HOME" => dir, "ERL_LIBS" => "/opt/erl"}
+
+      assert {:miss, "ERL_LIBS is set, which can change every compile"} =
                Match.select(doc(@build), ctx(env, manager: "mix"))
     end
   end

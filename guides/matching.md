@@ -153,7 +153,10 @@ compared only by version and checksum.
     compiler adds it to every `.erl` file Mix or rebar3 compiles, and
     Elixir adds it (without `warnings_as_errors`) to every module it
     compiles, so pure Elixir packages differ too.
-  - `ERL_FLAGS`, `ERL_AFLAGS` or `ERL_ZFLAGS` with an argument that can
+  - `ERL_LIBS` set to anything but blanks. Every app under it is on the
+    code path a dependency's `mix.exs` and compile can probe: Mix prunes
+    it only partly and late, and not at all under `Mix.install/2`.
+  - `ERL_FLAGS`, `ERL_AFLAGS`, `ERL_ZFLAGS` or `ELIXIR_ERL_OPTIONS` with an argument that can
     set it, run code or change the code loaded: `-env`, `-eval`, `-s`,
     `-run`, `-S`, `-pa`, `-pz`, `-path`, `-boot`, `-boot_var`,
     `-code_path_choice`, `-args_file`, `-config`, `-extra`, or app env
