@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+* On your build machine, a dependency Mix compiles with rebar3 no longer
+  matches while your global rebar3 config (`~/.config/rebar3/rebar.config`,
+  or the one under `REBAR_GLOBAL_CONFIG_DIR`) sets a key that changes
+  what rebar3 compiles, such as `erl_opts`, `overrides`, hooks or
+  plugins: rebar3 merges that file into every dependency compile, so the
+  beams built here would differ from the published build. The line reads
+  `global rebar3 config PATH sets KEY` (new reason code
+  `rebar3_global_config`) and names the key, never its value. A file that
+  does not parse, or one with a `rebar.config.script` beside it, misses
+  the same way. Mix dependencies and devices are not affected.
 * On your build machine, a build matches only when it was compiled with
   exactly the dependencies Mix compiles the package with in your project,
   at any depth, for the current env: not everything `mix.lock` has. A

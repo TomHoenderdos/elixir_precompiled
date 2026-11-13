@@ -29,7 +29,7 @@ A build of a candidate is installed only when **every** rule holds.
 | 6 | Dependencies | be compiled against the versions and checksums in your `mix.lock` | macros and inlined code from dependencies are baked in |
 | 7 | `compile_env` | have read the same `Application.compile_env` values as your config | those values are baked into the beams |
 | 8 | Compile-time inputs | have read the same environment variables your environment gives, and not depend on build-machine facts it can't record (see below) | otherwise it could differ from your build |
-| 9 | Build method | be built the way Mix builds the dependency here: no declaration of it (yours or a package's) sets any of `:manager`, `:compile` or `:system_env`, and a manager the build records is the one Mix uses here | an override, or another manager, builds other files |
+| 9 | Build method | be built the way Mix builds the dependency here: no declaration of it (yours or a package's) sets any of `:manager`, `:compile` or `:system_env`, a manager the build records is the one Mix uses here, and, for a rebar3 dependency, your global rebar3 config changes nothing it compiles | an override, another manager, or a global rebar3 config builds other files |
 
 ### The fine print
 
@@ -169,6 +169,25 @@ compared only by version and checksum.
   ...). When that is not the manager Mix resolves for the dependency in your
   project, it misses: `built with rebar3, project builds with make`. A build
   that records no manager is judged by the other rules alone.
+- A dependency Mix builds with rebar3 (or whose build records rebar3)
+  also depends on your global rebar3 config. rebar3 merges
+  `~/.config/rebar3/rebar.config` (under `REBAR_GLOBAL_CONFIG_DIR`
+  instead of your home when that is set) into every compile Mix runs it
+  for, so its `erl_opts` (a `{d, 'DEBUG'}`, `native`), `overrides`,
+  hooks, plugins, or the same keys under its `prod` or `default` profile
+  change the beams. While that file sets any key other than ones only
+  other rebar3 commands read (`hex`, `dialyzer`, `relx`, `ct_opts`,
+  `eunit_opts`, `edoc_opts`, `xref_*`, `cover_*`, `escript_*`, `alias`,
+  `shell`, `dist_node`, `project_plugins`, `rebar_packages_cdn`, other
+  profiles), every rebar3 dependency misses with
+  `global rebar3 config PATH sets KEY`. The line names the file and the
+  key, never the value. A file that does not parse misses too
+  (`... could not be read`), as does one with a `rebar.config.script`
+  beside it (`... has a .script beside it`). `REBAR_CONFIG` plays no part:
+  Mix points it at its own file for every rebar3 compile. Dependencies
+  Mix compiles itself are not affected. Firmware is compiled on your
+  build machine, so this check runs there; the device API installs builds
+  without compiling anything, so no rebar3 config is involved.
 - A global `Mix.install(deps, system_env: ...)` (also through
   `Precompiled.Host.install/2`) is not an override of any one dependency
   and does not cause a miss. It is the same as setting those variables in

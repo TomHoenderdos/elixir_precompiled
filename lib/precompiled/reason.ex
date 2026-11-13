@@ -58,7 +58,8 @@ defmodule Precompiled.Reason do
       "built with {0} set at compile time; a device cannot check its firmware's build environment",
     env_all: "reads the whole environment at compile time",
     config_unrecorded: "compile-time config reads not recorded",
-    config_order_differs: "compile-time config {0} {1} would differ in this project"
+    config_order_differs: "compile-time config {0} {1} would differ in this project",
+    rebar3_global_config: "global rebar3 config could change the build ({0})"
   ]
 
   @codes Keyword.keys(@templates)

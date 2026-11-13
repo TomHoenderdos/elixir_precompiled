@@ -262,6 +262,7 @@ defmodule Precompiled.Match do
     [
       fn -> target_reason(build["target"], b, ctx.system, ctx) end,
       fn -> build_method_ok(b, ctx) end,
+      fn -> rebar3_global_ok(b, ctx) end,
       fn -> compile_inputs_ok(build["target"], b, ctx) end,
       fn -> toolchain_reason(b) end,
       fn -> elixir_reason(b["elixir"], ctx.elixir) end,
@@ -473,6 +474,15 @@ defmodule Precompiled.Match do
       {_, []} ->
         manager_ok(build["manager"], Map.get(ctx, :manager))
     end
+  end
+
+  # Rebar3 merges the user's global config into a rebar3-managed dep's
+  # compile (Precompiled.Rebar3Config); a config that can change its beams
+  # makes the dep miss, whichever manager the build or the project names.
+  defp rebar3_global_ok(build, ctx) do
+    if "rebar3" in [build["manager"], Map.get(ctx, :manager)],
+      do: Precompiled.Rebar3Config.check(Map.get(ctx, :getenv, &System.get_env/1)),
+      else: :ok
   end
 
   defp manager_ok(nil, _running), do: :ok
