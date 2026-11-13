@@ -43,6 +43,22 @@ defmodule Precompiled.FileUtil do
     _ -> :ok
   end
 
+  @doc false
+  # What is at `path`, following links as the reader of a config file
+  # does: :absent only when the OS says nothing is there (enoent, or a
+  # path through a file); :unknown when it cannot tell (no search
+  # permission on a dir on the way, say), which a caller must not take
+  # for absent.
+  @spec presence(Path.t()) :: :regular | :other | :absent | :unknown
+  def presence(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular}} -> :regular
+      {:ok, _} -> :other
+      {:error, why} when why in [:enoent, :enotdir] -> :absent
+      {:error, _} -> :unknown
+    end
+  end
+
   @spec writable_dir?(Path.t()) :: boolean()
   def writable_dir?(dir) do
     probe = Path.join(dir, ".probe-#{System.pid()}-#{System.unique_integer([:positive])}")

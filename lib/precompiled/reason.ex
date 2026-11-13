@@ -59,7 +59,8 @@ defmodule Precompiled.Reason do
     env_all: "reads the whole environment at compile time",
     config_unrecorded: "compile-time config reads not recorded",
     config_order_differs: "compile-time config {0} {1} would differ in this project",
-    rebar3_global_config: "global rebar3 config could change the build ({0})"
+    rebar3_global_config: "global rebar3 config could change the build ({0})",
+    erl_compiler_options: "{0} can change every compile"
   ]
 
   @codes Keyword.keys(@templates)

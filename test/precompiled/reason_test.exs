@@ -15,11 +15,11 @@ defmodule Precompiled.ReasonTest do
              install_failed internal system_version_abi toolchain_otp_minor
              needed_lib_missing symbol_version_missing system_unknown system_bound_compile
              env_differs env_set_at_build env_all config_unrecorded config_order_differs
-             rebar3_global_config)a
+             rebar3_global_config erl_compiler_options)a
 
   test "the codes are exactly the table shared with the portal" do
     assert Reason.codes() == @shared
-    assert length(Reason.codes()) == 43
+    assert length(Reason.codes()) == 44
   end
 
   test "the codes for matching across releases render their templates" do

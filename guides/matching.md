@@ -146,6 +146,25 @@ compared only by version and checksum.
   never matches, as before.
 - A dependency whose sources can't be scanned never matches: they don't
   parse, or a file is over 2 MB, or the package over 20 MB.
+- Some settings on your machine change every compile, of any
+  dependency, and no build records them, so while one is in place
+  nothing matches (`... can change every compile`):
+  - `ERL_COMPILER_OPTIONS` set to anything but blanks. The Erlang
+    compiler adds it to every `.erl` file Mix or rebar3 compiles, and
+    Elixir adds it (without `warnings_as_errors`) to every module it
+    compiles, so pure Elixir packages differ too.
+  - `ERL_FLAGS`, `ERL_AFLAGS` or `ERL_ZFLAGS` with an argument that can
+    set it, run code or change the code loaded: `-env`, `-eval`, `-s`,
+    `-run`, `-S`, `-pa`, `-pz`, `-path`, `-boot`, `-boot_var`,
+    `-code_path_choice`, `-args_file`, `-config`, `-extra`, or app env
+    for `compiler`, `elixir`, `mix` or `stdlib`. Other flags, such as
+    `-kernel shell_history enabled` or `+S 4`, are fine.
+  - A `.erlang` file in your home directory or in Erlang's user config
+    directory (`~/.config/erlang`, `~/Library/Application Support/erlang`
+    on macOS). Every Erlang start runs it, `mix` included. A home whose
+    contents cannot be read misses too.
+
+  The line names the variable or file, never its value.
 
 - `Application.get_env` in a module body for an unset key of an app
   outside the dependency's own tree (Elixir already warns about it): what
@@ -182,7 +201,8 @@ compared only by version and checksum.
   profiles), every rebar3 dependency misses with
   `global rebar3 config PATH sets KEY`. The line names the file and the
   key, never the value. A file that does not parse misses too
-  (`... could not be read`), as does one with a `rebar.config.script`
+  (`... could not be read`), as does one whose directory cannot be
+  searched (`... could not be checked`), as does one with a `rebar.config.script`
   beside it (`... has a .script beside it`). `REBAR_CONFIG` plays no part:
   Mix points it at its own file for every rebar3 compile. Dependencies
   Mix compiles itself are not affected. Firmware is compiled on your

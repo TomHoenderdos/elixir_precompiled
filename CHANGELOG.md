@@ -11,7 +11,15 @@
   `global rebar3 config PATH sets KEY` (new reason code
   `rebar3_global_config`) and names the key, never its value. A file that
   does not parse, or one with a `rebar.config.script` beside it, misses
-  the same way. Mix dependencies and devices are not affected.
+  the same way, as does one whose directory cannot be searched. Mix
+  dependencies and devices are not affected.
+* On your build machine, nothing matches while `ERL_COMPILER_OPTIONS` is
+  set, while `ERL_FLAGS`, `ERL_AFLAGS` or `ERL_ZFLAGS` carry an argument
+  that can set it, run code or change the code loaded (`-env`, `-eval`,
+  `-pa`, ...), or while a `.erlang` file sits in your home or Erlang's
+  user config directory. Each changes every compile, Elixir modules
+  included, and no build records it. The line names the variable or file,
+  never its value (new reason code `erl_compiler_options`).
 * On your build machine, a build matches only when it was compiled with
   exactly the dependencies Mix compiles the package with in your project,
   at any depth, for the current env: not everything `mix.lock` has. A

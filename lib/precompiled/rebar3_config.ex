@@ -18,7 +18,8 @@ defmodule Precompiled.Rebar3Config do
   # A `rebar.config.script` beside the file is evaluated by rebar3 and could
   # set anything, so it is a miss. A file rebar3 cannot read is ignored by
   # rebar3; here it is a miss all the same, as nothing tells the two
-  # parsers agree.
+  # parsers agree. A file whose presence cannot be told (a config dir with
+  # no search permission) is a miss too; only enoent or enotdir is absent.
 
   alias Precompiled.Reason
 
@@ -57,13 +58,22 @@ defmodule Precompiled.Rebar3Config do
   # can (never its value).
   @spec check(getenv()) :: :ok | {:miss, Reason.t()}
   def check(getenv) do
-    with file when is_binary(file) <- path(getenv),
-         true <- File.regular?(file) do
-      if File.exists?(file <> ".script"),
-        do: miss(file, "script", "has a .script beside it"),
-        else: judge(file, consult(file))
-    else
-      _ -> :ok
+    case path(getenv) do
+      nil -> :ok
+      file -> check_file(file, Precompiled.FileUtil.presence(file))
+    end
+  end
+
+  # rebar3 reads the file only when filelib:is_regular/1 says so, so a
+  # directory or a missing file is nothing; one whose presence cannot be
+  # told (a config dir without search permission) could be anything.
+  defp check_file(file, :unknown), do: miss(file, "unreadable", "could not be checked")
+  defp check_file(_file, presence) when presence != :regular, do: :ok
+
+  defp check_file(file, :regular) do
+    case Precompiled.FileUtil.presence(file <> ".script") do
+      :absent -> judge(file, consult(file))
+      _ -> miss(file, "script", "has a .script beside it")
     end
   end
 

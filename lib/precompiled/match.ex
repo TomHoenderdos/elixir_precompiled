@@ -26,6 +26,9 @@ defmodule Precompiled.Match do
           optional(:systems) => map() | nil,
           # The environment a compile here sees (System.get_env/1 when absent).
           optional(:getenv) => (String.t() -> String.t() | nil),
+          # The same, for the machine's settings every compile sees: the
+          # global rebar3 config, ERL_COMPILER_OPTIONS, ERL_*FLAGS, .erlang.
+          optional(:machine_env) => (String.t() -> String.t() | nil),
           optional(:compile_order) => Precompiled.Env.compile_order() | nil,
           # The package's transitive deps as Mix loads them in the current
           # env (Env.closure/2), nil when unknown: then the lock decides.
@@ -263,6 +266,7 @@ defmodule Precompiled.Match do
       fn -> target_reason(build["target"], b, ctx.system, ctx) end,
       fn -> build_method_ok(b, ctx) end,
       fn -> rebar3_global_ok(b, ctx) end,
+      fn -> Precompiled.ErlCompilerEnv.check(machine_env(ctx)) end,
       fn -> compile_inputs_ok(build["target"], b, ctx) end,
       fn -> toolchain_reason(b) end,
       fn -> elixir_reason(b["elixir"], ctx.elixir) end,
@@ -481,9 +485,14 @@ defmodule Precompiled.Match do
   # makes the dep miss, whichever manager the build or the project names.
   defp rebar3_global_ok(build, ctx) do
     if "rebar3" in [build["manager"], Map.get(ctx, :manager)],
-      do: Precompiled.Rebar3Config.check(Map.get(ctx, :getenv, &System.get_env/1)),
+      do: Precompiled.Rebar3Config.check(machine_env(ctx)),
       else: :ok
   end
+
+  # The environment the machine's own settings are read from (HOME, the
+  # ERL_* variables): what a compile here sees. Kept apart from :getenv,
+  # which compile_inputs compares, so each can be given on its own.
+  defp machine_env(ctx), do: Map.get(ctx, :machine_env, &System.get_env/1)
 
   defp manager_ok(nil, _running), do: :ok
   defp manager_ok(built, built) when is_binary(built), do: :ok

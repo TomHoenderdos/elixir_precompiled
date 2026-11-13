@@ -249,7 +249,8 @@ A `MISS` line names the rule that the closest build broke; see
 | `MISS  built with rebar3, project builds with make` | Rule 9: the build was made by another manager than Mix uses for it here. It compiles from source. |
 | `MISS  build method unknown (deps did not load: ...)` | Rule 9: `Precompiled.Host.install/2` could not load the dependencies through Mix (the warning above names why), so no build can be confirmed. Everything compiles from source. |
 | `MISS  built with rebar3, project's manager for it is unknown` | Rule 9: Mix resolved no manager for the dependency here (often: its sources are not fetched yet), so the build's cannot be confirmed. It compiles from source. |
-| `MISS  global rebar3 config PATH sets KEY` | Rule 9: a rebar3 dependency, and your global rebar3 config (`~/.config/rebar3/rebar.config`, or the one under `REBAR_GLOBAL_CONFIG_DIR`) sets a key that changes what rebar3 compiles, such as `erl_opts`. `... could not be read` and `... has a .script beside it` are the same rule. It compiles from source; see [What matches](matching.md#the-fine-print). |
+| `MISS  global rebar3 config PATH sets KEY` | Rule 9: a rebar3 dependency, and your global rebar3 config (`~/.config/rebar3/rebar.config`, or the one under `REBAR_GLOBAL_CONFIG_DIR`) sets a key that changes what rebar3 compiles, such as `erl_opts`. `... could not be read`, `... could not be checked` and `... has a .script beside it` are the same rule. It compiles from source; see [What matches](matching.md#the-fine-print). |
+| `MISS  ERL_COMPILER_OPTIONS is set, which changes every compile` | Rule 8: the variable changes every compile here, Elixir included. `ERL_AFLAGS has -env, ...` and `PATH runs at every Erlang start, ...` (a `.erlang` file) are the same rule. Unset it, or move the file, for the run that installs; see [What matches](matching.md#the-fine-print). |
 
 ### Builds from another release of your system
 

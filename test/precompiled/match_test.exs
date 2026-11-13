@@ -866,7 +866,7 @@ defmodule Precompiled.MatchTest do
       assert {:ok, _, "pure_elixir"} = Match.select(doc([pe(@build)]), ctx(overrides: []))
 
       assert {:ok, _, _} =
-               Match.select(manifest(), ctx(manager: "rebar3", getenv: fn _ -> nil end))
+               Match.select(manifest(), ctx(manager: "rebar3", machine_env: fn _ -> nil end))
     end
 
     test "a manager that is not a string is a malformed entry" do

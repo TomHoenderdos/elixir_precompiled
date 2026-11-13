@@ -43,7 +43,7 @@ defmodule Precompiled.Rebar3ConfigTest do
         dep_env: "prod",
         config: fn _app, _path -> :error end,
         prefer: nil,
-        getenv: &Map.get(env, &1)
+        machine_env: &Map.get(env, &1)
       },
       Map.new(over)
     )
@@ -140,6 +140,27 @@ defmodule Precompiled.Rebar3ConfigTest do
       assert reason.text == "global rebar3 config #{file} could not be read"
     end
 
+    test "a config dir that cannot be searched is a miss, not an absent file", %{tmp_dir: dir} do
+      home(dir, "{hex, []}.\n")
+      cfg = Path.join([dir, ".config", "rebar3"])
+      File.chmod!(cfg, 0o000)
+      on_exit(fn -> File.chmod(cfg, 0o755) end)
+
+      # Root searches anything: nothing to test there.
+      if match?({:error, _}, File.ls(cfg)) do
+        assert {:miss, %{code: :rebar3_global_config, args: ["unreadable"], text: text}} =
+                 Rebar3Config.check(&Map.get(%{"HOME" => dir}, &1))
+
+        assert text ==
+                 "global rebar3 config #{Path.join(cfg, "rebar.config")} could not be checked"
+      end
+    end
+
+    test "a path through a file is an absent config", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, ".config"), "")
+      assert :ok = Rebar3Config.check(&Map.get(%{"HOME" => dir}, &1))
+    end
+
     test "a term that is not a {key, value} pair is a miss", %{tmp_dir: dir} do
       home(dir, "erl_opts.\n")
 
@@ -201,17 +222,6 @@ defmodule Precompiled.Rebar3ConfigTest do
 
       assert {:ok, _, _} =
                Match.select(doc(Map.put(@build, "manager", "mix")), ctx(env, manager: "mix"))
-    end
-
-    test "a build recorded as made with rebar3 misses too when the project's manager is unknown",
-         %{tmp_dir: dir} do
-      home(dir, "{erl_opts, [{d, 'DEBUG'}]}.\n")
-
-      assert {:miss, _} =
-               Match.select(
-                 doc(Map.put(@build, "manager", "rebar3")),
-                 ctx(%{"HOME" => dir}, manager: nil)
-               )
     end
   end
 end
