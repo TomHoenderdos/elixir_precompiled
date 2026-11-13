@@ -777,6 +777,24 @@ defmodule Precompiled.Device.RulesTest do
       end
     end
 
+    test "a config_order item with a field missing or of the wrong shape is malformed" do
+      item = order_item(enc(:error), enc({:ok, 1}))
+      ctx = with_config(ctx(loaded: @both_loaded), {:ok, 1})
+
+      for bad <- [
+            Map.delete(item, "default"),
+            Map.delete(item, "reader"),
+            Map.delete(item, "seen"),
+            %{item | "reader" => 1},
+            %{item | "default" => 1},
+            %{item | "app" => :fx_order_app},
+            %{item | "path" => "k"},
+            %{item | "path" => ["k", "deeper"]}
+          ] do
+        assert {:miss, "malformed entry", 9} = Rules.check(with_inputs([bad]), "recon", ctx)
+      end
+    end
+
     test "config_order for apps being installed waits for application:load/1" do
       item = order_item(enc(:error), enc({:ok, 1}), "telemetry", "x")
       b = put_in(build(deps: @tel), ["build", "compile_inputs"], [item])

@@ -366,6 +366,7 @@ defmodule Precompiled.Device.Rules do
   # wherever the two apps are. It is then a compile_env item (compile_env/4,
   # by CompileInputs.as_compile_env/2); the rest miss.
   defp order_decidable?(%{"default" => default}), do: CompileInputs.no_default?(default)
+  defp order_decidable?(_item), do: false
 
   defp items_well_formed(items) when is_list(items) do
     if Enum.all?(items, &env_item?/1), do: :ok, else: @malformed

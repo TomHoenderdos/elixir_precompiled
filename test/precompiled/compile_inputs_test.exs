@@ -89,6 +89,18 @@ defmodule Precompiled.CompileInputsTest do
       assert [] = CompileInputs.as_compile_env([%{yes | "seen" => 1}], decidable?)
     end
 
+    test "a config_order item missing a field is malformed, and never a compile_env item" do
+      decidable? = fn _ -> true end
+
+      for bad <- [
+            Map.delete(dev_order(rec(:error)), "default"),
+            %{dev_order(rec(:error)) | "reader" => 1}
+          ] do
+        assert {:miss, %{code: :malformed_entry}} = CompileInputs.device([bad], decidable?)
+        assert [] = CompileInputs.as_compile_env([bad], decidable?)
+      end
+    end
+
     test "no_default? holds only for a recorded unset default" do
       assert CompileInputs.no_default?(rec(:error))
       refute CompileInputs.no_default?(rec({:ok, 1}))

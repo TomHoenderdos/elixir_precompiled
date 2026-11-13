@@ -53,10 +53,10 @@ defmodule Precompiled.CompileInputs do
   # checks: the value the reader saw, against the device's config.
   @spec as_compile_env(term(), (map() -> boolean())) :: [map()]
   def as_compile_env(items, decidable?) when is_list(items) do
-    for %{"kind" => "config_order", "app" => app, "path" => [key], "seen" => seen} = item <- items,
-        is_binary(app) and is_binary(key) and is_binary(seen),
+    for item <- items,
+        order_item?(item),
         decidable?.(item),
-        do: %{"app" => app, "path" => [key], "value" => seen}
+        do: %{"app" => item["app"], "path" => item["path"], "value" => item["seen"]}
   end
 
   def as_compile_env(_items, _decidable?), do: []
@@ -168,16 +168,32 @@ defmodule Precompiled.CompileInputs do
     do: build_set(item, &set_at_build/1)
 
   # Decidable ones are checked as compile_env items (as_compile_env/2),
-  # which takes exactly the items this clause accepts.
-  defp device_item(
-         %{"kind" => "config_order", "app" => app, "path" => [key], "seen" => seen} = item,
-         decidable?
-       )
-       when is_binary(app) and is_binary(key) and is_binary(seen) do
-    if decidable?.(item), do: :ok, else: {:miss, Reason.new(:config_order_differs, [app, key])}
+  # which takes exactly the items order_item?/1 accepts; any other shape is
+  # malformed.
+  defp device_item(%{"kind" => "config_order"} = item, decidable?) do
+    cond do
+      not order_item?(item) -> malformed()
+      decidable?.(item) -> :ok
+      true -> {:miss, Reason.new(:config_order_differs, [item["app"], hd(item["path"])])}
+    end
   end
 
   defp device_item(item, _decidable?), do: whole(item)
+
+  # A config_order item in the shape the portal emits.
+  defp order_item?(%{
+         "kind" => "config_order",
+         "app" => app,
+         "path" => [key],
+         "reader" => reader,
+         "default" => default,
+         "seen" => seen
+       }),
+       do:
+         is_binary(app) and is_binary(key) and is_binary(reader) and is_binary(default) and
+           is_binary(seen)
+
+  defp order_item?(_item), do: false
 
   # Set by an earlier write in the same build: its value follows from the
   # build's own inputs, which are checked as items of their own.
