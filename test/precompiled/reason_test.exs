@@ -10,7 +10,7 @@ defmodule Precompiled.ReasonTest do
              build_method_override build_method_mismatch malformed_entry rule8_unscannable
              rule8_env rule8_target build_predates toolchain_elixir toolchain_otp
              dep_env_differs checksum_differs closure_mismatch closure_checksum closure_absent
-             closure_without compile_env_differs excepted revoked_provenance
+             closure_without closure_env_absent compile_env_differs excepted revoked_provenance
              revoked_not_in_batch remove_failed deadline_passed fetch_failed verify_failed
              install_failed internal system_version_abi toolchain_otp_minor
              needed_lib_missing symbol_version_missing system_unknown system_bound_compile
@@ -18,7 +18,7 @@ defmodule Precompiled.ReasonTest do
 
   test "the codes are exactly the table shared with the portal" do
     assert Reason.codes() == @shared
-    assert length(Reason.codes()) == 41
+    assert length(Reason.codes()) == 42
   end
 
   test "the codes for matching across releases render their templates" do

@@ -5,8 +5,10 @@
 defmodule Precompiled.Env.MixProject do
   @moduledoc false
   # Build time, inside a Mix project: the deps Mix is about to compile, the
-  # project's lock and build dir, and the Nerves system from the build plan
-  # when the loaded nerves has one (the Nerves fork).
+  # project's lock (versions and checksums), each dep's children for the
+  # current env (which optional deps are present), the build dir, and the
+  # Nerves system from the build plan when the loaded nerves has one (the
+  # Nerves fork).
 
   alias Precompiled.{Env, Fetch}
 
@@ -31,6 +33,7 @@ defmodule Precompiled.Env.MixProject do
       tooling: nerves_children_from(deps),
       mix_target: Atom.to_string(Mix.target()),
       build_methods: build_methods_from(deps),
+      present_deps: present_deps_from(deps),
       compile_order:
         Precompiled.CompileOrder.from_deps(
           deps,
@@ -59,6 +62,16 @@ defmodule Precompiled.Env.MixProject do
     do: Atom.to_string(manager)
 
   defp manager_name(_), do: nil
+
+  @doc false
+  # Each dep's children as Mix loaded them for the current env and target:
+  # Mix.Dep.Converger keeps an optional child only when something in this
+  # env brings it in, and drops a dep whose `only:`/`targets:` excludes it,
+  # whereas mix.lock holds every env's deps. Plain data, as the device-side
+  # modules must never see a %Mix.Dep{}.
+  @spec present_deps_from([Mix.Dep.t()]) :: Env.present_deps()
+  def present_deps_from(deps),
+    do: Map.new(deps, &{&1.app, &1.deps |> Enum.map(fn child -> child.app end) |> Enum.sort()})
 
   @doc false
   # The closure of nerves' children as Mix loaded them: each Mix.Dep names

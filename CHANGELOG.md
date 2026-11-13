@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+* On your build machine, a dependency's optional dependencies count as
+  present only when Mix compiles it with them in the current env, not
+  whenever `mix.lock` has them. A project that pulls an optional
+  dependency in `only: :test` (as `phx_new` does lazy_html for
+  phoenix_live_view) no longer misses the build made without it in dev
+  and prod, and no longer accepts there a build made with it, which Mix
+  would compile differently: that misses with `built with NAME, which
+  Mix leaves out of it in this env`. In test the build with it matches,
+  as before. Versions and checksums are still checked against the lock.
+  `Mix.install/2` projects and devices behave as before.
+
 ## v0.6.0 - 2026-11-13
 
 * Builds whose compile read an environment variable or the whole

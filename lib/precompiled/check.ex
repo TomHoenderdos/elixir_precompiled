@@ -639,6 +639,7 @@ defmodule Precompiled.Check do
       version: candidate.version,
       lock_entry: candidate.lock_entry,
       lock: env.lock,
+      present_deps: present_deps(env, candidate.name),
       system: env.system || {"host", ""},
       elixir: elixir,
       otp: otp,
@@ -655,6 +656,16 @@ defmodule Precompiled.Check do
       build_method_unknown: Map.get(method, :unknown),
       systems: Map.get(config, :systems_table)
     }
+  end
+
+  # The candidate's children for the current env, from a Mix project's
+  # env (Env.MixProject); nil without them (Env.MixInstall), or for a dep
+  # Mix did not load, and the lock decides which optional deps are there.
+  defp present_deps(env, name) do
+    case Map.get(env, :present_deps) do
+      %{^name => children} -> children
+      _ -> nil
+    end
   end
 
   # What the dep's own sources read at compile time (SourceScan), from the

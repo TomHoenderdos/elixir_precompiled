@@ -28,7 +28,8 @@ defmodule Precompiled.Env do
           tooling: [atom()] | nil,
           mix_target: String.t(),
           build_methods: build_methods(),
-          compile_order: compile_order() | nil
+          compile_order: compile_order() | nil,
+          present_deps: present_deps() | nil
         }
 
   @typedoc """
@@ -51,6 +52,14 @@ defmodule Precompiled.Env do
   library.
   """
   @type compile_order :: map() | {:ambiguous, String.t(), map()}
+
+  @typedoc """
+  Per dependency, its children as Mix loads them for the current env and
+  target: an optional dependency nothing in this env brings in is not
+  there, even when `mix.lock` has it (e.g. a project's `only: :test`
+  dependency in dev). Read only by this library.
+  """
+  @type present_deps :: %{optional(atom()) => [atom()]}
 
   @overrides [:manager, :compile, :system_env]
 
@@ -80,7 +89,11 @@ defmodule Precompiled.Env do
             build_methods: %{},
             # The deps.compile order (Precompiled.CompileOrder), for config_order
             # items; nil when not read from a Mix project.
-            compile_order: nil
+            compile_order: nil,
+            # Each dep's children in the current env (Mix.Dep.load_and_cache/0),
+            # for the declared-deps rule; nil when not read from a Mix project,
+            # and the lock decides which optional deps are present.
+            present_deps: nil
 
   @doc """
   The locked Hex entries among `apps`, in the order given. `envs` names each

@@ -182,6 +182,9 @@ defmodule Precompiled.Device.Rules do
   # An optional dependency the device lacks and the call did not ask for is
   # skipped: the package runs without that integration, so the build stays
   # installable, whether or not its lock has the dependency.
+  # There is no Mix here, so which optional deps are present is never read
+  # from Mix's env-resolved dep tree, as the host's declared-deps rule does
+  # (Env.MixProject's present_deps); this rule is unchanged by it.
   defp runtime_deps(build, name, b, ctx, acc) do
     with :ok <- Match.present(b, "deps"),
          :ok <- deps_well_formed(b["deps"]),

@@ -582,6 +582,58 @@ defmodule Precompiled.MatchTest do
       c = ctx(%{lock_entry: @ash_opt, lock: Map.put(@lock, :ash, @ash_opt)})
       assert {:ok, _, _} = Match.select(manifest(), c)
     end
+
+    # decimal is in the lock because the project declares it `only: :test`
+    # (as phx_new does lazy_html). `present_deps` is ash's children as
+    # Mix.Dep.load_and_cache/0 gives them in the current env.
+    test "an optional dep locked only for :test is absent in dev" do
+      lock = Map.merge(@lock, %{ash: @ash_opt, decimal: @decimal})
+      c = ctx(%{lock_entry: @ash_opt, lock: lock, present_deps: [:spark]})
+
+      assert {:ok, _, "nerves_system_rpi4"} = Match.select(manifest(), c)
+
+      with_decimal =
+        entry()
+        |> put_in(["build", "deps", "decimal"], %{"version" => "2.3.0", "checksum" => "DECOUTER"})
+
+      assert {:miss, %Precompiled.Reason{code: :closure_env_absent, args: ["decimal"]} = r} =
+               Match.select_reason(manifest("nerves_system_rpi4", with_decimal), c)
+
+      assert r.text == "built with decimal, which Mix leaves out of it in this env"
+    end
+
+    test "an optional dep locked only for :test is present in test" do
+      lock = Map.merge(@lock, %{ash: @ash_opt, decimal: @decimal})
+      c = ctx(%{lock_entry: @ash_opt, lock: lock, present_deps: [:spark, :decimal]})
+
+      assert {:miss, "built without decimal, lock has 2.3.0"} = Match.select(manifest(), c)
+
+      with_decimal =
+        entry()
+        |> put_in(["build", "deps", "decimal"], %{"version" => "2.3.0", "checksum" => "DECOUTER"})
+
+      assert {:ok, _, "nerves_system_rpi4"} =
+               Match.select(manifest("nerves_system_rpi4", with_decimal), c)
+    end
+
+    # A child Mix loads but the lock lacks (a path dep) has nothing to
+    # compare, as before.
+    test "a present child the lock does not have is not required" do
+      c =
+        ctx(%{
+          lock_entry: @ash_opt,
+          lock: Map.put(@lock, :ash, @ash_opt),
+          present_deps: [:spark, :decimal]
+        })
+
+      assert {:ok, _, _} = Match.select(manifest(), c)
+    end
+
+    test "without the env's children (nil) the lock decides, as on a device" do
+      lock = Map.merge(@lock, %{ash: @ash_opt, decimal: @decimal})
+      c = ctx(%{lock_entry: @ash_opt, lock: lock, present_deps: nil})
+      assert {:miss, "built without decimal, lock has 2.3.0"} = Match.select(manifest(), c)
+    end
   end
 
   describe "select/2 with both pure_elixir and a system entry" do

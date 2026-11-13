@@ -97,8 +97,22 @@ and then the device checks its own libraries too: see
 - every dependency the build was compiled against is in your `mix.lock`,
   at the same version and checksum;
 - every dependency the package declares (optional ones included) that
-  your lock has was also in the build. A build made *without* an optional
-  dependency you have would lack that integration.
+  is present in your project was also in the build, and one that is not
+  present was not. A build made *without* an optional dependency you have
+  would lack that integration; one made *with* an optional dependency
+  Mix leaves out would have it where your own compile would not
+  (`built with NAME, which Mix leaves out of it in this env`).
+
+On your build machine, present means what Mix itself compiles the
+package with in the current `MIX_ENV` and `MIX_TARGET`, not everything in
+`mix.lock`. The lock is shared by every env: a project that declares
+`{:lazy_html, ">= 0.1.0", only: :test}`, as `phx_new` does, has lazy_html
+in its lock in dev and prod too, yet Mix gives `phoenix_live_view` (which
+lists it as optional) no lazy_html there. So in dev and prod the build
+without lazy_html matches, and in test the one with it. Versions and
+checksums are still compared against the lock. In a `Mix.install/2`
+project the lock alone decides which declared dependencies are present,
+as before.
 
 **Rule 8, compile-time inputs.**
 

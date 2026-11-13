@@ -43,6 +43,20 @@ defmodule Precompiled.Env.MixProjectTest do
     assert MixProject.system_from_module(NervesWithPlan) == {"nerves_system_rpi4", "1.31.0"}
   end
 
+  # Mix drops an optional child no other dep brings in for the current env:
+  # in dev the project's `only: :test` decimal is gone, so ash has none.
+  test "present_deps_from takes each dep's children for the current env" do
+    dep = fn app, children -> %Mix.Dep{app: app, deps: Enum.map(children, &%Mix.Dep{app: &1})} end
+
+    dev = [dep.(:spark, []), dep.(:ash, [:spark])]
+    test_env = [dep.(:spark, []), dep.(:decimal, []), dep.(:ash, [:spark, :decimal])]
+
+    assert MixProject.present_deps_from(dev) == %{spark: [], ash: [:spark]}
+
+    assert MixProject.present_deps_from(test_env) ==
+             %{spark: [], decimal: [], ash: [:decimal, :spark]}
+  end
+
   test "candidates_from keeps Hex deps Mix would compile now" do
     lock = %{ash: @ash, jason: @jason, decimal: @decimal}
     dep = fn app, status, scm -> %Mix.Dep{app: app, status: status, scm: scm} end

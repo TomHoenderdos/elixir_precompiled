@@ -27,6 +27,9 @@ defmodule Precompiled.Match do
           # The environment a compile here sees (System.get_env/1 when absent).
           optional(:getenv) => (String.t() -> String.t() | nil),
           optional(:compile_order) => Precompiled.Env.compile_order() | nil,
+          # The package's children for the current env (Env.MixProject), nil
+          # when unknown: then every dep the lock has counts as present.
+          optional(:present_deps) => [atom()] | nil,
           optional(:user_config) => (String.t(), String.t() -> term()),
           name: String.t(),
           version: String.t(),
@@ -273,7 +276,9 @@ defmodule Precompiled.Match do
       end,
       fn -> present_reason(b, "deps") end,
       fn -> deps_ok(b["deps"], ctx.lock) end,
-      fn -> declared_deps_ok(ctx.lock_entry, b["deps"], ctx.lock) end,
+      fn ->
+        declared_deps_ok(ctx.lock_entry, b["deps"], ctx.lock, Map.get(ctx, :present_deps))
+      end,
       fn -> present_reason(b, "compile_env") end,
       fn -> compile_env_reason(b["compile_env"], ctx.config) end,
       fn ->
@@ -688,28 +693,52 @@ defmodule Precompiled.Match do
     end)
   end
 
-  # Every dep the package declares (optional ones included) that this
-  # project locks must have been in the build: an optional dep changes
-  # compile-time branches (`Code.ensure_loaded?/1`), so a build made without
-  # it is not the build Mix would make here. Versions and checksums of the
-  # ones present were already checked by `deps_ok/2`.
-  defp declared_deps_ok({:hex, _, _, _, _, declared, _, _}, built, lock) do
+  # Every dep the package declares (optional ones included) that is
+  # present here must have been in the build, and one that is not present
+  # must not have been: an optional dep changes compile-time branches
+  # (`Code.ensure_loaded?/1`), so a build made with or without it is not
+  # the build Mix would make here. Versions and checksums of the ones built
+  # were already checked by `deps_ok/2`, against the lock.
+  #
+  # Present means locked and, when `present` is known, among the package's
+  # children for the current env: Mix leaves out an optional dep nothing in
+  # this env brings in (a project's `only: :test` dep in dev), though the
+  # lock, shared by every env, has it. `present` is nil where no Mix
+  # project was loaded (Mix.install); there the lock alone decides, and a
+  # build with an optional dep this env leaves out is not refused. The
+  # device layer does not use this rule (Precompiled.Device.Rules).
+  defp declared_deps_ok({:hex, _, _, _, _, declared, _, _}, built, lock, present) do
     Enum.reduce_while(declared, :ok, fn {name, _req, _opts}, :ok ->
-      case lock[name] do
-        nil ->
+      entry = lock[name]
+      built? = Map.has_key?(built, Atom.to_string(name))
+
+      cond do
+        entry == nil and present == nil ->
           {:cont, :ok}
 
-        entry ->
-          if Map.has_key?(built, Atom.to_string(name)),
-            do: {:cont, :ok},
-            else:
+        present != nil and name not in present ->
+          if built?,
+            do:
               {:halt,
                {:miss,
                 Reason.new(
-                  :closure_without,
-                  [Atom.to_string(name), locked_arg(entry)],
-                  "built without #{name}, lock has #{locked_version(entry)}"
-                )}}
+                  :closure_env_absent,
+                  [Atom.to_string(name)],
+                  "built with #{name}, which Mix leaves out of it in this env"
+                )}},
+            else: {:cont, :ok}
+
+        entry == nil or built? ->
+          {:cont, :ok}
+
+        true ->
+          {:halt,
+           {:miss,
+            Reason.new(
+              :closure_without,
+              [Atom.to_string(name), locked_arg(entry)],
+              "built without #{name}, lock has #{locked_version(entry)}"
+            )}}
       end
     end)
   end

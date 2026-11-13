@@ -16,6 +16,8 @@ defmodule Precompiled.Env.MixInstall do
   # (it carries the provenance file) is rechecked against the current batch,
   # as in a Mix project's _build. Check removing one makes Mix.install/2
   # compile it from the sources deps.get already fetched.
+  # present_deps stays nil: the lock alone decides which optional deps a
+  # candidate's build must have been made with.
 
   alias Precompiled.{Env, Fetch}
 

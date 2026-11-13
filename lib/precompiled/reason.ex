@@ -36,6 +36,7 @@ defmodule Precompiled.Reason do
     closure_checksum: "built against {0} {1} with another checksum",
     closure_absent: "built against {0} {1}, not in lock",
     closure_without: "built without {0}, lock has {1}",
+    closure_env_absent: "built with {0}, which Mix leaves out of it in this env",
     compile_env_differs: "compile_env differs: {*}",
     excepted: "excepted: compiled from source",
     revoked_provenance: "revoked: provenance unreadable",
