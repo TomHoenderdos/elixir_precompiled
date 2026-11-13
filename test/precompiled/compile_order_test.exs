@@ -161,7 +161,11 @@ defmodule Precompiled.CompileOrderTest do
       seen =
         for [app, value] <- lines, app != "solo_b", into: %{}, do: {app, value == "{:ok, 1}"}
 
-      assert Enum.any?(seen, &elem(&1, 1)) and not Enum.all?(seen, &elem(&1, 1))
+      # Mix before 1.19 compiles solo_b first, so every reader comes after
+      # it; from 1.19 on base compiles before it and sees nothing. Either
+      # way each reader's prediction is checked below.
+      assert Enum.any?(seen, &elem(&1, 1))
+      if hd(real) != "solo_b", do: refute(Enum.all?(seen, &elem(&1, 1)))
 
       for {reader, saw_default?} <- seen do
         assert loaded[reader] == saw_default?, reader
