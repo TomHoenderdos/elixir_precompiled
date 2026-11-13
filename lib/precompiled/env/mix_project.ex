@@ -30,7 +30,12 @@ defmodule Precompiled.Env.MixProject do
       installed_envs: Map.new(installed),
       tooling: nerves_children_from(deps),
       mix_target: Atom.to_string(Mix.target()),
-      build_methods: build_methods_from(deps)
+      build_methods: build_methods_from(deps),
+      compile_order:
+        Precompiled.CompileOrder.from_deps(
+          deps,
+          System.get_env("MIX_OS_DEPS_COMPILE_PARTITION_COUNT")
+        )
     }
   end
 

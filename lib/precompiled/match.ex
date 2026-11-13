@@ -26,6 +26,8 @@ defmodule Precompiled.Match do
           optional(:systems) => map() | nil,
           # The environment a compile here sees (System.get_env/1 when absent).
           optional(:getenv) => (String.t() -> String.t() | nil),
+          optional(:compile_order) => Precompiled.Env.compile_order() | nil,
+          optional(:user_config) => (String.t(), String.t() -> term()),
           name: String.t(),
           version: String.t(),
           lock_entry: tuple(),
@@ -277,7 +279,11 @@ defmodule Precompiled.Match do
       fn ->
         Precompiled.CompileInputs.host(
           b["compile_inputs"],
-          Map.get(ctx, :getenv, &System.get_env/1)
+          Map.get(ctx, :getenv, &System.get_env/1),
+          %{
+            compile_order: Map.get(ctx, :compile_order),
+            user_config: Map.get(ctx, :user_config, &Precompiled.CompileInputs.user_config/2)
+          }
         )
       end
     ]

@@ -7,16 +7,32 @@ defmodule Precompiled.CompileInputs do
   # A build's compile_inputs: what its compile read that the portal could
   # not settle for us, checked on this side. An environment variable's value
   # is compared and never printed: here it may be the user's secret. Only
-  # the variable's name reaches a reason.
+  # the variable's name reaches a reason. A config_order item is checked
+  # against this project's compile order (CompileOrder): only its app and
+  # key names reach a reason.
 
-  alias Precompiled.Reason
+  alias Precompiled.{CompileOrder, Reason}
 
   @max_recorded_bytes 65_536
 
+  @no_order %{compile_order: nil, user_config: &__MODULE__.user_config/2}
+
+  @type order_ctx :: %{
+          compile_order: CompileOrder.t() | nil,
+          user_config: (String.t(), String.t() ->
+                          {:ok, term()} | :error | {:loaded, {:ok, term()} | :error})
+        }
+
   @spec host(term(), (String.t() -> String.t() | nil)) :: :ok | {:miss, Reason.t()}
-  def host(nil, _getenv), do: :ok
-  def host(items, getenv) when is_list(items), do: first_miss(items, &host_item(&1, getenv))
-  def host(_items, _getenv), do: malformed()
+  def host(items, getenv), do: host(items, getenv, @no_order)
+
+  @spec host(term(), (String.t() -> String.t() | nil), order_ctx()) :: :ok | {:miss, Reason.t()}
+  def host(nil, _getenv, _order), do: :ok
+
+  def host(items, getenv, order) when is_list(items),
+    do: first_miss(items, &host_item(&1, getenv, order))
+
+  def host(_items, _getenv, _order), do: malformed()
 
   # A device has no build environment of its firmware to compare with: an
   # item recorded unset is accepted, one recorded set is a miss that says so.
@@ -34,15 +50,86 @@ defmodule Precompiled.CompileInputs do
     end)
   end
 
-  defp host_item(%{"kind" => "env", "name" => name, "value" => value, "set_by" => "host"}, getenv)
+  defp host_item(
+         %{"kind" => "env", "name" => name, "value" => value, "set_by" => "host"},
+         getenv,
+         _order
+       )
        when is_binary(name) and is_binary(value) do
     if recorded?(value, current(getenv.(name))), do: :ok, else: differs(name)
   end
 
-  defp host_item(%{"kind" => "env", "set_by" => "build"} = item, _getenv),
+  defp host_item(%{"kind" => "env", "set_by" => "build"} = item, _getenv, _order),
     do: build_set(item, &differs/1)
 
-  defp host_item(item, _getenv), do: whole(item)
+  # Whether the build's reader saw the app's .app default depends on this
+  # project's compile order (CompileOrder); the user's config wins over it.
+  defp host_item(
+         %{
+           "kind" => "config_order",
+           "app" => app,
+           "path" => [key],
+           "reader" => reader,
+           "default" => default,
+           "seen" => seen
+         },
+         _getenv,
+         order
+       )
+       when is_binary(app) and is_binary(key) and is_binary(reader) and is_binary(default) and
+              is_binary(seen) do
+    with {:ok, seen} <- decode(seen),
+         {:ok, expected} <- expected(app, key, reader, default, order),
+         true <- expected == seen do
+      :ok
+    else
+      _ -> {:miss, Reason.new(:config_order_differs, [app, key])}
+    end
+  end
+
+  defp host_item(item, _getenv, _order), do: whole(item)
+
+  # What the reader would read here: the user's config when set; otherwise
+  # the .app default when the compile order loads the app first, and unset
+  # when it does not. Anything the order cannot say is :unknown.
+  defp expected(app, key, reader, default, %{compile_order: compile_order, user_config: config}) do
+    case config.(app, key) do
+      {:ok, _} = set ->
+        {:ok, set}
+
+      :error ->
+        case CompileOrder.loaded_before?(compile_order, app, reader) do
+          true -> decode(default)
+          false -> {:ok, :error}
+          :unknown -> :unknown
+        end
+
+      {:loaded, env} ->
+        if decode(default) == {:ok, :error}, do: {:ok, env}, else: :unknown
+    end
+  end
+
+  @doc false
+  # The user's config for {app, key}, read before this project's deps are
+  # loaded: config for an unloaded app is the config alone. Once the app is
+  # loaded its env may hold the .app default too, so it is marked.
+  @spec user_config(String.t(), String.t()) ::
+          {:ok, term()} | :error | {:loaded, {:ok, term()} | :error}
+  def user_config(app, key) do
+    with {:ok, a} <- existing_atom(app),
+         {:ok, k} <- existing_atom(key) do
+      env = Application.fetch_env(a, k)
+      if Application.spec(a, :vsn), do: {:loaded, env}, else: env
+    else
+      :none -> :error
+    end
+  end
+
+  defp existing_atom(name) do
+    {:ok, String.to_existing_atom(name)}
+  rescue
+    ArgumentError -> :none
+  end
 
   defp device_item(%{"kind" => "env", "name" => name, "value" => value, "set_by" => "host"})
        when is_binary(name) and is_binary(value) do
@@ -77,14 +164,16 @@ defmodule Precompiled.CompileInputs do
   defp current(nil), do: :error
   defp current(value) when is_binary(value), do: {:ok, value}
 
+  defp recorded?(value, current), do: decode(value) == {:ok, current}
+
   # A recorded value comes from a third-party build: decoded only by
-  # SafeTerm, and anything it refuses (`unrecordable` included) differs.
-  defp recorded?(value, current) do
+  # SafeTerm, and anything it refuses (`unrecordable` included) is :error.
+  defp decode(value) do
     with {:ok, bin} <- Base.url_decode64(value, padding: false),
          {:ok, term} <- Precompiled.SafeTerm.decode(bin, @max_recorded_bytes) do
-      term == current
+      {:ok, term}
     else
-      _ -> false
+      _ -> :error
     end
   end
 end

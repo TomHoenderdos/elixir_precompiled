@@ -1171,6 +1171,28 @@ defmodule Precompiled.MatchTest do
       assert {:miss, "malformed entry"} = Match.select(inputs_doc(%{}), ctx())
     end
 
+    test "a config_order item is checked against the project's compile order" do
+      item = %{
+        "kind" => "config_order",
+        "app" => "a",
+        "path" => ["k"],
+        "reader" => "r",
+        "default" => ienc({:ok, 1}),
+        "seen" => ienc({:ok, 1})
+      }
+
+      dep = &%Mix.Dep{app: &1, deps: [], manager: :mix, opts: []}
+      before = Precompiled.CompileOrder.from_deps([dep.(:a), dep.(:r)], nil)
+      later = Precompiled.CompileOrder.from_deps([dep.(:r), dep.(:a)], nil)
+      unset = fn _, _ -> :error end
+
+      assert {:ok, _, _} =
+               Match.select(inputs_doc([item]), ctx(compile_order: before, user_config: unset))
+
+      assert {:miss, "compile-time config a k would differ in this project"} =
+               Match.select(inputs_doc([item]), ctx(compile_order: later, user_config: unset))
+    end
+
     test "builds and builds_with_inputs are both read" do
       doc = put_in(inputs_doc([]), ["versions", "3.5.2", "builds"], [pe(@build)])
       assert {:ok, _, _} = Match.select(doc, ctx())

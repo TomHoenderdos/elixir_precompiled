@@ -27,7 +27,8 @@ defmodule Precompiled.Env do
           installed_envs: %{optional(atom()) => String.t()},
           tooling: [atom()] | nil,
           mix_target: String.t(),
-          build_methods: build_methods()
+          build_methods: build_methods(),
+          compile_order: compile_order() | nil
         }
 
   @typedoc """
@@ -42,6 +43,14 @@ defmodule Precompiled.Env do
   could not load the dependencies, in which case no build matches.
   """
   @type build_methods :: %{optional(atom()) => build_method()} | {:unknown, String.t()}
+
+  @typedoc """
+  The order `mix deps.compile` compiles this project's dependencies in, and
+  what each one finds loaded when it compiles, or `{:ambiguous, why}` when
+  there is no single order (a partitioned compile). Read only by this
+  library.
+  """
+  @type compile_order :: map() | {:ambiguous, String.t()}
 
   @overrides [:manager, :compile, :system_env]
 
@@ -68,7 +77,10 @@ defmodule Precompiled.Env do
             # The project's MIX_TARGET name, for deps that read Mix.target() at
             # compile time.
             mix_target: "host",
-            build_methods: %{}
+            build_methods: %{},
+            # The deps.compile order (Precompiled.CompileOrder), for config_order
+            # items; nil when not read from a Mix project.
+            compile_order: nil
 
   @doc """
   The locked Hex entries among `apps`, in the order given. `envs` names each
