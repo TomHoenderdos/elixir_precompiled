@@ -28,7 +28,7 @@ A build of a candidate is installed only when **every** rule holds.
 | 5 | Checksum | have the package checksum in your `mix.lock` | it is the exact same release |
 | 6 | Dependencies | be compiled against the versions and checksums in your `mix.lock` | macros and inlined code from dependencies are baked in |
 | 7 | `compile_env` | have read the same `Application.compile_env` values as your config | those values are baked into the beams |
-| 8 | Compile-time inputs | not depend on build-machine facts it can't record (see below) | otherwise it could differ from your build |
+| 8 | Compile-time inputs | have read the same environment variables your environment gives, and not depend on build-machine facts it can't record (see below) | otherwise it could differ from your build |
 | 9 | Build method | be built the way Mix builds the dependency here: no declaration of it (yours or a package's) sets any of `:manager`, `:compile` or `:system_env`, and a manager the build records is the one Mix uses here | an override, or another manager, builds other files |
 
 ### The fine print
@@ -107,17 +107,33 @@ and then the device checks its own libraries too: see
   `pure_elixir` build on a device target. It gets a system build only when
   that build was made under your target name: the recorded one, or else
   the system's conventional one (`nerves_system_rpi4` → `rpi4`).
-- A dependency that reads an environment variable at module level in
-  `lib/` never matches.
+- A build records the environment variables its compile read
+  (`compile_inputs`), in `lib/` and in `mix.exs` alike, with the value it
+  saw. It matches only when your environment gives the same value, unset
+  or set: otherwise `built with a different NAME`. Your value is compared,
+  never printed or reported.
+- A variable the build set itself (`System.put_env` in a `mix.exs`, then
+  read in `lib/`) is not compared: its value follows from inputs the build
+  recorded. When those inputs could not be recorded, it is a miss like any
+  other differing variable.
+- A build whose compile read the whole environment (`System.get_env/0`),
+  or whose compile-time config reads could not all be recorded, never
+  matches.
+- A build made before builds recorded their inputs has none: for it, a
+  dependency that reads an environment variable at module level in `lib/`
+  never matches, as before.
 - A dependency whose sources can't be scanned never matches: they don't
   parse, or a file is over 2 MB, or the package over 20 MB.
 
-Not covered by rule 8, because builds record neither:
-
-- environment variables read in a dependency's `mix.exs`;
-- `Application.get_env` in a module body (Elixir already warns about it).
-
-Such a dependency can be served a build made with other values.
+- `Application.get_env` in a module body for an unset key of an app
+  outside the dependency's own tree (Elixir already warns about it): what
+  it sees depends on whether that app compiled first. The build records
+  what it saw and the app's `.app` default. The client predicts the value
+  from your config and the order `mix deps.compile` uses in your project,
+  and misses with `compile-time config APP KEY would differ in this
+  project` when they differ. It predicts a clean compile: an incremental
+  compile, or an app installed precompiled, does not load that app's
+  `.app`, so it can differ from what the prediction assumes.
 
 **Rule 9, build method.**
 
@@ -193,6 +209,19 @@ cannot tell whether a beam-only build's dependency reads the Nerves
 system at compile time. On a device, a beam-only build made on another
 release of your system is accepted without that check. On your build
 machine the check does run.
+
+A device has no build environment of your firmware to compare with. A
+build whose compile read an environment variable that was unset at build
+time is accepted; one built with it set misses, and the line names the
+variable: `built with CI set at compile time; a device cannot check its
+firmware's build environment`.
+
+A device has no compile order either. A build whose dependency read an
+unset config key of an app outside its tree matches only when that app's
+`.app` gives the key no default, both apps are already on the device or
+both arrive with this install, and the device's config gives the value
+the build saw. Otherwise it misses with `compile-time config APP KEY would
+differ in this project`.
 
 ## When nothing matches
 

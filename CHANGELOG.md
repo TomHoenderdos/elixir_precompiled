@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.6.0 - 2026-11-13
+
+* Builds whose compile read an environment variable or the whole
+  environment are now published, with what the compile read
+  (`compile_inputs`). This release reads them; earlier releases never see
+  them and behave as before.
+* On your build machine, a build that read a variable matches only when
+  your environment gives the same value (unset or set alike): otherwise
+  `built with a different NAME`. Your value is never printed or reported.
+  A variable the build set itself, from inputs it recorded, is not
+  compared. A build that read the whole environment, or whose config reads
+  were not all recorded, does not match.
+* On a device, a build that read a variable matches when the variable was
+  unset at build time; one built with it set misses with
+  `built with NAME set at compile time; a device cannot check its
+  firmware's build environment`.
+* A build that records its compile inputs is no longer refused by the
+  module-level `System.get_env` scan (rule 8); builds without them still
+  are.
+* A build whose dependency read an unset config key of an app outside
+  its own dependency tree (`Application.get_env` in a module body) records
+  what it saw and the app's `.app` default. On your build machine the
+  client predicts what `mix deps.compile` would give it in your project,
+  from your config and your deps' compile order: a different value misses
+  with `compile-time config APP KEY would differ in this project`. A
+  partitioned compile (`MIX_OS_DEPS_COMPILE_PARTITION_COUNT` above 1)
+  always misses. On a device such a build matches only when the app's
+  `.app` gives the key no default.
+* New miss report codes: `env_differs`, `env_set_at_build`, `env_all`,
+  `config_unrecorded`, `config_order_differs`.
+
 ## v0.5.1 - 2026-11-12
 
 * On a device, an optional dependency (such as `:rustler` for
