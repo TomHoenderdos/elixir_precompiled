@@ -27,9 +27,9 @@ defmodule Precompiled.Match do
           # The environment a compile here sees (System.get_env/1 when absent).
           optional(:getenv) => (String.t() -> String.t() | nil),
           optional(:compile_order) => Precompiled.Env.compile_order() | nil,
-          # The package's children for the current env (Env.MixProject), nil
-          # when unknown: then every dep the lock has counts as present.
-          optional(:present_deps) => [atom()] | nil,
+          # The package's transitive deps as Mix loads them in the current
+          # env (Env.closure/2), nil when unknown: then the lock decides.
+          optional(:env_closure) => [atom()] | nil,
           optional(:user_config) => (String.t(), String.t() -> term()),
           name: String.t(),
           version: String.t(),
@@ -276,9 +276,7 @@ defmodule Precompiled.Match do
       end,
       fn -> present_reason(b, "deps") end,
       fn -> deps_ok(b["deps"], ctx.lock) end,
-      fn ->
-        declared_deps_ok(ctx.lock_entry, b["deps"], ctx.lock, Map.get(ctx, :present_deps))
-      end,
+      fn -> closure_ok(ctx.lock_entry, b["deps"], ctx.lock, Map.get(ctx, :env_closure)) end,
       fn -> present_reason(b, "compile_env") end,
       fn -> compile_env_reason(b["compile_env"], ctx.config) end,
       fn ->
@@ -693,55 +691,71 @@ defmodule Precompiled.Match do
     end)
   end
 
-  # Every dep the package declares (optional ones included) that is
-  # present here must have been in the build, and one that is not present
-  # must not have been: an optional dep changes compile-time branches
+  # The build's closure must be the one Mix compiles the package with
+  # here: an optional dep changes compile-time branches
   # (`Code.ensure_loaded?/1`), so a build made with or without it is not
-  # the build Mix would make here. Versions and checksums of the ones built
+  # the build Mix would make. Versions and checksums of the deps built
   # were already checked by `deps_ok/2`, against the lock.
   #
-  # Present means locked and, when `present` is known, among the package's
-  # children for the current env: Mix leaves out an optional dep nothing in
-  # this env brings in (a project's `only: :test` dep in dev), though the
-  # lock, shared by every env, has it. `present` is nil where no Mix
-  # project was loaded (Mix.install); there the lock alone decides, and a
-  # build with an optional dep this env leaves out is not refused. The
-  # device layer does not use this rule (Precompiled.Device.Rules).
-  defp declared_deps_ok({:hex, _, _, _, _, declared, _, _}, built, lock, present) do
+  # On a build machine `env_closure` is the package's transitive deps as
+  # Mix loads them in this env (Env.closure/2), and the build's `deps`, its
+  # whole closure, must name exactly those. The lock, shared by every env,
+  # cannot say this: it has a project's `only: :test` dep in dev too, at
+  # any depth, and lacks a path dep Mix loads all the same. A dep in the
+  # env's closure the build lacks misses, one in the build Mix leaves out
+  # misses.
+  #
+  # Where no Mix project was loaded (Mix.install) `env_closure` is nil and
+  # the lock decides: every dep the package declares that the lock has must
+  # be in the build, and nothing deeper is compared. The device layer does
+  # not use this rule (Precompiled.Device.Rules).
+  defp closure_ok(_lock_entry, built, lock, env_closure) when is_list(env_closure) do
+    built = built |> Map.keys() |> MapSet.new()
+    wanted = MapSet.new(env_closure, &Atom.to_string/1)
+
+    case {Enum.sort(MapSet.difference(built, wanted)),
+          Enum.sort(MapSet.difference(wanted, built))} do
+      {[name | _], _} ->
+        {:miss,
+         Reason.new(
+           :closure_env_absent,
+           [name],
+           "built with #{name}, which Mix leaves out of it in this env"
+         )}
+
+      {[], [name | _]} ->
+        {:miss, without(name, lock[String.to_existing_atom(name)])}
+
+      {[], []} ->
+        :ok
+    end
+  end
+
+  defp closure_ok({:hex, _, _, _, _, declared, _, _}, built, lock, nil) do
     Enum.reduce_while(declared, :ok, fn {name, _req, _opts}, :ok ->
       entry = lock[name]
-      built? = Map.has_key?(built, Atom.to_string(name))
 
-      cond do
-        entry == nil and present == nil ->
-          {:cont, :ok}
-
-        present != nil and name not in present ->
-          if built?,
-            do:
-              {:halt,
-               {:miss,
-                Reason.new(
-                  :closure_env_absent,
-                  [Atom.to_string(name)],
-                  "built with #{name}, which Mix leaves out of it in this env"
-                )}},
-            else: {:cont, :ok}
-
-        entry == nil or built? ->
-          {:cont, :ok}
-
-        true ->
-          {:halt,
-           {:miss,
-            Reason.new(
-              :closure_without,
-              [Atom.to_string(name), locked_arg(entry)],
-              "built without #{name}, lock has #{locked_version(entry)}"
-            )}}
-      end
+      if entry == nil or Map.has_key?(built, Atom.to_string(name)),
+        do: {:cont, :ok},
+        else: {:halt, {:miss, without(Atom.to_string(name), entry)}}
     end)
   end
+
+  defp without(name, nil),
+    do:
+      Reason.new(
+        :closure_without,
+        [name, "non_hex"],
+        "built without #{name}, which is not a Hex dependency here"
+      )
+
+  defp without(name, entry),
+    do:
+      Reason.new(
+        :closure_without,
+        [name, locked_arg(entry)],
+        "built without #{name}, lock has #{locked_version(entry)}"
+      )
 
   defp locked_version({:hex, _, v, _, _, _, _, _}), do: v
   defp locked_version(_), do: "a non-Hex source"

@@ -22,10 +22,21 @@ defmodule Precompiled.EnvDepsTest do
   defp views(tmp, mix_env) do
     ebin = Path.dirname(:code.which(Precompiled.Env.MixProject))
 
+    # Mix's side walks each loaded dep's children itself, independently of
+    # the client's Env.closure/2.
     code = """
     Code.prepend_path(#{inspect(ebin)})
-    client = Precompiled.Env.MixProject.load().present_deps
-    mix = Map.new(Mix.Dep.load_and_cache(), &{&1.app, Enum.sort(Enum.map(&1.deps, fn d -> d.app end))})
+    tree = Precompiled.Env.MixProject.load().present_deps
+    client = Map.new([:parent, :top], &{&1, Precompiled.Env.closure(tree, &1)})
+    by_app = Map.new(Mix.Dep.load_and_cache(), &{&1.app, &1})
+    walk = fn walk, apps, seen ->
+      Enum.reduce(apps, seen, fn app, seen ->
+        if app in seen, do: seen, else: walk.(walk, Enum.map(by_app[app].deps, & &1.app), [app | seen])
+      end)
+    end
+    mix = Map.new([:parent, :top], fn app ->
+      {app, Enum.sort(walk.(walk, Enum.map(by_app[app].deps, & &1.app), []))}
+    end)
     IO.puts("VIEWS " <> Base.encode64(:erlang.term_to_binary({client, mix})))
     """
 
@@ -44,18 +55,32 @@ defmodule Precompiled.EnvDepsTest do
   end
 
   @opt {:hex, :opt, "0.1.0", "i", [:mix], [], "hexpm", "OPTOUTER"}
+  @link {:hex, :link, "0.1.0", "i", [:mix],
+         [{:opt, "~> 0.1", [hex: :opt, repo: "hexpm", optional: true]}], "hexpm", "LINKOUTER"}
   @parent {:hex, :parent, "0.1.0", "i", [:mix],
            [{:opt, "~> 0.1", [hex: :opt, repo: "hexpm", optional: true]}], "hexpm", "PARENTOUTER"}
+  @top {:hex, :top, "0.1.0", "i", [:mix],
+        [{:link, "~> 0.1", [hex: :link, repo: "hexpm", optional: false]}], "hexpm", "TOPOUTER"}
+  @lock %{parent: @parent, top: @top, link: @link, opt: @opt}
 
-  # What Match decides for parent's build made with opt and the one made
-  # without it, given the lock a phx_new-style project has in every env.
-  defp decide(present_deps) do
+  defp locked(app) do
+    {:hex, _, v, _, _, _, _, c} = @lock[app]
+    {Atom.to_string(app), %{"version" => v, "checksum" => c}}
+  end
+
+  # What Match decides for a package's build made with opt and the one
+  # made without it, given the lock a phx_new-style project has in every
+  # env (opt locked) and the package's closure in this env (nil: unknown).
+  defp decide(app, env_closure) do
+    {:hex, _, version, _, _, _, _, outer} = @lock[app]
+    base = if app == :top, do: [:link], else: []
+
     ctx = %{
-      name: "parent",
-      version: "0.1.0",
-      lock_entry: @parent,
-      lock: %{parent: @parent, opt: @opt},
-      present_deps: present_deps,
+      name: Atom.to_string(app),
+      version: version,
+      lock_entry: @lock[app],
+      lock: @lock,
+      env_closure: env_closure,
       system: {"host", ""},
       elixir: "1.20.3",
       otp: "29",
@@ -63,25 +88,21 @@ defmodule Precompiled.EnvDepsTest do
       config: fn _app, _path -> :error end
     }
 
-    for {variant, deps} <- [
-          with: %{"opt" => %{"version" => "0.1.0", "checksum" => "OPTOUTER"}},
-          without: %{}
-        ],
-        into: %{} do
+    for {variant, deps} <- [with: [:opt | base], without: base], into: %{} do
       build = %{
         "elixir" => "1.20.3",
         "otp" => "29",
         "dep_env" => "prod",
         "system_version" => nil,
         "run_id" => "r",
-        "deps" => deps,
+        "deps" => Map.new(deps, &locked/1),
         "compile_env" => [],
-        "package_checksum" => "PARENTOUTER"
+        "package_checksum" => outer
       }
 
       manifest = %{
         "versions" => %{
-          "0.1.0" => %{
+          version => %{
             "builds" => [
               %{"target" => "pure_elixir", "ebin" => [], "priv" => [], "build" => build}
             ]
@@ -93,21 +114,25 @@ defmodule Precompiled.EnvDepsTest do
     end
   end
 
-  test "the client's present deps are Mix's children in dev and in test", %{tmp_dir: tmp} do
+  test "the client's env closures are Mix's in dev and in test", %{tmp_dir: tmp} do
     File.cp_r!(@fixture, tmp)
 
     {client, mix} = views(tmp, "dev")
     assert client == mix
-    assert client[:parent] == []
-    refute Map.has_key?(client, :opt)
-    assert decide(client[:parent]) == %{with: :miss, without: :ok}
+    assert client == %{parent: [], top: [:link]}
+    assert decide(:parent, client.parent) == %{with: :miss, without: :ok}
+    # Two levels down: link's optional opt.
+    assert decide(:top, client.top) == %{with: :miss, without: :ok}
 
     {client, mix} = views(tmp, "test")
     assert client == mix
-    assert client[:parent] == [:opt]
-    assert decide(client[:parent]) == %{with: :ok, without: :miss}
+    assert client == %{parent: [:opt], top: [:link, :opt]}
+    assert decide(:parent, client.parent) == %{with: :ok, without: :miss}
+    assert decide(:top, client.top) == %{with: :ok, without: :miss}
 
-    # The lock alone, in either env, wants the build with opt.
-    assert decide(nil) == %{with: :ok, without: :miss}
+    # The lock alone, in either env: the direct optional dep wants the
+    # build with opt; the one two levels down it cannot see.
+    assert decide(:parent, nil) == %{with: :ok, without: :miss}
+    assert decide(:top, nil) == %{with: :ok, without: :ok}
   end
 end

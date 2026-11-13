@@ -2,16 +2,20 @@
 
 ## Unreleased
 
-* On your build machine, a dependency's optional dependencies count as
-  present only when Mix compiles it with them in the current env, not
-  whenever `mix.lock` has them. A project that pulls an optional
-  dependency in `only: :test` (as `phx_new` does lazy_html for
-  phoenix_live_view) no longer misses the build made without it in dev
-  and prod, and no longer accepts there a build made with it, which Mix
-  would compile differently: that misses with `built with NAME, which
-  Mix leaves out of it in this env`. In test the build with it matches,
-  as before. Versions and checksums are still checked against the lock.
-  `Mix.install/2` projects and devices behave as before.
+* On your build machine, a build matches only when it was compiled with
+  exactly the dependencies Mix compiles the package with in your project,
+  at any depth, for the current env: not everything `mix.lock` has. A
+  project that pulls an optional dependency in `only: :test` (as `phx_new`
+  does lazy_html for phoenix_live_view) no longer misses the build made
+  without it in dev and prod, and no longer accepts there a build made
+  with it, directly or further down the tree, which Mix would compile
+  differently: that misses with `built with NAME, which Mix leaves out of
+  it in this env`. In test the build with it matches, as before. A
+  dependency Mix loads but the lock has no Hex entry for (a path
+  dependency with `override: true`) now misses every build that lacks it
+  (`built without NAME, which is not a Hex dependency here`). Versions
+  and checksums are still checked against the lock. `Mix.install/2`
+  projects and devices behave as before.
 
 ## v0.6.0 - 2026-11-13
 

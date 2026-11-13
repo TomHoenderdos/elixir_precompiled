@@ -222,17 +222,15 @@ defmodule Precompiled.CheckTest do
     Check.ctx(candidate, env, config, fn _, _ -> :error end, nil)
   end
 
-  # The env's children for the candidate reach the declared-deps rule; an
-  # env without them (a device, Mix.install) leaves the lock to decide.
-  test "the env's present deps reach Match per candidate", %{config: config, env: env} do
+  # The candidate's closure in the env's dep tree reaches the closure rule;
+  # an env without the tree (a device, Mix.install) leaves the lock to decide.
+  test "the env's closure reaches Match per candidate", %{config: config, env: env} do
     [candidate | _] = env.candidates
-    assert ctx_of(config, env).present_deps == nil
+    assert ctx_of(config, env).env_closure == nil
 
-    env = %{env | present_deps: %{candidate.name => [:spark]}}
-    assert ctx_of(config, env).present_deps == [:spark]
-
-    env = %{env | present_deps: %{}}
-    assert ctx_of(config, env).present_deps == nil
+    tree = %{candidate.name => [:spark], spark: [:decimal], decimal: []}
+    assert ctx_of(config, %{env | present_deps: tree}).env_closure == [:decimal, :spark]
+    assert ctx_of(config, %{env | present_deps: %{}}).env_closure == nil
   end
 
   # The env's compile order reaches the compile_inputs rule through

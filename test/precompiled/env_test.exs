@@ -39,4 +39,12 @@ defmodule Precompiled.EnvTest do
 
     assert Env.overrides(nil) == []
   end
+
+  test "closure is a dep's transitive deps in the env's tree, sorted, or nil" do
+    tree = %{ash: [:spark, :reactor], spark: [:decimal], reactor: [:spark], decimal: []}
+    assert Env.closure(tree, :ash) == [:decimal, :reactor, :spark]
+    assert Env.closure(tree, :decimal) == []
+    assert Env.closure(tree, :absent) == nil
+    assert Env.closure(nil, :ash) == nil
+  end
 end

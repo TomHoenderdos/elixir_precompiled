@@ -10,10 +10,13 @@ defmodule EnvDepsFixture.MixProject do
 
   # parent lists opt as an optional dep; the project pulls opt in only for
   # :test, as phx_new does lazy_html. Mix gives parent the child opt in
-  # test and none in dev, though both envs share one lock.
+  # test and none in dev, though both envs share one lock. top requires
+  # link, which lists opt as optional: opt is in top's closure, two levels
+  # down, only in test.
   defp deps do
     [
       {:parent, path: "deps_src/parent"},
+      {:top, path: "deps_src/top"},
       {:opt, path: "deps_src/opt", only: :test}
     ]
   end

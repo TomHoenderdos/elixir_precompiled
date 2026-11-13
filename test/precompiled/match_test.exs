@@ -584,11 +584,11 @@ defmodule Precompiled.MatchTest do
     end
 
     # decimal is in the lock because the project declares it `only: :test`
-    # (as phx_new does lazy_html). `present_deps` is ash's children as
+    # (as phx_new does lazy_html). `env_closure` is ash's transitive deps as
     # Mix.Dep.load_and_cache/0 gives them in the current env.
     test "an optional dep locked only for :test is absent in dev" do
       lock = Map.merge(@lock, %{ash: @ash_opt, decimal: @decimal})
-      c = ctx(%{lock_entry: @ash_opt, lock: lock, present_deps: [:spark]})
+      c = ctx(%{lock_entry: @ash_opt, lock: lock, env_closure: [:spark]})
 
       assert {:ok, _, "nerves_system_rpi4"} = Match.select(manifest(), c)
 
@@ -604,7 +604,7 @@ defmodule Precompiled.MatchTest do
 
     test "an optional dep locked only for :test is present in test" do
       lock = Map.merge(@lock, %{ash: @ash_opt, decimal: @decimal})
-      c = ctx(%{lock_entry: @ash_opt, lock: lock, present_deps: [:spark, :decimal]})
+      c = ctx(%{lock_entry: @ash_opt, lock: lock, env_closure: [:spark, :decimal]})
 
       assert {:miss, "built without decimal, lock has 2.3.0"} = Match.select(manifest(), c)
 
@@ -616,23 +616,60 @@ defmodule Precompiled.MatchTest do
                Match.select(manifest("nerves_system_rpi4", with_decimal), c)
     end
 
-    # A child Mix loads but the lock lacks (a path dep) has nothing to
-    # compare, as before.
-    test "a present child the lock does not have is not required" do
+    # A dep Mix gives ash here but the lock lacks (a path dep with
+    # override: true) is loaded when ash compiles: no build was made with
+    # it, so every build misses.
+    test "a present dep the lock does not have misses" do
       c =
         ctx(%{
           lock_entry: @ash_opt,
           lock: Map.put(@lock, :ash, @ash_opt),
-          present_deps: [:spark, :decimal]
+          env_closure: [:spark, :decimal]
         })
 
-      assert {:ok, _, _} = Match.select(manifest(), c)
+      assert {:miss,
+              %Precompiled.Reason{code: :closure_without, args: ["decimal", "non_hex"]} = r} =
+               Match.select_reason(manifest(), c)
+
+      assert r.text == "built without decimal, which is not a Hex dependency here"
     end
 
-    test "without the env's children (nil) the lock decides, as on a device" do
+    # ash requires spark, spark optionally uses decimal, and the project
+    # has decimal only for :test. In dev a build made where spark had
+    # decimal compiled with decimal loaded, which Mix would not do here.
+    test "an optional dep two levels down counts against the env's closure" do
+      lock = Map.merge(@lock, %{decimal: @decimal})
+
+      with_decimal =
+        entry()
+        |> put_in(["build", "deps", "decimal"], %{"version" => "2.3.0", "checksum" => "DECOUTER"})
+
+      dev = ctx(%{lock: lock, env_closure: [:spark]})
+
+      assert {:miss, %Precompiled.Reason{code: :closure_env_absent, args: ["decimal"]}} =
+               Match.select_reason(manifest("nerves_system_rpi4", with_decimal), dev)
+
+      assert {:ok, _, _} = Match.select(manifest(), dev)
+
+      test_env = ctx(%{lock: lock, env_closure: [:decimal, :spark]})
+      assert {:miss, "built without decimal, lock has 2.3.0"} = Match.select(manifest(), test_env)
+
+      assert {:ok, _, _} =
+               Match.select(manifest("nerves_system_rpi4", with_decimal), test_env)
+    end
+
+    test "without the env's closure (nil) the lock decides, as on a device" do
       lock = Map.merge(@lock, %{ash: @ash_opt, decimal: @decimal})
-      c = ctx(%{lock_entry: @ash_opt, lock: lock, present_deps: nil})
+      c = ctx(%{lock_entry: @ash_opt, lock: lock, env_closure: nil})
       assert {:miss, "built without decimal, lock has 2.3.0"} = Match.select(manifest(), c)
+
+      # The lock alone does not see a grandchild the build had.
+      with_decimal =
+        entry()
+        |> put_in(["build", "deps", "decimal"], %{"version" => "2.3.0", "checksum" => "DECOUTER"})
+
+      c = ctx(%{lock: lock, env_closure: nil})
+      assert {:ok, _, _} = Match.select(manifest("nerves_system_rpi4", with_decimal), c)
     end
   end
 

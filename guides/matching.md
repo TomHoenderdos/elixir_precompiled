@@ -96,23 +96,31 @@ and then the device checks its own libraries too: see
 
 - every dependency the build was compiled against is in your `mix.lock`,
   at the same version and checksum;
-- every dependency the package declares (optional ones included) that
-  is present in your project was also in the build, and one that is not
-  present was not. A build made *without* an optional dependency you have
-  would lack that integration; one made *with* an optional dependency
-  Mix leaves out would have it where your own compile would not
-  (`built with NAME, which Mix leaves out of it in this env`).
+- on your build machine, the build was compiled with exactly the
+  dependencies Mix compiles the package with in your project, at any
+  depth: its whole dependency tree for the current `MIX_ENV` and
+  `MIX_TARGET`, optional dependencies included. One the build lacks
+  misses with `built without NAME, ...`: it would lack that integration.
+  One Mix leaves out here misses with `built with NAME, which Mix leaves
+  out of it in this env`: it would have an integration your own compile
+  would not.
 
-On your build machine, present means what Mix itself compiles the
-package with in the current `MIX_ENV` and `MIX_TARGET`, not everything in
-`mix.lock`. The lock is shared by every env: a project that declares
+The tree is what Mix loads, not everything in `mix.lock`. The lock is
+shared by every env: a project that declares
 `{:lazy_html, ">= 0.1.0", only: :test}`, as `phx_new` does, has lazy_html
 in its lock in dev and prod too, yet Mix gives `phoenix_live_view` (which
 lists it as optional) no lazy_html there. So in dev and prod the build
-without lazy_html matches, and in test the one with it. Versions and
-checksums are still compared against the lock. In a `Mix.install/2`
-project the lock alone decides which declared dependencies are present,
-as before.
+without lazy_html matches, and in test the one with it; the same holds for
+a package that gets lazy_html further down its tree. A dependency Mix
+loads but the lock has no Hex entry for (a path dependency with
+`override: true`) is in no build, so every build of a package that has it
+in its tree misses. Versions and checksums are still compared against the
+lock.
+
+In a `Mix.install/2` project there is no dependency tree to read: every
+dependency the package declares (optional ones included) that the lock
+has must have been in the build, and dependencies further down are
+compared only by version and checksum.
 
 **Rule 8, compile-time inputs.**
 

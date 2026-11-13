@@ -91,8 +91,8 @@ defmodule Precompiled.Env do
             # items; nil when not read from a Mix project.
             compile_order: nil,
             # Each dep's children in the current env (Mix.Dep.load_and_cache/0),
-            # for the declared-deps rule; nil when not read from a Mix project,
-            # and the lock decides which optional deps are present.
+            # for the closure rule (Env.closure/2); nil when not read from a Mix project,
+            # and the lock decides which declared deps are present.
             present_deps: nil
 
   @doc """
@@ -112,6 +112,25 @@ defmodule Precompiled.Env do
           lock_entry: entry,
           dep_env: Map.get(envs, app, "prod")
         }
+  end
+
+  @doc """
+  The transitive deps of `app` in `tree` (a `t:present_deps/0`), sorted,
+  without `app` itself: what Mix has loaded when it compiles `app` in the
+  current env. nil when the tree is unknown or does not have `app`.
+  """
+  @spec closure(present_deps() | nil, atom()) :: [atom()] | nil
+  def closure(tree, app) when is_map(tree) and is_map_key(tree, app),
+    do: tree |> walk(tree[app], MapSet.new()) |> MapSet.delete(app) |> Enum.sort()
+
+  def closure(_tree, _app), do: nil
+
+  defp walk(_tree, [], seen), do: seen
+
+  defp walk(tree, [app | rest], seen) do
+    if MapSet.member?(seen, app),
+      do: walk(tree, rest, seen),
+      else: walk(tree, Map.get(tree, app, []) ++ rest, MapSet.put(seen, app))
   end
 
   @doc """
