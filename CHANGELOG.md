@@ -24,10 +24,13 @@
   what it saw and the app's `.app` default. On your build machine the
   client predicts what `mix deps.compile` would give it in your project,
   from your config and your deps' compile order: a different value misses
-  with `compile-time config APP KEY would differ in this project`. A
-  partitioned compile (`MIX_OS_DEPS_COMPILE_PARTITION_COUNT` above 1)
-  always misses. On a device such a build matches only when the app's
-  `.app` gives the key no default.
+  with `compile-time config APP KEY would differ in this project`. In a
+  partitioned compile (`MIX_OS_DEPS_COMPILE_PARTITION_COUNT` above 1),
+  such an item misses unless your config sets the key or the app is not
+  among your dependencies (nor part of OTP or Elixir); then it is compared
+  as above. On a device such a build matches only when the app's `.app`
+  gives the key no default and the device's config gives the value the
+  build saw.
 * New miss report codes: `env_differs`, `env_set_at_build`, `env_all`,
   `config_unrecorded`, `config_order_differs`.
 

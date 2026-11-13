@@ -54,8 +54,7 @@ defmodule Precompiled.CompileInputs do
   @spec as_compile_env(term(), (map() -> boolean())) :: [map()]
   def as_compile_env(items, decidable?) when is_list(items) do
     for item <- items,
-        order_item?(item),
-        decidable?.(item),
+        checkable?(item, decidable?),
         do: %{"app" => item["app"], "path" => item["path"], "value" => item["seen"]}
   end
 
@@ -167,18 +166,22 @@ defmodule Precompiled.CompileInputs do
   defp device_item(%{"kind" => "env", "set_by" => "build"} = item, _decidable?),
     do: build_set(item, &set_at_build/1)
 
-  # Decidable ones are checked as compile_env items (as_compile_env/2),
-  # which takes exactly the items order_item?/1 accepts; any other shape is
-  # malformed.
+  # Checkable ones are checked as compile_env items (as_compile_env/2);
+  # any other shape is malformed.
   defp device_item(%{"kind" => "config_order"} = item, decidable?) do
     cond do
       not order_item?(item) -> malformed()
-      decidable?.(item) -> :ok
+      checkable?(item, decidable?) -> :ok
       true -> {:miss, Reason.new(:config_order_differs, [item["app"], hd(item["path"])])}
     end
   end
 
   defp device_item(item, _decidable?), do: whole(item)
+
+  # Decidable, and the value the reader saw was recorded: a seen value the
+  # build could not record has nothing to compare the config with.
+  defp checkable?(item, decidable?),
+    do: order_item?(item) and decidable?.(item) and match?({:ok, _}, decode(item["seen"]))
 
   # A config_order item in the shape the portal emits.
   defp order_item?(%{

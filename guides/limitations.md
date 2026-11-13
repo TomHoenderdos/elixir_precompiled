@@ -2,19 +2,22 @@
 
 What `precompiled` does not do yet, or does not protect against. Each
 item says what happens and what to do about it. Apart from the two items
-under Matching, none of them can make Mix (or a device) use a wrong
-build: the worst case is a dependency that compiles anyway.
+under Matching, and the clean-compile assumption behind the compile
+order prediction (an incremental compile, or an app installed
+precompiled, can differ from it; see
+[Matching](matching.md)), none of them can make Mix (or a device) use a
+wrong build: the worst case is a dependency that compiles anyway.
 
 ## Matching
 
 **Your build environment is recorded only in part.** Builds record the
 environment variables a dependency's compile read and compare them with
 yours, but not your `PATH`, compilers or other tools. A dependency whose
-compile-time output depends on them (a Makefile, `c_src`, an env read in
-`mix.exs` or inside a compile-time function) can be served a build made
-without your values. Variables set in your shell and a global
-`Mix.install(deps, system_env: ...)` count the same. Rule 8 refuses only
-the case it can see: an env read at module level in `lib/`.
+compile-time output depends on them (a Makefile or `c_src`) can be served
+a build made without your values. Variables set in your shell and a
+global `Mix.install(deps, system_env: ...)` count the same. For a build
+without `compile_inputs`, rule 8 refuses only the case it can see: an env
+read at module level in `lib/`.
 *Fix:* list such a dependency in `:except`.
 
 **A device does not scan sources.** On a device, a beam-only build made on

@@ -218,9 +218,8 @@ firmware's build environment`.
 
 A device has no compile order either. A build whose dependency read an
 unset config key of an app outside its tree matches only when that app's
-`.app` gives the key no default, both apps are already on the device or
-both arrive with this install, and the device's config gives the value
-the build saw. Otherwise it misses with `compile-time config APP KEY would
+`.app` gives the key no default and the device's config gives the value
+the build saw, whether or not that app is installed on the device. Otherwise it misses with `compile-time config APP KEY would
 differ in this project`.
 
 ## When nothing matches

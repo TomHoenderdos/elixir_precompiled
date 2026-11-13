@@ -795,6 +795,27 @@ defmodule Precompiled.Device.RulesTest do
       end
     end
 
+    # The app's config reached the reader at the firmware's compile time
+    # whether or not the app is installed here.
+    test "config_order of a skipped optional app is still compared with the device config" do
+      deps = %{"kino" => %{"version" => "0.19.1", "checksum" => "k"}}
+      item = order_item(enc(:error), enc(:error), "kino", "x")
+      b = put_in(build(deps: deps), ["build", "compile_inputs"], [item])
+      spec = app_spec([:kernel, :kino], optional: [:kino])
+
+      assert {:ok, %{skipped: [:kino]}} = Rules.check(b, "x", ctx(app_spec: spec))
+
+      set = ctx(app_spec: spec, config: fn "kino", ["k"] -> {:ok, :live} end)
+      assert {:miss, "compile_env differs: kino [:k]", 8} = Rules.check(b, "x", set)
+    end
+
+    test "a decidable config_order item whose seen value is unrecordable misses" do
+      b = with_inputs([order_item(enc(:error), "unrecordable")])
+
+      assert {:miss, "compile-time config fx_order_app k would differ in this project", 9} =
+               Rules.check(b, "recon", with_config(ctx(loaded: @both_loaded), :error))
+    end
+
     test "config_order for apps being installed waits for application:load/1" do
       item = order_item(enc(:error), enc({:ok, 1}), "telemetry", "x")
       b = put_in(build(deps: @tel), ["build", "compile_inputs"], [item])

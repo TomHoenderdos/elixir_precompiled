@@ -346,8 +346,10 @@ defmodule Precompiled.Device.Rules do
       skipped = MapSet.new(acc.skipped, &Atom.to_string/1)
       ordered = CompileInputs.as_compile_env(b["compile_inputs"], &order_decidable?/1)
 
-      # A skipped app is never loaded here, so its items have nothing to say.
-      items = Enum.reject(b["compile_env"] ++ ordered, &MapSet.member?(skipped, &1["app"]))
+      # A skipped app is never loaded here, so its own compile_env items
+      # have nothing to say. A config_order item is kept: its app's config
+      # reached the reader at the firmware's compile time all the same.
+      items = Enum.reject(b["compile_env"], &MapSet.member?(skipped, &1["app"])) ++ ordered
 
       {deferred, now} =
         Enum.split_with(items, fn %{"app" => app} ->

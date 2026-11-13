@@ -101,6 +101,15 @@ defmodule Precompiled.CompileInputsTest do
       end
     end
 
+    test "a decidable config_order item with an unrecordable seen value misses" do
+      item = dev_order(rec(:error), "unrecordable")
+
+      assert {:miss, %{code: :config_order_differs, args: ["a", "k"]}} =
+               CompileInputs.device([item], fn _ -> true end)
+
+      assert [] = CompileInputs.as_compile_env([item], fn _ -> true end)
+    end
+
     test "no_default? holds only for a recorded unset default" do
       assert CompileInputs.no_default?(rec(:error))
       refute CompileInputs.no_default?(rec({:ok, 1}))
