@@ -18,28 +18,32 @@ defmodule Precompiled.CompileOrder do
   # loads a Mix dep's whole tree before compiling it (Mix.AppLoader), and a
   # loaded app stays loaded. A rebar3, make or custom-compiled dep compiles
   # in an OS process and loads nothing here. An app this project does not
-  # depend on never compiles here, so it is never loaded, unless it ships
-  # with OTP or Elixir: an earlier dep may load one of those all the same.
+  # depend on never compiles here, so it is never loaded, in no partition
+  # either, unless it ships with OTP or Elixir: an earlier dep may load one
+  # of those all the same. Those are found on disk, as Mix has pruned the
+  # code path to the project's deps by the time this runs.
   #
   # The deps are read as plain maps, never as %Mix.Dep{}: this module is
   # reached from the device layer, which must not reference Mix.
 
   @type t ::
           %{apps: [String.t()], mix: MapSet.t(), trees: %{String.t() => MapSet.t()}}
-          | {:ambiguous, String.t()}
+          | {:ambiguous, String.t(), %{apps: MapSet.t(), mix: MapSet.t()}}
 
   @spec from_deps([Mix.Dep.t()], String.t() | nil) :: t()
   def from_deps(deps, partition_count) do
+    deps = Enum.reject(deps, &(Keyword.get(&1.opts, :from_umbrella) == true))
+    apps = Enum.map(deps, &name(&1.app))
+    mix = for d <- deps, mix_compiled?(d), into: MapSet.new(), do: name(d.app)
+
     if partitioned?(partition_count) do
-      {:ambiguous, "MIX_OS_DEPS_COMPILE_PARTITION_COUNT"}
+      {:ambiguous, "MIX_OS_DEPS_COMPILE_PARTITION_COUNT", %{apps: MapSet.new(apps), mix: mix}}
     else
-      deps = Enum.reject(deps, &(Keyword.get(&1.opts, :from_umbrella) == true))
-      apps = Enum.map(deps, &name(&1.app))
       children = Map.new(deps, &{name(&1.app), Enum.map(&1.deps, fn d -> name(d.app) end)})
 
       %{
         apps: apps,
-        mix: for(d <- deps, mix_compiled?(d), into: MapSet.new(), do: name(d.app)),
+        mix: mix,
         trees: Map.new(apps, &{&1, tree(children[&1], children, MapSet.new())})
       }
     end
@@ -77,6 +81,14 @@ defmodule Precompiled.CompileOrder do
     end
   end
 
+  # Partitioned: only an app absent from the deps, which no partition
+  # loads, has an answer.
+  def loaded_before?({:ambiguous, _why, %{apps: apps, mix: mix}}, app, reader) do
+    if MapSet.member?(mix, reader) and not MapSet.member?(apps, app) and not shipped?(app),
+      do: false,
+      else: :unknown
+  end
+
   def loaded_before?(_order, _app, _reader), do: :unknown
 
   defp mix_compiled?(%{manager: :mix, opts: opts}), do: is_nil(opts[:compile])
@@ -99,20 +111,23 @@ defmodule Precompiled.CompileOrder do
   end
 
   defp found_shipped?(app) do
-    case :code.where_is_file(String.to_charlist(app <> ".app")) do
-      :non_existing ->
-        false
-
-      path ->
-        path = List.to_string(path)
-        Enum.any?(shipped_roots(), &String.starts_with?(path, &1 <> "/"))
-    end
+    Enum.any?(shipped_roots(), fn root ->
+      [root, "{#{app},#{app}-*}", "ebin", app <> ".app"]
+      |> Path.join()
+      |> Path.wildcard()
+      |> Enum.any?()
+    end)
   end
 
+  # OTP's lib dir does not depend on the code path; Elixir's own app is
+  # never pruned from it.
   defp shipped_roots() do
-    elixir = :code.lib_dir(:elixir)
     otp = [List.to_string(:code.lib_dir())]
-    if is_list(elixir), do: [Path.dirname(List.to_string(elixir)) | otp], else: otp
+
+    case :code.lib_dir(:elixir) do
+      dir when is_list(dir) -> [Path.dirname(List.to_string(dir)) | otp]
+      _ -> otp
+    end
   end
 
   defp partitioned?(nil), do: false

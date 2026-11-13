@@ -222,6 +222,43 @@ defmodule Precompiled.CheckTest do
     Check.ctx(candidate, env, config, fn _, _ -> :error end, nil)
   end
 
+  # The env's compile order reaches the compile_inputs rule through
+  # Check.ctx/5: precompiled_wiring_cfg compiles before ash, so ash saw its
+  # .app default, which nothing configures here.
+  test "a config_order item hits through the env's compile order", %{
+    f: f,
+    config: config,
+    env: env
+  } do
+    rec = &(&1 |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false))
+
+    item = %{
+      "kind" => "config_order",
+      "app" => "precompiled_wiring_cfg",
+      "path" => ["precompiled_wiring_key"],
+      "reader" => "ash",
+      "default" => rec.({:ok, 1}),
+      "seen" => rec.({:ok, 1})
+    }
+
+    entry = put_in(good_entry(f, "ash", "1.31.0"), ["build", "compile_inputs"], [item])
+
+    F.publish(f, %{
+      "ash" => %{"versions" => %{"3.5.2" => %{"builds" => [], "builds_with_inputs" => [entry]}}}
+    })
+
+    dep = &%Mix.Dep{app: &1, deps: [], manager: :mix, opts: []}
+    env = %{env | candidates: [hd(env.candidates)]}
+    order = Precompiled.CompileOrder.from_deps([dep.(:precompiled_wiring_cfg), dep.(:ash)], nil)
+
+    out = run_capturing(config, env)
+    assert_received {:report, {:ok, %{hits: 0, misses: 1}}}
+    assert out =~ "compile-time config precompiled_wiring_cfg precompiled_wiring_key would differ"
+
+    run_capturing(config, %{env | compile_order: order})
+    assert_received {:report, {:ok, %{hits: 1}}}
+  end
+
   test "a dep's build overrides and manager reach the rules (rule 9)", %{
     f: f,
     config: config,

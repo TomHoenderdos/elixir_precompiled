@@ -46,11 +46,11 @@ defmodule Precompiled.Env do
 
   @typedoc """
   The order `mix deps.compile` compiles this project's dependencies in, and
-  what each one finds loaded when it compiles, or `{:ambiguous, why}` when
+  what each one finds loaded when it compiles, or `{:ambiguous, why, deps}` when
   there is no single order (a partitioned compile). Read only by this
   library.
   """
-  @type compile_order :: map() | {:ambiguous, String.t()}
+  @type compile_order :: map() | {:ambiguous, String.t(), map()}
 
   @overrides [:manager, :compile, :system_env]
 

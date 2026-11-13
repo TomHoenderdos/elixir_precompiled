@@ -114,6 +114,16 @@ defmodule Precompiled.CompileInputsTest do
       assert @differs = check(order_item("unrecordable", rec({:ok, 1})), octx([mdep(:r)]))
     end
 
+    test "a partitioned order: an app not in the lock is still unset" do
+      item = %{order_item("unrecordable", rec(:error)) | "app" => "precompiled_no_such_view"}
+      assert :ok = check(item, octx([mdep(:r)], fn _, _ -> :error end, "2"))
+
+      set = %{order_item("unrecordable", rec({:ok, 1})) | "app" => "precompiled_no_such_view"}
+
+      assert {:miss, %{code: :config_order_differs}} =
+               check(set, octx([mdep(:r)], fn _, _ -> :error end, "2"))
+    end
+
     test "an ambiguous order, or none, is a miss" do
       item = order_item(rec({:ok, 1}), rec({:ok, 1}))
       assert @differs = check(item, octx([mdep(:a), mdep(:r)], fn _, _ -> :error end, "4"))

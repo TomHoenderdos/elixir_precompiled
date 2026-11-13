@@ -73,7 +73,7 @@ defmodule Precompiled.CompileOrderTest do
   test "a partitioned compile is ambiguous" do
     for count <- ["2", "8", "x"] do
       order = CompileOrder.from_deps([dep(:a), dep(:r)], count)
-      assert {:ambiguous, _} = order
+      assert {:ambiguous, _, _} = order
       assert CompileOrder.loaded_before?(order, "a", "r") == :unknown
       assert CompileOrder.apps(order) == []
     end
@@ -82,6 +82,15 @@ defmodule Precompiled.CompileOrderTest do
       assert %{apps: ["a", "r"]} = CompileOrder.from_deps([dep(:a), dep(:r)], count),
              inspect(count)
     end
+  end
+
+  # An app absent from the deps loads in no partition either.
+  test "a partitioned compile still knows an app the project does not depend on" do
+    order = CompileOrder.from_deps([dep(:a), dep(:r)], "2")
+    assert CompileOrder.loaded_before?(order, "precompiled_no_such_app_x", "r") == false
+    assert CompileOrder.loaded_before?(order, "ssl", "r") == :unknown
+    assert CompileOrder.loaded_before?(order, "a", "r") == :unknown
+    assert CompileOrder.loaded_before?(order, "precompiled_no_such_app_x", "gone") == :unknown
   end
 
   describe "against Mix's real deps.compile" do
@@ -120,7 +129,7 @@ defmodule Precompiled.CompileOrderTest do
 
       code = """
       Code.prepend_path(#{inspect(ebin)})
-      o = Precompiled.CompileOrder.from_deps(Mix.Dep.load_and_cache(), nil)
+      o = Precompiled.Env.MixProject.load().compile_order
       apps = Precompiled.CompileOrder.apps(o)
       loaded = Map.new(apps, &{&1, Precompiled.CompileOrder.loaded_before?(o, "solo_b", &1)})
       IO.puts("ORDER " <> Base.encode64(:erlang.term_to_binary({apps, loaded})))
@@ -140,7 +149,7 @@ defmodule Precompiled.CompileOrderTest do
             code
           ],
           cd: tmp,
-          env: [{"MIX_ENV", "dev"}],
+          env: [{"MIX_ENV", "dev"}, {"MIX_OS_DEPS_COMPILE_PARTITION_COUNT", nil}],
           stderr_to_stdout: true
         )
 
@@ -157,6 +166,34 @@ defmodule Precompiled.CompileOrderTest do
       for {reader, saw_default?} <- seen do
         assert loaded[reader] == saw_default?, reader
       end
+    end
+  end
+end
+
+defmodule Precompiled.CompileOrderCodePathTest do
+  # Changes the VM's code path, so not async.
+  use ExUnit.Case, async: false
+
+  alias Precompiled.CompileOrder
+
+  # Mix prunes the code path to the project's deps before the check runs,
+  # yet a later dep can still load an OTP app (Mix's builtin apps): an
+  # app that ships with OTP is found on disk, not on the code path.
+  test "an OTP app off the code path is still unknown" do
+    paths = Path.wildcard(Path.join([:code.lib_dir(), "{ssh,os_mon}-*", "ebin"]))
+    assert length(paths) == 2
+    on_path = Enum.filter(paths, &(String.to_charlist(&1) in :code.get_path()))
+
+    try do
+      Enum.each(on_path, &Code.delete_path/1)
+      assert :code.where_is_file(~c"ssh.app") == :non_existing
+      assert :code.where_is_file(~c"os_mon.app") == :non_existing
+
+      order = CompileOrder.from_deps([%Mix.Dep{app: :r, deps: [], manager: :mix, opts: []}], nil)
+      assert CompileOrder.loaded_before?(order, "ssh", "r") == :unknown
+      assert CompileOrder.loaded_before?(order, "os_mon", "r") == :unknown
+    after
+      Enum.each(on_path, &Code.append_path/1)
     end
   end
 end
