@@ -1298,4 +1298,83 @@ defmodule Precompiled.MatchTest do
                Match.select(doc([pe(@build)]), ctx(reads: reads))
     end
   end
+
+  # World builds: compiled with a pinned set of optional deps added at every
+  # depth, published in builds_closure. Only full env-closure equality makes
+  # one safe, so they are candidates only when env_closure is a list.
+  describe "builds_closure" do
+    @decimal_w {:hex, :decimal, "2.3.0", "i", [:mix], [], "hexpm", "DECOUTER"}
+
+    defp world_build(),
+      do:
+        pe(
+          @build
+          |> put_in(["deps", "decimal"], %{"version" => "2.3.0", "checksum" => "DECOUTER"})
+          |> Map.put("variant", "world_phx")
+        )
+
+    defp world_doc(builds, closure) do
+      %{
+        "format" => 2,
+        "versions" => %{"3.5.2" => %{"builds" => builds, "builds_closure" => closure}}
+      }
+    end
+
+    defp world_lock(), do: Map.put(@lock, :decimal, @decimal_w)
+
+    test "a world build hits when the env closure equals its closure" do
+      c = ctx(lock: world_lock(), env_closure: [:decimal, :spark])
+
+      assert {:ok, %{"build" => %{"variant" => "world_phx"}}, "pure_elixir"} =
+               Match.select(world_doc([pe(@build)], [world_build()]), c)
+
+      assert {:ok, _, "pure_elixir"} = Match.select(world_doc([], [world_build()]), c)
+    end
+
+    # Without a Mix project the lock decides at depth 1 only, which would
+    # take this build where Mix compiles spark without decimal.
+    test "a world build is ignored when env_closure is nil" do
+      c = ctx(lock: world_lock(), env_closure: nil)
+
+      assert {:miss, "not built for 3.5.2"} = Match.select(world_doc([], [world_build()]), c)
+
+      assert {:ok, %{"build" => build}, _} =
+               Match.select(world_doc([pe(@build)], [world_build()]), c)
+
+      refute Map.has_key?(build, "variant")
+
+      assert {:miss, "not built for 3.5.2"} =
+               Match.select(world_doc([], [world_build()]), Map.delete(c, :env_closure))
+    end
+
+    test "a world build one optional dep two levels down away from the env misses" do
+      c = ctx(lock: world_lock(), env_closure: [:spark])
+
+      assert {:miss, %Reason{code: :closure_env_absent, args: ["decimal"]}} =
+               Match.select_reason(world_doc([], [world_build()]), c)
+
+      plain = put_in(world_build(), ["build", "deps"], @build["deps"])
+      c = ctx(lock: world_lock(), env_closure: [:decimal, :spark])
+
+      assert {:miss, %Reason{code: :closure_without, args: ["decimal", "2.3.0"]}} =
+               Match.select_reason(world_doc([], [plain]), c)
+    end
+
+    test "a manifest without builds_closure is read as before" do
+      for closure <- [[:spark], nil] do
+        c = ctx(lock: world_lock(), env_closure: closure)
+        assert {:ok, _, "pure_elixir"} = Match.select(doc([pe(@build)]), c)
+      end
+
+      c = ctx(lock: world_lock(), env_closure: [:decimal, :spark])
+
+      assert {:miss, %Reason{code: :closure_without, args: ["decimal", "2.3.0"]}} =
+               Match.select_reason(doc([pe(@build)]), c)
+    end
+
+    test "a builds_closure that is not a list adds nothing" do
+      c = ctx(lock: world_lock(), env_closure: [:spark])
+      assert {:ok, _, _} = Match.select(world_doc([pe(@build)], %{"x" => 1}), c)
+    end
+  end
 end

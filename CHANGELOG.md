@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+* On your build machine, a project whose dependency tree the client has
+  read also considers the builds a manifest lists under `builds_closure`
+  for a version: builds made with a common app's optional dependencies
+  added at every depth of the package's tree. Such a build matches only
+  under the whole-tree comparison below, so it is never considered under
+  `Mix.install/2` or on a device. A release reads `builds_closure` only if
+  it makes that comparison; earlier releases ignore the list. A
+  `builds_closure` that is not a list is ignored and leaves the version's
+  other builds as they were. A manifest without it is read as before.
 * On your build machine, a dependency Mix compiles with rebar3 no longer
   matches while your global rebar3 config (`~/.config/rebar3/rebar.config`,
   or the one under `REBAR_GLOBAL_CONFIG_DIR`) sets a key that changes

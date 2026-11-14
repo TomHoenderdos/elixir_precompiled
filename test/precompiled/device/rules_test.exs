@@ -721,6 +721,22 @@ defmodule Precompiled.Device.RulesTest do
       assert {:miss, "no builds published"} = Rules.select(odd, "recon", nil, ctx())
     end
 
+    # A device has no env closure, so a world build is never a candidate.
+    test "builds_closure is never read" do
+      world = build(run_id: "world")
+
+      manifest = %{
+        "format" => 2,
+        "versions" => %{"1.0.0" => %{"builds" => [], "builds_closure" => [world]}}
+      }
+
+      assert {:miss, "no builds published"} = Rules.select(manifest, "recon", nil, ctx())
+
+      both = put_in(manifest, ["versions", "1.0.0", "builds"], [build()])
+      assert {:ok, "1.0.0", picked, _} = Rules.select(both, "recon", nil, ctx())
+      assert picked["build"]["run_id"] == "r1"
+    end
+
     defp order_item(default, seen, app \\ "fx_order_app", reader \\ "fx_order_reader") do
       %{
         "kind" => "config_order",

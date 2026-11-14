@@ -101,7 +101,7 @@ defmodule Precompiled.Match do
   def select_reason(manifest, ctx) do
     {system, system_version} = ctx.system
 
-    case builds(manifest, ctx.version) do
+    case builds(manifest, ctx.version, Map.get(ctx, :env_closure)) do
       [] ->
         {:miss, Reason.new(:not_built_version, [ctx.version], "not built for #{ctx.version}")}
 
@@ -121,12 +121,24 @@ defmodule Precompiled.Match do
     end
   end
 
-  # Both lists: builds_with_inputs holds the builds whose compile_inputs need
-  # a check here, which clients before 0.6.0 never see.
-  defp builds(manifest, version) do
+  # builds_with_inputs holds the builds whose compile_inputs need a check
+  # here, which clients before 0.6.0 never see. builds_closure holds world
+  # builds: made with optional deps added at every depth of the package's
+  # closure. They are safe only under closure_ok/4's full equality with the
+  # env's closure, so they are read only when `env_closure` is a list. With
+  # it nil (Mix.install) the lock decides at depth 1, which would take a
+  # world build where Mix compiles a dep further down without one of them.
+  # The device layer never reads them (Precompiled.Device.Rules).
+  defp builds(manifest, version, env_closure) do
     v = get_in(manifest, ["versions", version]) || %{}
-    List.wrap(v["builds"]) ++ List.wrap(v["builds_with_inputs"])
+    List.wrap(v["builds"]) ++ List.wrap(v["builds_with_inputs"]) ++ world(v, env_closure)
   end
+
+  defp world(%{"builds_closure" => list}, env_closure)
+       when is_list(list) and is_list(env_closure),
+       do: list
+
+  defp world(_v, _env_closure), do: []
 
   # The passing builds made for the release closest to the project's: the
   # exact release (and pure_elixir builds, which have none), else the

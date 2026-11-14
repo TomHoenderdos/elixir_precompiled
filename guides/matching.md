@@ -122,6 +122,17 @@ dependency the package declares (optional ones included) that the lock
 has must have been in the build, and dependencies further down are
 compared only by version and checksum.
 
+Some builds are made with a common app's optional dependencies added at
+every depth of the package's tree, so they match such an app as it is
+(the portal calls them world builds, and publishes them under
+`builds_closure` in the manifest). They are considered only on your build
+machine, in a project whose dependency tree the client has read, because
+only the whole-tree comparison above can tell that such a build is the one
+Mix would make. Under `Mix.install/2`, where dependencies further down are
+not compared, and on a device, they are never considered. The rule holds
+for every release that reads `builds_closure`: one reads it only if it
+compares the whole tree. Releases before 0.7.0 do not read it at all.
+
 **Rule 8, compile-time inputs.**
 
 - A dependency whose own sources read `Mix.target()` at compile time

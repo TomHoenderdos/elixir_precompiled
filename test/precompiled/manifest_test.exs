@@ -90,4 +90,30 @@ defmodule Precompiled.ManifestTest do
     bad = put_in(ok, ["versions", "1.0.0", "builds_with_inputs"], %{})
     assert {:fail, "manifest malformed"} = Manifest.normalize(bad)
   end
+
+  # builds_closure (0.7.0) holds world builds. One that is not a list is
+  # dropped: the version's other builds still serve.
+  test "format 2 accepts builds_closure, and drops a non-list one" do
+    ok = %{
+      "format" => 2,
+      "versions" => %{"1.0.0" => %{"builds" => [], "builds_closure" => [%{"target" => "x"}]}}
+    }
+
+    assert {:ok, ^ok} = Manifest.normalize(ok)
+
+    for bad <- [%{}, "nope", nil, 1] do
+      doc = put_in(ok, ["versions", "1.0.0", "builds_closure"], bad)
+      assert {:ok, m} = Manifest.normalize(doc)
+      assert m["versions"]["1.0.0"] == %{"builds" => []}
+    end
+  end
+
+  test "a manifest without builds_closure passes through unchanged" do
+    doc = %{
+      "format" => 2,
+      "versions" => %{"1.0.0" => %{"builds" => [], "builds_with_inputs" => []}}
+    }
+
+    assert {:ok, ^doc} = Manifest.normalize(doc)
+  end
 end

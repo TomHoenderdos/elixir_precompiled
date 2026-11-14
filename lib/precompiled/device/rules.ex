@@ -477,7 +477,8 @@ defmodule Precompiled.Device.Rules do
   end
 
   # Both lists: builds_with_inputs holds builds whose compile_inputs are
-  # checked here (CompileInputs.device/2).
+  # checked here (CompileInputs.device/2). builds_closure is never read: its
+  # world builds are safe only against an env closure, which a device lacks.
   defp builds_of(manifest, v) do
     case manifest["versions"][v] do
       %{"builds" => builds} = version when is_list(builds) ->
