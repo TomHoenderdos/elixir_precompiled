@@ -18,10 +18,12 @@ defmodule Precompiled.Env.MixInstall do
   # compile it from the sources deps.get already fetched.
   # present_deps is each dep's children as Mix loaded them in the install
   # project (Install.resolve/4), the tree Mix.install/2 compiles: the
-  # closure rule and builds_closure then apply as in a Mix project. nil
-  # when Mix's deps could not be read: the lock alone decides which declared
-  # deps a candidate's build must have been made with, and nothing deeper
-  # is compared.
+  # closure rule and builds_closure then apply as in a Mix project. When
+  # Mix's deps did not load it is nil, but build_methods is {:unknown, _}
+  # too and rule 9 misses every candidate. Only when they loaded in a shape
+  # the tree cannot be read from is it nil with build methods known: then
+  # the lock alone decides which declared deps a candidate's build must
+  # have been made with, and nothing deeper is compared.
 
   alias Precompiled.{Env, Fetch}
 

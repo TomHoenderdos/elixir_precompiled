@@ -57,11 +57,12 @@ already change any compiled code there.
 
 ## Mix.install
 
-These options of `Mix.install/2` are not applied to the precompiled step:
+How these options of `Mix.install/2` reach the precompiled step (only
+`:lockfile` is applied to it):
 
 | Option | What happens | Result |
 | --- | --- | --- |
-| `:lockfile` | Passed to Mix, not used for the check | Mix may re-resolve and recompile what was just installed |
+| `:lockfile` | Merged into the install project before the check, as `Mix.install/2` merges it | The check sees the versions and tree Mix compiles; Mix then finds the merge done |
 | `:config`, `:config_path` | Not applied before the check | A dependency whose compile-time config they change misses, or is placed and then recompiled by Mix |
 | `MIX_INSTALL_RESTORE_PROJECT_DIR` | Ignored | — |
 

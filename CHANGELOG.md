@@ -9,9 +9,15 @@
   at any depth, optional ones included, and the builds a manifest lists
   under `builds_closure` are considered too. An optional dependency the
   install has only for another env (`only: :test` in a script run in dev)
-  no longer counts as present because the lock has it. When Mix cannot
-  load the dependencies, the lock decides as before, and `builds_closure`
-  is not read.
+  no longer counts as present because the lock has it. The tree is read
+  after the `lockfile:` option's lock is merged into the install project,
+  as `Mix.install/2` merges it, so a lock that pins a dependency to another
+  version is checked against too, where before Mix could compile a placed
+  build's package differently from the build. When Mix cannot load the
+  dependencies, every dependency misses (`build method unknown`), as
+  before; when it loads them but their tree is not in the shape the
+  client reads, the lock decides as before and `builds_closure` is not
+  read.
 * On your build machine, a build that records rebar3 `platform_define`
   verdicts (`compile_inputs` items of kind `platform_define`, each a regex
   and whether it matched the builder's arch string) matches only when

@@ -94,6 +94,131 @@ defmodule Precompiled.InstallTest do
     assert {%{pkg: _}, nil} = quiet(fn -> Install.resolve(third, [], [], odd) end)
   end
 
+  test "a child that is not an atom leaves the tree unknown", %{tmp_dir: dir} do
+    pkg = %Mix.Dep{app: :pkg, scm: Hex.SCM, opts: [], manager: :mix, deps: [%{app: "here"}]}
+
+    assert {%{pkg: _}, nil} =
+             quiet(fn -> Install.resolve(Path.join(dir, "p"), [], [], fn -> [pkg] end) end)
+  end
+
+  # x lists z as optional and does not depend on y; y 2.0.0 requires z, y
+  # 1.0.0 does not. The install project's lock has y 2.0.0; the lockfile:
+  # option pins y 1.0.0, so Mix.install/2 compiles x without z. `load`
+  # gives what Mix's converger would from the lock in the project's dir.
+  @x {:hex, :x, "1.0.0", "i", [:mix], [{:z, "~> 1.0", [hex: :z, optional: true]}], "hexpm",
+      "XOUTER"}
+  @y2 {:hex, :y, "2.0.0", "i", [:mix], [{:z, "~> 1.0", [hex: :z]}], "hexpm", "Y2OUTER"}
+  @y1 {:hex, :y, "1.0.0", "i", [:mix], [], "hexpm", "Y1OUTER"}
+  @z {:hex, :z, "1.0.0", "i", [:mix], [], "hexpm", "ZOUTER"}
+
+  defp lock_load() do
+    fn ->
+      dep = fn app, children ->
+        %Mix.Dep{app: app, scm: Hex.SCM, opts: [], manager: :mix, deps: children}
+      end
+
+      z = dep.(:z, [])
+      y_children = if elem(Mix.Dep.Lock.read()[:y], 2) == "2.0.0", do: [z], else: []
+      x_children = if y_children == [], do: [], else: [z]
+      [dep.(:x, x_children), dep.(:y, y_children) | Enum.uniq(y_children ++ x_children)]
+    end
+  end
+
+  defp x_with_z(present) do
+    build = %{
+      "elixir" => "1.20.3",
+      "otp" => "29",
+      "dep_env" => "prod",
+      "system_version" => nil,
+      "run_id" => "r",
+      "deps" => %{"z" => %{"version" => "1.0.0", "checksum" => "ZOUTER"}},
+      "compile_env" => [],
+      "package_checksum" => "XOUTER"
+    }
+
+    manifest = %{
+      "versions" => %{
+        "1.0.0" => %{
+          "builds" => [%{"target" => "pure_elixir", "ebin" => [], "priv" => [], "build" => build}]
+        }
+      }
+    }
+
+    ctx = %{
+      name: "x",
+      version: "1.0.0",
+      lock_entry: @x,
+      lock: %{x: @x, y: @y1, z: @z},
+      env_closure: Precompiled.Env.closure(present, :x),
+      system: {"host", ""},
+      elixir: "1.20.3",
+      otp: "29",
+      dep_env: "prod",
+      config: fn _app, _path -> :error end
+    }
+
+    manifest |> Precompiled.Match.select(ctx) |> elem(0)
+  end
+
+  test "resolve merges the lockfile: option as Mix.install/2 does: a pinned sibling misses", %{
+    tmp_dir: dir
+  } do
+    external = Path.join(dir, "pinned.lock")
+    Mix.Dep.Lock.write(%{y: @y1}, file: external)
+
+    project = Path.join(dir, "install")
+    File.mkdir_p!(project)
+    Mix.Dep.Lock.write(%{x: @x, y: @y2, z: @z}, file: Path.join(project, "mix.lock"))
+
+    {_methods, present} =
+      quiet(fn -> Install.resolve(project, [], [lockfile: external], lock_load()) end)
+
+    # The lock Mix.install/2 compiles from, and the marker that makes it skip
+    # a second merge, exactly as it writes them.
+    assert Mix.Dep.Lock.read(Path.join(project, "mix.lock")) == %{x: @x, y: @y1, z: @z}
+
+    assert File.read!(Path.join(project, "merge.lock.md5")) ==
+             Base.encode64(:erlang.md5(File.read!(external)))
+
+    assert present.x == []
+    assert x_with_z(present) == :miss
+
+    # Without the merge the tree would have z under x, and the build with z
+    # would be taken although Mix.install/2 then compiles x without it.
+    other = Path.join(dir, "unpinned")
+    File.mkdir_p!(other)
+    Mix.Dep.Lock.write(%{x: @x, y: @y2, z: @z}, file: Path.join(other, "mix.lock"))
+    {_methods, unpinned} = quiet(fn -> Install.resolve(other, [], [], lock_load()) end)
+    assert unpinned.x == [:z]
+  end
+
+  test "lockfile: as a path dep's name reads that dep's mix.lock", %{tmp_dir: dir} do
+    src = Path.join(dir, "pinner")
+    File.mkdir_p!(src)
+
+    File.write!(Path.join(src, "mix.exs"), """
+    defmodule Pinner.MixProject do
+      use Mix.Project
+      def project, do: [app: :pinner, version: "0.1.0", deps: []]
+    end
+    """)
+
+    Mix.Dep.Lock.write(%{y: @y1}, file: Path.join(src, "mix.lock"))
+    project = Path.join(dir, "install")
+    File.mkdir_p!(project)
+    Mix.Dep.Lock.write(%{x: @x, y: @y2, z: @z}, file: Path.join(project, "mix.lock"))
+    deps = [{:pinner, path: src}]
+
+    {_methods, present} =
+      quiet(fn -> Install.resolve(project, deps, [lockfile: :pinner], lock_load()) end)
+
+    assert present.x == []
+
+    assert_raise Mix.Error, ~r/unknown dependency :nope given to :lockfile/, fn ->
+      quiet(fn -> Install.resolve(project, deps, [lockfile: :nope], lock_load()) end)
+    end
+  end
+
   test "a configured install hands Check the tree Mix loaded", %{config: config} do
     parent = self()
     here = %Mix.Dep{app: :here, scm: Hex.SCM, opts: [], manager: :mix, deps: []}

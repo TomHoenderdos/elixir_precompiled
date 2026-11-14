@@ -120,13 +120,17 @@ lock.
 `Precompiled.Host.install/2` makes the same whole-tree comparison. It
 reads the tree from the dependencies Mix loads in the project
 `Mix.install/2` then uses, from the same lock and for the same env:
-the tree `Mix.install/2` compiles. An optional dependency your install
-brings in counts as present at any depth; one it has only for another env
-(`{:lazy_html, ">= 0.1.0", only: :test}` in a script run in dev) does not.
-When Mix cannot load those dependencies, there is no tree to read, and the
-lock decides instead: every dependency the package declares (optional
-ones included) that the lock has must have been in the build, and
-dependencies further down are compared only by version and checksum.
+the tree `Mix.install/2` compiles. With the `lockfile:` option, that lock
+is merged into the install project first, as `Mix.install/2` merges it.
+An optional dependency your install brings in counts as present at any
+depth; one it has only for another env (`{:lazy_html, ">= 0.1.0", only:
+:test}` in a script run in dev) does not. When Mix cannot load those
+dependencies, every dependency misses on rule 9 (`build method unknown`,
+below). When Mix loads them but the tree is not in the shape the client
+reads (a Mix release that changed it), the lock decides instead: every
+dependency the package declares (optional ones included) that the lock
+has must have been in the build, and dependencies further down are
+compared only by version and checksum.
 
 Some builds are made with a common app's optional dependencies added at
 every depth of the package's tree, so they match such an app as it is

@@ -179,9 +179,10 @@ defmodule Precompiled.Install do
   end
 
   @doc false
-  # What Mix.install/2 does first: deps.get in its install project, with the
-  # project config it would push. Running it early is idempotent; the lock it
-  # writes is what Env.MixInstall reads. Then the deps Mix loads there, read
+  # What Mix.install/2 does first: the lockfile: merge and deps.get in its
+  # install project, with the project config it would push. Running them
+  # early is idempotent; the lock they write is what Env.MixInstall reads,
+  # and Mix.install/2 then finds the merge done (merge_lockfile/3). Then the deps Mix loads there, read
   # once for two things: how Mix builds each Hex dep (build_methods/4) and
   # each dep's children (present_deps/1), the tree Mix.install/2 loads and
   # compiles right after in the same project, from the same lock, env and
@@ -193,9 +194,61 @@ defmodule Precompiled.Install do
     File.mkdir_p!(dir)
 
     in_install_project(dir, deps, mix_opts, fn ->
+      merge_lockfile(dir, normalize_deps(deps), Keyword.get(mix_opts, :lockfile))
       Mix.Task.rerun("deps.get")
       load_deps(load)
     end)
+  end
+
+  # Mix.install/2's lockfile: step, as Elixir 1.17 to 1.20 write it: the
+  # external lock merged over the install project's, then deps.get, and the
+  # external lock's md5 in merge.lock.md5 so a run with the same lock skips
+  # both. Done here, before the tree is read, the tree checked is the one
+  # Mix.install/2 compiles: a sibling the external lock pins to a version
+  # that no longer brings in an optional dep changes another package's
+  # closure without making Mix recompile that package. Mix.install/2 then
+  # finds the same md5 and merges nothing.
+  defp merge_lockfile(_dir, _deps, nil), do: :ok
+
+  defp merge_lockfile(dir, deps, lockfile) do
+    external = lockfile_path(lockfile, deps)
+    md5_path = Path.join(dir, "merge.lock.md5")
+
+    old_md5 =
+      case File.read(md5_path) do
+        {:ok, data} -> Base.decode64!(data)
+        _ -> nil
+      end
+
+    new_md5 = external |> File.read!() |> :erlang.md5()
+
+    if old_md5 != new_md5 do
+      lock_path = Path.join(dir, "mix.lock")
+      merged = Map.merge(Mix.Dep.Lock.read(lock_path), Mix.Dep.Lock.read(external))
+      Mix.Dep.Lock.write(merged, file: lock_path)
+      File.write!(md5_path, Base.encode64(new_md5))
+    end
+
+    :ok
+  end
+
+  # Mix.install/2's expand_path/4 for :lockfile: a path, or the name of a
+  # path dependency whose mix.lock is meant.
+  defp lockfile_path(path, _deps) when is_binary(path), do: Path.expand(path)
+
+  defp lockfile_path(app, deps) when is_atom(app) do
+    app_dir =
+      case List.keyfind(deps, app, 0) do
+        {_, _, opts} when is_list(opts) -> opts[:path]
+        {_, opts} when is_list(opts) -> opts[:path]
+        _ -> Mix.raise("unknown dependency #{inspect(app)} given to :lockfile")
+      end
+
+    if !app_dir do
+      Mix.raise("#{inspect(app)} given to :lockfile must be a path dependency")
+    end
+
+    Path.join(app_dir, "mix.lock")
   end
 
   @doc false
