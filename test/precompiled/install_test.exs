@@ -66,6 +66,51 @@ defmodule Precompiled.InstallTest do
     refute Map.has_key?(methods, :parent)
   end
 
+  test "resolve/4 reads each dep's children as Mix loads them, or nil when they do not load", %{
+    tmp_dir: dir
+  } do
+    dep = fn app, children ->
+      %Mix.Dep{app: app, scm: Hex.SCM, opts: [], manager: :mix, deps: children}
+    end
+
+    here = dep.(:here, [])
+    loaded = fn -> [dep.(:pkg, [here]), here] end
+    project = Path.join(dir, "loaded")
+
+    assert {methods, present} = quiet(fn -> Install.resolve(project, [], [], loaded) end)
+    assert present == %{pkg: [:here], here: []}
+    assert methods[:pkg] == %{manager: "mix", overrides: []}
+
+    boom = fn -> raise "lock is broken" end
+    other = Path.join(dir, "broken")
+
+    assert quiet(fn -> Install.resolve(other, [], [], boom) end) ==
+             {{:unknown, "lock is broken"}, nil}
+
+    # A dep whose children are not the shape Mix gives: the tree is unknown
+    # (lock-only matching), the build methods are still read.
+    odd = fn -> [%{dep.(:pkg, []) | deps: :nope}] end
+    third = Path.join(dir, "odd")
+    assert {%{pkg: _}, nil} = quiet(fn -> Install.resolve(third, [], [], odd) end)
+  end
+
+  test "a configured install hands Check the tree Mix loaded", %{config: config} do
+    parent = self()
+    here = %Mix.Dep{app: :here, scm: Hex.SCM, opts: [], manager: :mix, deps: []}
+    pkg = %{here | app: :pkg, deps: [here]}
+
+    capture_io(fn ->
+      assert Install.run([], [], config,
+               installer: fn _, _ -> :ok end,
+               in_project?: false,
+               check: &send(parent, {:env, &1}),
+               load: fn -> [pkg, here] end
+             ) == :ok
+    end)
+
+    assert_received {:env, %Precompiled.Env{present_deps: %{pkg: [:here], here: []}}}
+  end
+
   test "deps that do not load make build methods unknown, with the cause", %{tmp_dir: dir} do
     boom = fn -> raise "lock is broken" end
     assert Install.build_methods(dir, [], [], boom) == {:unknown, "lock is broken"}
@@ -78,7 +123,7 @@ defmodule Precompiled.InstallTest do
        %{config: config} do
     parent = self()
 
-    check = fn -> send(parent, :checked) end
+    check = fn _env -> send(parent, :checked) end
 
     out =
       capture_io(fn ->
@@ -94,6 +139,13 @@ defmodule Precompiled.InstallTest do
 
     assert out =~
              "precompiled: deps did not load (lock is broken); every dependency compiles from source"
+  end
+
+  defp quiet(fun) do
+    parent = self()
+    capture_io(fn -> send(parent, {:quiet, outside_project(fun)}) end)
+    assert_received {:quiet, result}
+    result
   end
 
   # Mix.install/2 runs with no project on the stack; this test suite runs
@@ -303,7 +355,7 @@ defmodule Precompiled.InstallTest do
         assert Install.run([], [], config,
                  installer: installer,
                  in_project?: false,
-                 check: fn -> raise "boom" end
+                 check: fn _env -> raise "boom" end
                ) == :ok
       end)
 
@@ -319,7 +371,7 @@ defmodule Precompiled.InstallTest do
                Install.run([], [], config,
                  installer: installer,
                  in_project?: false,
-                 check: fn -> exit({:shutdown, :stop}) end
+                 check: fn _env -> exit({:shutdown, :stop}) end
                )
              ) == {:shutdown, :stop}
     end)

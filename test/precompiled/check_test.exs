@@ -223,7 +223,7 @@ defmodule Precompiled.CheckTest do
   end
 
   # The candidate's closure in the env's dep tree reaches the closure rule;
-  # an env without the tree (a device, Mix.install) leaves the lock to decide.
+  # an env without the tree (one whose deps did not load) leaves the lock to decide.
   test "the env's closure reaches Match per candidate", %{config: config, env: env} do
     [candidate | _] = env.candidates
     assert ctx_of(config, env).env_closure == nil

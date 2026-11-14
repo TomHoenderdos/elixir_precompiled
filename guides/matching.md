@@ -117,20 +117,27 @@ loads but the lock has no Hex entry for (a path dependency with
 in its tree misses. Versions and checksums are still compared against the
 lock.
 
-In a `Mix.install/2` project there is no dependency tree to read: every
-dependency the package declares (optional ones included) that the lock
-has must have been in the build, and dependencies further down are
-compared only by version and checksum.
+`Precompiled.Host.install/2` makes the same whole-tree comparison. It
+reads the tree from the dependencies Mix loads in the project
+`Mix.install/2` then uses, from the same lock and for the same env:
+the tree `Mix.install/2` compiles. An optional dependency your install
+brings in counts as present at any depth; one it has only for another env
+(`{:lazy_html, ">= 0.1.0", only: :test}` in a script run in dev) does not.
+When Mix cannot load those dependencies, there is no tree to read, and the
+lock decides instead: every dependency the package declares (optional
+ones included) that the lock has must have been in the build, and
+dependencies further down are compared only by version and checksum.
 
 Some builds are made with a common app's optional dependencies added at
 every depth of the package's tree, so they match such an app as it is
 (the portal calls them world builds, and publishes them under
-`builds_closure` in the manifest). They are considered only on your build
-machine, in a project whose dependency tree the client has read, because
-only the whole-tree comparison above can tell that such a build is the one
-Mix would make. Under `Mix.install/2`, where dependencies further down are
-not compared, and on a device, they are never considered. The rule holds
-for every release that reads `builds_closure`: one reads it only if it
+`builds_closure` in the manifest). They are considered only where the
+client has read the dependency tree: on your build machine in a Mix
+project, and under `Precompiled.Host.install/2`. Only the whole-tree
+comparison above can tell that such a build is the one Mix would make.
+Where the lock decides instead, they are never considered. The device API,
+`Precompiled.install/2`, never considers them either. The rule holds for
+every release that reads `builds_closure`: one reads it only if it
 compares the whole tree. Releases before 0.7.0 do not read it at all.
 
 **Rule 8, compile-time inputs.**

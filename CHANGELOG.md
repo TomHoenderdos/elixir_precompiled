@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+* `Precompiled.Host.install/2` now reads the dependency tree `Mix.install/2`
+  compiles, from the dependencies Mix loads in its install project, and
+  matches the way a Mix project on your build machine does: a build must
+  have been compiled with exactly the package's dependencies in that tree,
+  at any depth, optional ones included, and the builds a manifest lists
+  under `builds_closure` are considered too. An optional dependency the
+  install has only for another env (`only: :test` in a script run in dev)
+  no longer counts as present because the lock has it. When Mix cannot
+  load the dependencies, the lock decides as before, and `builds_closure`
+  is not read.
 * On your build machine, a build that records rebar3 `platform_define`
   verdicts (`compile_inputs` items of kind `platform_define`, each a regex
   and whether it matched the builder's arch string) matches only when
@@ -17,8 +27,8 @@
   read also considers the builds a manifest lists under `builds_closure`
   for a version: builds made with a common app's optional dependencies
   added at every depth of the package's tree. Such a build matches only
-  under the whole-tree comparison below, so it is never considered under
-  `Mix.install/2` or on a device. A release reads `builds_closure` only if
+  under the whole-tree comparison below, so it is never considered where
+  the client has not read the tree, or on a device. A release reads `builds_closure` only if
   it makes that comparison; earlier releases ignore the list. A
   `builds_closure` that is not a list is ignored and leaves the version's
   other builds as they were. A manifest without it is read as before.

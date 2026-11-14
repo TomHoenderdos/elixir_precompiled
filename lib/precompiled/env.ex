@@ -90,9 +90,10 @@ defmodule Precompiled.Env do
             # The deps.compile order (Precompiled.CompileOrder), for config_order
             # items; nil when not read from a Mix project.
             compile_order: nil,
-            # Each dep's children in the current env (Mix.Dep.load_and_cache/0),
-            # for the closure rule (Env.closure/2); nil when not read from a Mix project,
-            # and the lock decides which declared deps are present.
+            # Each dep's children in the current env (Mix.Dep.load_and_cache/0, in
+            # the project or in Mix.install/2's install project), for the closure
+            # rule (Env.closure/2); nil when Mix's deps were not read, and the lock
+            # decides which declared deps are present.
             present_deps: nil
 
   @doc """

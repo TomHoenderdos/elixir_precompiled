@@ -61,7 +61,7 @@ defmodule Precompiled.Install do
     dir = project_dir(deps, mix_opts)
     if forced?, do: File.rm_rf!(dir)
 
-    methods =
+    {methods, present} =
       resolve(dir, deps, mix_opts, Keyword.get(test_opts, :load, &Mix.Dep.load_and_cache/0))
 
     with {:unknown, why} <- methods do
@@ -71,17 +71,13 @@ defmodule Precompiled.Install do
     end
 
     check =
-      Keyword.get(test_opts, :check, fn ->
-        Check.check(
-          config,
-          Env.MixInstall.load(dir, deps, methods),
-          Keyword.take(test_opts, [:config_fun])
-        )
+      Keyword.get(test_opts, :check, fn env ->
+        Check.check(config, env, Keyword.take(test_opts, [:config_fun]))
       end)
 
     # Mix.install/2 runs whatever happened here; it compiles what is missing.
     try do
-      _ = check.()
+      _ = check.(Env.MixInstall.load(dir, deps, methods, present))
     rescue
       e -> internal_error(Exception.message(e))
     catch
@@ -182,17 +178,23 @@ defmodule Precompiled.Install do
     if Keyword.has_key?(opts, :path), do: Keyword.update!(opts, :path, &Path.expand/1), else: opts
   end
 
+  @doc false
   # What Mix.install/2 does first: deps.get in its install project, with the
   # project config it would push. Running it early is idempotent; the lock it
-  # writes is what Env.MixInstall reads. Returns how Mix builds each Hex dep
-  # there (build_methods/3).
-  defp resolve(dir, deps, mix_opts, load) do
+  # writes is what Env.MixInstall reads. Then the deps Mix loads there, read
+  # once for two things: how Mix builds each Hex dep (build_methods/4) and
+  # each dep's children (present_deps/1), the tree Mix.install/2 loads and
+  # compiles right after in the same project, from the same lock, env and
+  # target. `load` stands in for Mix.Dep.load_and_cache/0 in tests.
+  @spec resolve(Path.t(), [term()], keyword(), (-> [Mix.Dep.t()])) ::
+          {Env.build_methods(), Env.present_deps() | nil}
+  def resolve(dir, deps, mix_opts, load \\ &Mix.Dep.load_and_cache/0) do
     System.put_env(Keyword.get(mix_opts, :system_env, []))
     File.mkdir_p!(dir)
 
     in_install_project(dir, deps, mix_opts, fn ->
       Mix.Task.rerun("deps.get")
-      load_build_methods(load)
+      load_deps(load)
     end)
   end
 
@@ -207,19 +209,36 @@ defmodule Precompiled.Install do
   @spec build_methods(Path.t(), [term()], keyword(), (-> [Mix.Dep.t()])) ::
           Env.build_methods()
   def build_methods(dir, deps, mix_opts \\ [], load \\ &Mix.Dep.load_and_cache/0),
-    do: in_install_project(dir, deps, mix_opts, fn -> load_build_methods(load) end)
+    do: dir |> in_install_project(deps, mix_opts, fn -> load_deps(load) end) |> elem(0)
 
-  # Never cached past this call: Mix.install/2 loads its own deps.
-  defp load_build_methods(load) do
+  # Never cached past this call: Mix.install/2 loads its own deps. Deps that
+  # do not load leave both unknown: every candidate misses on rule 9.
+  defp load_deps(load) do
     Mix.Dep.clear_cached()
-    Env.MixProject.build_methods_from(load.())
+    deps = load.()
+    {Env.MixProject.build_methods_from(deps), present_deps(deps)}
   rescue
-    e -> {:unknown, Exception.message(e)}
+    e -> {{:unknown, Exception.message(e)}, nil}
   catch
     :exit, reason when stop?(reason) -> exit(reason)
-    kind, reason -> {:unknown, Exception.format_banner(kind, reason)}
+    kind, reason -> {{:unknown, Exception.format_banner(kind, reason)}, nil}
   after
     Mix.Dep.clear_cached()
+  end
+
+  # Each dep's children as Mix loaded them, as Env.MixProject reads them in
+  # a Mix project. Anything but the shape Mix gives (a Mix that changed
+  # its dep struct) leaves the tree unknown, nil: Match then falls back to
+  # the lock, and builds_closure is not read.
+  defp present_deps(deps) do
+    tree = Env.MixProject.present_deps_from(deps)
+
+    if Enum.all?(tree, fn {app, children} ->
+         is_atom(app) and is_list(children) and Enum.all?(children, &is_atom/1)
+       end),
+       do: tree
+  rescue
+    _ -> nil
   end
 
   defp in_install_project(dir, deps, mix_opts, fun) do

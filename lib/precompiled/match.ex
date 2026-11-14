@@ -126,7 +126,7 @@ defmodule Precompiled.Match do
   # builds: made with optional deps added at every depth of the package's
   # closure. They are safe only under closure_ok/4's full equality with the
   # env's closure, so they are read only when `env_closure` is a list. With
-  # it nil (Mix.install) the lock decides at depth 1, which would take a
+  # it nil (no tree read) the lock decides at depth 1, which would take a
   # world build where Mix compiles a dep further down without one of them.
   # The device layer never reads them (Precompiled.Device.Rules).
   defp builds(manifest, version, env_closure) do
@@ -739,7 +739,9 @@ defmodule Precompiled.Match do
   # env's closure the build lacks misses, one in the build Mix leaves out
   # misses.
   #
-  # Where no Mix project was loaded (Mix.install) `env_closure` is nil and
+  # Under Mix.install the tree is the one Mix loads in the install project
+  # (Install.resolve/4), so the same holds. Where no tree was read (deps
+  # that did not load) `env_closure` is nil and
   # the lock decides: every dep the package declares that the lock has must
   # be in the build, and nothing deeper is compared. The device layer does
   # not use this rule (Precompiled.Device.Rules).

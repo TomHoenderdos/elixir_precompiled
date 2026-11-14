@@ -16,9 +16,12 @@ defmodule Precompiled.Env.MixInstall do
   # (it carries the provenance file) is rechecked against the current batch,
   # as in a Mix project's _build. Check removing one makes Mix.install/2
   # compile it from the sources deps.get already fetched.
-  # present_deps stays nil: the lock alone decides which declared deps a
-  # candidate's build must have been made with, and nothing deeper is
-  # compared.
+  # present_deps is each dep's children as Mix loaded them in the install
+  # project (Install.resolve/4), the tree Mix.install/2 compiles: the
+  # closure rule and builds_closure then apply as in a Mix project. nil
+  # when Mix's deps could not be read: the lock alone decides which declared
+  # deps a candidate's build must have been made with, and nothing deeper
+  # is compared.
 
   alias Precompiled.{Env, Fetch}
 
@@ -27,8 +30,8 @@ defmodule Precompiled.Env.MixInstall do
   # `methods`: how Mix builds each Hex dep there, as Install.build_methods/4
   # loads it from Mix. Without it rule 9 has nothing to go on, and every
   # candidate misses.
-  @spec load(Path.t(), [term()], Env.build_methods()) :: Env.t()
-  def load(project_dir, deps, methods \\ {:unknown, "not loaded"}) do
+  @spec load(Path.t(), [term()], Env.build_methods(), Env.present_deps() | nil) :: Env.t()
+  def load(project_dir, deps, methods \\ {:unknown, "not loaded"}, present \\ nil) do
     lock = Mix.Dep.Lock.read(Path.join(project_dir, "mix.lock"))
     build_lib = Path.join([project_dir, "_build", Atom.to_string(Mix.env()), "lib"])
 
@@ -49,7 +52,8 @@ defmodule Precompiled.Env.MixInstall do
       deps_path: Path.join(project_dir, "deps"),
       installed: installed,
       installed_envs: Map.new(installed, &{&1, Map.get(envs, &1, "prod")}),
-      build_methods: methods
+      build_methods: methods,
+      present_deps: present
     }
   end
 
