@@ -330,4 +330,69 @@ defmodule Precompiled.CompileInputsTest do
       end
     end
   end
+
+  describe "platform_define" do
+    @linux28 "28.1.1-x86_64-pc-linux-gnu-64"
+    @mac29 "29.1.1-aarch64-apple-darwin25.0.0-64"
+
+    defp pd(regex, matched),
+      do: %{"kind" => "platform_define", "regex" => regex, "matched" => matched}
+
+    defp arch(a), do: %{compile_order: nil, user_config: fn _, _ -> :error end, rebar3_arch: a}
+    defp no_env(_name), do: nil
+
+    test "hackney's R14, recorded unmatched, is a hit on OTP 28 Linux and OTP 29 macOS" do
+      for a <- [@linux28, @mac29],
+          do: assert(:ok = CompileInputs.host([pd("R14", false)], &no_env/1, arch(a)))
+    end
+
+    test "a verdict that differs here misses, naming the regex and no part of the arch string" do
+      assert {:miss, %{code: :platform_define_differs, args: ["R14"], text: text}} =
+               CompileInputs.host([pd("R14", true)], &no_env/1, arch(@linux28))
+
+      assert text =~ ~s("R14")
+      refute text =~ "linux"
+
+      assert {:miss, %{code: :platform_define_differs}} =
+               CompileInputs.host([pd("darwin", true)], &no_env/1, arch(@linux28))
+
+      assert :ok = CompileInputs.host([pd("darwin", true)], &no_env/1, arch(@mac29))
+      assert :ok = CompileInputs.host([pd("^[0-9]+", true)], &no_env/1, arch(@linux28))
+    end
+
+    test "a regex this client cannot evaluate misses whatever was recorded" do
+      for matched <- [true, false] do
+        assert {:miss, %{code: :platform_define_differs, args: ["?"]}} =
+                 CompileInputs.host([pd("(", matched)], &no_env/1, arch(@linux28))
+      end
+    end
+
+    test "an item of any other shape is malformed" do
+      for bad <- [
+            pd("R14", "false"),
+            pd(14, false),
+            Map.delete(pd("R14", false), "matched"),
+            Map.delete(pd("R14", false), "regex")
+          ] do
+        assert {:miss, %{code: :malformed_entry}} =
+                 CompileInputs.host([bad], &no_env/1, arch(@linux28))
+
+        assert {:miss, %{code: :malformed_entry}} = CompileInputs.device([bad])
+      end
+    end
+
+    test "without an arch given, the running VM's is used" do
+      here = Precompiled.Rebar3Arch.arch()
+      assert :ok = CompileInputs.host([pd("^" <> Regex.escape(here) <> "$", true)], &no_env/1)
+
+      assert {:miss, _} =
+               CompileInputs.host([pd("^" <> Regex.escape(here) <> "$", false)], &no_env/1)
+    end
+
+    # A device compiles no dependency: firmware is compiled on the build
+    # machine, where the host check runs.
+    test "a device accepts a well-formed item whatever its verdict" do
+      assert :ok = CompileInputs.device([pd("R14", true), pd("R14", false), pd("(", true)])
+    end
+  end
 end

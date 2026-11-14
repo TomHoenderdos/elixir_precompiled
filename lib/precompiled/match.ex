@@ -300,10 +300,13 @@ defmodule Precompiled.Match do
         Precompiled.CompileInputs.host(
           b["compile_inputs"],
           Map.get(ctx, :getenv, &System.get_env/1),
-          %{
-            compile_order: Map.get(ctx, :compile_order),
-            user_config: Map.get(ctx, :user_config, &Precompiled.CompileInputs.user_config/2)
-          }
+          Map.merge(
+            %{
+              compile_order: Map.get(ctx, :compile_order),
+              user_config: Map.get(ctx, :user_config, &Precompiled.CompileInputs.user_config/2)
+            },
+            Map.take(ctx, [:rebar3_arch])
+          )
         )
       end
     ]

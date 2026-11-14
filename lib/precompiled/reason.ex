@@ -60,7 +60,8 @@ defmodule Precompiled.Reason do
     config_unrecorded: "compile-time config reads not recorded",
     config_order_differs: "compile-time config {0} {1} would differ in this project",
     rebar3_global_config: "global rebar3 config could change the build ({0})",
-    erl_compiler_options: "{0} can change every compile"
+    erl_compiler_options: "{0} can change every compile",
+    platform_define_differs: "rebar3 platform_define {0} decides differently on this machine"
   ]
 
   @codes Keyword.keys(@templates)

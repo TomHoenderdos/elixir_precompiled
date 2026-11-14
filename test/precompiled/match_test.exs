@@ -1217,6 +1217,19 @@ defmodule Precompiled.MatchTest do
       assert {:miss, _} = Match.select(inputs_doc([set]), ctx(getenv: fn _ -> nil end))
     end
 
+    test "a platform_define item in builds_with_inputs is decided against this arch string" do
+      r14 = %{"kind" => "platform_define", "regex" => "R14", "matched" => false}
+      linux = "28.1.1-x86_64-pc-linux-gnu-64"
+
+      assert {:ok, _, _} = Match.select(inputs_doc([r14]), ctx(rebar3_arch: linux))
+
+      assert {:miss, %Reason{code: :platform_define_differs, args: ["R14"]}} =
+               Match.select_reason(
+                 inputs_doc([r14]),
+                 ctx(rebar3_arch: "R14B04-x86_64-pc-linux-gnu-64")
+               )
+    end
+
     test "the user's value and the builder's value are never in the reason" do
       item = host_item("GITHUB_ACTIONS", ienc({:ok, "builder-value"}))
 

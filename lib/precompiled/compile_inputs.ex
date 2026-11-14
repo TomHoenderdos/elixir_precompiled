@@ -9,18 +9,24 @@ defmodule Precompiled.CompileInputs do
   # is compared and never printed: here it may be the user's secret. Only
   # the variable's name reaches a reason. A config_order item is checked
   # against this project's compile order (CompileOrder): only its app and
-  # key names reach a reason.
+  # key names reach a reason. A platform_define item is rebar3's verdict on
+  # one platform_define regex against the builder's arch string, checked
+  # against this machine's (Rebar3Arch): only the regex reaches a reason.
 
-  alias Precompiled.{CompileOrder, Reason}
+  alias Precompiled.{CompileOrder, Reason, Rebar3Arch}
 
   @max_recorded_bytes 65_536
 
   @no_order %{compile_order: nil, user_config: &__MODULE__.user_config/2}
 
+  # rebar3_arch, when given, stands for this machine's arch string.
   @type order_ctx :: %{
-          compile_order: CompileOrder.t() | nil,
-          user_config: (String.t(), String.t() ->
-                          {:ok, term()} | :error | {:loaded, {:ok, term()} | :error})
+          required(:compile_order) => CompileOrder.t() | nil,
+          required(:user_config) => (String.t(), String.t() ->
+                                       {:ok, term()}
+                                       | :error
+                                       | {:loaded, {:ok, term()} | :error}),
+          optional(:rebar3_arch) => String.t()
         }
 
   @spec host(term(), (String.t() -> String.t() | nil)) :: :ok | {:miss, Reason.t()}
@@ -111,6 +117,19 @@ defmodule Precompiled.CompileInputs do
     end
   end
 
+  # rebar3 defines the macro only when the regex matches its arch string;
+  # here it must decide as it did on the builder. A regex this client cannot
+  # evaluate is a miss. Firmware is compiled on this machine too (rebar3 runs
+  # on the host's VM when cross-compiling), so this is the check for it.
+  defp host_item(%{"kind" => "platform_define", "regex" => regex, "matched" => matched}, _, order)
+       when is_binary(regex) and is_boolean(matched) do
+    arch = Map.get_lazy(order, :rebar3_arch, &Rebar3Arch.arch/0)
+
+    if Rebar3Arch.match(regex, arch) == matched,
+      do: :ok,
+      else: platform_define_differs(regex)
+  end
+
   defp host_item(item, _getenv, _order), do: whole(item)
 
   # What the reader would read here: the user's config when set; otherwise
@@ -176,6 +195,14 @@ defmodule Precompiled.CompileInputs do
     end
   end
 
+  # A device compiles no dependency: firmware is compiled on the build
+  # machine, where rebar3 ran and host_item/3 checked this item, and the
+  # device API installs builds without compiling anything. Its own arch
+  # string is not the one rebar3 would see, so it is never compared.
+  defp device_item(%{"kind" => "platform_define", "regex" => regex, "matched" => matched}, _)
+       when is_binary(regex) and is_boolean(matched),
+       do: :ok
+
   defp device_item(item, _decidable?), do: whole(item)
 
   # Decidable, and the value the reader saw was recorded: a seen value the
@@ -216,6 +243,12 @@ defmodule Precompiled.CompileInputs do
 
   defp differs(name), do: {:miss, Reason.new(:env_differs, [name])}
   defp set_at_build(name), do: {:miss, Reason.new(:env_set_at_build, [name])}
+
+  defp platform_define_differs(regex) do
+    text = Reason.render(:platform_define_differs, [inspect(regex)])
+    {:miss, Reason.new(:platform_define_differs, [regex], text)}
+  end
+
   defp malformed(), do: {:miss, Reason.new(:malformed_entry, [], "malformed entry")}
 
   defp current(nil), do: :error

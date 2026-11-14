@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+* On your build machine, a build that records rebar3 `platform_define`
+  verdicts (`compile_inputs` items of kind `platform_define`, each a regex
+  and whether it matched the builder's arch string) matches only when
+  every regex decides the same against this machine's arch string,
+  computed as rebar3 computes it (OTP version, system architecture, word
+  size). Otherwise the line reads `rebar3 platform_define REGEX decides
+  differently on this machine` (new reason code `platform_define_differs`),
+  as it does for a regex the client cannot evaluate. Devices compile
+  nothing and accept such items. Releases before this one miss on the new
+  kind as a malformed entry.
 * On your build machine, a project whose dependency tree the client has
   read also considers the builds a manifest lists under `builds_closure`
   for a version: builds made with a common app's optional dependencies
