@@ -389,10 +389,13 @@ defmodule Precompiled.CompileInputsTest do
                CompileInputs.host([pd("^" <> Regex.escape(here) <> "$", false)], &no_env/1)
     end
 
-    # A device compiles no dependency: firmware is compiled on the build
-    # machine, where the host check runs.
-    test "a device accepts a well-formed item whatever its verdict" do
-      assert :ok = CompileInputs.device([pd("R14", true), pd("R14", false), pd("(", true)])
+    # A device has no build machine of its firmware to compare with: the
+    # firmware may have been compiled where the regex decides otherwise.
+    test "a device misses on a platform_define item whatever its verdict" do
+      for item <- [pd("R14", true), pd("R14", false), pd("(", true)] do
+        assert {:miss, %{code: :platform_define_differs, args: [_]}} =
+                 CompileInputs.device([item])
+      end
     end
   end
 end

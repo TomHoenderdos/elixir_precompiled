@@ -120,7 +120,8 @@ defmodule Precompiled.CompileInputs do
   # rebar3 defines the macro only when the regex matches its arch string;
   # here it must decide as it did on the builder. A regex this client cannot
   # evaluate is a miss. Firmware is compiled on this machine too (rebar3 runs
-  # on the host's VM when cross-compiling), so this is the check for it.
+  # on the host's VM when cross-compiling), so this is the check for it; a
+  # device cannot make it and misses (device_item/2).
   defp host_item(%{"kind" => "platform_define", "regex" => regex, "matched" => matched}, _, order)
        when is_binary(regex) and is_boolean(matched) do
     arch = Map.get_lazy(order, :rebar3_arch, &Rebar3Arch.arch/0)
@@ -195,13 +196,18 @@ defmodule Precompiled.CompileInputs do
     end
   end
 
-  # A device compiles no dependency: firmware is compiled on the build
-  # machine, where rebar3 ran and host_item/3 checked this item, and the
-  # device API installs builds without compiling anything. Its own arch
-  # string is not the one rebar3 would see, so it is never compared.
+  # The device's firmware was compiled on some build machine whose arch
+  # string the device cannot know (a Mac defines what the builder did not),
+  # and its own is not the one rebar3 saw there. As with an env item
+  # recorded set, there is nothing here to compare with: a miss.
   defp device_item(%{"kind" => "platform_define", "regex" => regex, "matched" => matched}, _)
-       when is_binary(regex) and is_boolean(matched),
-       do: :ok
+       when is_binary(regex) and is_boolean(matched) do
+    text =
+      "built with rebar3 platform_define #{inspect(regex)} decided on its build machine; " <>
+        "a device cannot check its firmware's build machine"
+
+    {:miss, Reason.new(:platform_define_differs, [regex], text)}
+  end
 
   defp device_item(item, _decidable?), do: whole(item)
 

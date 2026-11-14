@@ -9,8 +9,9 @@
   computed as rebar3 computes it (OTP version, system architecture, word
   size). Otherwise the line reads `rebar3 platform_define REGEX decides
   differently on this machine` (new reason code `platform_define_differs`),
-  as it does for a regex the client cannot evaluate. Devices compile
-  nothing and accept such items. Releases before this one miss on the new
+  as it does for a regex the client cannot evaluate. On a device such a
+  build misses with the same code: the device cannot know the machine its
+  firmware was compiled on. Releases before this one miss on the new
   kind as a malformed entry.
 * On your build machine, a project whose dependency tree the client has
   read also considers the builds a manifest lists under `builds_closure`

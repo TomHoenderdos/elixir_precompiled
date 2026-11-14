@@ -198,8 +198,8 @@ compares the whole tree. Releases before 0.7.0 do not read it at all.
   verdict differs, or a regex cannot be evaluated here, it misses with
   `rebar3 platform_define REGEX decides differently on this machine`. The
   line names the regex, never your arch string. Firmware is compiled on
-  your build machine, so this check runs there; a device compiles nothing
-  and does not make it.
+  your build machine, so this check runs there. A device cannot make it
+  and misses (see below).
 
 **Rule 9, build method.**
 
@@ -308,9 +308,11 @@ unset config key of an app outside its tree matches only when that app's
 the build saw, whether or not that app is installed on the device. Otherwise it misses with `compile-time config APP KEY would
 differ in this project`.
 
-A build's `platform_define` verdicts are not compared on a device: they
-describe rebar3 on a build machine, and the device's own architecture is
-not the one rebar3 would see when your firmware is compiled.
+A build that records rebar3 `platform_define` verdicts misses on a
+device too, naming the regex: the verdicts depend on the machine your
+firmware was compiled on (a Mac defines a `darwin` macro a Linux builder
+does not), which the device cannot know, and the device's own
+architecture is not the one rebar3 saw.
 
 ## When nothing matches
 
