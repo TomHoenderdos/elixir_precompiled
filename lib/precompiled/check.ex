@@ -76,7 +76,7 @@ defmodule Precompiled.Check do
     # this home mid-write keeps its own.
     Fetch.sweep_tmp(config, System.os_time(:second) - 3600)
     debug_skipped(skipped)
-    config_fun = Keyword.get(opts, :config_fun, &CompileEnv.lookup/2)
+    config_fun = config_view(Keyword.get(opts, :config_fun, &CompileEnv.lookup/2), env)
 
     lines =
       except_lines(excepted, env) ++ lines_for(candidates, installed, config, env, config_fun)
@@ -626,6 +626,19 @@ defmodule Precompiled.Check do
   def nerves_system?({"nerves_system_" <> _, _version}), do: true
   def nerves_system?(_system), do: false
 
+  # Config that could not be read answers no compile-time config key: a
+  # fresh reference equals no recorded value (SafeTerm refuses them), and
+  # :unreadable leaves every config_order item unknown.
+  defp config_view(_config_fun, %{config_unreadable: why}) when is_binary(why),
+    do: fn _app, _path -> {:unreadable, make_ref()} end
+
+  defp config_view(config_fun, _env), do: config_fun
+
+  defp user_config_view(%{config_unreadable: why}) when is_binary(why),
+    do: fn _app, _key -> :unreadable end
+
+  defp user_config_view(_env), do: &Precompiled.CompileInputs.user_config/2
+
   @doc false
   # What Match reads for one candidate. `config.systems_table` is the
   # run's systems table (systems_table/2), nil without one.
@@ -652,7 +665,7 @@ defmodule Precompiled.Check do
       config: config_fun,
       getenv: &System.get_env/1,
       compile_order: Map.get(env, :compile_order),
-      user_config: &Precompiled.CompileInputs.user_config/2,
+      user_config: user_config_view(env),
       prefer: Map.get(candidate, :installed_hash),
       mix_target: Map.get(env, :mix_target) || "host",
       reads: reads,

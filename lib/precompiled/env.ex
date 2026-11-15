@@ -29,7 +29,8 @@ defmodule Precompiled.Env do
           mix_target: String.t(),
           build_methods: build_methods(),
           compile_order: compile_order() | nil,
-          present_deps: present_deps() | nil
+          present_deps: present_deps() | nil,
+          config_unreadable: String.t() | nil
         }
 
   @typedoc """
@@ -89,14 +90,17 @@ defmodule Precompiled.Env do
             build_methods: %{},
             # The deps.compile order (Precompiled.CompileOrder), for config_order
             # items, in the project or in Mix.install/2's install project; nil
-            # when Mix's deps were not read, or Mix.install/2 is given config
-            # this check runs before.
+            # when Mix's deps were not read.
             compile_order: nil,
             # Each dep's children in the current env (Mix.Dep.load_and_cache/0, in
             # the project or in Mix.install/2's install project), for the closure
             # rule (Env.closure/2); nil when Mix's deps were not read, and the lock
             # decides which declared deps are present.
-            present_deps: nil
+            present_deps: nil,
+            # Why the compile-time config the deps compile with could not be
+            # read (Mix.install/2's config_path:), nil when it was: then no
+            # compile-time config read can be checked.
+            config_unreadable: nil
 
   @doc """
   The locked Hex entries among `apps`, in the order given. `envs` names each

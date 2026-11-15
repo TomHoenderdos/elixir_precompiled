@@ -25,7 +25,8 @@ defmodule Precompiled.CompileInputs do
           required(:user_config) => (String.t(), String.t() ->
                                        {:ok, term()}
                                        | :error
-                                       | {:loaded, {:ok, term()} | :error}),
+                                       | {:loaded, {:ok, term()} | :error}
+                                       | :unreadable),
           optional(:rebar3_arch) => String.t()
         }
 
@@ -150,6 +151,9 @@ defmodule Precompiled.CompileInputs do
 
       {:loaded, env} ->
         if decode(default) == {:ok, :error}, do: {:ok, env}, else: :unknown
+
+      :unreadable ->
+        :unknown
     end
   end
 

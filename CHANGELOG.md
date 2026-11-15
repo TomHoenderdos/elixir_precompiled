@@ -7,9 +7,13 @@
   `deps.compile` uses in its install project, as a Mix project does.
   Before, every such build missed under `Mix.install/2` with
   `compile-time config APP KEY would differ in this project`, for example
-  `phoenix_live_dashboard` without `phoenix_view`. Given `:config` or
-  `:config_path`, which `Mix.install/2` applies only after the check, such
-  a build still misses.
+  `phoenix_live_dashboard` without `phoenix_view`.
+* `Precompiled.Host.install/2` now checks a build's compile-time config
+  against `Mix.install/2`'s `:config` and `:config_path`, applied before
+  the check as `Mix.install/2` applies them (the file's keys replace
+  `:config`'s). Before, a build that recorded a key unset was installed
+  even when `:config` set it. A `:config_path` that cannot be read makes
+  every dependency that reads compile-time config compile from source.
 * A fresh `_build` no longer compiles this library again. As a dependency
   fetched from Hex (never a path or git checkout) it keeps its own compiled modules in
   `deps/precompiled/.compile_cache`, keyed on the toolchain, the compiler

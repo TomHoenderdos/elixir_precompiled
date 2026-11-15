@@ -239,33 +239,6 @@ defmodule Precompiled.InstallTest do
     assert Precompiled.CompileOrder.apps(env.compile_order) == ["pkg", "here"]
   end
 
-  # Mix.install/2 applies config: and config_path: only after the check, so
-  # the user's setting is unseen when it runs: the order is withheld, and a
-  # config_order item stays unknown rather than read as unset.
-  test "an install given config: or config_path: checks without a compile order", %{
-    config: config
-  } do
-    parent = self()
-    here = %Mix.Dep{app: :here, scm: Hex.SCM, opts: [], manager: :mix, deps: []}
-
-    for mix_opts <- [[], [config: [here: [k: 1]]], [config_path: "config/config.exs"]] do
-      capture_io(fn ->
-        assert Install.run([], mix_opts, config,
-                 installer: fn _, _ -> :ok end,
-                 in_project?: false,
-                 check: &send(parent, {:env, &1}),
-                 load: fn -> [here] end
-               ) == :ok
-      end)
-
-      assert_received {:env, env}
-
-      if mix_opts == [],
-        do: assert(Precompiled.CompileOrder.apps(env.compile_order) == ["here"]),
-        else: assert(env.compile_order == nil, inspect(mix_opts))
-    end
-  end
-
   test "deps that do not load make build methods unknown, with the cause", %{tmp_dir: dir} do
     boom = fn -> raise "lock is broken" end
     assert Install.build_methods(dir, [], [], boom) == {:unknown, "lock is broken"}

@@ -196,9 +196,8 @@ compares the whole tree. Releases before 0.7.0 do not read it at all.
   it sees depends on whether that app compiled first. The build records
   what it saw and the app's `.app` default. The client predicts the value
   from your config and the order `mix deps.compile` uses in your project
-  (under `Mix.install/2`, in its install project; given `:config` or
-  `:config_path` it cannot see that config before the check and misses),
-  and misses with `compile-time config APP KEY would differ in this
+  (under `Mix.install/2`, in its install project, with its `:config` and
+  `:config_path`), and misses with `compile-time config APP KEY would differ in this
   project` when they differ. It predicts a clean compile: an incremental
   compile, or an app installed precompiled, does not load that app's
   `.app`, so it can differ from what the prediction assumes.

@@ -57,13 +57,14 @@ already change any compiled code there.
 
 ## Mix.install
 
-How these options of `Mix.install/2` reach the precompiled step (only
-`:lockfile` is applied to it):
+How these options of `Mix.install/2` reach the precompiled step.
+`:config` and `:config_path` are not listed: they are applied before the
+check as `Mix.install/2` applies them, so the check sees the compile-time
+config the dependencies compile with.
 
 | Option | What happens | Result |
 | --- | --- | --- |
 | `:lockfile` | Merged into the install project before the check, as `Mix.install/2` merges it | The check sees the versions and tree Mix compiles; Mix then finds the merge done |
-| `:config`, `:config_path` | Not applied before the check | A dependency whose compile-time config they change misses, or is placed and then recompiled by Mix |
 | `MIX_INSTALL_RESTORE_PROJECT_DIR` | Ignored | — |
 
 In every case the dependency ends up compiled, never wrong.

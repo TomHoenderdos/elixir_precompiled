@@ -26,7 +26,7 @@ defmodule Precompiled.MixInstallCompileOrderTest do
   # solo_b's :k, read by that dep, with the value its compile logged and
   # solo_b's default (unrecordable when solo_b is not a dep, as the portal
   # records an app outside a build's closure).
-  defp run(tmp, apps, partitions) do
+  defp run(tmp, apps, partitions, mix_opts \\ []) do
     ebin = Path.dirname(:code.which(Precompiled.Install))
     log = Path.join(tmp, "order.log")
     deps = Enum.map(apps, &dep/1)
@@ -40,7 +40,7 @@ defmodule Precompiled.MixInstallCompileOrderTest do
       send(parent, {:env, env, Precompiled.CompileInputs.user_config("solo_b", "k")})
     end
 
-    :ok = Precompiled.Install.run(deps, [], %{}, check: check)
+    :ok = Precompiled.Install.run(deps, #{inspect(mix_opts)}, %{}, check: check)
     {order, user} = receive do {:env, env, user} -> {env.compile_order, user} end
 
     lines =
@@ -129,6 +129,33 @@ defmodule Precompiled.MixInstallCompileOrderTest do
     for {reader, value} <- r.lines do
       assert value == :error, reader
       assert r.loaded[reader] == false, reader
+      assert r.checked[reader] == :ok, reader
+    end
+  end
+
+  # Mix.install/2 applies config: and then config_path: before its deps
+  # compile, so every reader sees them whatever the order; the check sees
+  # them too, and keeps the order.
+  test "config: wins over the order", %{tmp_dir: tmp} do
+    r = run(tmp, [:zeta, :alpha, :solo_b], nil, config: [solo_b: [k: 2]])
+
+    assert %{apps: [_ | _]} = r.order
+
+    for {reader, value} <- r.lines do
+      assert value == {:ok, 2}, reader
+      if reader != "solo_b", do: assert(r.checked[reader] == :ok, reader)
+    end
+  end
+
+  test "config_path: wins over config: and the order", %{tmp_dir: tmp} do
+    file = Path.join(tmp, "solo_b_config.exs")
+    File.write!(file, "import Config\nconfig :solo_b, k: 3\n")
+    r = run(tmp, [:zeta, :alpha], nil, config: [solo_b: [k: 2]], config_path: file)
+
+    assert %{apps: [_ | _]} = r.order
+
+    for {reader, value} <- r.lines do
+      assert value == {:ok, 3}, reader
       assert r.checked[reader] == :ok, reader
     end
   end

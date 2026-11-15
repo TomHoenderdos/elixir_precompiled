@@ -158,6 +158,16 @@ defmodule Precompiled.CompileInputsTest do
       assert :ok = check(order_item(rec({:ok, 1}), rec(:error)), octx([mdep(:r), mdep(:a)]))
     end
 
+    # Mix.install/2's config_path: could not be read: whatever the order
+    # says, the reader may see anything.
+    test "unreadable user config misses every item" do
+      unreadable = fn _, _ -> :unreadable end
+
+      for {deps, seen} <- [{[mdep(:a), mdep(:r)], rec({:ok, 1})}, {[mdep(:r)], rec(:error)}] do
+        assert @differs = check(order_item(rec({:ok, 1}), seen), octx(deps, unreadable))
+      end
+    end
+
     test "the user's config wins over the order, by value" do
       after_r = [mdep(:r), mdep(:a)]
 

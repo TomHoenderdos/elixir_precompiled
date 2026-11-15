@@ -61,6 +61,8 @@ defmodule Precompiled.Install do
     dir = project_dir(deps, mix_opts)
     if forced?, do: File.rm_rf!(dir)
 
+    unreadable = apply_config(deps, mix_opts)
+
     {methods, present, order} =
       resolve(dir, deps, mix_opts, Keyword.get(test_opts, :load, &Mix.Dep.load_and_cache/0))
 
@@ -77,7 +79,8 @@ defmodule Precompiled.Install do
 
     # Mix.install/2 runs whatever happened here; it compiles what is missing.
     try do
-      _ = check.(Env.MixInstall.load(dir, deps, methods, present, check_order(order, mix_opts)))
+      env = Env.MixInstall.load(dir, deps, methods, present, order)
+      _ = check.(%{env | config_unreadable: unreadable})
     rescue
       e -> internal_error(Exception.message(e))
     catch
@@ -115,14 +118,45 @@ defmodule Precompiled.Install do
             "add :mix to extra_applications in mix.exs and rebuild the firmware"
   end
 
-  # Mix.install/2 puts its config: and loads its config_path: only after
-  # this check, right before it compiles, so a config_order item would be
-  # checked against config the reader never compiles with: the user's
-  # setting is unseen here, and the order alone would answer "unset". With
-  # either option the order is withheld, and every such item stays unknown.
-  defp check_order(order, mix_opts) do
-    if Keyword.get(mix_opts, :config, []) == [] and Keyword.get(mix_opts, :config_path) == nil,
-      do: order
+  # The compile-time config Mix.install/2 compiles its deps with, applied
+  # now so the check reads what the compiles will: Mix.install/2 puts the
+  # system_env, then config: (Application.put_all_env/2, persistent, each
+  # key replacing the app's), then reads config_path: as loadconfig does
+  # (Config.Reader with Mix.env/0 and Mix.target/0, imports included) and
+  # puts it the same way, so the file's keys replace config:'s. It does the
+  # same again when it runs; doing it first changes nothing it then does.
+  # Elixir 1.17 to 1.20 all apply them in that order before deps.get. nil,
+  # or why config_path: could not be read: Mix.install/2 then fails on it
+  # too, and the check (Check) misses every build that read config.
+  defp apply_config(deps, mix_opts) do
+    System.put_env(Keyword.get(mix_opts, :system_env, []))
+    Application.put_all_env(Keyword.get(mix_opts, :config, []), persistent: true)
+
+    case Keyword.get(mix_opts, :config_path) do
+      nil -> nil
+      path -> read_config(path, normalize_deps(deps))
+    end
+  end
+
+  defp read_config(path, deps) do
+    file = dep_file(path, deps, :config_path, "config/config.exs")
+    config = Elixir.Config.Reader.read!(file, env: Mix.env(), target: Mix.target())
+    Application.put_all_env(config, persistent: true)
+    nil
+  rescue
+    e -> unreadable(path, Exception.message(e))
+  catch
+    :exit, reason when stop?(reason) -> exit(reason)
+    kind, reason -> unreadable(path, Exception.format_banner(kind, reason))
+  end
+
+  defp unreadable(path, why) do
+    Output.warning(
+      "precompiled: config_path #{inspect(path)} could not be read (#{why}); " <>
+        "every dependency that reads compile-time config compiles from source"
+    )
+
+    "config_path unreadable"
   end
 
   # Mix.install/2 deletes the install dir when forced, which would delete the
@@ -224,7 +258,7 @@ defmodule Precompiled.Install do
   defp merge_lockfile(_dir, _deps, nil), do: :ok
 
   defp merge_lockfile(dir, deps, lockfile) do
-    external = lockfile_path(lockfile, deps)
+    external = dep_file(lockfile, deps, :lockfile, "mix.lock")
     md5_path = Path.join(dir, "merge.lock.md5")
 
     old_md5 =
@@ -245,23 +279,23 @@ defmodule Precompiled.Install do
     :ok
   end
 
-  # Mix.install/2's expand_path/4 for :lockfile: a path, or the name of a
-  # path dependency whose mix.lock is meant.
-  defp lockfile_path(path, _deps) when is_binary(path), do: Path.expand(path)
+  # Mix.install/2's expand_path/4 for :lockfile and :config_path: a path,
+  # or the name of a path dependency whose file at `relative` is meant.
+  defp dep_file(path, _deps, _key, _relative) when is_binary(path), do: Path.expand(path)
 
-  defp lockfile_path(app, deps) when is_atom(app) do
+  defp dep_file(app, deps, key, relative) when is_atom(app) do
     app_dir =
       case List.keyfind(deps, app, 0) do
         {_, _, opts} when is_list(opts) -> opts[:path]
         {_, opts} when is_list(opts) -> opts[:path]
-        _ -> Mix.raise("unknown dependency #{inspect(app)} given to :lockfile")
+        _ -> Mix.raise("unknown dependency #{inspect(app)} given to #{inspect(key)}")
       end
 
     if !app_dir do
-      Mix.raise("#{inspect(app)} given to :lockfile must be a path dependency")
+      Mix.raise("#{inspect(app)} given to #{inspect(key)} must be a path dependency")
     end
 
-    Path.join(app_dir, "mix.lock")
+    Path.join(app_dir, relative)
   end
 
   @doc false
