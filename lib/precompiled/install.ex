@@ -57,11 +57,13 @@ defmodule Precompiled.Install do
       Mix.raise("Precompiled.Host.install/2 cannot be used inside a Mix project")
     end
 
+    # Before any config is applied: a call Mix.install/2 refuses changes nothing.
+    validate!(mix_opts)
     {forced?, mix_opts} = take_force(mix_opts)
     dir = project_dir(deps, mix_opts)
     if forced?, do: File.rm_rf!(dir)
 
-    unreadable = apply_config(deps, mix_opts)
+    unreadable = apply_config(dir, deps, mix_opts)
 
     {methods, present, order} =
       resolve(dir, deps, mix_opts, Keyword.get(test_opts, :load, &Mix.Dep.load_and_cache/0))
@@ -123,24 +125,34 @@ defmodule Precompiled.Install do
   # system_env, then config: (Application.put_all_env/2, persistent, each
   # key replacing the app's), then reads config_path: as loadconfig does
   # (Config.Reader with Mix.env/0 and Mix.target/0, imports included) and
-  # puts it the same way, so the file's keys replace config:'s. It does the
-  # same again when it runs; doing it first changes nothing it then does.
+  # puts it the same way, so the file's keys replace config:'s. The file is
+  # evaluated inside the install project dir, as Mix.install/2 evaluates it,
+  # so a relative read or File.cwd!/0 in it sees that dir; its own path is
+  # expanded against the caller's cwd first, as Mix.install/2 expands it.
+  # It does the same again when it runs; doing it first changes nothing it
+  # then does.
   # Elixir 1.17 to 1.20 all apply them in that order before deps.get. nil,
   # or why config_path: could not be read: Mix.install/2 then fails on it
   # too, and the check (Check) misses every build that read config.
-  defp apply_config(deps, mix_opts) do
+  defp apply_config(dir, deps, mix_opts) do
     System.put_env(Keyword.get(mix_opts, :system_env, []))
     Application.put_all_env(Keyword.get(mix_opts, :config, []), persistent: true)
 
     case Keyword.get(mix_opts, :config_path) do
       nil -> nil
-      path -> read_config(path, normalize_deps(deps))
+      path -> read_config(dir, path, normalize_deps(deps))
     end
   end
 
-  defp read_config(path, deps) do
+  defp read_config(dir, path, deps) do
     file = dep_file(path, deps, :config_path, "config/config.exs")
-    config = Elixir.Config.Reader.read!(file, env: Mix.env(), target: Mix.target())
+    File.mkdir_p!(dir)
+
+    config =
+      File.cd!(dir, fn ->
+        Elixir.Config.Reader.read!(file, env: Mix.env(), target: Mix.target())
+      end)
+
     Application.put_all_env(config, persistent: true)
     nil
   rescue
@@ -157,6 +169,48 @@ defmodule Precompiled.Install do
     )
 
     "config_path unreadable"
+  end
+
+  # Mix.install/2's own checks, in its order, before it does anything: the
+  # :elixir requirement, then Keyword.validate!/2 with the options this
+  # Elixir's Mix.install/2 takes (:compilers from 1.19,
+  # :stop_unused_applications from 1.20).
+  @install_opts [
+    config: [],
+    config_path: nil,
+    consolidate_protocols: true,
+    elixir: nil,
+    force: false,
+    lockfile: nil,
+    runtime_config: [],
+    start_applications: true,
+    system_env: [],
+    verbose: false
+  ]
+
+  defp validate!(mix_opts) do
+    requirement = mix_opts[:elixir]
+    version = System.version()
+
+    if !!requirement and not Version.match?(version, requirement) do
+      Mix.raise(
+        "Mix.install/2 declared it supports only Elixir #{requirement} " <>
+          "but you're running on Elixir #{version}"
+      )
+    end
+
+    _ = Keyword.validate!(mix_opts, install_opts(Version.parse!(version)))
+    :ok
+  end
+
+  @doc false
+  @spec install_opts(Version.t()) :: keyword()
+  def install_opts(%Version{major: major, minor: minor}) do
+    @install_opts
+    |> then(&if({major, minor} >= {1, 19}, do: [{:compilers, [:elixir]} | &1], else: &1))
+    |> then(
+      &if({major, minor} >= {1, 20}, do: [{:stop_unused_applications, true} | &1], else: &1)
+    )
   end
 
   # Mix.install/2 deletes the install dir when forced, which would delete the

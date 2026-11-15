@@ -239,6 +239,72 @@ defmodule Precompiled.InstallTest do
     assert Precompiled.CompileOrder.apps(env.compile_order) == ["pkg", "here"]
   end
 
+  defp configured_run(config, mix_opts) do
+    capture_io(:stderr, fn ->
+      capture_io(fn ->
+        Install.run([], mix_opts, config,
+          installer: fn _, _ -> :ok end,
+          in_project?: false,
+          check: fn _env -> :ok end,
+          load: fn -> [] end
+        )
+      end)
+    end)
+  end
+
+  # Mix.install/2 refuses these before it applies any config, so a call it
+  # refuses changes nothing here either.
+  test "options Mix.install/2 refuses raise before any config is applied", %{config: config} do
+    probe = [precompiled_install_probe_a: [k: 1]]
+
+    assert_raise ArgumentError, ~r/unknown keys \[:bogus\]/, fn ->
+      configured_run(config, config: probe, bogus: 1)
+    end
+
+    assert_raise Mix.Error, ~r/declared it supports only Elixir ~> 0\.1/, fn ->
+      configured_run(config, config: probe, elixir: "~> 0.1")
+    end
+
+    assert Application.get_env(:precompiled_install_probe_a, :k) == nil
+
+    # Options of a later Elixir than this one are unknown to it, as to Mix.
+    if Version.match?(System.version(), "< 1.20.0") do
+      assert_raise ArgumentError, fn ->
+        configured_run(config, stop_unused_applications: false)
+      end
+    end
+
+    if Version.match?(System.version(), "< 1.19.0") do
+      assert_raise ArgumentError, fn -> configured_run(config, compilers: [:elixir]) end
+    end
+  end
+
+  test "the options are Mix.install/2's for each Elixir" do
+    keys = &(&1 |> Version.parse!() |> Install.install_opts() |> Keyword.keys() |> Enum.sort())
+    base = ~w(config config_path consolidate_protocols elixir force lockfile runtime_config
+              start_applications system_env verbose)a
+
+    assert keys.("1.17.3") == Enum.sort(base)
+    assert keys.("1.18.4") == Enum.sort(base)
+    assert keys.("1.19.0-rc.0") == Enum.sort([:compilers | base])
+    assert keys.("1.20.3") == Enum.sort([:compilers, :stop_unused_applications | base])
+  end
+
+  # Mix.install/2 reads its config_path: inside the install project, so a
+  # file that reads its cwd sees that dir, as it does under Mix.install/2.
+  test "config_path: is evaluated in the install project", %{config: config, tmp_dir: dir} do
+    file = Path.join(dir, "cwd_config.exs")
+    File.write!(file, "import Config\nconfig :precompiled_install_probe_b, cwd: File.cwd!()\n")
+    cwd = File.cwd!()
+
+    configured_run(config, config_path: file)
+
+    assert Application.get_env(:precompiled_install_probe_b, :cwd) ==
+             Install.project_dir([], config_path: file)
+
+    assert File.cwd!() == cwd
+  end
+
   test "deps that do not load make build methods unknown, with the cause", %{tmp_dir: dir} do
     boom = fn -> raise "lock is broken" end
     assert Install.build_methods(dir, [], [], boom) == {:unknown, "lock is broken"}

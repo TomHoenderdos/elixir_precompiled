@@ -60,12 +60,20 @@ defmodule Precompiled.MixInstallCompileOrderTest do
         {reader, Precompiled.CompileInputs.host([item], &System.get_env/1, ctx)}
       end
 
+    # The same reader as a build that saw solo_b's default would record it.
+    saw_default =
+      for {reader, _seen} <- lines, reader != "solo_b", into: %{} do
+        item = %{"kind" => "config_order", "app" => "solo_b", "path" => ["k"],
+                 "reader" => reader, "default" => rec.({:ok, 1}), "seen" => rec.({:ok, 1})}
+        {reader, Precompiled.CompileInputs.host([item], &System.get_env/1, ctx)}
+      end
+
     loaded =
       Map.new(lines, fn {reader, _} ->
         {reader, Precompiled.CompileOrder.loaded_before?(order, "solo_b", reader)}
       end)
 
-    result = {order, Precompiled.CompileOrder.apps(order), loaded, checked, lines}
+    result = {order, Precompiled.CompileOrder.apps(order), loaded, checked, saw_default, lines}
     IO.puts("RESULT " <> Base.encode64(:erlang.term_to_binary(result)))
     """
 
@@ -87,10 +95,18 @@ defmodule Precompiled.MixInstallCompileOrderTest do
     assert status == 0, out
     [encoded] = for "RESULT " <> e <- String.split(out, "\n"), do: e
 
-    {order, apps, loaded, checked, lines} =
+    {order, apps, loaded, checked, saw_default, lines} =
       encoded |> Base.decode64!() |> :erlang.binary_to_term()
 
-    %{order: order, apps: apps, loaded: loaded, checked: checked, lines: lines, out: out}
+    %{
+      order: order,
+      apps: apps,
+      loaded: loaded,
+      checked: checked,
+      saw_default: saw_default,
+      lines: lines,
+      out: out
+    }
   end
 
   test "the client's order and loaded_before? are what Mix.install/2's deps.compile does", %{
@@ -144,6 +160,14 @@ defmodule Precompiled.MixInstallCompileOrderTest do
     for {reader, value} <- r.lines do
       assert value == {:ok, 2}, reader
       if reader != "solo_b", do: assert(r.checked[reader] == :ok, reader)
+    end
+
+    # A build whose reader saw solo_b's default, even one compiled after
+    # solo_b here, would differ: config: set another value.
+    assert map_size(r.saw_default) == 4
+
+    for {reader, result} <- r.saw_default do
+      assert {:miss, %{code: :config_order_differs, args: ["solo_b", "k"]}} = result, reader
     end
   end
 
