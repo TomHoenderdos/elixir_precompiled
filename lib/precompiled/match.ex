@@ -229,8 +229,10 @@ defmodule Precompiled.Match do
 
   # When every build missed on its target and none is pure_elixir or for
   # this system, the version simply was not built here; otherwise the
-  # build that passed the most rules explains the miss best (ties keep the
-  # first), and a build for another system never explains it. That build
+  # build that passed the most rules explains the miss best (of a tie, the
+  # one made on the release closest to the project's, as nearest_release/2
+  # picks a hit; then the first listed), and a build for another system
+  # never explains it. That build
   # is named in the reason's `closest` (describe/2).
   defp furthest_reason(results, system, system_version, ctx) do
     case Enum.reject(results, &foreign?(&1, system)) do
@@ -242,10 +244,13 @@ defmodule Precompiled.Match do
         )
 
       own ->
+        best = own |> Enum.map(fn {_, {:miss, _, n}} -> n end) |> Enum.max()
+
         {build, {:miss, reason, _}} =
-          Enum.reduce(own, fn {_, {:miss, _, n}} = r, {_, {:miss, _, best}} = acc ->
-            if n > best, do: r, else: acc
-          end)
+          own
+          |> Enum.filter(fn {_, {:miss, _, n}} -> n == best end)
+          |> nearest_release(system_version)
+          |> hd()
 
         %{reason | closest: describe(build, ctx)}
     end

@@ -166,6 +166,37 @@ defmodule Precompiled.MatchTest do
                Match.select(doc([near, far]), ctx())
     end
 
+    test "of misses that got equally far, the build for the project's release explains it" do
+      sys = fn over ->
+        %{
+          "target" => "nerves_system_rpi4",
+          "ebin" => [],
+          "priv" => [],
+          "build" => Map.merge(@build, Map.put(over, "native", false))
+        }
+      end
+
+      # Listed first, on another release, and stopped by the same rule
+      # (deps_ok) as the build for the project's own release.
+      older =
+        sys.(%{
+          "system_version" => "1.30.0",
+          "deps" => %{"spark" => %{"version" => "2.7.7", "checksum" => "OLD"}}
+        })
+
+      own =
+        sys.(%{
+          "system_version" => "1.31.0",
+          "deps" =>
+            Map.put(@build["deps"], "zz_not_locked", %{"version" => "1.0.0", "checksum" => "Z"})
+        })
+
+      assert {:miss, %Reason{code: :closure_absent, args: ["zz_not_locked", "1.0.0"]} = r} =
+               Match.select_reason(doc([older, own]), ctx())
+
+      assert r.closest =~ "nerves_system_rpi4 1.31.0"
+    end
+
     test "a foreign-target miss ranks below every other miss" do
       foreign = %{
         "target" => "nerves_system_bbb",

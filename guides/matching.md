@@ -335,7 +335,7 @@ precompiled: telemetry_poller 1.1.0       MISS  built with Elixir 1.20.3, runnin
 ```
 
 The closest build is the one that got furthest through the rules before
-one broke (ties go to the first listed). It is named by the first 12
+one broke (of a tie, the one made on the release closest to the project's, then the first listed). It is named by the first 12
 characters of its files hash, then, where the manifest says, its variant,
 its toolchain, its system and release, and how its dependency closure
 differs from the one Mix compiles the package with here:
