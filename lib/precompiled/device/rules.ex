@@ -64,11 +64,20 @@ defmodule Precompiled.Device.Rules do
           deferred_env: [map()]
         }
 
-  @malformed {:miss, "malformed entry"}
+  @malformed {:miss, %Reason{code: :malformed_entry, text: "malformed entry"}}
 
   @spec check(map(), String.t(), ctx()) ::
           {:ok, verdict()} | {:miss, String.t(), non_neg_integer()}
   def check(build, name, ctx) do
+    case check_coded(build, name, ctx) do
+      {:miss, %Reason{text: text}, n} -> {:miss, text, n}
+      ok -> ok
+    end
+  end
+
+  # check/3 with each miss as its Reason: the code and arguments a device
+  # report sends, the text the line prints.
+  defp check_coded(build, name, ctx) do
     b = build["build"] || %{}
     if not is_map(b) or not lists_in_place?(build), do: throw(:malformed)
 
@@ -83,10 +92,10 @@ defmodule Precompiled.Device.Rules do
 
     [
       fn acc -> build["target"] |> target(b, ctx) |> with_acc(acc) end,
-      fn acc -> b |> Match.toolchain_present() |> with_acc(acc) end,
-      fn acc -> b["elixir"] |> Match.elixir_ok(ctx.env.elixir) |> with_acc(acc) end,
-      fn acc -> b["otp"] |> Match.otp_ok(ctx.env.otp) |> with_acc(acc) end,
-      fn acc -> b["dep_env"] |> Match.dep_env_ok("prod") |> with_acc(acc) end,
+      fn acc -> b |> Match.toolchain_reason() |> with_acc(acc) end,
+      fn acc -> b["elixir"] |> Match.elixir_reason(ctx.env.elixir) |> with_acc(acc) end,
+      fn acc -> b["otp"] |> Match.otp_reason(ctx.env.otp) |> with_acc(acc) end,
+      fn acc -> b["dep_env"] |> Match.dep_env_reason("prod") |> with_acc(acc) end,
       fn acc -> b |> checksum(ctx) |> with_acc(acc) end,
       fn acc -> runtime_deps(build, name, b, ctx, acc) end,
       fn acc -> declared(b, ctx, acc) end,
@@ -94,7 +103,6 @@ defmodule Precompiled.Device.Rules do
       fn acc ->
         b["compile_inputs"]
         |> CompileInputs.device(&order_decidable?/1)
-        |> Reason.textual()
         |> with_acc(acc)
       end
     ]
@@ -108,19 +116,24 @@ defmodule Precompiled.Device.Rules do
       rescue
         # Catches everything: a rule that raises on an odd manifest entry is
         # a miss for this build, so the install goes on without it.
-        _ -> {:halt, {:miss, "check raised", n}}
+        _ -> {:halt, {:miss, raised(), n}}
       catch
-        _, _ -> {:halt, {:miss, "check raised", n}}
+        _, _ -> {:halt, {:miss, raised(), n}}
       end
     end)
   catch
     # Catches everything left, including the throw above: a malformed entry.
-    _, _ -> {:miss, "malformed entry", 0}
+    _, _ -> {:miss, elem(@malformed, 1), 0}
   end
+
+  defp raised(), do: Reason.new(:internal, [], "check raised")
+
+  # A Rules text with no Match reason behind it, coded for a report.
+  defp miss(code, args, text), do: {:miss, Reason.new(code, args, text)}
 
   defp with_acc(:ok, acc), do: {:ok, acc}
   defp with_acc({:ok, warning}, acc) when is_binary(warning), do: {:ok, warn(acc, warning)}
-  defp with_acc({:miss, _} = miss, _acc), do: miss
+  defp with_acc({:miss, %Reason{}} = miss, _acc), do: miss
 
   defp warn(acc, warning), do: %{acc | warnings: acc.warnings ++ [warning]}
 
@@ -138,16 +151,16 @@ defmodule Precompiled.Device.Rules do
   defp target(t, b, ctx) do
     if is_binary(b["system_version"]),
       do: target_known(t, b, ctx),
-      else: {:miss, "build has no system version"}
+      else: miss(:build_predates, ["system_version"], "build has no system version")
   end
 
   defp target_known(t, _b, %{env: %{system: nil}}),
-    do: {:miss, "not built for this system (#{t})"}
+    do: miss(:not_built_target, [], "not built for this system (#{t})")
 
   defp target_known(t, b, ctx) do
     rule_ctx = %{systems: Map.get(ctx, :systems)}
 
-    case t |> Match.target_reason(b, ctx.env.system, rule_ctx) |> Reason.textual() do
+    case Match.target_reason(t, b, ctx.env.system, rule_ctx) do
       :ok -> platform_note(t, ctx.env)
       miss -> miss
     end
@@ -162,7 +175,7 @@ defmodule Precompiled.Device.Rules do
   # the checksum must be there (it came through the signed chain); a closure
   # member must also be the one the build that needs it was locked against.
   defp checksum(b, ctx) do
-    with :ok <- Match.present(b, "package_checksum"),
+    with :ok <- Match.present_reason(b, "package_checksum"),
          :ok <- if(is_binary(b["package_checksum"]), do: :ok, else: @malformed) do
       pinned(b["package_checksum"], ctx[:pin])
     end
@@ -171,7 +184,7 @@ defmodule Precompiled.Device.Rules do
   defp pinned(_sum, nil), do: :ok
   defp pinned(sum, %{checksum: sum}) when is_binary(sum), do: :ok
 
-  defp pinned(_sum, _pin), do: {:miss, checksum_differs()}
+  defp pinned(_sum, _pin), do: miss(:checksum_differs, [], checksum_differs())
 
   @doc false
   @spec checksum_differs() :: String.t()
@@ -187,7 +200,7 @@ defmodule Precompiled.Device.Rules do
   # (Env.closure/2 over Env.MixProject's present_deps); this rule is
   # unchanged by it.
   defp runtime_deps(build, name, b, ctx, acc) do
-    with :ok <- Match.present(b, "deps"),
+    with :ok <- Match.present_reason(b, "deps"),
          :ok <- deps_well_formed(b["deps"]),
          {:ok, props} <- app_props(ctx.app_spec.(build)) do
       {required, skipped, locked_optional} = closure(props, name, b, ctx)
@@ -219,7 +232,11 @@ defmodule Precompiled.Device.Rules do
     if Enum.all?(keys, &atoms?(Keyword.get(props, &1, []))), do: {:ok, props}, else: @malformed
   end
 
-  defp app_props({:fail, why}) when is_binary(why), do: {:miss, why}
+  defp app_props({:fail, why}) when is_binary(why) do
+    {:fail, reason} = Reason.of_install({:fail, why})
+    {:miss, reason}
+  end
+
   defp app_props(_), do: @malformed
 
   defp atoms?(list), do: is_list(list) and Enum.all?(list, &is_atom/1)
@@ -275,9 +292,18 @@ defmodule Precompiled.Device.Rules do
 
   defp closure_app(app, deps, ctx, acc) do
     case {deps[Atom.to_string(app)], device_vsn(app, ctx)} do
-      {nil, nil} -> {:miss, "needs #{app}, which this firmware does not include"}
-      {nil, _vsn} -> {:ok, acc}
-      {entry, vsn} -> present_dep(app, entry, vsn, acc)
+      {nil, nil} ->
+        miss(
+          :closure_absent,
+          [Atom.to_string(app)],
+          "needs #{app}, which this firmware does not include"
+        )
+
+      {nil, _vsn} ->
+        {:ok, acc}
+
+      {entry, vsn} ->
+        present_dep(app, entry, vsn, acc)
     end
   end
 
@@ -288,7 +314,12 @@ defmodule Precompiled.Device.Rules do
   defp present_dep(_app, %{"version" => v}, v, acc), do: {:ok, acc}
 
   defp present_dep(app, %{"version" => v}, dv, _acc),
-    do: {:miss, "built against #{app} #{v}, device has #{dv}"}
+    do:
+      miss(
+        :closure_mismatch,
+        [Atom.to_string(app), v, dv],
+        "built against #{app} #{v}, device has #{dv}"
+      )
 
   # What this tool loaded in this VM is the version in use, even when the
   # Env was read before it was loaded.
@@ -342,7 +373,7 @@ defmodule Precompiled.Device.Rules do
   # Rule 9. An item for the package itself, for an app still to be
   # installed or for one not loaded yet is checked after application:load/1.
   defp compile_env(b, name, ctx, acc) do
-    with :ok <- Match.present(b, "compile_env"),
+    with :ok <- Match.present_reason(b, "compile_env"),
          :ok <- items_well_formed(b["compile_env"]) do
       later = MapSet.new([name | Enum.map(acc.needs, &Atom.to_string(&1.app))])
       loaded = loaded_apps(ctx)
@@ -360,7 +391,7 @@ defmodule Precompiled.Device.Rules do
           MapSet.member?(later, app) or waiting_to_load?(app, loaded, ctx)
         end)
 
-      case Match.compile_env_ok(now, ctx.config) do
+      case Match.compile_env_reason(now, ctx.config) do
         :ok -> {:ok, %{acc | deferred_env: acc.deferred_env ++ deferred}}
         miss -> miss
       end
@@ -427,6 +458,19 @@ defmodule Precompiled.Device.Rules do
   @spec select(map(), String.t(), nil | String.t(), ctx()) ::
           {:ok, String.t(), map(), verdict()} | {:miss, String.t()}
   def select(manifest, name, req, ctx) do
+    case select_coded(manifest, name, req, ctx) do
+      {:miss, %Reason{text: text}, _version} -> {:miss, text}
+      ok -> ok
+    end
+  end
+
+  @doc false
+  # select/4 with the miss as its Reason and the version it names: the
+  # newest the request allows, whose builds explain the miss, or nil when
+  # no version matched at all.
+  @spec select_coded(map(), String.t(), nil | String.t(), ctx()) ::
+          {:ok, String.t(), map(), verdict()} | {:miss, Reason.t(), String.t() | nil}
+  def select_coded(manifest, name, req, ctx) do
     versions =
       manifest
       |> versions_of()
@@ -435,10 +479,13 @@ defmodule Precompiled.Device.Rules do
       |> Enum.sort({:desc, Version})
 
     case versions do
-      [] -> {:miss, if(req, do: "no version matches #{req}", else: "no versions published")}
+      [] -> {:miss, no_version(req), nil}
       _ -> first_passing(versions, manifest, name, ctx)
     end
   end
+
+  defp no_version(nil), do: Reason.new(:not_in_batch, [], "no versions published")
+  defp no_version(req), do: Reason.new(:not_built_version, [req], "no version matches #{req}")
 
   defp versions_of(%{"versions" => versions}) when is_map(versions), do: versions
   defp versions_of(_), do: %{}
@@ -471,7 +518,7 @@ defmodule Precompiled.Device.Rules do
     Enum.reduce_while(versions, nil, fn v, first_miss ->
       case best_build(builds_of(manifest, v), name, ctx) do
         {:ok, build, verdict} -> {:halt, {:ok, v, build, verdict}}
-        {:miss, why} -> {:cont, first_miss || {:miss, why}}
+        {:miss, why} -> {:cont, first_miss || {:miss, why, v}}
       end
     end)
   end
@@ -492,10 +539,11 @@ defmodule Precompiled.Device.Rules do
   defp with_inputs(list) when is_list(list), do: list
   defp with_inputs(_other), do: []
 
-  defp best_build([], _name, _ctx), do: {:miss, "no builds published"}
+  defp best_build([], _name, _ctx),
+    do: miss(:not_built_version, [], "no builds published")
 
   defp best_build(builds, name, ctx) do
-    results = Enum.map(builds, &{&1, check(&1, name, ctx)})
+    results = Enum.map(builds, &{&1, check_coded(&1, name, ctx)})
 
     case for({b, {:ok, verdict}} <- results, do: {b, verdict}) do
       [] ->

@@ -175,6 +175,57 @@ calls, and ignore them.
   `offline.json` is judged by its batch's expiry against the device clock,
   which must be sane; one with a signed `offline.json` needs no clock.
 
+## Reporting a miss from a device
+
+When an install misses or fails and it should not, send what it found
+from the device's shell:
+
+```elixir
+Precompiled.install(:circuits_gpio)
+Precompiled.report()
+```
+
+Every `install/2` but a dry run records its outcome in the store, in
+`DIR/.last-install.json`: one line per package it planned or missed, with
+HIT, MISS or FAIL and the reason code. Only the last install is kept, and
+`report/1` sends that one. It shows the summary first and asks
+`Send this report to <host>? [y/N]`; only `y` or `yes` sends.
+
+| Option | Effect |
+| --- | --- |
+| *(none)* | Shows the report, then asks; anything but `y` or `yes` sends nothing |
+| `yes: true` | Skips the question and sends |
+| `contact: "@you"` | Adds a handle for follow-up questions (at most 100 characters once redacted) |
+| `dump: true` | Prints the exact JSON and sends nothing; `dump: "/data/report.json"` writes it instead |
+| `dir:` | The store, as for `install/2` |
+
+The question needs an interactive shell: IEx on the console or over ssh.
+From an `rpc` or a script, with no terminal to answer on, it shows the
+summary and cancels; `yes: true` sends without asking, as
+`Precompiled.Host.report(yes: true)` does in Livebook.
+
+The report goes to the configured source's `/reports`, over the same
+https and CA certificates as the install: the firmware's `config
+:precompiled, :device, source:`, or the official API. It never takes a
+source per call, and a `file://` bundle has nowhere to send to
+(`{:error, :bundle_source}`). `enabled: false` in the firmware turns it
+off too (`:off`).
+
+What is sent is what the host's report sends (see
+[Troubleshooting](troubleshooting.md#what-is-sent-and-what-never-is)),
+with the device's facts in place of the build's: the Elixir and OTP
+versions, OS family and CPU architecture; the target, Nerves system and
+version when the source knows that system (its systems table lists it,
+or the install used a build made for it), `custom` otherwise; and the
+version and checksum of each package the install planned and of its
+build's dependencies. Never sent: the printed details, paths, the host
+name, serial numbers, config values or environment variables.
+
+A new report prints its id, the one thing needed to retract it
+([Retracting a report](troubleshooting.md#retracting-a-report)).
+`report/1` never raises; it returns what happened (`{:sent, id, false}`,
+`:cancelled`, `:no_report`, `{:error, why}`, ...).
+
 ## The cache
 
 Installs stay in the store on `/data` across reboots, but nothing is

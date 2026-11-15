@@ -265,7 +265,8 @@ defmodule Precompiled.Host do
         config: config,
         project_dir: dir,
         env: env,
-        target: "host"
+        target: "host",
+        app: if(Mix.Project.get() != nil, do: Mix.Project.config()[:app])
       },
       yes: Keyword.get(opts, :yes, false),
       contact: Keyword.get(opts, :contact),

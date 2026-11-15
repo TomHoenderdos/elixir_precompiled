@@ -139,7 +139,8 @@ defmodule PrecompiledTest do
   end
 
   # The code path, the loaded apps and every name in the store but the
-  # trust state and the (empty) staging dir.
+  # trust state, the (empty) staging dir and the record of the last
+  # install (which every install writes, for Precompiled.report/1).
   defp snapshot(opts) do
     dir = opts[:dir]
 
@@ -148,6 +149,7 @@ defmodule PrecompiledTest do
           rel = Path.relative_to(p, dir),
           not String.starts_with?(rel, ".trust"),
           rel != ".staging",
+          rel != ".last-install.json",
           do: rel
 
     {:code.get_path(), Enum.sort(for({a, _, _} <- Application.loaded_applications(), do: a)),
@@ -987,6 +989,16 @@ defmodule PrecompiledTest do
       assert {reason.code, reason.args} == {:needed_lib_missing, ["libssl.so.3"]}
       assert reason.text == "libssl.so.3 missing on target"
       assert snapshot(opts) == before
+
+      # The install's record has the miss, coded, for Precompiled.report/1.
+      assert {:ok, %{"lines" => [line]}} = Precompiled.Device.Outcome.read(opts[:dir])
+
+      assert %{
+               "name" => "demo_ssl",
+               "status" => "miss",
+               "reason_code" => "needed_lib_missing",
+               "reason_args" => ["libssl.so.3"]
+             } = line
 
       # The report built from that miss carries the code.
       payload = Precompiled.Report.payload(report_where(:demo_ssl), report_of(reason), nil)

@@ -71,8 +71,11 @@ defmodule Precompiled.ReportFlowTest do
     end
   end
 
+  # Mix's own "==> app" header, which Mix.Shell.Process prints once after
+  # another test pushed a project, is not the report's output.
   defp streams(out \\ [], err \\ []) do
     receive do
+      {:mix_shell, :info, ["==> " <> _]} -> streams(out, err)
       {:mix_shell, :info, [line]} -> streams([line | out], err)
       {:mix_shell, :error, [line]} -> streams(out, [line | err])
     after
@@ -279,10 +282,10 @@ defmodule Precompiled.ReportFlowTest do
     assert F.report_posts() == []
   end
 
-  test "the device API has no report call" do
+  test "the device API has its own report call" do
     Code.ensure_loaded!(Precompiled)
-    refute function_exported?(Precompiled, :report, 0)
-    refute function_exported?(Precompiled, :report, 1)
+    assert function_exported?(Precompiled, :report, 0)
+    assert function_exported?(Precompiled, :report, 1)
   end
 
   test "Host.report/1 after Mix.install/2 reports the install project's last build",

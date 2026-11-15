@@ -93,6 +93,7 @@ global rebar3 config that changes compile options, `ERL_COMPILER_OPTIONS`,
 `mix precompiled.report` sends the last build's HIT/MISS/FAIL report,
 after showing it and asking (see
 [Troubleshooting](https://hexdocs.pm/precompiled/troubleshooting.html#reporting-a-miss)).
+On a device, `Precompiled.report()` does the same for the last `Precompiled.install/2`.
 
 ## Guides
 

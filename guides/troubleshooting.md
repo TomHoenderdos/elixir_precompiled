@@ -39,6 +39,11 @@ In a script or Livebook, after `Precompiled.Host.install/2`:
 to answer `[y/N]`, so it stops there. `Precompiled.Host.report(yes: true)`
 sends it.
 
+On a Nerves device, after `Precompiled.install/2`: `Precompiled.report()`
+shows the last install's report and asks; with no terminal to answer on
+(an `rpc`, a script) it stops there, and `Precompiled.report(yes: true)`
+sends it. See [Reporting a miss from a device](device.md#reporting-a-miss-from-a-device).
+
 Reporting never fails a build or a script: any problem prints one line,
 and `mix precompiled.report` always exits 0.
 

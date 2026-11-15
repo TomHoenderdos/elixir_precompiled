@@ -11,6 +11,8 @@ defmodule Precompiled.Device.Store do
   #   .precompiled-store       marker: sweep, clean and eviction act only
   #                            in a directory that carries it
   #   .trust/                  trust state, never counted, never removed
+  #   .last-install.json       what the last install found, for
+  #                            Precompiled.report/1; kept by sweep and clean
   #   .staging/<app>-<vsn>.<os pid>-<unique>/   in-flight installs
   #   <app>-<vsn>/{ebin,priv,.precompiled.json} cache entries
   #
@@ -58,6 +60,8 @@ defmodule Precompiled.Device.Store do
   @provenance ".precompiled.json"
   @staging ".staging"
   @trust ".trust"
+  @outcome ".last-install.json"
+  @max_outcome 1_048_576
   @replaced ".replaced."
   @discard ".discard."
   @probe ".probe."
@@ -645,7 +649,7 @@ defmodule Precompiled.Device.Store do
     in_use = in_use()
     cutoff = System.os_time(:second) - @stale_after
 
-    for name <- ls(dir), name not in [@trust, @staging, @marker, @lost_found] do
+    for name <- ls(dir), name not in [@trust, @staging, @marker, @lost_found, @outcome] do
       path = Path.join(dir, name)
 
       case {name, entry_dir_name?(name), File.lstat(path, time: :posix)} do
@@ -659,6 +663,44 @@ defmodule Precompiled.Device.Store do
 
   defp sweep_entry(dir, path, in_use) do
     if read_provenance(path) == :error and not in_use?(path, in_use), do: discard(dir, path)
+  end
+
+  ## The last install's outcome
+
+  @doc false
+  # Replaces the outcome file: written and synced under a temporary name,
+  # then renamed over the old one, so a reader sees the old file or the
+  # new one, never half of either. A crash leaves the temporary file,
+  # which the next sweep removes.
+  @spec write_outcome(Path.t(), iodata()) :: :ok | {:error, term()}
+  def write_outcome(dir, bytes) do
+    dir = root(dir)
+    path = Path.join(dir, @outcome)
+    tmp = Path.join(dir, ".outcome." <> unique())
+
+    with :ok <- write_file(tmp, bytes),
+         :ok <- :file.rename(tmp, path) do
+      :ok
+    else
+      error ->
+        _ = File.rm(tmp)
+        error
+    end
+  end
+
+  @doc false
+  # The outcome file's bytes, at most 1 MB, and only a regular file.
+  @spec read_outcome(Path.t()) :: {:ok, binary()} | :error
+  def read_outcome(dir) do
+    path = Path.join(root(dir), @outcome)
+
+    with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_outcome <-
+           File.lstat(path),
+         {:ok, bytes} <- File.read(path) do
+      {:ok, bytes}
+    else
+      _ -> :error
+    end
   end
 
   ## Mounts and the lock

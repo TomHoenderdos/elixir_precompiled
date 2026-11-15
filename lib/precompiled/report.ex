@@ -18,6 +18,11 @@ defmodule Precompiled.Report do
   # app, project directory and user names. Names, versions and targets are
   # never rewritten: a host named like a package must not turn that
   # package's line into garbage.
+  #
+  # A device (`Precompiled.report/1`) sends through the same run/2: its
+  # `where` brings its own reader, payload and summary header (`:read`,
+  # `:payload`, `:header`, `:no_report`), and this module calls no Mix, so
+  # the device layer reaches it without Mix.
 
   alias Precompiled.{HTTP, Output, Reason}
 
@@ -48,14 +53,18 @@ defmodule Precompiled.Report do
   @checksum ~r/\A[0-9a-fA-F]{64}\z/
 
   @type where :: %{
-          required(:build_lib) => Path.t(),
-          required(:lock) => map(),
+          optional(:build_lib) => Path.t(),
+          optional(:lock) => map(),
           required(:config) => map(),
           required(:project_dir) => Path.t(),
-          required(:env) => String.t(),
-          required(:target) => String.t(),
+          optional(:env) => String.t(),
+          optional(:target) => String.t(),
           optional(:host_name) => String.t() | nil,
-          optional(:app) => atom() | String.t() | nil
+          optional(:app) => atom() | String.t() | nil,
+          optional(:read) => (-> {:ok, map()} | {:error, term()}),
+          optional(:payload) => (map(), String.t() | nil -> map()),
+          optional(:header) => (map() -> String.t()),
+          optional(:no_report) => String.t()
         }
 
   @type outcome ::
@@ -88,8 +97,8 @@ defmodule Precompiled.Report do
     contact = Keyword.get(opts, :contact)
 
     with :ok <- contact_ok(contact),
-         {:ok, report} <- read(where.build_lib),
-         body = where |> payload(report, contact) |> redact(where),
+         {:ok, report} <- read_for(where),
+         body = where |> payload_for(report, contact) |> redact(where),
          :ok <- contact_length_ok(body) do
       Enum.each(summary(body, report, where), &say(opts, &1))
       deliver(body, where, opts)
@@ -104,14 +113,22 @@ defmodule Precompiled.Report do
         :invalid
 
       {:error, _no_or_old} ->
-        say(
-          opts,
-          "precompiled: no report for #{where.env}/#{where.target}; run a build first " <>
-            "(with precompiled 0.4.0 or later, and the same MIX_ENV and MIX_TARGET)"
-        )
-
+        say(opts, no_report_line(where))
         :no_report
     end
+  end
+
+  defp read_for(%{read: read}), do: read.()
+  defp read_for(where), do: read(where.build_lib)
+
+  defp payload_for(%{payload: payload}, report, contact), do: payload.(report, contact)
+  defp payload_for(where, report, contact), do: payload(where, report, contact)
+
+  defp no_report_line(%{no_report: line}), do: line
+
+  defp no_report_line(where) do
+    "precompiled: no report for #{where.env}/#{where.target}; run a build first " <>
+      "(with precompiled 0.4.0 or later, and the same MIX_ENV and MIX_TARGET)"
   end
 
   defp dump_stdout?(opts), do: Keyword.get(opts, :dump) == :stdout
@@ -260,14 +277,29 @@ defmodule Precompiled.Report do
 
   @spec payload(where(), map(), String.t() | nil) :: map()
   def payload(where, report, contact) do
-    ctx = report["context"]
     public = public_names(where.lock)
 
-    {target, system, system_version} = place(ctx, public)
+    assemble(report, contact,
+      public?: &MapSet.member?(public, &1),
+      place: place(report["context"], public),
+      lock: &lock_closure(where.lock, &1, @max_lock)
+    )
+  end
+
+  @doc false
+  # The body of a report: `report` is a report.json (or a device's last
+  # install, in the same shape); `:public?` says which lines may be sent,
+  # `:place` is the {target, system, system_version} to send, and `:lock`
+  # gives the lock entries of the sent lines' names.
+  @spec assemble(map(), String.t() | nil, keyword()) :: map()
+  def assemble(report, contact, opts) do
+    ctx = report["context"]
+    public? = Keyword.fetch!(opts, :public?)
+    {target, system, system_version} = Keyword.fetch!(opts, :place)
 
     lines =
       report["lines"]
-      |> Enum.filter(&(well_formed?(&1) and MapSet.member?(public, &1["name"])))
+      |> Enum.filter(&(well_formed?(&1) and public?.(&1["name"])))
       |> Enum.take(@max_lines)
       |> Enum.map(&line(&1, system == @custom))
 
@@ -282,7 +314,7 @@ defmodule Precompiled.Report do
       "system" => system,
       "system_version" => system_version,
       "lines" => lines,
-      "lock" => lock_closure(where.lock, Enum.map(lines, & &1["name"]), @max_lock),
+      "lock" => Keyword.fetch!(opts, :lock).(Enum.map(lines, & &1["name"])),
       "contact" => text(contact)
     }
     |> Map.reject(fn {_k, v} -> is_nil(v) end)
@@ -319,7 +351,9 @@ defmodule Precompiled.Report do
   defp text(s) when is_binary(s), do: s
   defp text(_), do: nil
 
-  defp client_version() do
+  @doc false
+  @spec client_version() :: String.t()
+  def client_version() do
     case Application.spec(:precompiled, :vsn) do
       nil -> "0.0.0"
       vsn -> to_string(vsn)
@@ -375,7 +409,10 @@ defmodule Precompiled.Report do
 
   defp otp(_), do: nil
 
-  defp os() do
+  @doc false
+  # The OS family and the VM's architecture, with its version digits cut.
+  @spec os() :: map()
+  def os() do
     family = if match?({:win32, _}, :os.type()), do: "win32", else: "unix"
 
     arch =
@@ -437,18 +474,13 @@ defmodule Precompiled.Report do
   # free text they are removed from.
   @spec contact_needles(where()) :: [String.t()]
   def contact_needles(where) do
-    app = Map.get_lazy(where, :app, &mix_app/0)
+    app = Map.get(where, :app)
     user = System.get_env("USER") || System.get_env("USERNAME")
     names = [app && to_string(app), Path.basename(where.project_dir), user]
 
     (needles(where) ++ long_enough(names, @min_contact_needle))
     |> Enum.uniq()
     |> Enum.sort_by(&(-String.length(&1)))
-  end
-
-  defp mix_app() do
-    if Code.ensure_loaded?(Mix.Project) and Mix.Project.get() != nil,
-      do: Mix.Project.config()[:app]
   end
 
   @doc false
@@ -504,6 +536,17 @@ defmodule Precompiled.Report do
   # from the payload; the report only gives the build's age.
   @spec summary(map(), map(), where()) :: [String.t()]
   def summary(payload, report, where) do
+    [header(where, report) | body(payload, where)]
+  end
+
+  defp header(%{header: header}, report), do: header.(report)
+
+  defp header(where, report) do
+    "precompiled: report of the build for MIX_ENV=#{where.env} MIX_TARGET=#{where.target}, " <>
+      "written #{age(report["built_at"])}; run this with the same env and target as the build"
+  end
+
+  defp body(payload, where) do
     lines = Map.get(payload, "lines", [])
     count = fn status -> Enum.count(lines, &(&1["status"] == status)) end
 
@@ -513,8 +556,6 @@ defmodule Precompiled.Report do
       end
 
     [
-      "precompiled: report of the build for MIX_ENV=#{where.env} MIX_TARGET=#{where.target}, " <>
-        "written #{age(report["built_at"])}; run this with the same env and target as the build",
       "  #{count.("hit")} hit, #{count.("miss")} miss, #{count.("fail")} fail"
     ] ++
       shown ++
@@ -525,7 +566,10 @@ defmodule Precompiled.Report do
       ]
   end
 
-  defp age(built_at) when is_binary(built_at) do
+  @doc false
+  # How long ago `built_at` (ISO 8601) was, for a summary line.
+  @spec age(term()) :: String.t()
+  def age(built_at) when is_binary(built_at) do
     case DateTime.from_iso8601(built_at) do
       {:ok, at, _} ->
         minutes = div(DateTime.diff(DateTime.utc_now(), at, :second), 60)
@@ -541,17 +585,30 @@ defmodule Precompiled.Report do
     end
   end
 
-  defp age(_), do: "at an unknown time"
+  def age(_), do: "at an unknown time"
 
   @doc false
   @spec post_report(iodata(), map()) :: {:ok, pos_integer(), binary()} | {:error, term()}
   def post_report(json, config),
     do:
-      HTTP.post(Map.get(config, :source) <> "/reports", json,
-        max_bytes: @response_bytes,
-        deadline_ms: @timeout_ms,
-        connect_timeout_ms: Map.get(config, :connect_timeout_ms, 5_000)
+      HTTP.post(
+        Map.get(config, :source) <> "/reports",
+        json,
+        [
+          max_bytes: @response_bytes,
+          deadline_ms: @timeout_ms,
+          connect_timeout_ms: Map.get(config, :connect_timeout_ms, 5_000)
+        ] ++ cacerts(config)
       )
+
+  # A device's `cacerts_path:` verifies its https source, here as for the
+  # install.
+  defp cacerts(config) do
+    case Map.get(config, :cacerts_path) do
+      path when is_binary(path) -> [cacerts_path: path]
+      _ -> []
+    end
+  end
 
   @doc false
   @spec output([String.t()]) :: :ok

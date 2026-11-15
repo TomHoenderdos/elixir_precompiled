@@ -15,6 +15,7 @@ defmodule Precompiled.Device.Plan do
   # package's lock has, and it loads before that package. No Mix, no Hex.
 
   alias Precompiled.Device.Rules
+  alias Precompiled.Reason
 
   @type request :: {atom(), nil | String.t()}
   @type manifest_fun ::
@@ -26,6 +27,23 @@ defmodule Precompiled.Device.Plan do
   @spec build([request()], Rules.ctx(), keyword()) ::
           {:ok, Precompiled.Plan.t()} | {:error, term()}
   def build(requests, ctx, opts) do
+    case build_coded(requests, ctx, opts) do
+      {:error, {:no_build, name, %Reason{text: text}, _version}} ->
+        {:error, {:no_build, name, text}}
+
+      other ->
+        other
+    end
+  end
+
+  @doc false
+  # build/3 with a miss as `{:no_build, name, reason, version}`: the
+  # Reason a device report sends and the version it names (the pin, the
+  # exact request, or the newest version the request allows; nil when no
+  # version was there to try).
+  @spec build_coded([request()], Rules.ctx(), keyword()) ::
+          {:ok, Precompiled.Plan.t()} | {:error, term()}
+  def build_coded(requests, ctx, opts) do
     state = %{chosen: %{}, order: [], present: [], warnings: [], skipped: [], needs: %{}}
     queue = Enum.map(requests, fn {app, req} -> {app, req, nil, :requested} end)
     ctx = Map.put(ctx, :requested, Enum.map(requests, &elem(&1, 0)))
@@ -114,7 +132,11 @@ defmodule Precompiled.Device.Plan do
             {:error, {:conflict, app, Enum.sort([install.version, want])}}
 
           pin && pin.checksum != install.build["build"]["package_checksum"] ->
-            {:error, {:no_build, Atom.to_string(app), Rules.checksum_differs()}}
+            no_build(
+              Atom.to_string(app),
+              Reason.new(:checksum_differs, [], Rules.checksum_differs()),
+              install.version
+            )
 
           true ->
             {:chosen, promote(state, app, role)}
@@ -154,9 +176,9 @@ defmodule Precompiled.Device.Plan do
   # A pin is passed to the selection as the exact version: a version the
   # manifest does not offer is a refusal, never another version.
   defp choose(name, app, want, pin, role, ctx, manifest_fun) do
-    with {:ok, manifest, ref} <- manifest(manifest_fun, name),
+    with {:ok, manifest, ref} <- manifest(manifest_fun, name, exact(want)),
          {:ok, vsn, build, verdict} <- select(manifest, name, want, %{ctx | pin: pin}),
-         {:ok, bytes} <- bytes(build, name) do
+         {:ok, bytes} <- bytes(build, name, vsn) do
       {:ok,
        %{
          app: app,
@@ -171,31 +193,56 @@ defmodule Precompiled.Device.Plan do
     end
   end
 
-  defp manifest(fun, name) do
+  defp manifest(fun, name, version) do
     case fun.(name) do
-      {:ok, manifest, %{sha: _, path: _} = ref} -> {:ok, manifest, ref}
-      {kind, why} when kind in [:miss, :fail] and is_binary(why) -> no_build(name, why)
-      _ -> no_build(name, "manifest unavailable")
+      {:ok, manifest, %{sha: _, path: _} = ref} ->
+        {:ok, manifest, ref}
+
+      {kind, why} when kind in [:miss, :fail] and is_binary(why) ->
+        no_build(name, manifest_reason(kind, why), version)
+
+      _ ->
+        no_build(name, Reason.new(:fetch_failed, [], "manifest unavailable"), version)
     end
   end
+
+  # A name the batch does not list is not in it; anything else is a
+  # download or a check that failed (Reason.of_manifest/1).
+  defp manifest_reason(:miss, "not in " <> _ = why), do: Reason.new(:not_in_batch, [], why)
+
+  defp manifest_reason(kind, why) do
+    {_kind, reason} = Reason.of_manifest({kind, why})
+    reason
+  end
+
+  # The version a request names exactly: a pin's, or "1.2.3" itself.
+  defp exact(want) when is_binary(want) do
+    case Version.parse(want) do
+      {:ok, _} -> want
+      :error -> nil
+    end
+  end
+
+  defp exact(_want), do: nil
 
   defp select(manifest, name, want, ctx) do
-    case Rules.select(manifest, name, want, ctx) do
+    case Rules.select_coded(manifest, name, want, ctx) do
       {:ok, _vsn, _build, _verdict} = ok -> ok
-      {:miss, why} -> no_build(name, why)
+      {:miss, why, version} -> no_build(name, why, version || exact(want))
     end
   end
 
-  defp bytes(build, name) do
+  defp bytes(build, name, version) do
     files = List.wrap(build["ebin"]) ++ List.wrap(build["priv"])
     sizes = for %{"size" => size} <- files, is_integer(size) and size >= 0, do: size
 
     if length(sizes) == length(files),
       do: {:ok, Enum.sum(sizes)},
-      else: no_build(name, "malformed entry")
+      else: no_build(name, Reason.new(:malformed_entry, []), version)
   end
 
-  defp no_build(name, why), do: {:error, {:no_build, name, why}}
+  defp no_build(name, %Reason{} = why, version),
+    do: {:error, {:no_build, name, why, version}}
 
   defp closure_ok([], _closure), do: :ok
   defp closure_ok(_needs, true), do: :ok
@@ -226,7 +273,12 @@ defmodule Precompiled.Device.Plan do
         do:
           no_build(
             Atom.to_string(app),
-            "built against #{dep} #{locked}, this call installs #{dep} #{chosen}"
+            Reason.new(
+              :closure_mismatch,
+              [Atom.to_string(dep), locked, chosen],
+              "built against #{dep} #{locked}, this call installs #{dep} #{chosen}"
+            ),
+            state.chosen[app].version
           )
     end)
   end

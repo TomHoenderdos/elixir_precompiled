@@ -720,9 +720,11 @@ defmodule Precompiled.Match do
   @spec toolchain_present(map()) :: :ok | {:miss, String.t()}
   def toolchain_present(build), do: build |> toolchain_reason() |> Reason.textual()
 
-  defp toolchain_reason(%{"elixir" => e, "otp" => o}) when is_binary(e) and is_binary(o), do: :ok
+  @doc false
+  @spec toolchain_reason(term()) :: :ok | {:miss, reason()}
+  def toolchain_reason(%{"elixir" => e, "otp" => o}) when is_binary(e) and is_binary(o), do: :ok
 
-  defp toolchain_reason(_),
+  def toolchain_reason(_),
     do: {:miss, Reason.new(:build_predates, ["toolchain"], "build predates toolchain")}
 
   # Elixir's promise is backward within a minor: code compiled on x.y.N runs
@@ -735,7 +737,9 @@ defmodule Precompiled.Match do
   @spec elixir_ok(term(), term()) :: :ok | {:miss, String.t()}
   def elixir_ok(built, running), do: built |> elixir_reason(running) |> Reason.textual()
 
-  defp elixir_reason(built, running) do
+  @doc false
+  @spec elixir_reason(term(), term()) :: :ok | {:miss, reason()}
+  def elixir_reason(built, running) do
     with {:ok, b} <- parse_version(built),
          {:ok, r} <- parse_version(running),
          true <- b.major > 0 and {b.major, b.minor} == {r.major, r.minor},
@@ -762,9 +766,11 @@ defmodule Precompiled.Match do
   @spec otp_ok(term(), term()) :: :ok | {:miss, String.t()}
   def otp_ok(built, running), do: built |> otp_reason(running) |> Reason.textual()
 
-  defp otp_reason(built, running) when built == running, do: :ok
+  @doc false
+  @spec otp_reason(term(), term()) :: :ok | {:miss, reason()}
+  def otp_reason(built, running) when built == running, do: :ok
 
-  defp otp_reason(built, running),
+  def otp_reason(built, running),
     do:
       {:miss,
        Reason.new(:toolchain_otp, [built, running], "built on OTP #{built}, running #{running}")}
@@ -775,12 +781,14 @@ defmodule Precompiled.Match do
   @spec dep_env_ok(term(), term()) :: :ok | {:miss, String.t()}
   def dep_env_ok(built, running), do: built |> dep_env_reason(running) |> Reason.textual()
 
-  defp dep_env_reason(nil, _running),
+  @doc false
+  @spec dep_env_reason(term(), term()) :: :ok | {:miss, reason()}
+  def dep_env_reason(nil, _running),
     do: {:miss, Reason.new(:build_predates, ["dep_env"], "build predates dep_env")}
 
-  defp dep_env_reason(built, built), do: :ok
+  def dep_env_reason(built, built), do: :ok
 
-  defp dep_env_reason(built, running),
+  def dep_env_reason(built, running),
     do:
       {:miss,
        Reason.new(
@@ -812,7 +820,9 @@ defmodule Precompiled.Match do
   @spec present(map(), String.t()) :: :ok | {:miss, String.t()}
   def present(build, key), do: build |> present_reason(key) |> Reason.textual()
 
-  defp present_reason(build, key) do
+  @doc false
+  @spec present_reason(map(), String.t()) :: :ok | {:miss, reason()}
+  def present_reason(build, key) do
     case Map.fetch(build, key) do
       {:ok, v} when not is_nil(v) -> :ok
       _ -> {:miss, Reason.new(:build_predates, [key], "build predates #{@field_names[key]}")}

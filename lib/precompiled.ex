@@ -14,6 +14,7 @@ defmodule Precompiled do
       Precompiled.install(:recon, source: "file:///media/usb/precompiled")
       Precompiled.list()
       Precompiled.uninstall(:recon)
+      Precompiled.report()
 
   A call selects the build that matches the device (its Nerves system and
   version, OTP, Elixir, CPU and the apps it already has, by name and exact
@@ -153,6 +154,7 @@ defmodule Precompiled do
   alias Precompiled.Device.Env
   alias Precompiled.Device.Libs
   alias Precompiled.Device.Loader
+  alias Precompiled.Device.Outcome
   alias Precompiled.Device.Output
   alias Precompiled.Device.Plan
   alias Precompiled.Device.Source
@@ -329,6 +331,150 @@ defmodule Precompiled do
   defp clean_line(%{removed: removed, bytes: bytes, kept: kept}) do
     "precompiled: cache cleaned, #{length(removed)} removed (#{Output.kb(bytes)}), " <>
       "kept loaded: #{Enum.join(kept, ", ")}"
+  end
+
+  # :source as install/2 takes it: config_only/1 refuses a network one per
+  # call, and a file:// bundle has nowhere to send to.
+  @report_keys [:yes, :contact, :dump, :dir, :source]
+  # Seams: the question's answer and whether a terminal is there to ask on.
+  @report_seams [:gets, :interactive?]
+
+  @typedoc """
+  What `report/1` did. `{:sent, id, false}` is a new report and its id (what
+  retracting it needs); `{:sent, nil, true}` is one the source had already
+  received. The rest: dumped, cancelled (a no, or no terminal to ask on),
+  no install to report, an invalid `contact:`, reporting turned off in the
+  firmware, or an error.
+  """
+  @type report_outcome ::
+          {:sent, String.t() | nil, boolean()}
+          | :dumped
+          | :cancelled
+          | :no_report
+          | :invalid
+          | :off
+          | {:error, term()}
+
+  @doc """
+  Sends what the last `install/2` on this device hit, missed and failed to
+  the configured source's `/reports`, after showing it and asking
+  `Send this report to <host>? [y/N]`. Only `y` or `yes` sends.
+
+      Precompiled.install(:circuits_gpio)
+      Precompiled.report()                    # show, ask, send
+      Precompiled.report(yes: true)           # no question
+      Precompiled.report(contact: "@me")      # a handle for follow-up questions
+      Precompiled.report(dump: true)          # print the exact JSON, send nothing
+
+  Options: `yes: true` skips the question; `contact:` adds a handle (at
+  most 100 characters); `dump: true` prints the JSON and `dump: path`
+  writes it, sending nothing; `:dir` is the store, as for `install/2`.
+
+  The question is asked only in an interactive shell (IEx on the console
+  or over ssh). Without one (an `rpc`, a script) it shows the summary and
+  cancels, unless `yes: true`. The source is the firmware's config (or the
+  official API), never a per-call option, and never a `file://` bundle.
+
+  Sent: each candidate's name, version, HIT/MISS/FAIL, reason code and
+  arguments; the Elixir and OTP versions, OS family and architecture; the
+  target, Nerves system and its version when the source knows that system
+  (otherwise `custom`); and the version and checksum of each package the
+  install planned and of its build's dependencies. Never sent: paths,
+  host name, serial number, config values, environment variables or the
+  printed details. A new report prints its id, the one thing needed to
+  retract it (`DELETE <source>/reports/<id>`). Never raises.
+  """
+  @spec report(keyword()) :: report_outcome()
+  def report(opts \\ []) do
+    with {:ok, opts} <- report_opts(opts),
+         :ok <- config_only(opts),
+         :ok <- reporting_enabled(),
+         {:ok, config} <- Source.config(Keyword.take(opts, [:dir, :source])),
+         :ok <- network_source(config) do
+      Precompiled.Report.run(report_where(config), report_run_opts(opts))
+    end
+  rescue
+    e ->
+      IO.puts("precompiled: report not sent: internal error (#{inspect(e.__struct__)})")
+      {:error, :internal}
+  catch
+    kind, _reason when kind in [:exit, :throw] ->
+      IO.puts("precompiled: report not sent: internal error (#{kind})")
+      {:error, :internal}
+  end
+
+  defp report_opts(opts) do
+    known = if seams?(), do: @report_keys ++ @report_seams, else: @report_keys
+
+    cond do
+      not (is_list(opts) and Keyword.keyword?(opts)) -> {:error, {:bad_option, opts}}
+      key = Enum.find(Keyword.keys(opts), &(&1 not in known)) -> {:error, {:bad_option, key}}
+      not is_boolean(Keyword.get(opts, :yes, false)) -> {:error, {:bad_option, :yes}}
+      not is_binary(Keyword.get(opts, :dir, "")) -> {:error, {:bad_option, :dir}}
+      true -> {:ok, opts}
+    end
+  end
+
+  defp reporting_enabled() do
+    if Keyword.get(device_config(), :enabled) == false do
+      IO.puts("precompiled: off; nothing to report")
+      :off
+    else
+      :ok
+    end
+  end
+
+  defp network_source(%{bundle: true}) do
+    IO.puts("precompiled: the source is a file:// bundle; reports go to a network source")
+    {:error, :bundle_source}
+  end
+
+  defp network_source(_config), do: :ok
+
+  defp report_where(config) do
+    dir = config.dir
+
+    %{
+      config: config,
+      project_dir: dir,
+      read: fn -> Outcome.read(dir) end,
+      payload: &Outcome.payload/2,
+      header: &Outcome.header/1,
+      no_report: "precompiled: no install recorded in #{dir}; run Precompiled.install/2 first"
+    }
+  end
+
+  defp report_run_opts(opts) do
+    yes = Keyword.get(opts, :yes, false)
+    interactive? = Keyword.get_lazy(opts, :interactive?, &interactive?/0)
+    gets = Keyword.get(opts, :gets, &IO.gets/1)
+
+    gets =
+      if interactive?,
+        do: gets,
+        else: fn _prompt ->
+          IO.puts("precompiled: no terminal to ask on; pass yes: true to send")
+          :eof
+        end
+
+    [yes: yes, contact: Keyword.get(opts, :contact), dump: dump(opts[:dump]), gets: gets]
+  end
+
+  defp dump(true), do: :stdout
+  defp dump(path) when is_binary(path), do: path
+  defp dump(_), do: nil
+
+  # A shell someone types into: IEx on the console or over ssh echoes and
+  # completes; an rpc, a script or a notebook does neither.
+  defp interactive?() do
+    case :io.getopts(:standard_io) do
+      opts when is_list(opts) ->
+        Keyword.get(opts, :terminal) == true or Keyword.get(opts, :echo) == true or
+          is_function(Keyword.get(opts, :expand_fun))
+
+      _ ->
+        false
+    end
   end
 
   ## Requests and options
@@ -532,8 +678,11 @@ defmodule Precompiled do
     entries = Store.list(config.dir)
     active = active(entries)
 
+    record = fn facts -> record(config.dir, opts, Map.put(facts, :env, env)) end
+
     with :ok <- not_present(requests, env, active),
-         {:ok, batch} <- config |> Source.batch() |> clock_refusal(config, opts) do
+         {:ok, batch} <-
+           config |> Source.batch() |> clock_refusal(config, opts) |> refused(requests, record) do
       config = Source.with_batch(config, batch)
       ctx = ctx(env, config, batch, entries, active, memo, opts)
 
@@ -544,24 +693,60 @@ defmodule Precompiled do
         allow: Keyword.get(device_config(), :allow)
       ]
 
-      with {:ok, plan} <- Plan.build(requests, ctx, plan_opts) do
-        for i <- plan.installs, do: say(opts, plan_line(i))
-        for w <- plan.warnings, do: say(opts, Output.line("", "WARN", w))
-        for {app, dep} <- plan.skipped, do: say(opts, Output.skipped_optional(app, dep))
+      case Plan.build_coded(requests, ctx, plan_opts) do
+        {:ok, plan} ->
+          for i <- plan.installs, do: say(opts, plan_line(i))
+          for w <- plan.warnings, do: say(opts, Output.line("", "WARN", w))
+          for {app, dep} <- plan.skipped, do: say(opts, Output.skipped_optional(app, dep))
 
-        state = %{
-          env: env,
-          config: config,
-          batch: batch,
-          active: active,
-          opts: opts,
-          memo: memo,
-          lib_roots: ctx.lib_roots
-        }
+          state = %{
+            env: env,
+            config: config,
+            batch: batch,
+            active: active,
+            opts: opts,
+            memo: memo,
+            lib_roots: ctx.lib_roots
+          }
 
-        if opts[:dry_run], do: dry_run(plan, env, opts), else: apply_plan(plan, state)
+          if opts[:dry_run],
+            do: dry_run(plan, env, opts),
+            else: plan |> apply_plan(state) |> applied(plan, ctx.systems, record)
+
+        {:error, {:no_build, name, reason, version}} ->
+          record.(%{lines: Outcome.missed(name, reason, version), systems: ctx.systems})
+          {:error, {:no_build, name, reason.text}}
+
+        {:error, _} = error ->
+          record.(%{lines: [], systems: ctx.systems})
+          error
       end
     end
+  end
+
+  # What the install found, for report/1: every call but a dry run.
+  defp record(dir, opts, facts) do
+    if not opts[:dry_run], do: Outcome.record(dir, facts)
+    :ok
+  end
+
+  defp refused({:error, {:batch, why}} = error, requests, record) when is_binary(why) do
+    record.(%{lines: Outcome.refused(requests, why)})
+    error
+  end
+
+  defp refused({:error, {:clock_unsynchronized, _}} = error, requests, record) do
+    record.(%{lines: Outcome.refused(requests, "batch refused: clock not synchronized")})
+    error
+  end
+
+  defp refused(result, _requests, _record), do: result
+
+  defp applied(result, plan, systems, record) do
+    {lines, lock} = Outcome.applied(plan.installs, result)
+    targets = for i <- plan.installs, is_binary(i.target), uniq: true, do: i.target
+    record.(%{lines: lines, lock: lock, systems: systems, targets: targets})
+    result
   end
 
   # A requested app the device has, and that this library did not load,

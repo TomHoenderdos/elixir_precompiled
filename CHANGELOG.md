@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+* `Precompiled.report/1` sends a device's last `Precompiled.install/2`
+  outcome to the configured source, as `mix precompiled.report` does for a
+  build: every install but a dry run now records its HIT, MISS and FAIL
+  lines, with reason codes, in the store's `.last-install.json`, and
+  `report/1` shows them and asks before sending (`yes: true` skips the
+  question; with no terminal it cancels). A device's MISS now keeps the
+  reason code and version of the build it tried; the printed lines and
+  `{:no_build, pkg, why}` are unchanged.
 * README: what the portal builds (including builds for a typical Phoenix
   app's optional dependencies), the `~> 0.7` requirement, the closest
   build on a `MISS` line, `Precompiled.Host.install/2`'s `Mix.install/2`
