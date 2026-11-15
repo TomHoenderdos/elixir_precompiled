@@ -192,8 +192,11 @@ defmodule Precompiled.Device.OutcomeTest do
   end
 
   describe "the payload" do
-    # Through JSON, as the file holds it.
+    # Through JSON, as the file holds it. Every line's name is listed by
+    # the source unless `extra` says which are.
     defp doc_of(lines, extra \\ %{}) do
+      extra = Map.put_new(extra, :listed, Enum.map(lines, & &1["name"]))
+
       facts(lines, extra)
       |> Outcome.doc()
       |> :json.encode()
@@ -274,6 +277,52 @@ defmodule Precompiled.Device.OutcomeTest do
 
       body = Outcome.payload(doc_of(lines), nil)
       assert body["lines"] == [] and body["lock"] == []
+    end
+
+    test "a name the source does not list is never sent, only shown locally" do
+      secret = Outcome.missed("acme_secret_driver", Reason.new(:not_in_batch, []), "1.2.0")
+      listed = Outcome.missed("demo_b", Reason.new(:toolchain_otp, ["28", "29"]), "1.0.0")
+      doc = doc_of(secret ++ listed, %{listed: ["demo_b"]})
+
+      body = Outcome.payload(doc, nil)
+      assert [%{"name" => "demo_b"}] = body["lines"]
+      refute body |> :json.encode() |> IO.iodata_to_binary() =~ "acme"
+
+      shown = doc |> Outcome.header() |> List.wrap() |> Enum.join("\n")
+      assert shown =~ "acme_secret_driver 1.2.0  not sent: not in the public index"
+      refute shown =~ "demo_b"
+    end
+
+    test "a refused batch lists nothing: no requested name is sent" do
+      lines = Outcome.refused([{:acme_secret_driver, "1.2.0"}], "batch unavailable: x")
+      body = Outcome.payload(doc_of(lines, %{listed: []}), nil)
+      assert body["lines"] == []
+      refute body |> :json.encode() |> IO.iodata_to_binary() =~ "acme"
+    end
+
+    test "the lock read back is deduplicated by name and capped at 1000" do
+      entries =
+        for i <- 1..1200,
+            do: %{"name" => "pkg_#{i}", "version" => "1.0.0", "checksum" => @dep_sum}
+
+      dup = %{"name" => "pkg_1", "version" => "9.9.9", "checksum" => @dep_sum}
+      lines = for i <- 1..1200, do: Outcome.line("pkg_#{i}", "1.0.0", :hit, Reason.new(:hit, []))
+
+      body = Outcome.payload(doc_of(lines, %{lock: [dup | entries]}), nil)
+      assert length(body["lines"]) == 500
+      names = Enum.map(body["lock"], & &1["name"])
+      assert names == Enum.uniq(names)
+      assert length(body["lock"]) <= 1000
+      assert %{"version" => "9.9.9"} = Enum.find(body["lock"], &(&1["name"] == "pkg_1"))
+    end
+
+    test "a record that no install ran is no report", %{tmp_dir: dir} do
+      :ok = Store.ensure_root(dir)
+      lines = Outcome.missed("demo_a", Reason.new(:not_in_batch, []), "1.0.0")
+      :ok = Outcome.record(dir, facts(lines, %{listed: ["demo_a"]}))
+      assert {:ok, _} = Outcome.read(dir)
+      :ok = Outcome.record_refusal(dir)
+      assert {:error, :no_install} = Outcome.read(dir)
     end
 
     test "the printed detail is never sent: only the code's own text" do

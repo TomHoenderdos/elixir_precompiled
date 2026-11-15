@@ -9,7 +9,8 @@
   `report/1` shows them and asks before sending (`yes: true` skips the
   question; with no terminal it cancels). A device's MISS now keeps the
   reason code and version of the build it tried; the printed lines and
-  `{:no_build, pkg, why}` are unchanged.
+  `{:no_build, pkg, why}` are unchanged. Only names the signed batch lists
+  are sent; a call refused before it ran records that no install ran.
 * README: what the portal builds (including builds for a typical Phoenix
   app's optional dependencies), the `~> 0.7` requirement, the closest
   build on a `MISS` line, `Precompiled.Host.install/2`'s `Mix.install/2`

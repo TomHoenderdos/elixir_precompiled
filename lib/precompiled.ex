@@ -215,6 +215,8 @@ defmodule Precompiled do
          {:ok, config} <- Source.config(merged),
          :ok <- network_apps(config) do
       Store.with_lock(fn -> locked_install(requests, config, merged) end, merged[:lock_retries])
+    else
+      error -> refused_early(error, opts)
     end
     |> said(opts)
   rescue
@@ -680,11 +682,13 @@ defmodule Precompiled do
 
     record = fn facts -> record(config.dir, opts, Map.put(facts, :env, env)) end
 
-    with :ok <- not_present(requests, env, active),
+    with :ok <- not_present(requests, env, active) |> refused_early(opts),
          {:ok, batch} <-
            config |> Source.batch() |> clock_refusal(config, opts) |> refused(requests, record) do
       config = Source.with_batch(config, batch)
       ctx = ctx(env, config, batch, entries, active, memo, opts)
+      listed = listed(batch)
+      record = fn facts -> record.(Map.update(facts, :listed, listed, &(listed ++ &1))) end
 
       plan_opts = [
         manifest: Source.manifest_fun(config, batch),
@@ -724,6 +728,26 @@ defmodule Precompiled do
     end
   end
 
+  # A call refused before it took the lock: the store's record says no
+  # install ran, so report/1 never sends an older install's outcome. The
+  # store is the call's :dir when it names one, else the firmware's.
+  defp refused_early(:ok, _opts), do: :ok
+
+  defp refused_early(error, opts) do
+    dry_run? = is_list(opts) and Keyword.keyword?(opts) and opts[:dry_run] == true
+    if not dry_run?, do: Outcome.record_refusal(refusal_dir(opts))
+    error
+  end
+
+  defp refusal_dir(opts) do
+    with true <- is_list(opts) and Keyword.keyword?(opts),
+         dir when is_binary(dir) <- opts[:dir] do
+      dir
+    else
+      _ -> Keyword.get(device_config(), :dir, Source.default_dir())
+    end
+  end
+
   # What the install found, for report/1: every call but a dry run.
   defp record(dir, opts, facts) do
     if not opts[:dry_run], do: Outcome.record(dir, facts)
@@ -745,8 +769,27 @@ defmodule Precompiled do
   defp applied(result, plan, systems, record) do
     {lines, lock} = Outcome.applied(plan.installs, result)
     targets = for i <- plan.installs, is_binary(i.target), uniq: true, do: i.target
-    record.(%{lines: lines, lock: lock, systems: systems, targets: targets})
+
+    # The planned builds' own dependencies are names the source lists too.
+    deps =
+      for %{build: %{"build" => %{"deps" => deps}}} <- plan.installs,
+          is_map(deps),
+          name <- Map.keys(deps),
+          do: name
+
+    record.(%{lines: lines, lock: lock, systems: systems, targets: targets, listed: deps})
     result
+  end
+
+  # Every package name the verified batch (or offline document) lists.
+  defp listed(batch) do
+    for key <- [:manifests, :manifests_v2],
+        names = Map.get(batch, key),
+        is_map(names),
+        name <- Map.keys(names),
+        is_binary(name),
+        uniq: true,
+        do: name
   end
 
   # A requested app the device has, and that this library did not load,

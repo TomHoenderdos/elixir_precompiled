@@ -172,6 +172,73 @@ defmodule Precompiled.DeviceReportTest do
              Precompiled.report(ropts ++ [interactive?: false, gets: asked, yes: true])
   end
 
+  test "a package the batch does not list is recorded but never sent",
+       %{fixture: f, opts: opts, report_opts: ropts, tmp_dir: dir} do
+    publish(f, dir)
+
+    assert {:error, {:no_build, "acme_secret_driver", _}} =
+             Precompiled.install({:acme_secret_driver, "1.2.0"}, opts)
+
+    assert {:sent, _, false} = Precompiled.report(ropts ++ [yes: true])
+    {body, decoded} = sent_body()
+    assert decoded["lines"] == []
+    refute body =~ "acme"
+    assert output() =~ "acme_secret_driver 1.2.0  not sent: not in the public index"
+  end
+
+  test "a refused batch sends none of the requested names",
+       %{fixture: f, opts: opts, report_opts: ropts, tmp_dir: dir} do
+    publish(f, dir)
+    Fixture.withdraw_batch()
+
+    assert {:error, {:batch, _}} = Precompiled.install({:acme_secret_driver, "1.2.0"}, opts)
+    assert {:sent, _, false} = Precompiled.report(ropts ++ [yes: true])
+    {body, decoded} = sent_body()
+    assert decoded["lines"] == []
+    refute body =~ "acme"
+  end
+
+  test "a call refused before it ran replaces the older record",
+       %{fixture: f, opts: opts, report_opts: ropts, tmp_dir: dir} do
+    publish(f, dir)
+    {:ok, _} = Precompiled.install(:demo_rep, opts)
+
+    # Already present now: refused before anything is fetched.
+    assert {:error, {:already_present, :logger, _}} = Precompiled.install(:logger, opts)
+    assert :no_report = Precompiled.report(ropts ++ [yes: true])
+
+    {:ok, _} = Precompiled.install(:demo_rep, opts)
+    assert {:error, {:bad_option, :nope}} = Precompiled.install(:demo_rep, opts ++ [nope: 1])
+    assert :no_report = Precompiled.report(ropts ++ [yes: true])
+
+    {:ok, _} = Precompiled.install(:demo_rep, opts)
+    Application.put_env(:precompiled, :device, enabled: false)
+
+    try do
+      assert {:error, :disabled} = Precompiled.install(:demo_rep, opts)
+    after
+      Application.delete_env(:precompiled, :device)
+    end
+
+    assert :no_report = Precompiled.report(ropts ++ [yes: true])
+    assert Fixture.report_posts() == []
+  end
+
+  test "without the seam, a shell with no terminal (a StringIO) is not interactive",
+       %{fixture: f, opts: opts, report_opts: ropts, tmp_dir: dir} do
+    publish(f, dir)
+    {:ok, _} = Precompiled.install(:demo_rep, opts)
+    asked = fn _ -> flunk("asked without a terminal") end
+
+    out =
+      capture_io(fn ->
+        assert :cancelled = Precompiled.report(ropts ++ [gets: asked])
+      end)
+
+    assert out =~ "no terminal to ask on"
+    assert Fixture.report_posts() == []
+  end
+
   test "dump prints the body yes: true sends, and sends nothing",
        %{fixture: f, opts: opts, report_opts: ropts, tmp_dir: dir} do
     publish(f, dir)

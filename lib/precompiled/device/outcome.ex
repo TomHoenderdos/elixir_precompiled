@@ -31,7 +31,8 @@ defmodule Precompiled.Device.Outcome do
           required(:lines) => [line()],
           optional(:lock) => [map()],
           optional(:systems) => map() | nil,
-          optional(:targets) => [String.t()]
+          optional(:targets) => [String.t()],
+          optional(:listed) => [String.t()]
         }
 
   ## Lines
@@ -157,6 +158,7 @@ defmodule Precompiled.Device.Outcome do
   @spec doc(facts(), DateTime.t()) :: map()
   def doc(facts, now \\ DateTime.utc_now()) do
     env = facts.env
+    listed = MapSet.new(Map.get(facts, :listed, []))
     {system, system_version} = env.system || {nil, nil}
 
     %{
@@ -170,9 +172,17 @@ defmodule Precompiled.Device.Outcome do
         "system_version" => null(system_version),
         "system_known" => known?(system, facts)
       },
-      "lines" => Enum.map(facts.lines, &Map.new(&1, fn {k, v} -> {k, null(v)} end)),
+      "lines" => Enum.map(facts.lines, &recorded(&1, listed)),
       "lock" => Map.get(facts, :lock, [])
     }
+  end
+
+  # Each line says whether the source lists its name: only those are ever
+  # sent (payload/2), so a private package's name stays on the device.
+  defp recorded(line, listed) do
+    line
+    |> Map.put("listed", MapSet.member?(listed, line["name"]))
+    |> Map.new(fn {k, v} -> {k, null(v)} end)
   end
 
   # `:json` writes nil as the string "nil"; JSON's null is :null.
@@ -208,12 +218,34 @@ defmodule Precompiled.Device.Outcome do
   end
 
   @doc false
-  @spec read(Path.t()) :: {:ok, map()} | {:error, :no_report}
+  # Records that the last install call was refused before it ran, so a
+  # later report never sends an older install's outcome. Only into a store
+  # that already exists and is safe; never raises.
+  @spec record_refusal(Path.t()) :: :ok | {:error, term()}
+  def record_refusal(dir) do
+    case Store.check_root(dir) do
+      :ok -> Store.write_outcome(dir, :json.encode(%{"format" => @format, "no_install" => true}))
+      _ -> :ok
+    end
+  rescue
+    _ -> {:error, :internal}
+  end
+
+  @doc false
+  @spec read(Path.t()) :: {:ok, map()} | {:error, :no_report | :no_install}
   def read(dir) do
     with {:ok, bytes} <- Store.read_outcome(dir),
-         %{"lines" => lines, "context" => ctx} = doc when is_list(lines) and is_map(ctx) <-
-           decode(bytes) do
-      {:ok, doc}
+         %{} = doc <- decode(bytes) do
+      case doc do
+        %{"no_install" => true} ->
+          {:error, :no_install}
+
+        %{"lines" => lines, "context" => ctx} when is_list(lines) and is_map(ctx) ->
+          {:ok, doc}
+
+        _ ->
+          {:error, :no_report}
+      end
     else
       _ -> {:error, :no_report}
     end
@@ -228,17 +260,20 @@ defmodule Precompiled.Device.Outcome do
   ## The report
 
   @doc false
-  # The body Precompiled.report/1 sends for `doc`. Every line comes from
-  # this device's source, so each well-formed one is sent; the system goes
-  # by name only when known?/2 held, and the target with it.
+  # The body Precompiled.report/1 sends for `doc`. A line is sent only when
+  # the signed batch lists its name, as a package or as a dependency of one
+  # of the builds the install planned, as the host sends only the public
+  # Hex names of its lock; the system goes by name only when known?/2
+  # held, and the target with it.
   @spec payload(map(), String.t() | nil) :: map()
   def payload(doc, contact) do
     ctx = doc["context"]
     lock = valid_lock(doc["lock"])
+    listed = listed_names(doc)
 
     body =
       Report.assemble(doc, contact,
-        public?: &(is_binary(&1) and Regex.match?(@package, &1)),
+        public?: &(MapSet.member?(listed, &1) and Regex.match?(@package, &1)),
         place: place(ctx),
         lock: fn names -> Enum.filter(lock, &(&1["name"] in names)) end
       )
@@ -259,21 +294,47 @@ defmodule Precompiled.Device.Outcome do
   defp text(s) when is_binary(s), do: s
   defp text(_), do: nil
 
+  defp listed_names(doc) do
+    for %{"name" => name, "listed" => true} <- doc["lines"],
+        is_binary(name),
+        into: MapSet.new(),
+        do: name
+  end
+
   # The recorded entries, checked again: the file is on a writable disk.
+  # One entry per name, the first, and at most @max_lock.
   defp valid_lock(entries) when is_list(entries) do
-    for %{"name" => n, "version" => v, "checksum" => c} <- entries,
-        e = entry(n, v, c),
-        e != nil,
-        do: e
+    for(
+      %{"name" => n, "version" => v, "checksum" => c} <- entries,
+      e = entry(n, v, c),
+      e != nil,
+      do: e
+    )
+    |> Enum.uniq_by(& &1["name"])
+    |> Enum.take(@max_lock)
   end
 
   defp valid_lock(_entries), do: []
 
   @doc false
-  # The summary's first line.
-  @spec header(map()) :: String.t()
+  # The summary's first lines: what the report is, and each line kept on
+  # the device because the source does not list its name.
+  @spec header(map()) :: [String.t()]
   def header(doc) do
-    "precompiled: report of the last Precompiled.install/2 on this device, " <>
-      "written #{Report.age(doc["built_at"])}"
+    listed = listed_names(doc)
+
+    kept =
+      for %{"name" => name} = l <- doc["lines"],
+          is_binary(name),
+          not MapSet.member?(listed, name) do
+        "  #{String.upcase(to_string(l["status"]))}  #{name} #{text(l["version"])}  " <>
+          "not sent: not in the public index"
+      end
+
+    [
+      "precompiled: report of the last Precompiled.install/2 on this device, " <>
+        "written #{Report.age(doc["built_at"])}"
+      | kept
+    ]
   end
 end

@@ -63,7 +63,7 @@ defmodule Precompiled.Report do
           optional(:app) => atom() | String.t() | nil,
           optional(:read) => (-> {:ok, map()} | {:error, term()}),
           optional(:payload) => (map(), String.t() | nil -> map()),
-          optional(:header) => (map() -> String.t()),
+          optional(:header) => (map() -> String.t() | [String.t()]),
           optional(:no_report) => String.t()
         }
 
@@ -536,7 +536,7 @@ defmodule Precompiled.Report do
   # from the payload; the report only gives the build's age.
   @spec summary(map(), map(), where()) :: [String.t()]
   def summary(payload, report, where) do
-    [header(where, report) | body(payload, where)]
+    List.wrap(header(where, report)) ++ body(payload, where)
   end
 
   defp header(%{header: header}, report), do: header.(report)

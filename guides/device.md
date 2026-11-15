@@ -188,7 +188,9 @@ Precompiled.report()
 Every `install/2` but a dry run records its outcome in the store, in
 `DIR/.last-install.json`: one line per package it planned or missed, with
 HIT, MISS or FAIL and the reason code. Only the last install is kept, and
-`report/1` sends that one. It shows the summary first and asks
+`report/1` sends that one. A call refused before it ran (an app already
+present, a bad option, `enabled: false`) replaces it with a record that no
+install ran, so an older install is never sent. It shows the summary first and asks
 `Send this report to <host>? [y/N]`; only `y` or `yes` sends.
 
 | Option | Effect |
@@ -211,7 +213,10 @@ source per call, and a `file://` bundle has nowhere to send to
 (`{:error, :bundle_source}`). `enabled: false` in the firmware turns it
 off too (`:off`).
 
-What is sent is what the host's report sends (see
+A line is sent only when the signed batch lists its package, as a
+package or as a dependency of a build the install planned: a private
+package's name stays on the device, shown in the summary as `not sent:
+not in the public index`. Otherwise, what is sent is what the host's report sends (see
 [Troubleshooting](troubleshooting.md#what-is-sent-and-what-never-is)),
 with the device's facts in place of the build's: the Elixir and OTP
 versions, OS family and CPU architecture; the target, Nerves system and
