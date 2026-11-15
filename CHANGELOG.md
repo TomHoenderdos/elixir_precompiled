@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.7.0 - 2026-11-15
 
 * `Precompiled.Host.install/2` now predicts a dependency's compile-time
   read of another app's config from the order `Mix.install/2`'s
