@@ -1261,6 +1261,15 @@ defmodule Precompiled.MatchTest do
                )
     end
 
+    test "an endian item in builds_with_inputs is decided against this byte order" do
+      little = %{"kind" => "endian", "value" => "little"}
+
+      assert {:ok, _, _} = Match.select(inputs_doc([little]), ctx(endian: :little))
+
+      assert {:miss, %Reason{code: :endian_differs, args: ["little", "big"]}} =
+               Match.select_reason(inputs_doc([little]), ctx(endian: :big))
+    end
+
     test "the user's value and the builder's value are never in the reason" do
       item = host_item("GITHUB_ACTIONS", ienc({:ok, "builder-value"}))
 

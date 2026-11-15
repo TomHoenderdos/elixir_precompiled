@@ -341,6 +341,70 @@ defmodule Precompiled.CompileInputsTest do
     end
   end
 
+  describe "endian" do
+    defp endian(value), do: %{"kind" => "endian", "value" => value}
+
+    defp here_is(e), do: %{compile_order: nil, user_config: fn _, _ -> :error end, endian: e}
+
+    defp none(_name), do: nil
+
+    test "a build compiled on a machine of this byte order is a hit" do
+      for e <- [:little, :big],
+          do: assert(:ok = CompileInputs.host([endian(Atom.to_string(e))], &none/1, here_is(e)))
+    end
+
+    # nx compiled on a little-endian builder bakes little-endian float
+    # layouts: a big-endian machine must compile it itself.
+    test "a build compiled on a machine of the other byte order misses, naming both" do
+      assert {:miss, %{code: :endian_differs, args: ["little", "big"], text: text}} =
+               CompileInputs.host([endian("little")], &none/1, here_is(:big))
+
+      assert text == "built on a little-endian machine, this one is big-endian"
+
+      assert {:miss, %{code: :endian_differs, args: ["big", "little"]}} =
+               CompileInputs.host([endian("big")], &none/1, here_is(:little))
+    end
+
+    test "without a byte order given, the running VM's is used" do
+      here = Atom.to_string(System.endianness())
+      other = if here == "little", do: "big", else: "little"
+      assert :ok = CompileInputs.host([endian(here)], &none/1)
+      assert {:miss, %{code: :endian_differs}} = CompileInputs.host([endian(other)], &none/1)
+    end
+
+    test "an item of any other shape is malformed" do
+      for bad <- [
+            endian("native"),
+            endian("Little"),
+            endian(:little),
+            endian(nil),
+            Map.delete(endian("little"), "value"),
+            Map.put(endian("little"), "extra", 1)
+          ] do
+        assert {:miss, %{code: :malformed_entry}} =
+                 CompileInputs.host([bad], &none/1, here_is(:little)),
+               inspect(bad)
+
+        assert {:miss, %{code: :malformed_entry}} = CompileInputs.device([bad]), inspect(bad)
+      end
+    end
+
+    # The firmware was compiled on some machine the device cannot name.
+    test "a device misses on an endian item whatever its value" do
+      for value <- ["little", "big"] do
+        assert {:miss, %{code: :endian_differs, args: [^value]}} =
+                 CompileInputs.device([endian(value)])
+      end
+    end
+
+    test "the first differing item wins, as for every kind" do
+      env = %{"kind" => "env", "name" => "X", "value" => "unrecordable", "set_by" => "host"}
+
+      assert {:miss, %{code: :endian_differs}} =
+               CompileInputs.host([endian("big"), env], &none/1, here_is(:little))
+    end
+  end
+
   describe "platform_define" do
     @linux28 "28.1.1-x86_64-pc-linux-gnu-64"
     @mac29 "29.1.1-aarch64-apple-darwin25.0.0-64"

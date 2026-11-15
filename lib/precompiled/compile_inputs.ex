@@ -11,7 +11,9 @@ defmodule Precompiled.CompileInputs do
   # against this project's compile order (CompileOrder): only its app and
   # key names reach a reason. A platform_define item is rebar3's verdict on
   # one platform_define regex against the builder's arch string, checked
-  # against this machine's (Rebar3Arch): only the regex reaches a reason.
+  # against this machine's (Rebar3Arch): only the regex reaches a reason. An
+  # endian item is the byte order the build's compile read (nx's float
+  # layouts), checked against this machine's System.endianness/0.
 
   alias Precompiled.{CompileOrder, Reason, Rebar3Arch}
 
@@ -19,7 +21,8 @@ defmodule Precompiled.CompileInputs do
 
   @no_order %{compile_order: nil, user_config: &__MODULE__.user_config/2}
 
-  # rebar3_arch, when given, stands for this machine's arch string.
+  # rebar3_arch, when given, stands for this machine's arch string; endian
+  # for its byte order.
   @type order_ctx :: %{
           required(:compile_order) => CompileOrder.t() | nil,
           required(:user_config) => (String.t(), String.t() ->
@@ -27,7 +30,8 @@ defmodule Precompiled.CompileInputs do
                                        | :error
                                        | {:loaded, {:ok, term()} | :error}
                                        | :unreadable),
-          optional(:rebar3_arch) => String.t()
+          optional(:rebar3_arch) => String.t(),
+          optional(:endian) => :little | :big
         }
 
   @spec host(term(), (String.t() -> String.t() | nil)) :: :ok | {:miss, Reason.t()}
@@ -132,6 +136,15 @@ defmodule Precompiled.CompileInputs do
       else: platform_define_differs(regex)
   end
 
+  # The byte order a compile-time System.endianness/0 read returned on the
+  # builder must be this machine's: Mix compiles the dependency here, on the
+  # host's VM for firmware too.
+  defp host_item(%{"kind" => "endian", "value" => built} = item, _getenv, order)
+       when built in ["little", "big"] and map_size(item) == 2 do
+    here = order |> Map.get_lazy(:endian, &System.endianness/0) |> Atom.to_string()
+    if built == here, do: :ok, else: {:miss, Reason.new(:endian_differs, [built, here])}
+  end
+
   defp host_item(item, _getenv, _order), do: whole(item)
 
   # What the reader would read here: the user's config when set; otherwise
@@ -211,6 +224,16 @@ defmodule Precompiled.CompileInputs do
         "a device cannot check its firmware's build machine"
 
     {:miss, Reason.new(:platform_define_differs, [regex], text)}
+  end
+
+  # The device cannot know the byte order of the machine its firmware was
+  # compiled on: as with platform_define, a miss.
+  defp device_item(%{"kind" => "endian", "value" => built} = item, _decidable?)
+       when built in ["little", "big"] and map_size(item) == 2 do
+    text =
+      "built on a #{built}-endian machine; a device cannot check its firmware's build machine"
+
+    {:miss, Reason.new(:endian_differs, [built], text)}
   end
 
   defp device_item(item, _decidable?), do: whole(item)

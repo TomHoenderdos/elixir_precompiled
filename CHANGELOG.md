@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+* A build whose compile read the byte order (`System.endianness/0`: nx and
+  every package with nx in its closure, such as polaris, nx_image,
+  nx_signal and safetensors) carries an `endian` compile input. It holds
+  when the build's byte order is this machine's, and misses with
+  `built on a little-endian machine, this one is big-endian` otherwise. A
+  device cannot check the machine its firmware was compiled on and misses.
+  Clients before this release treat the item as malformed and miss, as
+  they do for any input kind they do not know.
 * `Precompiled.report/1` sends a device's last `Precompiled.install/2`
   outcome to the configured source, as `mix precompiled.report` does for a
   build: every install but a dry run now records its HIT, MISS and FAIL

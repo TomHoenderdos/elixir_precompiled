@@ -15,11 +15,12 @@ defmodule Precompiled.ReasonTest do
              install_failed internal system_version_abi toolchain_otp_minor
              needed_lib_missing symbol_version_missing system_unknown system_bound_compile
              env_differs env_set_at_build env_all config_unrecorded config_order_differs
-             rebar3_global_config erl_compiler_options platform_define_differs)a
+             rebar3_global_config erl_compiler_options platform_define_differs
+             endian_differs)a
 
   test "the codes are exactly the table shared with the portal" do
     assert Reason.codes() == @shared
-    assert length(Reason.codes()) == 45
+    assert length(Reason.codes()) == 46
   end
 
   test "the codes for matching across releases render their templates" do
@@ -153,7 +154,9 @@ defmodule Precompiled.ReasonTest do
           {:config_order_differs, ["phoenix_view", "template_engines"],
            "compile-time config phoenix_view template_engines would differ in this project"},
           {:platform_define_differs, ["R14"],
-           "rebar3 platform_define R14 decides differently on this machine"}
+           "rebar3 platform_define R14 decides differently on this machine"},
+          {:endian_differs, ["little", "big"],
+           "built on a little-endian machine, this one is big-endian"}
         ] do
       assert Reason.new(code, args).text == text
     end
