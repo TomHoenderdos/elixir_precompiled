@@ -524,8 +524,8 @@ defmodule Precompiled.Check do
              {:ok, manifest} <- config |> Fetch.manifest(sname, sha, path) |> Reason.of_manifest(),
              reads = scan_reads(config, env, sname, candidate.lock_entry),
              :ok <- scan_in_time(reads),
-             {:ok, entry, _system_key} <-
-               Match.select_reason(manifest, ctx(candidate, env, config, config_fun, reads)) do
+             match_ctx = ctx(candidate, env, config, config_fun, reads),
+             {:ok, entry, _system_key} <- Match.select_reason(manifest, match_ctx) do
           provenance = %{
             sha: sha,
             path: path,
@@ -537,6 +537,7 @@ defmodule Precompiled.Check do
           candidate
           |> place(entry, provenance, config, env, config_fun)
           |> Reason.of_install()
+          |> installed_build(Match.describe(entry, match_ctx))
         end
 
       result =
@@ -556,6 +557,10 @@ defmodule Precompiled.Check do
         crashed(base, inspect(reason))
     end
   end
+
+  # A HIT line names the build it installed (Match.describe/2).
+  defp installed_build({:hit, stats}, label), do: {:hit, Map.put(stats, :build, label)}
+  defp installed_build(result, _label), do: result
 
   # An unchanged manifest the network could not deliver says nothing
   # against the installed build: kept, with a note. For anything else it is
@@ -782,12 +787,14 @@ defmodule Precompiled.Check do
       stripped: stats.stripped,
       status: :hit,
       reason: {:hit, []},
-      detail: "#{mb(bytes)} MB#{if cached == files, do: ", cached", else: ""}"
+      detail:
+        "#{mb(bytes)} MB#{if cached == files, do: ", cached", else: ""}" <>
+          build_suffix(stats[:build])
     })
   end
 
   defp line_for(base, {status, %Reason{} = r}) when status in [:miss, :fail],
-    do: Map.merge(base, %{status: status, detail: r.text, reason: {r.code, r.args}})
+    do: Map.merge(base, %{status: status, detail: miss_detail(r), reason: {r.code, r.args}})
 
   # `one/5` already turns `{:unreachable, _}` into a miss (or a kept build)
   # through `unreachable/2`; kept here so a stage that skips it is still a
@@ -798,6 +805,16 @@ defmodule Precompiled.Check do
   # A plain text outcome no stage coded: still a line, as an internal error.
   defp line_for(base, {status, why}) when status in [:miss, :fail] and is_binary(why),
     do: Map.merge(base, %{status: status, detail: why, reason: {:internal, []}})
+
+  # The line's text, then the build that came closest. Only the detail
+  # carries it: a report sends the code's template, never the detail.
+  defp miss_detail(%Reason{text: text, closest: closest}) when is_binary(closest),
+    do: text <> "; closest build " <> closest
+
+  defp miss_detail(%Reason{text: text}), do: text
+
+  defp build_suffix(label) when is_binary(label), do: "; build " <> label
+  defp build_suffix(_label), do: ""
 
   # Rule 7, second half: the manifest said the compile_env matches; the
   # downloaded .app is the authority. A manifest that lies still cannot

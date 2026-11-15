@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+* A `MISS` line now names the build that came closest after its reason:
+  `; closest build HASH: VARIANT, Elixir X/OTP Y, SYSTEM RELEASE, closure
+  +a -b`, with the first 12 characters of the build's files hash, its
+  variant (a world build's own, else `with` or `without` the package's
+  optional dependencies), its toolchain, its system and release, and how
+  its closure differs from the one Mix compiles the package with here. A
+  `HIT` line names the build it installed the same way, after its size
+  (`; build HASH: ...`). Only manifest values and dependency names are
+  printed; nothing from the environment is. Reason codes and arguments are
+  unchanged, so `mix precompiled.report` sends what it sent before.
 * `Precompiled.Host.install/2` now reads the dependency tree `Mix.install/2`
   compiles, from the dependencies Mix loads in its install project, and
   matches the way a Mix project on your build machine does: a build must

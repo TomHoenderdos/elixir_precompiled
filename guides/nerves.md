@@ -7,7 +7,7 @@ only the rest is compiled. The line per dependency tells you which was
 which:
 
 ```
-precompiled: circuits_gpio 2.3.1          HIT   48 KB
+precompiled: circuits_gpio 2.3.1          HIT   48 KB; build 9c41e07d2a5b: Elixir 1.20.0/OTP 28, nerves_system_rpi4 1.31.0
 precompiled: nerves_pack 0.7.1            MISS  built with nerves_ssh 1.3.3, project has 1.3.2
 ```
 

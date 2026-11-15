@@ -239,7 +239,9 @@ See [Trust](trust.md#batch-checks) for every batch check.
 
 ## A dependency misses
 
-A `MISS` line names the rule that the closest build broke; see
+A `MISS` line names the rule that the closest build broke, then that build
+(`; closest build HASH: VARIANT, Elixir X/OTP Y, ...`, see
+[When nothing matches](matching.md#when-nothing-matches)); see
 [What matches](matching.md) for all the rules. Some worth knowing:
 
 | Line | Meaning |

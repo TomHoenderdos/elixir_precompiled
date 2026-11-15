@@ -328,8 +328,30 @@ architecture is not the one rebar3 saw.
 ## When nothing matches
 
 The dependency compiles from source, and its line names the rule that the
-closest build broke:
+closest build broke, then that build:
 
 ```
-precompiled: telemetry_poller 1.1.0       MISS  built with Elixir 1.20.3, running 1.20.1
+precompiled: telemetry_poller 1.1.0       MISS  built with Elixir 1.20.3, running 1.20.1; closest build 5ccaf59fba70: Elixir 1.20.3/OTP 28
 ```
+
+The closest build is the one that got furthest through the rules before
+one broke (ties go to the first listed). It is named by the first 12
+characters of its files hash, then, where the manifest says, its variant,
+its toolchain, its system and release, and how its dependency closure
+differs from the one Mix compiles the package with here:
+
+* the variant is a world build's own (`world_phx`), else `with` or
+  `without` the package's optional dependencies, for a package that
+  declares any;
+* in `closure +a -b`, `+a` is a dependency the build was made with that
+  Mix leaves out here, `-b` one Mix compiles the package with that the
+  build lacks (at most three of each, then `+N more`).
+
+A `HIT` line names the build it installed the same way, after its size:
+`HIT  4.1 MB; build 3f2a9c01b7de: without, Elixir 1.20.0/OTP 28`.
+
+Only manifest values and dependency names are printed, each limited to
+letters, digits and `_ . + : -` (anything else prints as `?`). Nothing
+from your environment is. The closest build is part of the line only: a
+report (`mix precompiled.report`) sends the reason's code and arguments,
+which it does not change.

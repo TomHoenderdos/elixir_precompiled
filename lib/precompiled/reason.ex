@@ -10,10 +10,19 @@ defmodule Precompiled.Reason do
   # target and system names, and are what `mix precompiled.report` sends,
   # with `render/2` of them as the text. The table is shared with the portal
   # (`Portal.Reports.Payload.known_codes/0`): change both together.
+  #
+  # `closest`, on a miss Match explains with a build, names that build
+  # (`Match.describe/2`). The line prints it after `text`; report.json keeps
+  # it only inside the line's detail, and a report never sends it.
 
-  defstruct [:code, args: [], text: ""]
+  defstruct [:code, args: [], text: "", closest: nil]
 
-  @type t :: %__MODULE__{code: atom(), args: [String.t()], text: String.t()}
+  @type t :: %__MODULE__{
+          code: atom(),
+          args: [String.t()],
+          text: String.t(),
+          closest: String.t() | nil
+        }
 
   @templates [
     hit: "installed",

@@ -182,4 +182,100 @@ defmodule Precompiled.CheckReasonTest do
     codes = Enum.map(Reason.codes(), &Atom.to_string/1)
     assert Enum.all?(report_json(lib)["lines"], &(&1["reason_code"] in codes))
   end
+
+  defp ash_entry(f, over) do
+    beam = "beam ash"
+    app = "{application, ash, [{vsn, \"3.5.2\"}, {modules, ['Elixir.X']}]}.\n"
+
+    %{
+      "target" => "pure_elixir",
+      "ebin" => [
+        %{
+          "path" => "ebin/Elixir.X.beam",
+          "sha256" => F.file(f, beam),
+          "size" => byte_size(beam),
+          "mode" => 33188
+        },
+        %{
+          "path" => "ebin/ash.app",
+          "sha256" => F.file(f, app),
+          "size" => byte_size(app),
+          "mode" => 33188
+        }
+      ],
+      "priv" => [],
+      "build" =>
+        Map.merge(
+          %{
+            "elixir" => System.version(),
+            "otp" => to_string(:erlang.system_info(:otp_release)),
+            "system_version" => nil,
+            "run_id" => "r",
+            "deps" => %{},
+            "compile_env" => [],
+            "package_checksum" => "ASHOUTER",
+            "dep_env" => "prod"
+          },
+          over
+        )
+    }
+  end
+
+  test "a MISS line names the closest build; its code, args and the report stay as before", %{
+    f: f,
+    config: config,
+    env: env,
+    lib: lib
+  } do
+    e = ash_entry(f, %{"otp" => "20"})
+    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [e]}}}})
+    otp = to_string(:erlang.system_info(:otp_release))
+    short = binary_part(Precompiled.Match.files_hash(e), 0, 12)
+    text = "built on OTP 20, running #{otp}"
+    detail = "#{text}; closest build #{short}: Elixir #{System.version()}/OTP 20"
+
+    report = run(config, env)
+
+    assert %{status: :miss, detail: ^detail, reason: {:toolchain_otp, ["20", ^otp]}} =
+             Enum.find(report.lines, &(&1.name == "ash"))
+
+    line = Enum.find(report_json(lib)["lines"], &(&1["name"] == "ash"))
+    assert %{"reason_code" => "toolchain_otp", "reason_args" => ["20", ^otp]} = line
+
+    where = %{
+      build_lib: lib,
+      # Only public Hex entries (a 64-hex checksum) reach a report.
+      lock: %{ash: put_elem(@ash, 7, String.duplicate("a", 64))},
+      config: config,
+      project_dir: Path.dirname(lib),
+      env: "dev",
+      target: "rpi4"
+    }
+
+    body = Precompiled.Report.payload(where, report_json(lib), nil)
+    sent = Enum.find(body["lines"], &(&1["name"] == "ash"))
+    assert sent["reason"] == text
+    refute body |> :json.encode() |> IO.iodata_to_binary() =~ "closest"
+  end
+
+  test "a HIT line names the build it installed", %{f: f, config: config, env: env} do
+    e = ash_entry(f, %{})
+    F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [e]}}}})
+    short = binary_part(Precompiled.Match.files_hash(e), 0, 12)
+
+    out =
+      capture_io(fn ->
+        capture_io(:stderr, fn ->
+          send(self(), {:report, Check.check(config, env, config_fun: fn _, _ -> :error end)})
+        end)
+      end)
+
+    assert_received {:report, {:ok, %{hits: 1} = report}}
+
+    assert %{status: :hit, detail: detail, reason: {:hit, []}} =
+             Enum.find(report.lines, &(&1.name == "ash"))
+
+    assert detail =~ ~r/\A\d+\.\d MB(, cached)?; build #{short}: Elixir /
+    assert out =~ ~r/precompiled: ash 3\.5\.2\s+HIT\s+0\.0 MB; build #{short}: /
+  end
 end

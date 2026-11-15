@@ -53,7 +53,7 @@ Nothing more: every `mix compile`, `mix test`, [`mix phx.server`](https://hexdoc
 and prints one line per candidate:
 
 ```
-precompiled: ash 3.36.0                   HIT   4.1 MB
+precompiled: ash 3.36.0                   HIT   4.1 MB; build 3f2a9c01b7de: Elixir 1.20.0/OTP 28
 precompiled: nerves_pack 0.7.1            MISS  built with nerves_ssh 1.3.3, project has 1.3.2
 precompiled: 40 hit, 5 miss, 0 fail of 45 deps, 61.2 MB, 8.3 s
 ```

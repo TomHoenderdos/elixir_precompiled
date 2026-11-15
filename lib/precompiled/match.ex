@@ -110,7 +110,7 @@ defmodule Precompiled.Match do
 
         case Enum.filter(results, &match?({_, {:ok, _}}, &1)) do
           [] ->
-            {:miss, furthest_reason(results, system, system_version)}
+            {:miss, furthest_reason(results, system, system_version, ctx)}
 
           ok ->
             {build, _} =
@@ -230,8 +230,9 @@ defmodule Precompiled.Match do
   # When every build missed on its target and none is pure_elixir or for
   # this system, the version simply was not built here; otherwise the
   # build that passed the most rules explains the miss best (ties keep the
-  # first), and a build for another system never explains it.
-  defp furthest_reason(results, system, system_version) do
+  # first), and a build for another system never explains it. That build
+  # is named in the reason's `closest` (describe/2).
+  defp furthest_reason(results, system, system_version, ctx) do
     case Enum.reject(results, &foreign?(&1, system)) do
       [] ->
         Reason.new(
@@ -241,13 +242,141 @@ defmodule Precompiled.Match do
         )
 
       own ->
-        {_, {:miss, reason, _}} =
+        {build, {:miss, reason, _}} =
           Enum.reduce(own, fn {_, {:miss, _, n}} = r, {_, {:miss, _, best}} = acc ->
             if n > best, do: r, else: acc
           end)
 
-        reason
+        %{reason | closest: describe(build, ctx)}
     end
+  end
+
+  @doc """
+  Names a build for a HIT or MISS line: the first 12 characters of its
+  files hash (`files_hash/1`), then, where known, its variant, its
+  toolchain, its system and release, and how its closure differs from the
+  one Mix compiles the package with here, as in
+  `"3f2a9c01b7de: without, Elixir 1.18.4/OTP 27, closure -decimal"`.
+
+  The variant is a world build's own (`world_phx`), else `with` or
+  `without` the package's optional deps, for a package that declares any.
+  In the closure, `+name` is a dep the build was made with that Mix leaves
+  out here, `-name` one Mix compiles it with that the build lacks.
+
+  Only manifest values and dependency names are printed, each reduced to
+  the characters a reason argument may hold (letters, digits and
+  `_ . + : -`; anything else prints as `?`); nothing from the environment
+  is read. Never raises.
+  """
+  @spec describe(map(), map()) :: String.t()
+  def describe(entry, ctx) do
+    b = if is_map(entry["build"]), do: entry["build"], else: %{}
+
+    parts =
+      [
+        variant_label(b, ctx),
+        toolchain_label(b),
+        target_label(entry["target"], b),
+        closure_label(b["deps"], ctx)
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    id = short_hash(entry)
+    if parts == [], do: id, else: id <> ": " <> Enum.join(parts, ", ")
+  rescue
+    _ -> "?"
+  catch
+    _, _ -> "?"
+  end
+
+  defp short_hash(entry) do
+    case files_hash(entry) do
+      hash when is_binary(hash) -> binary_part(hash, 0, 12)
+      nil -> "?"
+    end
+  end
+
+  defp label(v) when is_binary(v), do: v |> List.wrap() |> Reason.clean_args() |> hd()
+  defp label(_v), do: "?"
+
+  defp variant_label(%{"variant" => v}, _ctx) when not is_nil(v), do: label(v)
+
+  defp variant_label(%{"deps" => deps}, ctx) when is_map(deps) do
+    case optional_deps(Map.get(ctx, :lock_entry)) do
+      [] ->
+        nil
+
+      optional ->
+        if Enum.any?(optional, &Map.has_key?(deps, &1)), do: "with", else: "without"
+    end
+  end
+
+  defp variant_label(_b, _ctx), do: nil
+
+  defp optional_deps({:hex, _, _, _, _, declared, _, _}) when is_list(declared) do
+    for {name, _req, opts} <- declared,
+        is_list(opts),
+        opts[:optional] == true,
+        do: Atom.to_string(name)
+  end
+
+  defp optional_deps(_lock_entry), do: []
+
+  defp toolchain_label(%{"elixir" => e, "otp" => o}) when not is_nil(e) and not is_nil(o),
+    do: "Elixir #{label(e)}/OTP #{label(o)}"
+
+  defp toolchain_label(_b), do: nil
+
+  defp target_label("pure_elixir", _b), do: nil
+
+  defp target_label(t, b) when is_binary(t) do
+    case b["system_version"] do
+      nil -> label(t)
+      v -> "#{label(t)} #{label(v)}"
+    end
+  end
+
+  defp target_label(_t, _b), do: nil
+
+  # The two sides closure_ok/4 compares: the env's closure where it is
+  # known, else the deps the package declares that the lock holds (a
+  # build dep the lock lacks shows as +).
+  defp closure_label(deps, ctx) when is_map(deps) do
+    built = deps |> Map.keys() |> MapSet.new()
+    lock = Map.get(ctx, :lock, %{})
+
+    {plus, minus} =
+      case Map.get(ctx, :env_closure) do
+        closure when is_list(closure) ->
+          wanted = MapSet.new(closure, &Atom.to_string/1)
+          {MapSet.difference(built, wanted), MapSet.difference(wanted, built)}
+
+        _ ->
+          in_lock = MapSet.new(Map.keys(lock), &Atom.to_string/1)
+          declared = MapSet.new(declared_in_lock(Map.get(ctx, :lock_entry), lock))
+          {MapSet.difference(built, in_lock), MapSet.difference(declared, built)}
+      end
+
+    case signed(plus, "+") ++ signed(minus, "-") do
+      [] -> nil
+      names -> "closure " <> Enum.join(names, " ")
+    end
+  end
+
+  defp closure_label(_deps, _ctx), do: nil
+
+  defp declared_in_lock({:hex, _, _, _, _, declared, _, _}, lock) when is_list(declared) do
+    for {name, _req, _opts} <- declared, Map.has_key?(lock, name), do: Atom.to_string(name)
+  end
+
+  defp declared_in_lock(_lock_entry, _lock), do: []
+
+  @max_closure_names 3
+
+  defp signed(set, sign) do
+    {shown, rest} = set |> Enum.sort() |> Enum.split(@max_closure_names)
+    names = Enum.map(shown, &(sign <> label(&1)))
+    if rest == [], do: names, else: names ++ ["#{sign}#{length(rest)} more"]
   end
 
   defp foreign?({%{"target" => t}, {:miss, _, 0}}, system),
