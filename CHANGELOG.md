@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+* README: what the portal builds (including builds for a typical Phoenix
+  app's optional dependencies), the `~> 0.7` requirement, the closest
+  build on a `MISS` line, `Precompiled.Host.install/2`'s `Mix.install/2`
+  options, and the environment checks that stop installs.
+
 ## v0.7.0 - 2026-11-15
 
 * `Precompiled.Host.install/2` now predicts a dependency's compile-time

@@ -8,12 +8,17 @@
 Install signed, verified precompiled builds of your Hex dependencies
 instead of compiling them. Builds come from the
 [Nerves compatibility portal](https://compatibility.nerves-project.org),
-which builds selected Hex packages for the host (`pure_elixir`) and for
-Nerves systems, signs a batch index every 15 minutes, and serves files by
-SHA-256. A dependency is installed only when a build matches the project on
-every rule in [What matches](https://hexdocs.pm/precompiled/matching.html);
-everything else compiles as before, and nothing this library does can fail
-your build.
+which builds Hex packages for the host, on each supported Elixir/OTP
+toolchain, and for Nerves systems, signs a batch index every 15 minutes, and
+serves files by SHA-256. Besides a build with and one without a package's
+optional dependencies, it also builds packages with the optional
+dependencies a typical Phoenix app has, so a fresh `mix phx.new` app gets
+most of its dependencies prebuilt. A dependency is installed only when a
+build matches the project on every rule in
+[What matches](https://hexdocs.pm/precompiled/matching.html), including
+being compiled with exactly the dependencies Mix compiles it with in your
+project and env; everything else compiles as before, and nothing this
+library does can fail your build.
 
 ## Installation
 
@@ -35,7 +40,7 @@ end
 
 defp deps do
   [
-    {:precompiled, "~> 0.3", runtime: false},
+    {:precompiled, "~> 0.7", runtime: false},
     ...
   ]
 end
@@ -54,7 +59,7 @@ and prints one line per candidate:
 
 ```
 precompiled: ash 3.36.0                   HIT   4.1 MB; build 3f2a9c01b7de: Elixir 1.20.0/OTP 28
-precompiled: nerves_pack 0.7.1            MISS  built with nerves_ssh 1.3.3, project has 1.3.2
+precompiled: nerves_pack 0.7.1            MISS  built with nerves_ssh 1.3.3, project has 1.3.2; closest build 9b04e17ac2d5: Elixir 1.20.3/OTP 29, rpi4 2.2.2
 precompiled: 40 hit, 5 miss, 0 fail of 45 deps, 61.2 MB, 8.3 s
 ```
 
@@ -66,6 +71,10 @@ installed:
 Precompiled.Host.install([{:jason, "1.4.5"}, {:decimal, "3.2.0"}])
 ```
 
+It takes the same options as `Mix.install/2` (`config:`, `config_path:`,
+`lockfile:` and so on) and checks builds against the dependency tree and
+config that `Mix.install/2` will compile with.
+
 On a running Nerves device, from an IEx shell:
 
 ```elixir
@@ -73,6 +82,13 @@ Precompiled.install(:recon)
 ```
 
 `PRECOMPILED=0` turns it off.
+
+On your build machine nothing is installed while something outside the
+project would make your own compile differ from the published build: a
+global rebar3 config that changes compile options, `ERL_COMPILER_OPTIONS`,
+`ERL_LIBS`, compiler-affecting `ERL_*FLAGS`/`ELIXIR_ERL_OPTIONS`, or a
+`.erlang` file. The line names the variable or file (never its value); see
+[Troubleshooting](https://hexdocs.pm/precompiled/troubleshooting.html).
 
 `mix precompiled.report` sends the last build's HIT/MISS/FAIL report,
 after showing it and asking (see
