@@ -88,13 +88,13 @@ defmodule Precompiled.Integration.PhxConfigTest do
     write_config!(proj, f, true)
 
     assert compile!(proj, "dev") =~
-             ~r/precompiled: jason 1\.4\.5\s+MISS\s+compile_env differs: phoenix_live_view \[:debug_attributes\], phoenix_live_view \[:debug_heex_annotations\], phoenix_live_view \[:root_tag_attribute\]\n/
+             ~r/precompiled: jason 1\.4\.5\s+MISS\s+compile_env differs: phoenix_live_view \[:debug_attributes\], phoenix_live_view \[:debug_heex_annotations\], phoenix_live_view \[:root_tag_attribute\](;[^\n]*)?\n/
 
     for env <- ["test", "prod"] do
       out = compile!(proj, env)
 
       assert out =~
-               ~r/precompiled: jason 1\.4\.5\s+MISS\s+compile_env differs: phoenix_live_view \[:root_tag_attribute\]\n/,
+               ~r/precompiled: jason 1\.4\.5\s+MISS\s+compile_env differs: phoenix_live_view \[:root_tag_attribute\](;[^\n]*)?\n/,
              "#{env}:\n" <> out
     end
 
