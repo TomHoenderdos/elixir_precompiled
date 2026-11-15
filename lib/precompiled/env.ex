@@ -88,7 +88,9 @@ defmodule Precompiled.Env do
             mix_target: "host",
             build_methods: %{},
             # The deps.compile order (Precompiled.CompileOrder), for config_order
-            # items; nil when not read from a Mix project.
+            # items, in the project or in Mix.install/2's install project; nil
+            # when Mix's deps were not read, or Mix.install/2 is given config
+            # this check runs before.
             compile_order: nil,
             # Each dep's children in the current env (Mix.Dep.load_and_cache/0, in
             # the project or in Mix.install/2's install project), for the closure

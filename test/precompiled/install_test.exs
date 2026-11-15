@@ -77,27 +77,29 @@ defmodule Precompiled.InstallTest do
     loaded = fn -> [dep.(:pkg, [here]), here] end
     project = Path.join(dir, "loaded")
 
-    assert {methods, present} = quiet(fn -> Install.resolve(project, [], [], loaded) end)
+    assert {methods, present, order} = quiet(fn -> Install.resolve(project, [], [], loaded) end)
     assert present == %{pkg: [:here], here: []}
     assert methods[:pkg] == %{manager: "mix", overrides: []}
+    # The order deps.compile walks, read from the same list.
+    assert Precompiled.CompileOrder.apps(order) == ["pkg", "here"]
 
     boom = fn -> raise "lock is broken" end
     other = Path.join(dir, "broken")
 
     assert quiet(fn -> Install.resolve(other, [], [], boom) end) ==
-             {{:unknown, "lock is broken"}, nil}
+             {{:unknown, "lock is broken"}, nil, nil}
 
     # A dep whose children are not the shape Mix gives: the tree is unknown
     # (lock-only matching), the build methods are still read.
     odd = fn -> [%{dep.(:pkg, []) | deps: :nope}] end
     third = Path.join(dir, "odd")
-    assert {%{pkg: _}, nil} = quiet(fn -> Install.resolve(third, [], [], odd) end)
+    assert {%{pkg: _}, nil, nil} = quiet(fn -> Install.resolve(third, [], [], odd) end)
   end
 
   test "a child that is not an atom leaves the tree unknown", %{tmp_dir: dir} do
     pkg = %Mix.Dep{app: :pkg, scm: Hex.SCM, opts: [], manager: :mix, deps: [%{app: "here"}]}
 
-    assert {%{pkg: _}, nil} =
+    assert {%{pkg: _}, nil, _order} =
              quiet(fn -> Install.resolve(Path.join(dir, "p"), [], [], fn -> [pkg] end) end)
   end
 
@@ -170,7 +172,7 @@ defmodule Precompiled.InstallTest do
     File.mkdir_p!(project)
     Mix.Dep.Lock.write(%{x: @x, y: @y2, z: @z}, file: Path.join(project, "mix.lock"))
 
-    {_methods, present} =
+    {_methods, present, _order} =
       quiet(fn -> Install.resolve(project, [], [lockfile: external], lock_load()) end)
 
     # The lock Mix.install/2 compiles from, and the marker that makes it skip
@@ -188,7 +190,7 @@ defmodule Precompiled.InstallTest do
     other = Path.join(dir, "unpinned")
     File.mkdir_p!(other)
     Mix.Dep.Lock.write(%{x: @x, y: @y2, z: @z}, file: Path.join(other, "mix.lock"))
-    {_methods, unpinned} = quiet(fn -> Install.resolve(other, [], [], lock_load()) end)
+    {_methods, unpinned, _order} = quiet(fn -> Install.resolve(other, [], [], lock_load()) end)
     assert unpinned.x == [:z]
   end
 
@@ -209,7 +211,7 @@ defmodule Precompiled.InstallTest do
     Mix.Dep.Lock.write(%{x: @x, y: @y2, z: @z}, file: Path.join(project, "mix.lock"))
     deps = [{:pinner, path: src}]
 
-    {_methods, present} =
+    {_methods, present, _order} =
       quiet(fn -> Install.resolve(project, deps, [lockfile: :pinner], lock_load()) end)
 
     assert present.x == []
@@ -233,7 +235,35 @@ defmodule Precompiled.InstallTest do
              ) == :ok
     end)
 
-    assert_received {:env, %Precompiled.Env{present_deps: %{pkg: [:here], here: []}}}
+    assert_received {:env, %Precompiled.Env{present_deps: %{pkg: [:here], here: []}} = env}
+    assert Precompiled.CompileOrder.apps(env.compile_order) == ["pkg", "here"]
+  end
+
+  # Mix.install/2 applies config: and config_path: only after the check, so
+  # the user's setting is unseen when it runs: the order is withheld, and a
+  # config_order item stays unknown rather than read as unset.
+  test "an install given config: or config_path: checks without a compile order", %{
+    config: config
+  } do
+    parent = self()
+    here = %Mix.Dep{app: :here, scm: Hex.SCM, opts: [], manager: :mix, deps: []}
+
+    for mix_opts <- [[], [config: [here: [k: 1]]], [config_path: "config/config.exs"]] do
+      capture_io(fn ->
+        assert Install.run([], mix_opts, config,
+                 installer: fn _, _ -> :ok end,
+                 in_project?: false,
+                 check: &send(parent, {:env, &1}),
+                 load: fn -> [here] end
+               ) == :ok
+      end)
+
+      assert_received {:env, env}
+
+      if mix_opts == [],
+        do: assert(Precompiled.CompileOrder.apps(env.compile_order) == ["here"]),
+        else: assert(env.compile_order == nil, inspect(mix_opts))
+    end
   end
 
   test "deps that do not load make build methods unknown, with the cause", %{tmp_dir: dir} do

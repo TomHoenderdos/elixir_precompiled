@@ -61,7 +61,7 @@ defmodule Precompiled.Install do
     dir = project_dir(deps, mix_opts)
     if forced?, do: File.rm_rf!(dir)
 
-    {methods, present} =
+    {methods, present, order} =
       resolve(dir, deps, mix_opts, Keyword.get(test_opts, :load, &Mix.Dep.load_and_cache/0))
 
     with {:unknown, why} <- methods do
@@ -77,7 +77,7 @@ defmodule Precompiled.Install do
 
     # Mix.install/2 runs whatever happened here; it compiles what is missing.
     try do
-      _ = check.(Env.MixInstall.load(dir, deps, methods, present))
+      _ = check.(Env.MixInstall.load(dir, deps, methods, present, check_order(order, mix_opts)))
     rescue
       e -> internal_error(Exception.message(e))
     catch
@@ -113,6 +113,16 @@ defmodule Precompiled.Install do
     raise RuntimeError,
           "Precompiled.Host.install/2 needs Mix on this device: " <>
             "add :mix to extra_applications in mix.exs and rebuild the firmware"
+  end
+
+  # Mix.install/2 puts its config: and loads its config_path: only after
+  # this check, right before it compiles, so a config_order item would be
+  # checked against config the reader never compiles with: the user's
+  # setting is unseen here, and the order alone would answer "unset". With
+  # either option the order is withheld, and every such item stays unknown.
+  defp check_order(order, mix_opts) do
+    if Keyword.get(mix_opts, :config, []) == [] and Keyword.get(mix_opts, :config_path) == nil,
+      do: order
   end
 
   # Mix.install/2 deletes the install dir when forced, which would delete the
@@ -182,13 +192,16 @@ defmodule Precompiled.Install do
   # What Mix.install/2 does first: the lockfile: merge and deps.get in its
   # install project, with the project config it would push. Running them
   # early is idempotent; the lock they write is what Env.MixInstall reads,
-  # and Mix.install/2 then finds the merge done (merge_lockfile/3). Then the deps Mix loads there, read
-  # once for two things: how Mix builds each Hex dep (build_methods/4) and
-  # each dep's children (present_deps/1), the tree Mix.install/2 loads and
-  # compiles right after in the same project, from the same lock, env and
-  # target. `load` stands in for Mix.Dep.load_and_cache/0 in tests.
+  # and Mix.install/2 then finds the merge done (merge_lockfile/3). Then the
+  # deps Mix loads there, read once for three things: how Mix builds each
+  # Hex dep (build_methods/4), each dep's children (present_deps/1), and the
+  # order deps.compile walks them in (CompileOrder.from_deps/2). Mix.install/2
+  # loads and compiles that same list right after, in the same project, from
+  # the same lock, env and target: its deps.loadpaths runs deps.compile over
+  # Mix.Dep.load_and_cache/0, as in a Mix project. `load` stands in for
+  # Mix.Dep.load_and_cache/0 in tests.
   @spec resolve(Path.t(), [term()], keyword(), (-> [Mix.Dep.t()])) ::
-          {Env.build_methods(), Env.present_deps() | nil}
+          {Env.build_methods(), Env.present_deps() | nil, Env.compile_order() | nil}
   def resolve(dir, deps, mix_opts, load \\ &Mix.Dep.load_and_cache/0) do
     System.put_env(Keyword.get(mix_opts, :system_env, []))
     File.mkdir_p!(dir)
@@ -265,16 +278,20 @@ defmodule Precompiled.Install do
     do: dir |> in_install_project(deps, mix_opts, fn -> load_deps(load) end) |> elem(0)
 
   # Never cached past this call: Mix.install/2 loads its own deps. Deps that
-  # do not load leave both unknown: every candidate misses on rule 9.
+  # do not load leave all three unknown: every candidate misses on rule 9.
+  # The partition count is read after resolve/4 put the system_env: Mix.install/2
+  # partitions its deps.compile by it as a Mix project does.
   defp load_deps(load) do
     Mix.Dep.clear_cached()
     deps = load.()
-    {Env.MixProject.build_methods_from(deps), present_deps(deps)}
+
+    {Env.MixProject.build_methods_from(deps), present_deps(deps),
+     compile_order(deps, System.get_env("MIX_OS_DEPS_COMPILE_PARTITION_COUNT"))}
   rescue
-    e -> {{:unknown, Exception.message(e)}, nil}
+    e -> {{:unknown, Exception.message(e)}, nil, nil}
   catch
     :exit, reason when stop?(reason) -> exit(reason)
-    kind, reason -> {{:unknown, Exception.format_banner(kind, reason)}, nil}
+    kind, reason -> {{:unknown, Exception.format_banner(kind, reason)}, nil, nil}
   after
     Mix.Dep.clear_cached()
   end
@@ -290,6 +307,14 @@ defmodule Precompiled.Install do
          is_atom(app) and is_list(children) and Enum.all?(children, &is_atom/1)
        end),
        do: tree
+  rescue
+    _ -> nil
+  end
+
+  # As present_deps/1: deps in a shape the order cannot be read from leave
+  # it unknown, nil.
+  defp compile_order(deps, partition_count) do
+    Precompiled.CompileOrder.from_deps(deps, partition_count)
   rescue
     _ -> nil
   end

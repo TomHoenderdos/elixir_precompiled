@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+* `Precompiled.Host.install/2` now predicts a dependency's compile-time
+  read of another app's config from the order `Mix.install/2`'s
+  `deps.compile` uses in its install project, as a Mix project does.
+  Before, every such build missed under `Mix.install/2` with
+  `compile-time config APP KEY would differ in this project`, for example
+  `phoenix_live_dashboard` without `phoenix_view`. Given `:config` or
+  `:config_path`, which `Mix.install/2` applies only after the check, such
+  a build still misses.
 * A fresh `_build` no longer compiles this library again. As a dependency
   fetched from Hex (never a path or git checkout) it keeps its own compiled modules in
   `deps/precompiled/.compile_cache`, keyed on the toolchain, the compiler

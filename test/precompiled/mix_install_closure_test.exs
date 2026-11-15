@@ -35,7 +35,7 @@ defmodule Precompiled.MixInstallClosureTest do
     Mix.start()
     deps = #{inspect(deps())}
     dir = Precompiled.Install.project_dir(deps, [])
-    {methods, present} = Precompiled.Install.resolve(dir, deps, [])
+    {methods, present, _order} = Precompiled.Install.resolve(dir, deps, [])
     env = Precompiled.Env.MixInstall.load(dir, deps, methods, present)
     apps = [:mi_pkg, :mi_top, :mi_link, :mi_here]
     client = Map.new(apps, &{&1, Precompiled.Env.closure(env.present_deps, &1)})

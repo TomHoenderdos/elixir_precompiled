@@ -31,9 +31,23 @@ defmodule Precompiled.Env.MixInstall do
 
   # `methods`: how Mix builds each Hex dep there, as Install.build_methods/4
   # loads it from Mix. Without it rule 9 has nothing to go on, and every
-  # candidate misses.
-  @spec load(Path.t(), [term()], Env.build_methods(), Env.present_deps() | nil) :: Env.t()
-  def load(project_dir, deps, methods \\ {:unknown, "not loaded"}, present \\ nil) do
+  # candidate misses. `order`: the order Mix.install/2's deps.compile walks
+  # the install project's deps in (Install.resolve/4); nil leaves every
+  # config_order item unknown.
+  @spec load(
+          Path.t(),
+          [term()],
+          Env.build_methods(),
+          Env.present_deps() | nil,
+          Env.compile_order() | nil
+        ) :: Env.t()
+  def load(
+        project_dir,
+        deps,
+        methods \\ {:unknown, "not loaded"},
+        present \\ nil,
+        order \\ nil
+      ) do
     lock = Mix.Dep.Lock.read(Path.join(project_dir, "mix.lock"))
     build_lib = Path.join([project_dir, "_build", Atom.to_string(Mix.env()), "lib"])
 
@@ -55,7 +69,8 @@ defmodule Precompiled.Env.MixInstall do
       installed: installed,
       installed_envs: Map.new(installed, &{&1, Map.get(envs, &1, "prod")}),
       build_methods: methods,
-      present_deps: present
+      present_deps: present,
+      compile_order: order
     }
   end
 
