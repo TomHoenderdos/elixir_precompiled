@@ -10,14 +10,17 @@ defmodule Precompiled.MixProject.CompileCache do
   #
   # Loaded by the `compile.precompiled_cache` compiler in mix.exs, which
   # Mix runs before the Elixir compiler when it compiles this library as
-  # a dependency. Only for the Hex package (`hex_metadata.config` in the
-  # dep dir): a path or git checkout is someone's working copy and is never
-  # written to. The cache lives in the dep dir itself, so whoever can write
+  # a dependency. Only for a dep Hex fetched (Mix's `:build_scm` is
+  # Hex.SCM and the lock entry is a `:hex` one): a path or git checkout,
+  # an unpacked Hex tree used as a path dep included, is someone's working
+  # copy and is never written to. The cache lives in the dep dir itself, so whoever can write
   # it can already change the sources Mix compiles: it trusts nothing new.
   #
   # An entry is the compile path's beams and the Elixir compiler's manifest,
   # under a key over everything the compile reads (the toolchain, the dep
-  # dir, compiler options, every source file, the deps' .app files). It is
+  # dir, compiler options, every source file, the deps' .app files, and
+  # the project's config for this library, should a compile-time read of
+  # it ever be added; a test keeps Application.compile_env out of lib/). It is
   # restored only into a compile path with neither, every file checked
   # against the sha256 the index recorded, the manifest written last; any
   # failure removes what was written and Mix compiles as before. Mix then
@@ -38,14 +41,19 @@ defmodule Precompiled.MixProject.CompileCache do
           erl_compiler_options: String.t() | nil,
           project: keyword(),
           sources: [{String.t(), binary()}],
-          deps: [{atom(), binary() | nil}]
+          deps: [{atom(), binary() | nil}],
+          app_env: keyword()
         }
 
   # The compiler's run/1, from mix.exs: restores before compile.elixir and
   # saves after it. Never fails the compile.
   @spec run([String.t()], String.t()) :: {:noop, []}
   def run(args, dir) do
-    if enabled?(args, dir, System.get_env("PRECOMPILED_COMPILE_CACHE")) do
+    config = Mix.Project.config()
+    lock = Mix.Dep.Lock.read() |> Map.get(config[:app])
+    env_var = System.get_env("PRECOMPILED_COMPILE_CACHE")
+
+    if enabled?(args, config[:build_scm], lock, env_var) do
       root = Path.join(dir, @root)
       key = key(inputs(args, dir))
       ebin = Mix.Project.compile_path()
@@ -67,15 +75,22 @@ defmodule Precompiled.MixProject.CompileCache do
     _ -> {:noop, []}
   end
 
-  @spec enabled?([String.t()], String.t(), String.t() | nil) :: boolean()
-  def enabled?(args, dir, env_var) do
+  # `scm` is the one Mix compiles the dep with (`:build_scm`, set by
+  # Mix.Dep.in_dependency/3), `lock` the dep's entry in the project's lock.
+  @spec enabled?([String.t()], module() | nil, tuple() | nil, String.t() | nil) :: boolean()
+  def enabled?(args, scm, lock, env_var) do
     env_var != "0" and "--from-mix-deps-compile" in args and "--force" not in args and
-      File.regular?(Path.join(dir, "hex_metadata.config"))
+      scm == Hex.SCM and is_tuple(lock) and elem(lock, 0) == :hex
   end
 
   @spec key(inputs()) :: String.t()
   def key(inputs) do
-    inputs = %{inputs | sources: Enum.sort(inputs.sources), deps: Enum.sort(inputs.deps)}
+    inputs = %{
+      inputs
+      | sources: Enum.sort(inputs.sources),
+        deps: Enum.sort(inputs.deps),
+        app_env: Enum.sort(inputs.app_env)
+    }
 
     :crypto.hash(:sha256, :erlang.term_to_binary({1, inputs}, [:deterministic]))
     |> Base.encode16(case: :lower)
@@ -101,7 +116,8 @@ defmodule Precompiled.MixProject.CompileCache do
       project:
         Keyword.take(config, [:elixirc_options, :erlc_options, :erlc_include_path, :compilers]),
       sources: for(f <- Enum.uniq(elixirc ++ erlc ++ own), do: {f, digest(Path.join(dir, f))}),
-      deps: for(dep <- config[:deps] || [], app = elem(dep, 0), do: {app, app_digest(app)})
+      deps: for(dep <- config[:deps] || [], app = elem(dep, 0), do: {app, app_digest(app)}),
+      app_env: Application.get_all_env(:precompiled)
     }
   end
 

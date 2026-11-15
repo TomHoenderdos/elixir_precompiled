@@ -9,7 +9,7 @@
 | `:home` / `PRECOMPILED_HOME` | Cache and trust state dir. The config key beats the variable. Default: the user cache dir (`:filename.basedir(:user_cache, "precompiled")`). `PRECOMPILED_HOME=~/.nerves/precompiled` keeps using the pre-rename cache. |
 | `:deadline_seconds` | All network for one run (default 300); what is still waiting then compiles. Root and batch get 15 s together, connects 5 s. |
 | `:root_check_seconds` | How often the served root is checked for a rotation (default 3600; a batch that fails to verify checks it at once). |
-| `:cache_max_mb` | Cache size bound (default 4096), least recently used evicted, checked once a day. Trust state is never evicted. |
+| `:cache_max_mb` | Cache size bound (default 4096), least recently used evicted, checked once a day. Last use is recorded at most once a day per entry, so the eviction order is approximate within a day. Trust state is never evicted. |
 | `PRECOMPILED=0` | Off: installs nothing and removes earlier installs. |
 | `PRECOMPILED_OFFLINE=1` | No network: the cached batch (while fresh) and cached files only. |
 | `PRECOMPILED_CACERTS_PATH` (or `HEX_CACERTS_PATH`) | A PEM CA bundle that replaces the OS store (TLS-intercepting proxies). Verification stays on; only the bundle's CAs are trusted. |
@@ -41,16 +41,24 @@ one release, when the new ones are unset.
 ## This library's own compile
 
 The `deps.compile precompiled` step compiles this library before it can
-install anything. As a Hex dependency it keeps its compiled modules in
+install anything. As a dependency fetched from Hex it keeps its compiled modules in
 `deps/precompiled/.compile_cache`, so a fresh `_build` (another `MIX_ENV`
 or `MIX_TARGET`, `rm -rf _build`, `mix clean --deps`) restores them
 instead of compiling again. The entry is keyed on the Elixir and OTP
-versions, the compiler options and every source file of the library;
+versions, the compiler options, every source file of the library and the
+project's `config :precompiled`;
 each restored file is checked against the sha256 recorded when it was
 saved, and Mix still checks the restored build as it checks its own.
 It lives in the deps dir, so it trusts nothing that the sources Mix
-compiles do not already. A path or git checkout of this library is never
-written to. `mix deps.clean precompiled` removes it with the sources.
+compiles do not already. Only a dependency Hex fetched is written to: a
+path or git checkout of this library, an unpacked Hex package used as a
+path dependency included, is never written to. `mix deps.clean
+precompiled` removes it with the sources.
+
+One entry is kept per deps dir. CI that shares one `deps/` across several
+Elixir or OTP versions replaces the entry on every version change, so it
+compiles the library each time as before: it loses the speed-up, never
+correctness.
 
 ## Seeing what happened
 
