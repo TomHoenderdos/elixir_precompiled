@@ -215,6 +215,55 @@ defmodule Precompiled.FetchTest do
     assert m > 1
   end
 
+  test "a cache entry used in the last day is not marked again", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    s = F.file(f, "good")
+    file = Path.join(config.home, "files/#{s}")
+    File.mkdir_p!(Path.dirname(file))
+    File.write!(file, "good")
+    recent = System.os_time(:second) - 3600
+    File.touch!(file, recent)
+
+    entry = entry(with_app(f, [file_entry(s, 4)]))
+
+    assert {:ok, %{cached: 1}} =
+             Fetch.install(config, :ash, entry, @lock_entry, lib, deps_path: deps)
+
+    assert {:ok, %File.Stat{mtime: ^recent}} = File.lstat(file, time: :posix)
+
+    # A day old, or from the future (a clock set back): marked again.
+    for mtime <- [System.os_time(:second) - 86_400, System.os_time(:second) + 3600] do
+      File.touch!(file, mtime)
+      assert {:ok, _} = Fetch.install(config, :ash, entry, @lock_entry, lib, deps_path: deps)
+      assert {:ok, %File.Stat{mtime: m}} = File.lstat(file, time: :posix)
+      refute m == mtime
+    end
+  end
+
+  test "installed files get the manifest's mode, in nested priv dirs", %{
+    f: f,
+    config: config,
+    build_lib: lib,
+    deps: deps
+  } do
+    files =
+      for {name, mode} <- [{"a", 0o100644}, {"b", 0o100755}, {"c", 0o644}, {"d", 0o755}] do
+        file_entry(F.file(f, name), 1, "priv/sub/dir/#{name}", mode)
+      end
+
+    entry = %{"ebin" => with_app(f, []), "priv" => files, "build" => %{}}
+    assert {:ok, _} = Fetch.install(config, :ash, entry, @lock_entry, lib, deps_path: deps)
+
+    for %{"path" => path, "mode" => mode} <- files do
+      stat = File.lstat!(Path.join([lib, "ash", path]))
+      assert Bitwise.band(stat.mode, 0o777) == Bitwise.band(mode, 0o777), path
+    end
+  end
+
   test "a cached file that no longer matches its sha is re-downloaded", %{
     f: f,
     config: config,

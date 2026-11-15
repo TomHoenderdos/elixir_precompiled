@@ -2,6 +2,28 @@
 #
 # SPDX-License-Identifier: CC0-1.0
 #
+defmodule Mix.Tasks.Compile.PrecompiledCache do
+  @moduledoc false
+  # Restores this library's own compiled modules into a fresh _build instead
+  # of compiling them (build_support/compile_cache.exs). Kept this small:
+  # Mix reads this file on every run, and loads the rest only when it
+  # compiles this library as a dependency.
+  def run(args) do
+    if "--from-mix-deps-compile" in args do
+      mod = Precompiled.MixProject.CompileCache
+
+      if not Code.ensure_loaded?(mod),
+        do: Code.require_file("build_support/compile_cache.exs", __DIR__)
+
+      apply(mod, :run, [args, __DIR__])
+    else
+      {:noop, []}
+    end
+  rescue
+    _ -> {:noop, []}
+  end
+end
+
 defmodule Precompiled.MixProject do
   use Mix.Project
 
@@ -20,6 +42,7 @@ defmodule Precompiled.MixProject do
       version: @version,
       elixir: "~> 1.17",
       elixirc_paths: elixirc_paths(Mix.env()),
+      compilers: [:precompiled_cache | Mix.compilers()],
       deps: deps(),
       description: "Install signed precompiled dependency builds instead of compiling them",
       package: package(),
@@ -115,6 +138,7 @@ defmodule Precompiled.MixProject do
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "guides",
+        "build_support",
         "lib",
         "LICENSE",
         "LICENSES/*",

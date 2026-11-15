@@ -15,6 +15,7 @@
 | `PRECOMPILED_CACERTS_PATH` (or `HEX_CACERTS_PATH`) | A PEM CA bundle that replaces the OS store (TLS-intercepting proxies). Verification stays on; only the bundle's CAs are trusted. |
 | `HTTPS_PROXY`/`https_proxy`, `HTTP_PROXY`/`http_proxy`, `NO_PROXY`/`no_proxy` | Proxies, as Hex reads them. Credentials in the proxy URL are sent only to the proxy. `NO_PROXY` takes host names, domains (`.corp.example`), IP addresses and `*`; CIDR ranges are ignored. |
 | `PRECOMPILED_DEBUG=1` | Also print each dependency that was not a candidate, and why. |
+| `PRECOMPILED_COMPILE_CACHE=0` | Compile this library itself on every fresh `_build`, instead of reusing its own compiled modules from `deps/precompiled/.compile_cache` (see below). |
 
 The keys go in `config :precompiled, ...`; `Precompiled.Host.install/2`
 also takes `:except` and `:home` as options. `:source`, `:root` and
@@ -36,6 +37,20 @@ one release, when the new ones are unset.
   tables and source scans), from the same cache dir a run uses.
 - `:except` keeps listed dependencies compiled from source; an earlier
   install of one is removed.
+
+## This library's own compile
+
+The `deps.compile precompiled` step compiles this library before it can
+install anything. As a Hex dependency it keeps its compiled modules in
+`deps/precompiled/.compile_cache`, so a fresh `_build` (another `MIX_ENV`
+or `MIX_TARGET`, `rm -rf _build`, `mix clean --deps`) restores them
+instead of compiling again. The entry is keyed on the Elixir and OTP
+versions, the compiler options and every source file of the library;
+each restored file is checked against the sha256 recorded when it was
+saved, and Mix still checks the restored build as it checks its own.
+It lives in the deps dir, so it trusts nothing that the sources Mix
+compiles do not already. A path or git checkout of this library is never
+written to. `mix deps.clean precompiled` removes it with the sources.
 
 ## Seeing what happened
 

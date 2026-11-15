@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+* A fresh `_build` no longer compiles this library again. As a Hex
+  dependency it keeps its own compiled modules in
+  `deps/precompiled/.compile_cache`, keyed on the toolchain, the compiler
+  options and every source file, and restores them, each file checked by
+  sha256, into a `_build` that has none: another `MIX_ENV` or
+  `MIX_TARGET`, `rm -rf _build`. About 0.4 s less per fresh `_build` on a
+  laptop, more on a CI runner with few cores. `PRECOMPILED_COMPILE_CACHE=0`
+  turns it off.
+* Installing a build makes fewer file system calls: its dirs are made once,
+  a file whose mode is already the one a new file gets is not set again,
+  and a cache entry used in the last day is not marked used again (the
+  cache gc orders by day). Every file is still hashed before it is placed.
+
 * A `MISS` line now names the build that came closest after its reason:
   `; closest build HASH: VARIANT, Elixir X/OTP Y, SYSTEM RELEASE, closure
   +a -b`, with the first 12 characters of the build's files hash, its

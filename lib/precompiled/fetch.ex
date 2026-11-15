@@ -39,6 +39,7 @@ defmodule Precompiled.Fetch do
   @ok_modes [0o644, 0o755, 0o100644, 0o100755]
   @provenance_file "precompiled.json"
   @file_concurrency 8
+  @day 86_400
 
   @doc """
   GET `url`'s body, capped at `:max_bytes`. A `file://` URL is read from
@@ -507,9 +508,12 @@ defmodule Precompiled.Fetch do
   defp read_cached_manifest(config, sha) do
     path = manifest_cache_path(config, sha)
 
-    case read_cached(path, @max_manifest_bytes) do
-      {:ok, bytes} -> if sha256(bytes) == sha, do: used(path, {:ok, bytes}), else: :absent
-      other -> other
+    case read_cached_entry(path, @max_manifest_bytes) do
+      {:ok, bytes, mtime} ->
+        if sha256(bytes) == sha, do: used(path, mtime, {:ok, bytes}), else: :absent
+
+      other ->
+        other
     end
   end
 
@@ -518,6 +522,15 @@ defmodule Precompiled.Fetch do
   # writes makes it a no-op.
   defp used(path, result) do
     _ = Precompiled.FileUtil.mark_used(path)
+    result
+  end
+
+  # The same, for an entry whose mtime the read already has: one marked in
+  # the last day is not marked again. Setting times is the dearest call a
+  # cached install makes per file, and the gc orders by day anyway.
+  defp used(path, mtime, result) do
+    now = System.os_time(:second)
+    if mtime > now or now - mtime >= @day, do: _ = Precompiled.FileUtil.mark_used(path)
     result
   end
 
@@ -546,9 +559,17 @@ defmodule Precompiled.Fetch do
   # two is refused. The read stops at `max` + 1 bytes, whatever the file
   # has grown to since.
   defp read_cached(path, max) do
-    case File.lstat(path) do
+    case read_cached_entry(path, max) do
+      {:ok, bytes, _mtime} -> {:ok, bytes}
+      other -> other
+    end
+  end
+
+  # read_cached/2, plus the read file's mtime (posix seconds).
+  defp read_cached_entry(path, max) do
+    case File.lstat(path, time: :posix) do
       {:ok, %File.Stat{type: :regular, size: size}} when size > max -> :absent
-      {:ok, %File.Stat{type: :regular} = stat} -> read_regular(path, stat, max)
+      {:ok, %File.Stat{type: :regular} = stat} -> read_regular_entry(path, stat, max)
       {:ok, %File.Stat{}} -> {:fail, "cache refused (#{path} is not a regular file; remove it)"}
       {:error, _} -> :absent
     end
@@ -560,6 +581,13 @@ defmodule Precompiled.Fetch do
   # write the user's own cache; a swap to a symlink or another file is
   # caught by the inode check after the open.
   defp read_regular(path, lstat, max) do
+    case read_regular_entry(path, lstat, max) do
+      {:ok, bytes, _mtime} -> {:ok, bytes}
+      other -> other
+    end
+  end
+
+  defp read_regular_entry(path, lstat, max) do
     case :file.open(String.to_charlist(path), [:read, :raw, :binary]) do
       {:ok, fd} ->
         try do
@@ -578,7 +606,7 @@ defmodule Precompiled.Fetch do
          %File.Stat{type: :regular} = stat <- File.Stat.from_record(info),
          true <- {stat.inode, stat.major_device} == {lstat.inode, lstat.major_device},
          {:ok, bytes} when byte_size(bytes) <= max <- read_capped(fd, max + 1, []) do
-      {:ok, bytes}
+      {:ok, bytes, stat.mtime}
     else
       {:ok, _too_long} -> :absent
       {:error, _} -> :absent
@@ -944,16 +972,34 @@ defmodule Precompiled.Fetch do
   # Up to @file_concurrency files of one dep download at once, each bounded
   # by its declared size and the run deadline; results are taken in order,
   # so the first failing file (in manifest order) is the one reported.
+  #
+  # The dirs are made once, before any file; a file is written only as a
+  # new one, and set to its mode only when that is not already the mode a
+  # new file gets (the umask's, read from a probe file).
   defp stage(config, files, staging) do
     with {:ok, _dir} <- cache_dir(config, "files") do
       File.mkdir_p!(staging)
-      stage_files(config, files, staging)
+
+      for dir <- files |> Enum.map(&Path.dirname(&1["path"])) |> Enum.uniq(),
+          do: File.mkdir_p!(Path.join(staging, dir))
+
+      stage_files(config, files, staging, new_file_mode(staging))
     end
   end
 
-  defp stage_files(config, files, staging) do
+  # Validated paths are all under ebin/ or priv/: the probe's name at the
+  # top of staging is never one of them.
+  defp new_file_mode(staging) do
+    probe = Path.join(staging, ".mode-probe")
+    File.write!(probe, "", [:exclusive])
+    mode = Bitwise.band(File.lstat!(probe).mode, 0o777)
+    File.rm!(probe)
+    mode
+  end
+
+  defp stage_files(config, files, staging, new_mode) do
     files
-    |> Task.async_stream(&stage_file(config, &1, staging),
+    |> Task.async_stream(&stage_file(config, &1, staging, new_mode),
       max_concurrency: @file_concurrency,
       timeout: :infinity,
       ordered: true
@@ -983,12 +1029,12 @@ defmodule Precompiled.Fetch do
 
   # Runs in a task linked to the caller: it never raises, or the exit would
   # take the caller (and the user's build) down with it.
-  defp stage_file(config, f, staging) do
+  defp stage_file(config, f, staging, new_mode) do
     with {:ok, bytes, cached?} <- fetch_file(config, f) do
       target = Path.join(staging, f["path"])
-      File.mkdir_p!(Path.dirname(target))
-      File.write!(target, bytes)
-      File.chmod!(target, Bitwise.band(f["mode"], 0o777))
+      mode = Bitwise.band(f["mode"], 0o777)
+      File.write!(target, bytes, [:exclusive])
+      if mode != new_mode, do: File.chmod!(target, mode)
       {:ok, f, cached?}
     end
   rescue
@@ -1014,9 +1060,11 @@ defmodule Precompiled.Fetch do
   defp read_cached_file(config, sha, size) do
     path = file_cache_path(config, sha)
 
-    case read_cached(path, size) do
-      {:ok, bytes} ->
-        if check_bytes(bytes, sha, size) == :ok, do: used(path, {:ok, bytes}), else: :absent
+    case read_cached_entry(path, size) do
+      {:ok, bytes, mtime} ->
+        if check_bytes(bytes, sha, size) == :ok,
+          do: used(path, mtime, {:ok, bytes}),
+          else: :absent
 
       other ->
         other

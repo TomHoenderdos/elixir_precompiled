@@ -33,7 +33,10 @@ credo_default_checks =
   configs: [
     %{
       name: "default",
-      files: %{included: ["lib/", "test/", "scripts/"], excluded: ["test/fixtures/"]},
+      files: %{
+        included: ["build_support/", "lib/", "test/", "scripts/"],
+        excluded: ["test/fixtures/"]
+      },
       strict: true,
       checks: checks
     },
