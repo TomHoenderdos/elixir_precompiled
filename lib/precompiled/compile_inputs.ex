@@ -16,7 +16,12 @@ defmodule Precompiled.CompileInputs do
   # layouts), checked against this machine's System.endianness/0. An os_type
   # item is the :os.type/0 the build's compile read (kino's asset hook),
   # checked against this machine's: both elements, or the family alone when
-  # the item carries no name.
+  # the item carries no name. A
+  # set_by "nerves" env item is a firmware build's read of a variable that
+  # holds where the Nerves toolchain or system lives (CROSSCOMPILE): its
+  # value cut at those two paths (split/2), compared with this project's
+  # value cut at its own; only the name reaches a reason. A mix_target item
+  # is the target a firmware build's compile read through Mix.target/0.
 
   alias Precompiled.{CompileOrder, Reason, Rebar3Arch}
 
@@ -26,6 +31,10 @@ defmodule Precompiled.CompileInputs do
   @os_name ~r/\A[a-z][a-z0-9_]{0,63}\z/
 
   @no_order %{compile_order: nil, user_config: &__MODULE__.user_config/2}
+
+  @nerves_roots ["NERVES_TOOLCHAIN", "NERVES_SYSTEM"]
+  @max_segments 64
+  @max_segment_bytes 4096
 
   # rebar3_arch, when given, stands for this machine's arch string; endian
   # for its byte order; os_type for its :os.type/0.
@@ -38,7 +47,8 @@ defmodule Precompiled.CompileInputs do
                                        | :unreadable),
           optional(:rebar3_arch) => String.t(),
           optional(:endian) => :little | :big,
-          optional(:os_type) => {atom(), atom()}
+          optional(:os_type) => {atom(), atom()},
+          optional(:mix_target) => String.t()
         }
 
   @spec host(term(), (String.t() -> String.t() | nil)) :: :ok | {:miss, Reason.t()}
@@ -172,7 +182,94 @@ defmodule Precompiled.CompileInputs do
     end
   end
 
+  # Nerves sets the variable for a target's compile from where its toolchain
+  # and system sit on this machine: cut at those paths, the value must be
+  # the build's. The paths themselves never reach a reason.
+  defp host_item(
+         %{"kind" => "env", "name" => name, "set_by" => "nerves", "value" => segments} = item,
+         getenv,
+         _order
+       )
+       when is_binary(name) and map_size(item) == 4 do
+    cond do
+      not segments?(segments) -> malformed()
+      nerves_value(getenv, name) == segments -> :ok
+      true -> differs(name)
+    end
+  end
+
+  # The target the build's compile read must be the one Mix compiles for here.
+  defp host_item(%{"kind" => "mix_target", "value" => built} = item, _getenv, order)
+       when is_binary(built) and built != "" and map_size(item) == 2 do
+    running = Map.get(order, :mix_target, "host")
+    if built == running, do: :ok, else: {:miss, Reason.new(:rule8_target, [built, running])}
+  end
+
   defp host_item(item, _getenv, _order), do: whole(item)
+
+  defp nerves_value(getenv, name) do
+    case getenv.(name) do
+      value when is_binary(value) ->
+        roots = for root <- @nerves_roots, path = getenv.(root), is_binary(path), do: {root, path}
+        split(value, roots)
+
+      _ ->
+        :unset
+    end
+  end
+
+  @doc false
+  # `value` cut at every occurrence of a root's path, leftmost first and, of
+  # two that start at the same byte, the longer: each cut is
+  # %{"root" => name}, the text between cuts a literal string, no literal
+  # empty. An empty path cuts nothing. The portal cuts the same way
+  # (Compatibility.CompileInputs.split/2).
+  @spec split(String.t(), [{String.t(), String.t()}]) :: [String.t() | map()]
+  def split(value, roots) when is_binary(value) do
+    roots =
+      roots
+      |> Enum.filter(fn {_name, path} -> is_binary(path) and path != "" end)
+      |> Enum.sort_by(fn {_name, path} -> -byte_size(path) end)
+
+    do_split(value, roots, "", [])
+  end
+
+  defp do_split(<<>>, _roots, literal, acc), do: Enum.reverse(push_literal(acc, literal))
+
+  defp do_split(<<byte, rest::binary>> = value, roots, literal, acc) do
+    case Enum.find(roots, fn {_name, path} -> String.starts_with?(value, path) end) do
+      {name, path} ->
+        rest = binary_part(value, byte_size(path), byte_size(value) - byte_size(path))
+        do_split(rest, roots, "", [%{"root" => name} | push_literal(acc, literal)])
+
+      nil ->
+        do_split(rest, roots, literal <> <<byte>>, acc)
+    end
+  end
+
+  defp push_literal(acc, ""), do: acc
+  defp push_literal(acc, literal), do: [literal | acc]
+
+  # One canonical cut, in the shape the portal emits: at least one root,
+  # every literal a non-empty, NUL-free UTF-8 string, no two literals in a
+  # row.
+  defp segments?(segments) when is_list(segments) and length(segments) in 1..@max_segments do
+    Enum.all?(segments, &segment?/1) and Enum.any?(segments, &is_map/1) and
+      not Enum.any?(Enum.chunk_every(segments, 2, 1, :discard), fn [a, b] ->
+        is_binary(a) and is_binary(b)
+      end)
+  end
+
+  defp segments?(_segments), do: false
+
+  defp segment?(%{"root" => root} = segment), do: map_size(segment) == 1 and root in @nerves_roots
+
+  defp segment?(literal) when is_binary(literal) do
+    byte_size(literal) in 1..@max_segment_bytes and String.valid?(literal) and
+      not String.contains?(literal, <<0>>)
+  end
+
+  defp segment?(_segment), do: false
 
   # What the reader would read here: the user's config when set; otherwise
   # the .app default when the compile order loads the app first, and unset
@@ -275,6 +372,25 @@ defmodule Precompiled.CompileInputs do
       :error ->
         malformed()
     end
+  end
+
+  # Nothing of the firmware's build environment is here: as with an env item
+  # recorded set, a miss.
+  defp device_item(
+         %{"kind" => "env", "name" => name, "set_by" => "nerves", "value" => segments} = item,
+         _decidable?
+       )
+       when is_binary(name) and map_size(item) == 4 do
+    if segments?(segments), do: set_at_build(name), else: malformed()
+  end
+
+  defp device_item(%{"kind" => "mix_target", "value" => built} = item, _decidable?)
+       when is_binary(built) and built != "" and map_size(item) == 2 do
+    text =
+      "reads Mix.target() at compile time; built for target #{built}, " <>
+        "a device cannot check its firmware's"
+
+    {:miss, Reason.new(:rule8_target, [built, "unknown"], text)}
   end
 
   defp device_item(item, _decidable?), do: whole(item)

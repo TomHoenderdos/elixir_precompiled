@@ -160,6 +160,14 @@ compares the whole tree. Releases before 0.7.0 do not read it at all.
   read in `lib/`) is not compared: its value follows from inputs the build
   recorded. When those inputs could not be recorded, it is a miss like any
   other differing variable.
+- A Nerves system build records them too when its package reads one at
+  module level in `lib/` (circuits_i2c's `CIRCUITS_I2C_I2CDEV`, which its
+  `mix.exs` sets from `CROSSCOMPILE` and the `:default_backend` config).
+  A variable whose value holds where the Nerves toolchain or system sits
+  (`CROSSCOMPILE`) is compared with those two paths left out: your value,
+  with your `NERVES_TOOLCHAIN` and `NERVES_SYSTEM` paths cut out, must be
+  the build's with its own cut out. A `Mix.target()` read must have been
+  made for your target. A device cannot check either and never matches.
 - A build whose compile read the whole environment (`System.get_env/0`),
   or whose compile-time config reads could not all be recorded, never
   matches.

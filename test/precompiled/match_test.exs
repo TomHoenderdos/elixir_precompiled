@@ -1439,4 +1439,111 @@ defmodule Precompiled.MatchTest do
       assert {:ok, _, _} = Match.select(world_doc([pe(@build)], %{"x" => 1}), c)
     end
   end
+
+  # circuits_i2c on a Nerves target (judge revision 17): lib/ reads
+  # CIRCUITS_I2C_I2CDEV at compile time, which its own mix.exs sets from the
+  # target, CROSSCOMPILE and its :default_backend config. A firmware build
+  # that recorded those inputs is decided by them, not refused by rule 8.
+  describe "a firmware build's recorded inputs" do
+    @tc "/home/me/.nerves/artifacts/nerves_toolchain_aarch64_nerves_linux_gnu-15.3.1"
+    @cross @tc <> "/bin/aarch64-nerves-linux-gnu"
+
+    defp fw_enc(term),
+      do: term |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
+
+    defp fw_items do
+      [
+        %{
+          "kind" => "env",
+          "name" => "CIRCUITS_I2C_I2CDEV",
+          "set_by" => "build",
+          "inputs" => "recorded",
+          "value" => fw_enc({:ok, "normal"})
+        },
+        %{
+          "kind" => "env",
+          "name" => "CROSSCOMPILE",
+          "set_by" => "nerves",
+          "value" => [%{"root" => "NERVES_TOOLCHAIN"}, "/bin/aarch64-nerves-linux-gnu"]
+        },
+        %{"kind" => "mix_target", "value" => "rpi4"}
+      ]
+    end
+
+    defp fw_doc(inputs) do
+      e = entry()
+
+      build =
+        e["build"]
+        |> Map.merge(%{
+          "mix_target" => "rpi4",
+          "compile_env" => [
+            %{"app" => "ash", "path" => ["default_backend"], "value" => fw_enc(:error)}
+          ]
+        })
+        |> then(&if(inputs, do: Map.put(&1, "compile_inputs", inputs), else: &1))
+
+      list = if inputs, do: "builds_with_inputs", else: "builds"
+
+      %{
+        "format" => 2,
+        "versions" => %{"3.5.2" => %{"builds" => [], list => [%{e | "build" => build}]}}
+      }
+    end
+
+    defp fw_ctx(over \\ []) do
+      env = %{"CROSSCOMPILE" => @cross, "NERVES_TOOLCHAIN" => @tc}
+
+      ctx(
+        Keyword.merge(
+          [
+            reads: %{env: ["CIRCUITS_I2C_I2CDEV"], target: true, system: false},
+            mix_target: "rpi4",
+            getenv: &Map.get(env, &1)
+          ],
+          over
+        )
+      )
+    end
+
+    test "a Nerves project with the default backend hits" do
+      assert {:ok, _, "nerves_system_rpi4"} = Match.select(fw_doc(fw_items()), fw_ctx())
+    end
+
+    test "without recorded inputs rule 8 still refuses it" do
+      assert {:miss, %Reason{code: :rule8_env}} = Match.select_reason(fw_doc(nil), fw_ctx())
+    end
+
+    test "a project that configures another backend misses on the config" do
+      config = fn
+        "ash", ["default_backend"] -> {:ok, {Circuits.I2C.I2CDev, test: true}}
+        _app, _path -> :error
+      end
+
+      assert {:miss, %Reason{code: :compile_env_differs}} =
+               Match.select_reason(fw_doc(fw_items()), fw_ctx(config: config))
+    end
+
+    test "a differing CROSSCOMPILE misses, naming only the variable" do
+      env = %{
+        "CROSSCOMPILE" => @tc <> "/bin/arm-nerves-linux-gnueabihf",
+        "NERVES_TOOLCHAIN" => @tc
+      }
+
+      assert {:miss, %Reason{code: :env_differs, args: ["CROSSCOMPILE"]} = reason} =
+               Match.select_reason(fw_doc(fw_items()), fw_ctx(getenv: &Map.get(env, &1)))
+
+      refute inspect(reason) =~ @tc
+    end
+
+    test "no Nerves env here (a plain compile) misses" do
+      assert {:miss, %Reason{code: :env_differs, args: ["CROSSCOMPILE"]}} =
+               Match.select_reason(fw_doc(fw_items()), fw_ctx(getenv: fn _ -> nil end))
+    end
+
+    test "another target misses" do
+      assert {:miss, %Reason{code: :rule8_target, args: ["rpi4", "rpi5"]}} =
+               Match.select_reason(fw_doc(fw_items()), fw_ctx(mix_target: "rpi5"))
+    end
+  end
 end

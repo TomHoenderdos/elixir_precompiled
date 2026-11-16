@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+* A firmware build whose package reads an environment variable at compile
+  time is no longer refused by rule 8 when it records its compile inputs
+  (circuits_i2c's `CIRCUITS_I2C_I2CDEV` and circuits_spi's
+  `CIRCUITS_SPI_SPIDEV`, which their `mix.exs` sets from the Nerves target
+  and the `:default_backend` config). Two new input kinds decide it: an
+  `env` item with `set_by: "nerves"` (`CROSSCOMPILE`) holds when this
+  project's value, cut at its own `NERVES_TOOLCHAIN` and `NERVES_SYSTEM`
+  paths, cuts to the build's, and misses with `built with a different
+  CROSSCOMPILE` otherwise; a `mix_target` item holds when the build's target
+  is the one Mix compiles for, and misses with `rule8_target` otherwise.
+  A device cannot check either and misses. Clients before this release
+  treat both as malformed and miss.
 * A build whose compile read the OS type (`:os.type/0`: kino's `Kino.JS`
   asset hook, and every package whose compile runs it) carries an
   `os_type` compile input. It holds when the build's family and name are

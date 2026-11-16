@@ -439,7 +439,7 @@ defmodule Precompiled.Match do
               compile_order: Map.get(ctx, :compile_order),
               user_config: Map.get(ctx, :user_config, &Precompiled.CompileInputs.user_config/2)
             },
-            Map.take(ctx, [:rebar3_arch, :endian, :os_type])
+            Map.take(ctx, [:rebar3_arch, :endian, :os_type, :mix_target])
           )
         )
       end

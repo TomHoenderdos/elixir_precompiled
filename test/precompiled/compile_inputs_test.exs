@@ -579,4 +579,142 @@ defmodule Precompiled.CompileInputsTest do
       end
     end
   end
+
+  # A firmware build's read of a variable holding where the Nerves toolchain
+  # or system lives (judge revision 17): circuits_i2c's mix.exs reads
+  # CROSSCOMPILE, which Nerves sets to <NERVES_TOOLCHAIN>/bin/<tuple>.
+  describe "set_by nerves" do
+    @tuple "/bin/aarch64-nerves-linux-gnu"
+    @cross %{
+      "kind" => "env",
+      "name" => "CROSSCOMPILE",
+      "set_by" => "nerves",
+      "value" => [%{"root" => "NERVES_TOOLCHAIN"}, @tuple]
+    }
+
+    defp nerves_env(vars), do: &Map.get(vars, &1)
+
+    @mine "/Users/me/.nerves/artifacts/nerves_toolchain_aarch64_nerves_linux_gnu-15.3.1"
+
+    test "this project's value cut at its own toolchain path is the build's: a hit" do
+      env = nerves_env(%{"CROSSCOMPILE" => @mine <> @tuple, "NERVES_TOOLCHAIN" => @mine})
+      assert :ok = CompileInputs.host([@cross], env)
+    end
+
+    test "a value that differs once cut misses with env_differs, naming only the variable" do
+      for vars <- [
+            # another toolchain tuple
+            %{
+              "CROSSCOMPILE" => @mine <> "/bin/arm-nerves-linux-gnueabihf",
+              "NERVES_TOOLCHAIN" => @mine
+            },
+            # the variable unset (no Nerves env)
+            %{"NERVES_TOOLCHAIN" => @mine},
+            # the toolchain path unknown here: nothing is cut
+            %{"CROSSCOMPILE" => @mine <> @tuple},
+            # a toolchain path the value does not start with
+            %{"CROSSCOMPILE" => "/opt/other" <> @tuple, "NERVES_TOOLCHAIN" => @mine}
+          ] do
+        assert {:miss, %{code: :env_differs, args: ["CROSSCOMPILE"], text: text}} =
+                 CompileInputs.host([@cross], nerves_env(vars)),
+               inspect(vars)
+
+        refute text =~ @mine
+      end
+    end
+
+    test "both roots, each cut where it occurs" do
+      item = %{
+        @cross
+        | "name" => "CFLAGS",
+          "value" => [
+            "-I",
+            %{"root" => "NERVES_SYSTEM"},
+            "/usr -B",
+            %{"root" => "NERVES_TOOLCHAIN"}
+          ]
+      }
+
+      vars = %{
+        "CFLAGS" => "-I/s/sys-2/usr -B/t/tc-15",
+        "NERVES_SYSTEM" => "/s/sys-2",
+        "NERVES_TOOLCHAIN" => "/t/tc-15"
+      }
+
+      assert :ok = CompileInputs.host([item], nerves_env(vars))
+
+      assert {:miss, %{code: :env_differs}} =
+               CompileInputs.host([item], nerves_env(%{vars | "CFLAGS" => "-I/s/sys-2/usr -O2"}))
+    end
+
+    test "split/2 cuts leftmost first, the longer root first where two start" do
+      assert CompileInputs.split("/n/t/x", [{"NERVES_SYSTEM", "/n"}, {"NERVES_TOOLCHAIN", "/n/t"}]) ==
+               [%{"root" => "NERVES_TOOLCHAIN"}, "/x"]
+
+      assert CompileInputs.split("a/r/b/r", [{"NERVES_SYSTEM", "/r"}]) ==
+               ["a", %{"root" => "NERVES_SYSTEM"}, "/b", %{"root" => "NERVES_SYSTEM"}]
+
+      assert CompileInputs.split("/usr", [{"NERVES_SYSTEM", ""}]) == ["/usr"]
+    end
+
+    test "a value that is not one canonical cut is malformed" do
+      for value <- [
+            [],
+            [@tuple],
+            "/opt/tc" <> @tuple,
+            [%{"root" => "HOME"}, @tuple],
+            [%{"root" => "NERVES_TOOLCHAIN"}, ""],
+            [%{"root" => "NERVES_TOOLCHAIN"}, "/bin", "/gcc"],
+            [%{"root" => "NERVES_TOOLCHAIN", "x" => 1}]
+          ] do
+        bad = %{@cross | "value" => value}
+
+        assert {:miss, %{code: :malformed_entry}} =
+                 CompileInputs.host([bad], nerves_env(%{})),
+               inspect(value)
+
+        assert {:miss, %{code: :malformed_entry}} = CompileInputs.device([bad]), inspect(value)
+      end
+
+      assert {:miss, %{code: :malformed_entry}} =
+               CompileInputs.host([Map.put(@cross, "extra", 1)], nerves_env(%{}))
+    end
+
+    # The firmware's build environment is not on the device.
+    test "a device misses with env_set_at_build" do
+      assert {:miss, %{code: :env_set_at_build, args: ["CROSSCOMPILE"]}} =
+               CompileInputs.device([@cross])
+    end
+  end
+
+  describe "mix_target" do
+    defp target(t), do: %{"kind" => "mix_target", "value" => t}
+    defp targets(t), do: %{compile_order: nil, user_config: fn _, _ -> :error end, mix_target: t}
+
+    test "the project's own target is a hit, any other a miss naming both" do
+      assert :ok = CompileInputs.host([target("rpi4")], &none/1, targets("rpi4"))
+
+      assert {:miss, %{code: :rule8_target, args: ["rpi4", "rpi5"]}} =
+               CompileInputs.host([target("rpi4")], &none/1, targets("rpi5"))
+
+      # No target given is the host's.
+      assert {:miss, %{code: :rule8_target, args: ["rpi4", "host"]}} =
+               CompileInputs.host([target("rpi4")], &none/1)
+    end
+
+    test "a device cannot check its firmware's MIX_TARGET: a miss" do
+      assert {:miss, %{code: :rule8_target, args: ["rpi4", _]}} =
+               CompileInputs.device([target("rpi4")])
+    end
+
+    test "an item of any other shape is malformed" do
+      for bad <- [target(""), target(:rpi4), target(nil), Map.put(target("rpi4"), "x", 1)] do
+        assert {:miss, %{code: :malformed_entry}} =
+                 CompileInputs.host([bad], &none/1, targets("rpi4")),
+               inspect(bad)
+
+        assert {:miss, %{code: :malformed_entry}} = CompileInputs.device([bad]), inspect(bad)
+      end
+    end
+  end
 end
