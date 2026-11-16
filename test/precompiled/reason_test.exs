@@ -164,8 +164,8 @@ defmodule Precompiled.ReasonTest do
     end
   end
 
-  test "the release is 0.7.0" do
-    assert Mix.Project.config()[:version] == "0.7.0"
+  test "the release is 0.7.1" do
+    assert Mix.Project.config()[:version] == "0.7.1"
     assert File.read!("CHANGELOG.md") =~ "## v0.6.0"
   end
 end

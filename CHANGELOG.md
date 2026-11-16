@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.7.1 - 2026-11-16
 
 * A firmware build whose package reads an environment variable at compile
   time is no longer refused by rule 8 when it records its compile inputs
