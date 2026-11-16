@@ -318,10 +318,11 @@ above but the target holds, and also:
 - every library its `.so` files need is found on your machine
   (`ldconfig -p`, then the `/lib64`, multiarch and `/lib` dirs), for your
   machine's architecture, and defines every symbol version they need;
-- a `.so` the package downloads from its upstream release (as
-  rustler_precompiled packages do) comes from an archive the package's
-  own checksum file in `deps/` lists with the same sha256. The file is
-  read as data, never run.
+- its `.so` files are ones the package downloads from its upstream
+  release (as rustler_precompiled packages do), from an archive the
+  package's own checksum file in `deps/` lists with the same sha256. The
+  file is read as data, never run. A `.so` the build compiled itself is
+  never used: its compiler flags may have assumed the builder's CPU.
 
 A Nerves project, and a device, never read host-native builds.
 

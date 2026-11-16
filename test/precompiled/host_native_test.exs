@@ -211,10 +211,9 @@ defmodule Precompiled.HostNativeTest do
       Path.join(dir, "deps")
     end
 
-    test "every archive listed with its sha256 passes; none to check passes", %{tmp_dir: dir} do
+    test "every archive listed with its sha256 passes", %{tmp_dir: dir} do
       deps = deps(dir, ~s|%{"#{@archive}" => "sha256:#{@hex}"}|)
       assert HostNative.origins_reason([origin()], deps, "x") == :ok
-      assert HostNative.origins_reason([], deps, "x") == :ok
 
       File.write!(
         Path.join([deps, "x", "checksum.exs"]),
@@ -223,6 +222,17 @@ defmodule Precompiled.HostNativeTest do
 
       assert HostNative.origins_reason([origin(%{"checksum_file" => "checksum.exs"})], deps, "x") ==
                :ok
+    end
+
+    # A library compiled on the builder may assume its CPU (-march=native)
+    # and is never used; only an upstream file the package pins is.
+    test "no origins: a library the build compiled itself misses", %{tmp_dir: dir} do
+      deps = deps(dir, ~s|%{"#{@archive}" => "sha256:#{@hex}"}|)
+
+      assert {:miss, %Reason{code: :origin_unverified, text: text}} =
+               HostNative.origins_reason([], deps, "x")
+
+      assert text == "native library compiled by the build, not a checksum-pinned download"
     end
 
     test "another sha256, or an archive the file does not list", %{tmp_dir: dir} do

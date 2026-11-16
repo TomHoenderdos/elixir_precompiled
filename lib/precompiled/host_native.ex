@@ -223,10 +223,21 @@ defmodule Precompiled.HostNative do
 
   @doc false
   # Every origin's archive is listed, with the sha256 the build names, in
-  # the package's own checksum file under `deps_path`. No origins (the
-  # package compiled its library itself) passes. Origins that are not a
-  # list of complete entries are a malformed entry.
+  # the package's own checksum file under `deps_path`. No origins misses:
+  # the package compiled its library on the builder, whose flags may have
+  # assumed the builder's CPU (-march=native), and the portal serves no
+  # such build. Origins that are not a list of complete entries are a
+  # malformed entry.
   @spec origins_reason(term(), Path.t(), String.t()) :: :ok | {:miss, Reason.t()}
+  def origins_reason([], _deps_path, _dep),
+    do:
+      {:miss,
+       Reason.new(
+         :origin_unverified,
+         ["(none)"],
+         "native library compiled by the build, not a checksum-pinned download"
+       )}
+
   def origins_reason(origins, deps_path, dep) when is_list(origins) do
     if Enum.all?(origins, &origin?/1),
       do: Enum.reduce_while(origins, :ok, &origin_ok(&1, &2, deps_path, dep)),

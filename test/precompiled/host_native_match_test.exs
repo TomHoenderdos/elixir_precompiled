@@ -264,7 +264,8 @@ defmodule Precompiled.HostNativeMatchTest do
   end
 
   test "every origin's archive must be in the package's checksum file", c do
-    assert {:ok, _, _} = Match.select_reason(doc([], [hn(%{"origins" => []})]), ctx(c))
+    assert {:ok, _, _} = Match.select_reason(doc([], [hn()]), ctx(c))
+    assert {:origin_unverified, _} = miss_code(c, [], [hn(%{"origins" => []})])
 
     bad = [%{hd(hn()["build"]["origins"]) | "archive_sha256" => String.duplicate("0", 64)}]
     assert {:origin_unverified, r} = miss_code(c, [], [hn(%{"origins" => bad})])

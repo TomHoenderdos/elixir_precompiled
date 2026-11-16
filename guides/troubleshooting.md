@@ -292,6 +292,7 @@ other build serves can miss on a host-native build:
 | `MISS  built for x86_64-linux-gnu, this machine is aarch64-apple-darwin24.6.0` (`triple_differs`) | The build was made for another machine type or libc. macOS, musl and 32-bit hosts get no host-native builds. | Nothing to fix; it compiles from source. |
 | `MISS  built for NIF 2.17, this VM has 2.16` (`nif_version_newer`) | The build was made on an OTP whose NIF version your VM cannot load. | Move to a newer OTP of the same major, or let it compile. |
 | `MISS  libx-1.0.0.tar.gz not in the package's checksum file` (`origin_unverified`) | The `.so` came from an archive the package's own checksum file under `deps/` does not pin with that sha256, or that file is missing or not a plain map. | Run `mix deps.get`; otherwise let it compile. |
+| `MISS  native library compiled by the build, not a checksum-pinned download` (`origin_unverified`) | The build's `.so` was compiled on the builder rather than downloaded from the package's upstream release; its compiler flags may have assumed the builder's CPU. | Nothing to fix; it compiles from source. |
 
 `toolchain_otp_minor`, `needed_lib_missing` and `symbol_version_missing`
 mean what they do above, for your machine's OTP and libraries.

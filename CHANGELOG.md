@@ -12,9 +12,10 @@
   build, its OTP major is this one and its full OTP version and NIF version
   no newer, every library its ELF files need is found here
   (`ldconfig -p`, the 64-bit, multiarch and `/lib` dirs) with every symbol
-  version they need, and every library downloaded from an upstream release
-  is listed, with the archive's sha256, in the package's own checksum file
-  under `deps/` (read as data, never evaluated). Three new reason codes:
+  version they need, and every library is one downloaded from an upstream
+  release whose archive is listed, with its sha256, in the package's own
+  checksum file under `deps/` (read as data, never evaluated); a library
+  the build compiled itself is never used. Three new reason codes:
   `triple_differs`, `nif_version_newer`, `origin_unverified`. Off, the
   list is never read and nothing changes.
 
