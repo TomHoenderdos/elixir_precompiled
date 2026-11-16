@@ -1451,7 +1451,7 @@ defmodule Precompiled.MatchTest do
     defp fw_enc(term),
       do: term |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
 
-    defp fw_items do
+    defp fw_items() do
       [
         %{
           "kind" => "env",
