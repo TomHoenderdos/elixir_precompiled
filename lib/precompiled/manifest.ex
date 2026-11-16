@@ -25,7 +25,7 @@ defmodule Precompiled.Manifest do
   @spec normalize(map()) :: {:ok, map()} | {:fail, String.t()}
   def normalize(%{"format" => 2, "versions" => versions} = doc) when is_map(versions) do
     if Enum.all?(versions, fn {_, v} -> version_ok?(v) end),
-      do: {:ok, Map.put(doc, "versions", Map.new(versions, &drop_bad_closure/1))},
+      do: {:ok, Map.put(doc, "versions", Map.new(versions, &drop_bad_lists/1))},
       else: {:fail, "manifest malformed"}
   end
 
@@ -56,10 +56,12 @@ defmodule Precompiled.Manifest do
 
   defp version_ok?(_v), do: false
 
-  defp drop_bad_closure({version, %{"builds_closure" => list} = v}) when not is_list(list),
-    do: {version, Map.delete(v, "builds_closure")}
+  @dropped_unless_list ["builds_closure", "builds_host_native"]
 
-  defp drop_bad_closure(pair), do: pair
+  defp drop_bad_lists({version, v}),
+    do:
+      {version,
+       Map.reject(v, fn {k, list} -> k in @dropped_unless_list and not is_list(list) end)}
 
   defp builds(entries) do
     for {target, entry} <- entries do

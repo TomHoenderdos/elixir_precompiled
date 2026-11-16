@@ -108,6 +108,26 @@ defmodule Precompiled.ManifestTest do
     end
   end
 
+  # builds_host_native (#85) holds host-native builds, read only with the
+  # host_native opt-in. One that is not a list is dropped: the version's
+  # other builds still serve.
+  test "format 2 accepts builds_host_native, and drops a non-list one" do
+    ok = %{
+      "format" => 2,
+      "versions" => %{
+        "1.0.0" => %{"builds" => [], "builds_host_native" => [%{"target" => "host_native"}]}
+      }
+    }
+
+    assert {:ok, ^ok} = Manifest.normalize(ok)
+
+    for bad <- [%{}, "nope", nil, 1] do
+      doc = put_in(ok, ["versions", "1.0.0", "builds_host_native"], bad)
+      assert {:ok, m} = Manifest.normalize(doc)
+      assert m["versions"]["1.0.0"] == %{"builds" => []}
+    end
+  end
+
   test "a manifest without builds_closure passes through unchanged" do
     doc = %{
       "format" => 2,

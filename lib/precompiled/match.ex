@@ -9,7 +9,7 @@ defmodule Precompiled.Match do
   so every rule is testable without a network or a build.
   """
 
-  alias Precompiled.Reason
+  alias Precompiled.{HostNative, Reason}
 
   @typep reason :: Reason.t()
 
@@ -34,6 +34,10 @@ defmodule Precompiled.Match do
           # env (Env.closure/2), nil when unknown: then the lock decides.
           optional(:env_closure) => [atom()] | nil,
           optional(:user_config) => (String.t(), String.t() -> term()),
+          # With the host_native opt-in on a host project, this machine
+          # (Precompiled.HostNative.host/0) and its deps dir; nil or absent
+          # otherwise, and builds_host_native is never read.
+          optional(:host_native) => map() | nil,
           name: String.t(),
           version: String.t(),
           lock_entry: tuple(),
@@ -99,6 +103,19 @@ defmodule Precompiled.Match do
   """
   @spec select_reason(map(), ctx()) :: {:ok, map(), String.t()} | {:miss, reason()}
   def select_reason(manifest, ctx) do
+    case select_regular(manifest, ctx) do
+      {:miss, reason} = miss ->
+        case host_native_builds(manifest, ctx) do
+          [] -> miss
+          builds -> select_host_native(builds, ctx, reason)
+        end
+
+      hit ->
+        hit
+    end
+  end
+
+  defp select_regular(manifest, ctx) do
     {system, system_version} = ctx.system
 
     case builds(manifest, ctx.version, Map.get(ctx, :env_closure)) do
@@ -139,6 +156,49 @@ defmodule Precompiled.Match do
        do: list
 
   defp world(_v, _env_closure), do: []
+
+  # builds_host_native (#85) holds builds made for a Linux glibc triple:
+  # beams and priv libraries that load on another machine of that triple,
+  # not the bytes Mix would compile here. Read only with the host_native
+  # opt-in (ctx.host_native, set by Check), on a host that is no Nerves
+  # target, after the regular builds missed; never on a device.
+  defp host_native_builds(manifest, %{host_native: %{} = _host, system: {"host", ""}} = ctx) do
+    case get_in(manifest, ["versions", ctx.version, "builds_host_native"]) do
+      list when is_list(list) -> list
+      _ -> []
+    end
+  end
+
+  defp host_native_builds(_manifest, _ctx), do: []
+
+  # A passing host-native build, the best ranked (newest run among equals).
+  # When none passes, the regular miss stands unless it only said that no
+  # build was made for this system or version: then the host-native build
+  # that came furthest explains it.
+  defp select_host_native(builds, ctx, regular) do
+    results =
+      Enum.map(
+        builds,
+        &{&1, check(&1, ctx, fn b, c -> host_native_rules(b, c, c.host_native) end)}
+      )
+
+    case Enum.filter(results, &match?({_, {:ok, _}}, &1)) do
+      [] ->
+        if regular.code in [:not_built_target, :not_built_version],
+          do: {:miss, closest_host_native(results, ctx)},
+          else: {:miss, regular}
+
+      ok ->
+        {build, _} = Enum.min_by(ok, fn {b, _} -> rank(b, ctx) end)
+        {:ok, build, build["target"]}
+    end
+  end
+
+  defp closest_host_native(results, ctx) do
+    best = results |> Enum.map(fn {_, {:miss, _, n}} -> n end) |> Enum.max()
+    {build, {:miss, reason, _}} = Enum.find(results, fn {_, {:miss, _, n}} -> n == best end)
+    %{reason | closest: describe(build, ctx)}
+  end
 
   # The passing builds made for the release closest to the project's: the
   # exact release (and pure_elixir builds, which have none), else the
@@ -334,6 +394,9 @@ defmodule Precompiled.Match do
 
   defp target_label("pure_elixir", _b), do: nil
 
+  defp target_label("host_native", %{"triple" => t}) when is_binary(t),
+    do: "host_native #{label(t)}"
+
   defp target_label(t, b) when is_binary(t) do
     case b["system_version"] do
       nil -> label(t)
@@ -389,9 +452,9 @@ defmodule Precompiled.Match do
 
   defp foreign?(_, _), do: false
 
-  defp check(build, ctx) do
+  defp check(build, ctx, rules_of \\ &rules/2) do
     build
-    |> rules(ctx)
+    |> rules_of.(ctx)
     |> Enum.reduce_while({:ok, 0}, fn rule, {:ok, n} ->
       case rule.() do
         :ok -> {:cont, {:ok, n + 1}}
@@ -406,10 +469,44 @@ defmodule Precompiled.Match do
 
   defp rules(build, ctx) do
     b = build["build"] || %{}
+    [fn -> target_reason(build["target"], b, ctx.system, ctx) end | build_rules(build, b, ctx)]
+  end
+
+  # A host-native build passes the rules of any host build, with the
+  # triple in place of the target, and then its own: the OTP release no
+  # newer than this one, the NIF version no newer than this VM's, every
+  # needed library and symbol version here, and every downloaded library's
+  # archive pinned by the package's checksum file.
+  defp host_native_rules(build, ctx, host) do
+    b = build["build"] || %{}
+
+    [fn -> HostNative.triple_reason(build["target"], b, host) end] ++
+      build_rules(build, b, ctx) ++
+      [
+        fn -> otp_full_reason(b["otp_full"], host.otp_full) end,
+        fn -> HostNative.nif_reason(b["nif_version"], host.nif_version) end,
+        fn -> HostNative.needs_reason(b, host) end,
+        fn -> HostNative.origins_reason(b["origins"], host.deps_path, ctx.name) end
+      ]
+  end
+
+  defp malformed(), do: {:miss, Reason.new(:malformed_entry, [], "malformed entry")}
+
+  # otp_minor/2 against this machine's own release, said as such.
+  defp otp_full_reason(built, running) when is_binary(built) do
+    case otp_minor(built, running) do
+      {:miss, r} -> {:miss, %{r | text: "built on OTP #{built}, running #{running || "?"}"}}
+      ok -> ok
+    end
+  end
+
+  defp otp_full_reason(_built, _running), do: malformed()
+
+  # Every rule but the target's, which decides what a build was made for.
+  defp build_rules(build, b, ctx) do
     {:hex, _, _, _, _, _, _, outer} = ctx.lock_entry
 
     [
-      fn -> target_reason(build["target"], b, ctx.system, ctx) end,
       fn -> build_method_ok(b, ctx) end,
       fn -> rebar3_global_ok(b, ctx) end,
       fn -> Precompiled.ErlCompilerEnv.check(machine_env(ctx)) end,
@@ -713,6 +810,7 @@ defmodule Precompiled.Match do
   end
 
   defp conventional_target("pure_elixir"), do: "host"
+  defp conventional_target("host_native"), do: "host"
   defp conventional_target("nerves_system_" <> name), do: name
   defp conventional_target(other), do: to_string(other)
 

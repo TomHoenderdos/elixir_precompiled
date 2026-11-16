@@ -87,7 +87,7 @@ defmodule Precompiled.Host do
           Check.check(
             config,
             Keyword.get_lazy(opts, :env, &Env.MixProject.load/0),
-            Keyword.take(opts, [:config_fun])
+            Keyword.take(opts, [:config_fun, :native_host])
           )
         end)
     end

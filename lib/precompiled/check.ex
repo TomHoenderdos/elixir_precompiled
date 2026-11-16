@@ -7,7 +7,18 @@ defmodule Precompiled.Check do
   # The shared engine: every candidate becomes a HIT, MISS or FAIL line with
   # a reason; the same list lands in `<build_lib>/.precompiled/report.json`.
 
-  alias Precompiled.{CompileEnv, Config, Env, Fetch, FileUtil, Match, Output, Reason, Trust}
+  alias Precompiled.{
+    CompileEnv,
+    Config,
+    Env,
+    Fetch,
+    FileUtil,
+    HostNative,
+    Match,
+    Output,
+    Reason,
+    Trust
+  }
 
   @type line :: %{
           name: String.t(),
@@ -30,6 +41,8 @@ defmodule Precompiled.Check do
   #   `CompileEnv.lookup/2`);
   # - `:toolchain`: `{elixir, otp}` in place of the running ones. Test only:
   #   it lets a test change the toolchain under an unchanged batch.
+  # - `:native_host`: the machine host-native builds are matched against
+  #   (`HostNative.host/0`) in place of this one. Test only.
   @spec check(map(), Env.t(), keyword()) :: :nothing_to_do | {:ok, report()}
   def check(config, %Env{} = env, opts \\ []) do
     started = System.monotonic_time(:millisecond)
@@ -50,6 +63,7 @@ defmodule Precompiled.Check do
           |> with_home(env)
           |> with_deadline()
           |> with_toolchain(opts)
+          |> with_native_host(env, opts)
           |> Map.put(:dead_origins, dead)
 
         run_check(config, env, opts, %{
@@ -159,6 +173,18 @@ defmodule Precompiled.Check do
         {System.version(), to_string(:erlang.system_info(:otp_release))}
     )
   end
+
+  # The machine host-native builds are matched against, read once per run
+  # and only with the opt-in on a host project: no Nerves system, MIX_TARGET
+  # host. Otherwise none, and no host-native build is ever read.
+  defp with_native_host(config, env, opts) do
+    if Map.get(config, :host_native) == true and host_project?(env),
+      do: Map.put(config, :native_host, Keyword.get_lazy(opts, :native_host, &HostNative.host/0)),
+      else: Map.delete(config, :native_host)
+  end
+
+  defp host_project?(env),
+    do: env.system in [nil, {"host", ""}] and Map.get(env, :mix_target, "host") in [nil, "host"]
 
   @doc false
   # The whole run, every request in it, ends at :deadline_at; whatever is
@@ -672,8 +698,19 @@ defmodule Precompiled.Check do
       manager: Map.get(method, :manager),
       overrides: Map.get(method, :overrides, []),
       build_method_unknown: Map.get(method, :unknown),
-      systems: Map.get(config, :systems_table)
+      systems: Map.get(config, :systems_table),
+      host_native: host_native(config, env)
     }
+  end
+
+  # The host-native builds' view of this machine, with the deps dir their
+  # origins' checksum files are read from; nil unless with_native_host/3
+  # set one.
+  defp host_native(config, env) do
+    case Map.get(config, :native_host) do
+      %{} = host -> if host_project?(env), do: Map.put(host, :deps_path, env.deps_path)
+      _ -> nil
+    end
   end
 
   # What the dep's own sources read at compile time (SourceScan), from the

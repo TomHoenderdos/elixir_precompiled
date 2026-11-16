@@ -16,11 +16,12 @@ defmodule Precompiled.ReasonTest do
              needed_lib_missing symbol_version_missing system_unknown system_bound_compile
              env_differs env_set_at_build env_all config_unrecorded config_order_differs
              rebar3_global_config erl_compiler_options platform_define_differs
-             endian_differs os_type_differs)a
+             endian_differs os_type_differs triple_differs nif_version_newer
+             origin_unverified)a
 
   test "the codes are exactly the table shared with the portal" do
     assert Reason.codes() == @shared
-    assert length(Reason.codes()) == 47
+    assert length(Reason.codes()) == 50
   end
 
   test "the codes for matching across releases render their templates" do
@@ -34,6 +35,19 @@ defmodule Precompiled.ReasonTest do
           {:system_unknown, ["nerves_system_rpi4", "2.4.0"],
            "nerves_system_rpi4 2.4.0 not yet known to the portal"},
           {:system_bound_compile, [], "reads the Nerves system at compile time"}
+        ] do
+      assert Reason.render(code, args) == text
+      assert Reason.new(code, args).text == text
+    end
+  end
+
+  test "the codes for host-native builds render their templates" do
+    for {code, args, text} <- [
+          {:triple_differs, ["x86_64-linux-gnu", "aarch64-apple-darwin24.6.0"],
+           "built for x86_64-linux-gnu, this machine is aarch64-apple-darwin24.6.0"},
+          {:nif_version_newer, ["2.17", "2.16"], "built for NIF 2.17, this VM has 2.16"},
+          {:origin_unverified, ["libx-v1.0.0-nif-2.16-x86_64-linux-gnu.so.tar.gz"],
+           "libx-v1.0.0-nif-2.16-x86_64-linux-gnu.so.tar.gz not in the package's checksum file"}
         ] do
       assert Reason.render(code, args) == text
       assert Reason.new(code, args).text == text

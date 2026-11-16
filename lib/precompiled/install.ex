@@ -64,6 +64,8 @@ defmodule Precompiled.Install do
     if forced?, do: File.rm_rf!(dir)
 
     unreadable = apply_config(dir, deps, mix_opts)
+    # Mix.install/2's config: may hold the opt-in (`precompiled: [host_native: true]`).
+    config = Config.with_host_native(config)
 
     {methods, present, order} =
       resolve(dir, deps, mix_opts, Keyword.get(test_opts, :load, &Mix.Dep.load_and_cache/0))
@@ -75,14 +77,14 @@ defmodule Precompiled.Install do
     end
 
     check =
-      Keyword.get(test_opts, :check, fn env ->
-        Check.check(config, env, Keyword.take(test_opts, [:config_fun]))
+      Keyword.get(test_opts, :check, fn env, config ->
+        Check.check(config, env, Keyword.take(test_opts, [:config_fun, :native_host]))
       end)
 
     # Mix.install/2 runs whatever happened here; it compiles what is missing.
     try do
       env = Env.MixInstall.load(dir, deps, methods, present, order)
-      _ = check.(%{env | config_unreadable: unreadable})
+      _ = run_check(check, %{env | config_unreadable: unreadable}, config)
     rescue
       e -> internal_error(Exception.message(e))
     catch
@@ -106,6 +108,10 @@ defmodule Precompiled.Install do
   rescue
     _ -> :ok
   end
+
+  # The :check seam takes the env, or the env and the config.
+  defp run_check(check, env, _config) when is_function(check, 1), do: check.(env)
+  defp run_check(check, env, config), do: check.(env, config)
 
   defp internal_error(why),
     do: Output.warning("precompiled: internal error, compiling from source (#{why})")

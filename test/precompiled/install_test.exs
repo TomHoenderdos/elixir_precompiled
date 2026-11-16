@@ -305,6 +305,35 @@ defmodule Precompiled.InstallTest do
     assert File.cwd!() == cwd
   end
 
+  # The Mix.install/2 spelling of the opt-in, `config: [precompiled:
+  # [host_native: true]]`, is applied before the check, so the check sees it.
+  test "config: can turn host_native on for the check", %{config: config} do
+    parent = self()
+    old = Application.get_all_env(:precompiled)
+
+    on_exit(fn ->
+      Application.delete_env(:precompiled, :host_native)
+      Application.put_all_env([{:precompiled, old}])
+    end)
+
+    run = fn mix_opts ->
+      capture_io(fn ->
+        Install.run([], mix_opts, config,
+          installer: fn _, _ -> :ok end,
+          in_project?: false,
+          check: fn _env, config -> send(parent, {:host_native, config.host_native}) end,
+          load: fn -> [] end
+        )
+      end)
+    end
+
+    run.([])
+    assert_received {:host_native, false}
+
+    run.(config: [precompiled: [host_native: true]])
+    assert_received {:host_native, true}
+  end
+
   test "deps that do not load make build methods unknown, with the cause", %{tmp_dir: dir} do
     boom = fn -> raise "lock is broken" end
     assert Install.build_methods(dir, [], [], boom) == {:unknown, "lock is broken"}

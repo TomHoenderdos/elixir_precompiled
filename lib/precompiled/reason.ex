@@ -72,7 +72,10 @@ defmodule Precompiled.Reason do
     erl_compiler_options: "{0} can change every compile",
     platform_define_differs: "rebar3 platform_define {0} decides differently on this machine",
     endian_differs: "built on a {0}-endian machine, this one is {1}-endian",
-    os_type_differs: "built on {0}, this machine is {1}"
+    os_type_differs: "built on {0}, this machine is {1}",
+    triple_differs: "built for {0}, this machine is {1}",
+    nif_version_newer: "built for NIF {0}, this VM has {1}",
+    origin_unverified: "{0} not in the package's checksum file"
   ]
 
   @codes Keyword.keys(@templates)

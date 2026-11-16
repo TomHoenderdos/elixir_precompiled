@@ -124,6 +124,24 @@ defmodule Precompiled.ConfigTest do
     assert out =~ "except"
   end
 
+  test "host_native is a boolean opt-in, default false; anything else is ignored" do
+    configure(source: "https://x")
+    assert Config.load().host_native == false
+
+    configure(source: "https://x", host_native: true)
+    assert Config.load().host_native == true
+
+    configure(source: "https://x", host_native: false)
+    assert Config.load().host_native == false
+
+    for bad <- ["true", 1, :yes, [true]] do
+      configure(source: "https://x", host_native: bad)
+      {config, out} = with_shell(&Config.load/0)
+      assert config.host_native == false
+      assert out =~ "host_native"
+    end
+  end
+
   test "the nerves config key still works" do
     configure([])
     Application.put_env(:nerves, :precompiled, source: "https://old.test/x")

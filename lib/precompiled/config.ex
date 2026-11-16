@@ -29,6 +29,14 @@ defmodule Precompiled.Config do
   used entries going first (checked at most once a day).
   `PRECOMPILED_OFFLINE=1` makes no request: the last verified batch
   and the cache only, and only while that batch is still fresh.
+
+  `host_native: true` (default false) opts the project in to host-native
+  builds: on a Linux glibc host (x86_64 or aarch64) that is not a Nerves
+  target, a dependency with native code no other build serves may install
+  a build made for this machine's triple, beams and `priv` libraries
+  together. Such a build is ABI-compatible with this machine, not the
+  bytes Mix would compile here, hence the opt-in. Under `Mix.install/2`:
+  `config: [precompiled: [host_native: true]]`.
   """
 
   @type t :: %{
@@ -43,7 +51,8 @@ defmodule Precompiled.Config do
           connect_timeout_ms: pos_integer(),
           root_check_seconds: non_neg_integer(),
           cache_max_bytes: non_neg_integer(),
-          content_override: [String.t()] | nil
+          content_override: [String.t()] | nil,
+          host_native: boolean()
         }
 
   @loopback ["127.0.0.1", "::1", "localhost"]
@@ -80,7 +89,8 @@ defmodule Precompiled.Config do
         connect_timeout_ms: 5_000,
         root_check_seconds: non_neg(opts[:root_check_seconds], 3600),
         cache_max_bytes: non_neg(opts[:cache_max_mb], 4096) * 1_048_576,
-        content_override: content(opts[:content])
+        content_override: content(opts[:content]),
+        host_native: host_native(opts[:host_native])
       }
     else
       _ -> nil
@@ -105,6 +115,25 @@ defmodule Precompiled.Config do
                 "(config :precompiled, source: ..., root: ..., content: [...]), " <>
                 "see the Trust guide"
     end
+  end
+
+  @doc false
+  # `config` with host_native read again from the app env: Mix.install/2's
+  # `config:` and `config_path:` (Install.apply_config) reach it only after
+  # load/1 has run.
+  @spec with_host_native(map()) :: map()
+  def with_host_native(config),
+    do: Map.put(config, :host_native, host_native(Keyword.get(app_env(), :host_native)))
+
+  defp host_native(nil), do: false
+  defp host_native(b) when is_boolean(b), do: b
+
+  defp host_native(other) do
+    Precompiled.Output.warning(
+      "precompiled: ignoring host_native, not a boolean: #{inspect(other)}"
+    )
+
+    false
   end
 
   # Test-only clock skew for the freshness checks. Project config only, never
