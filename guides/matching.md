@@ -299,6 +299,32 @@ why (for example `built for nerves_system_rpi4 2.1.0 (toolchain 15.3),
 project has 2.3.0 (toolchain 15.4)`), and the dependency compiles from
 source.
 
+## Host-native builds (opt-in)
+
+With `config :precompiled, host_native: true`, a project on a Linux
+glibc host, x86_64 or aarch64, that is no Nerves target also considers a
+version's host-native builds, after every other build missed: a NIF
+package's beams and `.so` files built together for one triple
+(`x86_64-linux-gnu`, `aarch64-linux-gnu`, read from
+`:erlang.system_info(:system_architecture)`). Such a build is
+ABI-compatible with your machine, not the bytes your own compile would
+produce, which is why it is opt-in. It installs only when every rule
+above but the target holds, and also:
+
+- it was made for your machine's triple, with glibc (musl and macOS hosts
+  have no triple, and miss);
+- its OTP major is yours and its full OTP version no newer than yours;
+- its NIF version is no newer than your VM's;
+- every library its `.so` files need is found on your machine
+  (`ldconfig -p`, then the `/lib64`, multiarch and `/lib` dirs), for your
+  machine's architecture, and defines every symbol version they need;
+- a `.so` the package downloads from its upstream release (as
+  rustler_precompiled packages do) comes from an archive the package's
+  own checksum file in `deps/` lists with the same sha256. The file is
+  read as data, never run.
+
+A Nerves project, and a device, never read host-native builds.
+
 ## On a device
 
 `Precompiled.install/2` chooses builds by the same rules and the same

@@ -281,6 +281,21 @@ On a device, `needed_lib_missing` and `symbol_version_missing` also come
 from the check against the device's own libraries, for builds of your
 exact release too: `{:error, {:libs, app, reason}}`.
 
+### Host-native builds
+
+With `host_native: true` (see
+[What matches](matching.md#host-native-builds-opt-in)), a dependency no
+other build serves can miss on a host-native build:
+
+| Line | Meaning | What to do |
+| --- | --- | --- |
+| `MISS  built for x86_64-linux-gnu, this machine is aarch64-apple-darwin24.6.0` (`triple_differs`) | The build was made for another machine type or libc. macOS, musl and 32-bit hosts get no host-native builds. | Nothing to fix; it compiles from source. |
+| `MISS  built for NIF 2.17, this VM has 2.16` (`nif_version_newer`) | The build was made on an OTP whose NIF version your VM cannot load. | Move to a newer OTP of the same major, or let it compile. |
+| `MISS  libx-1.0.0.tar.gz not in the package's checksum file` (`origin_unverified`) | The `.so` came from an archive the package's own checksum file under `deps/` does not pin with that sha256, or that file is missing or not a plain map. | Run `mix deps.get`; otherwise let it compile. |
+
+`toolchain_otp_minor`, `needed_lib_missing` and `symbol_version_missing`
+mean what they do above, for your machine's OTP and libraries.
+
 ## A bug
 
 | Line | Meaning | What to do |

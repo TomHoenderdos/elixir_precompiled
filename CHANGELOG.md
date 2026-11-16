@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+* Host-native builds, opt-in: with `config :precompiled, host_native: true`
+  (under `Mix.install/2`, `config: [precompiled: [host_native: true]]`) a
+  Linux glibc host (x86_64 or aarch64) that is no Nerves target also reads
+  a version's `builds_host_native` list, after its regular builds missed:
+  a NIF package's beams and priv libraries built for this machine's
+  triple, ABI-compatible with it rather than the bytes Mix would compile
+  here. Such a build is installed only when, besides the rules of any host
+  build, its OTP major is this one and its full OTP version and NIF version
+  no newer, every library its ELF files need is found here
+  (`ldconfig -p`, the 64-bit, multiarch and `/lib` dirs) with every symbol
+  version they need, and every library downloaded from an upstream release
+  is listed, with the archive's sha256, in the package's own checksum file
+  under `deps/` (read as data, never evaluated). Three new reason codes:
+  `triple_differs`, `nif_version_newer`, `origin_unverified`. Off, the
+  list is never read and nothing changes.
+
 ## v0.7.1 - 2026-11-16
 
 * A firmware build whose package reads an environment variable at compile

@@ -83,6 +83,13 @@ Precompiled.install(:recon)
 
 `PRECOMPILED=0` turns it off.
 
+On a Linux glibc machine (x86_64 or aarch64),
+`config :precompiled, host_native: true` also installs host-native builds
+of NIF packages: beams and `.so` files built for this machine's triple,
+ABI-compatible with it rather than identical to your own compile, so off
+by default (see
+[Configuration](https://hexdocs.pm/precompiled/configuration.html)).
+
 On your build machine nothing is installed while something outside the
 project would make your own compile differ from the published build: a
 global rebar3 config that changes compile options, `ERL_COMPILER_OPTIONS`,
