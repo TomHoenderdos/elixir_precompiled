@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+* A build whose compile read the OS type (`:os.type/0`: kino's `Kino.JS`
+  asset hook, and every package whose compile runs it) carries an
+  `os_type` compile input. It holds when the build's family and name are
+  this machine's `:os.type/0`, or the family alone when the build records
+  no name (only Elixir's `File.rm_rf/1` read it), and misses with
+  `built on unix:linux, this machine is unix:darwin` otherwise. A device
+  cannot check the machine its firmware was compiled on and misses.
+  Clients before this release treat the item as malformed and miss.
 * A build whose compile read the byte order (`System.endianness/0`: nx and
   every package with nx in its closure, such as polaris, nx_image,
   nx_signal and safetensors) carries an `endian` compile input. It holds

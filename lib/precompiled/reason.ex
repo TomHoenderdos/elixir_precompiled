@@ -71,7 +71,8 @@ defmodule Precompiled.Reason do
     rebar3_global_config: "global rebar3 config could change the build ({0})",
     erl_compiler_options: "{0} can change every compile",
     platform_define_differs: "rebar3 platform_define {0} decides differently on this machine",
-    endian_differs: "built on a {0}-endian machine, this one is {1}-endian"
+    endian_differs: "built on a {0}-endian machine, this one is {1}-endian",
+    os_type_differs: "built on {0}, this machine is {1}"
   ]
 
   @codes Keyword.keys(@templates)

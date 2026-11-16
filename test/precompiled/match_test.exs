@@ -1270,6 +1270,15 @@ defmodule Precompiled.MatchTest do
                Match.select_reason(inputs_doc([little]), ctx(endian: :big))
     end
 
+    test "an os_type item in builds_with_inputs is decided against this OS type" do
+      linux = %{"kind" => "os_type", "family" => "unix", "name" => "linux"}
+
+      assert {:ok, _, _} = Match.select(inputs_doc([linux]), ctx(os_type: {:unix, :linux}))
+
+      assert {:miss, %Reason{code: :os_type_differs, args: ["unix:linux", "unix:darwin"]}} =
+               Match.select_reason(inputs_doc([linux]), ctx(os_type: {:unix, :darwin}))
+    end
+
     test "the user's value and the builder's value are never in the reason" do
       item = host_item("GITHUB_ACTIONS", ienc({:ok, "builder-value"}))
 

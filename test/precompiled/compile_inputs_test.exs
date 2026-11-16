@@ -405,6 +405,113 @@ defmodule Precompiled.CompileInputsTest do
     end
   end
 
+  describe "os_type" do
+    defp os_type(family, name \\ nil) do
+      item = %{"kind" => "os_type", "family" => family}
+      if name, do: Map.put(item, "name", name), else: item
+    end
+
+    defp os_here(os), do: %{compile_order: nil, user_config: fn _, _ -> :error end, os_type: os}
+
+    test "a build compiled on this OS type is a hit" do
+      for {f, n} = os <- [{:unix, :linux}, {:unix, :darwin}, {:win32, :nt}] do
+        assert :ok =
+                 CompileInputs.host(
+                   [os_type(Atom.to_string(f), Atom.to_string(n))],
+                   &no_env/1,
+                   os_here(os)
+                 )
+      end
+    end
+
+    # kino built on Linux: a macOS machine must compile it itself.
+    test "the same family on another OS misses, naming both" do
+      assert {:miss, %{code: :os_type_differs, args: ["unix:linux", "unix:darwin"], text: text}} =
+               CompileInputs.host(
+                 [os_type("unix", "linux")],
+                 &no_env/1,
+                 os_here({:unix, :darwin})
+               )
+
+      assert text == "built on unix:linux, this machine is unix:darwin"
+    end
+
+    test "another family misses" do
+      assert {:miss, %{code: :os_type_differs, args: ["unix:linux", "win32:nt"]}} =
+               CompileInputs.host([os_type("unix", "linux")], &no_env/1, os_here({:win32, :nt}))
+    end
+
+    # Only the family could reach the build (Elixir's File.rm_rf/1).
+    test "an item without a name compares the family alone" do
+      for os <- [{:unix, :linux}, {:unix, :darwin}, {:unix, :freebsd}] do
+        assert :ok = CompileInputs.host([os_type("unix")], &no_env/1, os_here(os))
+      end
+
+      assert {:miss, %{code: :os_type_differs, args: ["unix", "win32"], text: text}} =
+               CompileInputs.host([os_type("unix")], &no_env/1, os_here({:win32, :nt}))
+
+      assert text == "built on unix, this machine is win32"
+    end
+
+    test "without an OS type given, the running VM's is used" do
+      {f, n} = :os.type()
+      here = os_type(Atom.to_string(f), Atom.to_string(n))
+      assert :ok = CompileInputs.host([here], &no_env/1)
+
+      assert {:miss, %{code: :os_type_differs}} =
+               CompileInputs.host([%{here | "name" => "not_this_os"}], &no_env/1)
+    end
+
+    test "an item of any other shape is malformed" do
+      for bad <- [
+            os_type("Unix", "linux"),
+            os_type("vxworks", "x"),
+            os_type("unix", "Linux"),
+            os_type("unix", "1linux"),
+            os_type("unix", "linux\n"),
+            os_type("unix", String.duplicate("a", 65)),
+            %{"kind" => "os_type", "family" => :unix},
+            %{"kind" => "os_type", "family" => "unix", "name" => :linux},
+            %{"kind" => "os_type", "family" => "unix", "name" => ""},
+            %{"kind" => "os_type", "family" => "unix", "name" => nil},
+            %{"kind" => "os_type"},
+            %{"kind" => "os_type", "value" => "unix:linux"},
+            Map.put(os_type("unix", "linux"), "extra", 1)
+          ] do
+        assert {:miss, %{code: :malformed_entry}} =
+                 CompileInputs.host([bad], &no_env/1, os_here({:unix, :linux})),
+               inspect(bad)
+
+        assert {:miss, %{code: :malformed_entry}} = CompileInputs.device([bad]), inspect(bad)
+      end
+    end
+
+    # The firmware was compiled on some machine the device cannot name.
+    test "a device misses on an os_type item whatever its value" do
+      for {item, shown} <- [
+            {os_type("unix", "linux"), "unix:linux"},
+            {os_type("unix"), "unix"},
+            {os_type("win32", "nt"), "win32:nt"}
+          ] do
+        assert {:miss, %{code: :os_type_differs, args: [^shown], text: text}} =
+                 CompileInputs.device([item])
+
+        assert text =~ "a device cannot check its firmware's build machine"
+      end
+    end
+
+    test "the first differing item wins, as for every kind" do
+      env = %{"kind" => "env", "name" => "X", "value" => "unrecordable", "set_by" => "host"}
+
+      assert {:miss, %{code: :os_type_differs}} =
+               CompileInputs.host(
+                 [os_type("win32", "nt"), env],
+                 &no_env/1,
+                 os_here({:unix, :linux})
+               )
+    end
+  end
+
   describe "platform_define" do
     @linux28 "28.1.1-x86_64-pc-linux-gnu-64"
     @mac29 "29.1.1-aarch64-apple-darwin25.0.0-64"

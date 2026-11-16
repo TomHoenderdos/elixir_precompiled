@@ -13,16 +13,22 @@ defmodule Precompiled.CompileInputs do
   # one platform_define regex against the builder's arch string, checked
   # against this machine's (Rebar3Arch): only the regex reaches a reason. An
   # endian item is the byte order the build's compile read (nx's float
-  # layouts), checked against this machine's System.endianness/0.
+  # layouts), checked against this machine's System.endianness/0. An os_type
+  # item is the :os.type/0 the build's compile read (kino's asset hook),
+  # checked against this machine's: both elements, or the family alone when
+  # the item carries no name.
 
   alias Precompiled.{CompileOrder, Reason, Rebar3Arch}
 
   @max_recorded_bytes 65_536
+  @os_families ["unix", "win32"]
+  # An :os.type/0 name as it renders: linux, darwin, freebsd, nt.
+  @os_name ~r/\A[a-z][a-z0-9_]{0,63}\z/
 
   @no_order %{compile_order: nil, user_config: &__MODULE__.user_config/2}
 
   # rebar3_arch, when given, stands for this machine's arch string; endian
-  # for its byte order.
+  # for its byte order; os_type for its :os.type/0.
   @type order_ctx :: %{
           required(:compile_order) => CompileOrder.t() | nil,
           required(:user_config) => (String.t(), String.t() ->
@@ -31,7 +37,8 @@ defmodule Precompiled.CompileInputs do
                                        | {:loaded, {:ok, term()} | :error}
                                        | :unreadable),
           optional(:rebar3_arch) => String.t(),
-          optional(:endian) => :little | :big
+          optional(:endian) => :little | :big,
+          optional(:os_type) => {atom(), atom()}
         }
 
   @spec host(term(), (String.t() -> String.t() | nil)) :: :ok | {:miss, Reason.t()}
@@ -145,6 +152,26 @@ defmodule Precompiled.CompileInputs do
     if built == here, do: :ok, else: {:miss, Reason.new(:endian_differs, [built, here])}
   end
 
+  # The OS type a compile-time :os.type/0 read returned on the builder must
+  # be this machine's: both elements, or the family alone when only the
+  # family could reach the build (the item has no name).
+  defp host_item(%{"kind" => "os_type"} = item, _getenv, order) do
+    case os_type_item(item) do
+      {:ok, built} ->
+        {family, name} = Map.get_lazy(order, :os_type, &:os.type/0)
+        here = [Atom.to_string(family), Atom.to_string(name)]
+        here = Enum.take(here, length(built))
+
+        if built == here,
+          do: :ok,
+          else:
+            {:miss, Reason.new(:os_type_differs, [Enum.join(built, ":"), Enum.join(here, ":")])}
+
+      :error ->
+        malformed()
+    end
+  end
+
   defp host_item(item, _getenv, _order), do: whole(item)
 
   # What the reader would read here: the user's config when set; otherwise
@@ -236,7 +263,34 @@ defmodule Precompiled.CompileInputs do
     {:miss, Reason.new(:endian_differs, [built], text)}
   end
 
+  # The device cannot know the OS of the machine its firmware was compiled
+  # on: as with endian, a miss.
+  defp device_item(%{"kind" => "os_type"} = item, _decidable?) do
+    case os_type_item(item) do
+      {:ok, built} ->
+        shown = Enum.join(built, ":")
+        text = "built on #{shown}; a device cannot check its firmware's build machine"
+        {:miss, Reason.new(:os_type_differs, [shown], text)}
+
+      :error ->
+        malformed()
+    end
+  end
+
   defp device_item(item, _decidable?), do: whole(item)
+
+  # An os_type item's recorded elements, [family, name] or [family]; any
+  # other shape is malformed.
+  defp os_type_item(%{"family" => family, "name" => name} = item)
+       when family in @os_families and is_binary(name) and map_size(item) == 3 do
+    if Regex.match?(@os_name, name), do: {:ok, [family, name]}, else: :error
+  end
+
+  defp os_type_item(%{"family" => family} = item)
+       when family in @os_families and map_size(item) == 2,
+       do: {:ok, [family]}
+
+  defp os_type_item(_item), do: :error
 
   # Decidable, and the value the reader saw was recorded: a seen value the
   # build could not record has nothing to compare the config with.
