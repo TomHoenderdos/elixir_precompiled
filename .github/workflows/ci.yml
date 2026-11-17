@@ -5,10 +5,24 @@ on:
   pull_request:
 permissions:
   contents: read
+# Mix 1.18 to 1.20.5 can wait on its own build lock forever. The first lock
+# of a build dir leaves the lock file hard-linked to that Mix's port file;
+# a later Mix whose listener gets the same port rewrites the lock with its
+# own pid through that link, then waits for itself: "Waiting for lock on
+# the build directory (held by process <its own pid>)". It hung
+# `mix test --only integration` for an hour on 91f05b9. Fixed upstream by
+# elixir-lang/elixir#15765, in no release yet. A job here runs one Mix per
+# build dir at a time, so nothing needs the lock; children of the
+# integration tests run without it too (test/support/child_project.ex).
+env:
+  MIX_OS_CONCURRENCY_LOCK: "0"
 jobs:
   test:
     name: test (Elixir ${{ matrix.elixir }}, OTP ${{ matrix.otp }})
     runs-on: ubuntu-24.04
+    # A row takes under 6 minutes; a hang fails it instead of holding the
+    # runner for GitHub's 6 hours.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -77,6 +91,7 @@ jobs:
         run: MIX_ENV=prod mix archive.build -o /tmp/precompiled.ez
   chain:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: erlef/setup-beam@v1
