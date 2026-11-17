@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.7.3 - 2026-11-17
 
 * A project whose config sets `config :elixir, :time_zone_database, ...`
   (ex_nvr's `Tzdata.TimeZoneDatabase`, a dependency not compiled yet when
