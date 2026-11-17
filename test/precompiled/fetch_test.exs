@@ -215,6 +215,45 @@ defmodule Precompiled.FetchTest do
     assert m > 1
   end
 
+  describe "a cache entry another writer replaces with the same bytes" do
+    # Two runs sharing a home, or two deps of one run whose builds share a
+    # file (an empty one, say), each write the entry they downloaded:
+    # write_atomic renames a new file, with a new inode, over the old one.
+    # A read whose lstat saw the old file and whose open got the new one
+    # holds the right bytes all the same; it must not refuse the dep.
+    # Files, manifests and systems documents share that read
+    # (read_cached_entry/2); a manifest is the cheapest to read in a loop.
+    defp replacing(path, bytes, writers) do
+      for _ <- 1..writers do
+        spawn_link(fn -> replace_forever(path, bytes) end)
+      end
+    end
+
+    defp replace_forever(path, bytes) do
+      :ok = Precompiled.FileUtil.write_atomic(path, bytes)
+      replace_forever(path, bytes)
+    end
+
+    defp stop(pids), do: Enum.each(pids, &(Process.unlink(&1) && Process.exit(&1, :kill)))
+
+    test "a manifest is read, never refused as changed", %{f: f, config: config} do
+      F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{}}}}, format: 1)
+
+      sha =
+        F.get(:batch)["payload"]
+        |> Base.url_decode64!(padding: false)
+        |> :json.decode()
+        |> get_in(["manifests", "ash"])
+
+      assert {:ok, _} = Fetch.manifest(config, "ash", sha)
+      path = Path.join(config.home, "manifests/#{sha}.json")
+      writers = replacing(path, File.read!(path), 4)
+      results = for _ <- 1..2000, do: Fetch.manifest(config, "ash", sha)
+      stop(writers)
+      assert Enum.reject(results, &match?({:ok, _}, &1)) == []
+    end
+  end
+
   test "a cache entry used in the last day is not marked again", %{
     f: f,
     config: config,

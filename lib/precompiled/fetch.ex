@@ -555,9 +555,18 @@ defmodule Precompiled.Fetch do
   # is fetched again and replaced.
   #
   # The file is opened only after lstat says it is regular, and the open
-  # handle must be that same file (inode and device): a swap between the
-  # two is refused. The read stops at `max` + 1 bytes, whatever the file
-  # has grown to since.
+  # handle must be that same file (inode and device). The read stops at
+  # `max` + 1 bytes, whatever the file has grown to since.
+  #
+  # Another file under the name by the open is what every writer of this
+  # cache does: write_atomic/2 renames a new file over the entry, and two
+  # runs sharing a home, or two deps of one run whose builds share a file,
+  # write the same entry. So the name is looked at again: a regular file
+  # is read as before, anything else refused as above. Every caller
+  # re-hashes the bytes, so a file that keeps changing under the name only
+  # costs a download (`:absent`), never the dep.
+  @cache_read_attempts 3
+
   defp read_cached(path, max) do
     case read_cached_entry(path, max) do
       {:ok, bytes, _mtime} -> {:ok, bytes}
@@ -566,12 +575,22 @@ defmodule Precompiled.Fetch do
   end
 
   # read_cached/2, plus the read file's mtime (posix seconds).
-  defp read_cached_entry(path, max) do
+  defp read_cached_entry(path, max), do: read_cached_entry(path, max, @cache_read_attempts)
+
+  defp read_cached_entry(path, max, attempts) do
     case File.lstat(path, time: :posix) do
       {:ok, %File.Stat{type: :regular, size: size}} when size > max -> :absent
-      {:ok, %File.Stat{type: :regular} = stat} -> read_regular_entry(path, stat, max)
+      {:ok, %File.Stat{type: :regular} = stat} -> read_entry(path, stat, max, attempts)
       {:ok, %File.Stat{}} -> {:fail, "cache refused (#{path} is not a regular file; remove it)"}
       {:error, _} -> :absent
+    end
+  end
+
+  defp read_entry(path, stat, max, attempts) do
+    case read_regular_entry(path, stat, max) do
+      {:fail, _} when attempts > 1 -> read_cached_entry(path, max, attempts - 1)
+      {:fail, _} -> :absent
+      other -> other
     end
   end
 

@@ -18,6 +18,15 @@
   `candidate crashed: <error>`, with nothing of a half-finished install
   left behind.
 
+* A cache entry that another writer replaced with the same bytes while
+  it was being read no longer FAILs the dependency with `cache refused
+  (... changed while being read)`. Two runs sharing a home, or two
+  dependencies of one run whose builds share a file, each write the
+  entry they downloaded, renaming a new file over it; a read whose open
+  got the new file now looks at the name again, as a symlink or other
+  non-regular file is still refused. One that keeps changing is
+  downloaded again; the bytes are re-hashed either way.
+
 ## v0.7.2 - 2026-11-17
 
 * Host-native builds, opt-in: with `config :precompiled, host_native: true`
