@@ -296,6 +296,24 @@ defmodule Precompiled.HostNativeCheckTest do
     refute File.exists?(Path.join(c.lib, "x"))
   end
 
+  # Staging writes every file by its path, whichever list names it: a priv
+  # path under `ebin` lands in priv all the same, so it is read back too.
+  test "on, a priv library listed under ebin is read back as well", c do
+    config = config(c, true)
+    entry = host_native(c.f)
+    extra = file(c.f, "priv/native/libextra.so", @so, 33261)
+
+    publish(c.f, %{
+      "builds" => [],
+      "builds_host_native" => [%{entry | "ebin" => entry["ebin"] ++ [extra]}]
+    })
+
+    {report, out} = run(c, config)
+    assert report.hits == 0
+    assert out =~ "priv/native/libextra.so has no checksum-pinned origin"
+    refute File.exists?(Path.join(c.lib, "x"))
+  end
+
   test "a regular hit still wins with the opt-in on", c do
     config = config(c, true)
     pure = entry(c.f, "pure_elixir", %{})

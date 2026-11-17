@@ -284,14 +284,18 @@ defmodule Precompiled.HostNative do
   # of this host's machine that one of the build's origins names by path,
   # so a build filed under the wrong triple, or a library the origins leave
   # out (one compiled on the builder), is never installed. The portal checks
-  # the same at ingest; this holds whatever the signed manifest says.
+  # the same at ingest; this holds whatever the signed manifest says. Every
+  # staged file is read, `ebin`'s list too: staging writes a file by its
+  # path whichever list names it, so a `priv/` path listed under `ebin`
+  # lands in priv all the same.
   @spec staged_natives(Path.t(), map(), map() | nil) :: :ok | {:fail, String.t()}
   def staged_natives(staging, entry, %{triple: triple}) when is_map_key(@machines, triple) do
     machine = Map.fetch!(@machines, triple)
     origins = entry |> get_in(["build", "origins"]) |> List.wrap()
     named = for %{"path" => path} <- origins, is_binary(path), into: MapSet.new(), do: path
+    staged = List.wrap(entry["ebin"]) ++ List.wrap(entry["priv"])
 
-    Enum.find_value(entry["priv"] || [], :ok, fn %{"path" => path} ->
+    Enum.find_value(staged, :ok, fn %{"path" => path} ->
       case Precompiled.Elf.read_file(Path.join(staging, path)) do
         :not_elf ->
           nil

@@ -16,8 +16,9 @@
   release whose archive is listed, with its sha256, in the package's own
   checksum file under `deps/` (read as data, never evaluated); a library
   the build compiled itself is never used. Before it replaces anything in
-  `_build`, every staged priv file that is ELF is read back: it must be a
-  64-bit library of this machine that one of the build's origins names.
+  `_build`, every staged file that is ELF is read back, whichever of the
+  entry's lists names it: it must be a 64-bit library of this machine that
+  one of the build's origins names.
   Three new reason codes:
   `triple_differs`, `nif_version_newer`, `origin_unverified`. Off, the
   list is never read and nothing changes.

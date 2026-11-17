@@ -871,12 +871,9 @@ defmodule Precompiled.Check do
   defp build_suffix(label) when is_binary(label), do: "; build " <> label
   defp build_suffix(_label), do: ""
 
-  # Rule 7, second half: the manifest said the compile_env matches; the
-  # downloaded .app is the authority. A manifest that lies still cannot
-  # plant a mismatched build.
-  # A host-native build's staged priv, from its bytes (the staging dir holds
-  # `ebin/<app>.app`): every ELF file a library of this machine that one of
-  # the build's origins names. Any other build: nothing more.
+  # A host-native build's staged files, from their bytes (the staging dir
+  # holds `ebin/<app>.app`): every ELF file a library of this machine that
+  # one of the build's origins names. Any other build: nothing more.
   defp verify_natives(%{"target" => "host_native"} = entry, app_path, config),
     do:
       HostNative.staged_natives(
@@ -887,6 +884,9 @@ defmodule Precompiled.Check do
 
   defp verify_natives(_entry, _app_path, _config), do: :ok
 
+  # Rule 7, second half: the manifest said the compile_env matches; the
+  # downloaded .app is the authority. A manifest that lies still cannot
+  # plant a mismatched build.
   defp verify_app(app_path, name, version, config_fun) do
     with :ok <- app_identity(app_path, name, version) do
       case Match.compile_env_from_app(app_path) do
