@@ -473,7 +473,11 @@ defmodule Precompiled.Match do
   end
 
   # A host-native build passes the rules of any host build, with the
-  # triple in place of the target, and then its own: the OTP release no
+  # triple in place of the target, and then its own: its compile inputs
+  # recorded (nil passes compile_inputs_ok/3 for a build from before 0.6.0,
+  # but a host-native build's library is picked by env the tool reads, the
+  # TARGET_* overrides and a force-build variable, which the list holds and
+  # no source scan of the package sees), the OTP release no
   # newer than this one, the NIF version no newer than this VM's, every
   # needed library and symbol version here, and every downloaded library's
   # archive pinned by the package's checksum file.
@@ -483,6 +487,7 @@ defmodule Precompiled.Match do
     [fn -> HostNative.triple_reason(build["target"], b, host) end] ++
       build_rules(build, b, ctx) ++
       [
+        fn -> present_reason(b, "compile_inputs") end,
         fn -> otp_full_reason(b["otp_full"], host.otp_full) end,
         fn -> HostNative.nif_reason(b["nif_version"], host.nif_version) end,
         fn -> HostNative.needs_reason(b, host) end,
@@ -911,7 +916,8 @@ defmodule Precompiled.Match do
   @field_names %{
     "package_checksum" => "package_checksum",
     "deps" => "deps lock",
-    "compile_env" => "compile_env"
+    "compile_env" => "compile_env",
+    "compile_inputs" => "compile inputs"
   }
 
   @doc false

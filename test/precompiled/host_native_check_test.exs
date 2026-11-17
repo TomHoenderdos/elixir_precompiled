@@ -135,6 +135,7 @@ defmodule Precompiled.HostNativeCheckTest do
           "otp_full" => otp(),
           "nif_version" => "2.16",
           "mix_target" => "host",
+          "compile_inputs" => [],
           "native" => true,
           "elf" => %{"needs" => %{"libz.so.1" => ["ZLIB_1.2.9"]}},
           "origins" => [
@@ -332,6 +333,21 @@ defmodule Precompiled.HostNativeCheckTest do
       assert out =~ "priv/native/libx.so is not a 64-bit aarch64-linux-gnu library"
       refute File.exists?(Path.join(c.lib, "x"))
     end
+  end
+
+  # The worker publishes no host-native pass without its env reads (the
+  # TARGET_* overrides, a force-build variable): one without the list could
+  # have dropped them, and this client would take it whatever its env says.
+  test "on, a host-native build without compile_inputs misses", c do
+    config = config(c, true)
+    entry = host_native(c.f)
+    entry = %{entry | "build" => Map.delete(entry["build"], "compile_inputs")}
+    publish(c.f, %{"builds" => [], "builds_host_native" => [entry]})
+
+    {report, out} = run(c, config)
+    assert report.hits == 0
+    assert out =~ ~r/x 1\.0\.0\s+MISS\s+build predates compile inputs/
+    refute File.exists?(Path.join(c.lib, "x"))
   end
 
   test "a regular hit still wins with the opt-in on", c do

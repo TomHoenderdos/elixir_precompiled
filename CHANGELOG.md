@@ -9,7 +9,8 @@
   a NIF package's beams and priv libraries built for this machine's
   triple, ABI-compatible with it rather than the bytes Mix would compile
   here. Such a build is installed only when, besides the rules of any host
-  build, its OTP major is this one and its full OTP version and NIF version
+  build, it records its compile inputs (the env its native tool picks the
+  library by is compared like any other), its OTP major is this one and its full OTP version and NIF version
   no newer, every library its ELF files need is found here
   (`ldconfig -p`, the 64-bit, multiarch and `/lib` dirs) with every symbol
   version they need, and every library is one downloaded from an upstream

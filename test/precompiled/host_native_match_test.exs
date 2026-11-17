@@ -71,6 +71,7 @@ defmodule Precompiled.HostNativeMatchTest do
           "mix_target" => "host",
           "deps" => %{"spark" => %{"version" => "2.7.8", "checksum" => "SPARKOUTER"}},
           "compile_env" => [],
+          "compile_inputs" => [],
           "package_checksum" => "XOUTER",
           "run_id" => "r1",
           "image_digest" => "d",
@@ -142,6 +143,32 @@ defmodule Precompiled.HostNativeMatchTest do
   test "a host-native build hits when every rule holds", c do
     assert {:ok, %{"target" => "host_native"}, "host_native"} =
              Match.select_reason(doc([firmware()], [hn()]), ctx(c))
+  end
+
+  # What the user's own compile would pick the library by: the tool's
+  # triple overrides, its force-build switches (env and config). Each is a
+  # recorded input; a host-native build without the list misses.
+  test "the env and config the tool picks the library by are compared", c do
+    unset = Base.url_encode64(:erlang.term_to_binary(:error), padding: false)
+    env = %{"kind" => "env", "name" => "TARGET_ARCH", "set_by" => "host", "value" => unset}
+    force = %{"app" => "rustler_precompiled", "path" => ["force_build_all"], "value" => unset}
+    doc = doc([], [hn(%{"compile_inputs" => [env], "compile_env" => [force]})])
+
+    assert {:ok, _, "host_native"} = Match.select_reason(doc, ctx(c, getenv: fn _ -> nil end))
+
+    assert {:miss, %Reason{code: :env_differs, args: ["TARGET_ARCH"]}} =
+             Match.select_reason(doc, ctx(c, getenv: &if(&1 == "TARGET_ARCH", do: "x86_64")))
+
+    config = fn
+      "rustler_precompiled", ["force_build_all"] -> {:ok, true}
+      _, _ -> :error
+    end
+
+    assert {:miss, %Reason{code: :compile_env_differs}} =
+             Match.select_reason(doc, ctx(c, getenv: fn _ -> nil end, config: config))
+
+    assert {:miss, %Reason{code: :build_predates, args: ["compile_inputs"]}} =
+             Match.select_reason(doc([], [hn(%{"compile_inputs" => nil})]), ctx(c))
   end
 
   test "without the opt-in the list is never read", c do
