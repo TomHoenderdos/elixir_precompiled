@@ -314,6 +314,26 @@ defmodule Precompiled.HostNativeCheckTest do
     refute File.exists?(Path.join(c.lib, "x"))
   end
 
+  # A relocatable object or an executable is no library a NIF loads: the
+  # portal takes only ET_DYN, and so does the read-back.
+  test "on, an origin-named priv ELF that is no shared library is not installed", c do
+    config = config(c, true)
+    rel = File.read!(Path.expand("../fixtures/elf/rel_aarch64.o", __DIR__))
+    <<head::binary-16, _type::little-16, rest::binary>> = @so
+    exec = <<head::binary, 2::little-16, rest::binary>>
+
+    for bytes <- [rel, exec] do
+      entry = host_native(c.f)
+      entry = %{entry | "priv" => [file(c.f, "priv/native/libx.so", bytes, 33261)]}
+      publish(c.f, %{"builds" => [], "builds_host_native" => [entry]})
+
+      {report, out} = run(c, config)
+      assert report.hits == 0
+      assert out =~ "priv/native/libx.so is not a 64-bit aarch64-linux-gnu library"
+      refute File.exists?(Path.join(c.lib, "x"))
+    end
+  end
+
   test "a regular hit still wins with the opt-in on", c do
     config = config(c, true)
     pure = entry(c.f, "pure_elixir", %{})

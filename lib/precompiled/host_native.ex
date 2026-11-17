@@ -280,10 +280,11 @@ defmodule Precompiled.HostNative do
 
   @doc false
   # The staged files of a host-native `entry`, read back before they replace
-  # anything in _build: every priv file that is ELF must be a 64-bit library
-  # of this host's machine that one of the build's origins names by path,
-  # so a build filed under the wrong triple, or a library the origins leave
-  # out (one compiled on the builder), is never installed. The portal checks
+  # anything in _build: every file that is ELF must be a 64-bit shared
+  # library (ET_DYN, as the portal requires) of this host's machine that
+  # one of the build's origins names by path, so a build filed under the
+  # wrong triple, or a library the origins leave out (one compiled on the
+  # builder), is never installed. The portal checks
   # the same at ingest; this holds whatever the signed manifest says. Every
   # staged file is read, `ebin`'s list too: staging writes a file by its
   # path whichever list names it, so a `priv/` path listed under `ebin`
@@ -300,7 +301,7 @@ defmodule Precompiled.HostNative do
         :not_elf ->
           nil
 
-        {:ok, %{class: 64, machine: ^machine}} ->
+        {:ok, %{class: 64, machine: ^machine, type: :dyn}} ->
           unless MapSet.member?(named, path),
             do: {:fail, "#{path} has no checksum-pinned origin"}
 
