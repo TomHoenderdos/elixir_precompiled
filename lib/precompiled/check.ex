@@ -773,11 +773,16 @@ defmodule Precompiled.Check do
   defp install(candidate, entry, provenance, config, env, config_fun) do
     sname = Atom.to_string(candidate.name)
 
+    verify = fn app ->
+      with :ok <- verify_app(app, sname, candidate.version, config_fun),
+           do: verify_natives(entry, app, config)
+    end
+
     with {:ok, stats} <-
            Fetch.install(config, candidate.name, entry, candidate.lock_entry, env.build_lib,
              deps_path: env.deps_path,
              provenance: provenance,
-             verify_app: &verify_app(&1, sname, candidate.version, config_fun)
+             verify_app: verify
            ) do
       {:hit, Map.put(stats, :stripped, stripped?(Path.join(env.build_lib, sname), sname))}
     end
@@ -869,6 +874,19 @@ defmodule Precompiled.Check do
   # Rule 7, second half: the manifest said the compile_env matches; the
   # downloaded .app is the authority. A manifest that lies still cannot
   # plant a mismatched build.
+  # A host-native build's staged priv, from its bytes (the staging dir holds
+  # `ebin/<app>.app`): every ELF file a library of this machine that one of
+  # the build's origins names. Any other build: nothing more.
+  defp verify_natives(%{"target" => "host_native"} = entry, app_path, config),
+    do:
+      HostNative.staged_natives(
+        app_path |> Path.dirname() |> Path.dirname(),
+        entry,
+        Map.get(config, :native_host)
+      )
+
+  defp verify_natives(_entry, _app_path, _config), do: :ok
+
   defp verify_app(app_path, name, version, config_fun) do
     with :ok <- app_identity(app_path, name, version) do
       case Match.compile_env_from_app(app_path) do

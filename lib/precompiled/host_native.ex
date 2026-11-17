@@ -279,6 +279,37 @@ defmodule Precompiled.HostNative do
   end
 
   @doc false
+  # The staged files of a host-native `entry`, read back before they replace
+  # anything in _build: every priv file that is ELF must be a 64-bit library
+  # of this host's machine that one of the build's origins names by path,
+  # so a build filed under the wrong triple, or a library the origins leave
+  # out (one compiled on the builder), is never installed. The portal checks
+  # the same at ingest; this holds whatever the signed manifest says.
+  @spec staged_natives(Path.t(), map(), map() | nil) :: :ok | {:fail, String.t()}
+  def staged_natives(staging, entry, %{triple: triple}) when is_map_key(@machines, triple) do
+    machine = Map.fetch!(@machines, triple)
+    origins = entry |> get_in(["build", "origins"]) |> List.wrap()
+    named = for %{"path" => path} <- origins, is_binary(path), into: MapSet.new(), do: path
+
+    Enum.find_value(entry["priv"] || [], :ok, fn %{"path" => path} ->
+      case Precompiled.Elf.read_file(Path.join(staging, path)) do
+        :not_elf ->
+          nil
+
+        {:ok, %{class: 64, machine: ^machine}} ->
+          unless MapSet.member?(named, path),
+            do: {:fail, "#{path} has no checksum-pinned origin"}
+
+        _ ->
+          {:fail, "#{path} is not a 64-bit #{triple} library"}
+      end
+    end)
+  end
+
+  def staged_natives(_staging, _entry, _host),
+    do: {:fail, "host-native build on a host without a triple"}
+
+  @doc false
   # A rustler_precompiled-style checksum file, read as data: at most 1 MiB,
   # parsed with Code.string_to_quoted/2 (no new atoms) and never evaluated.
   # Only a literal map of string names to "sha256:<64 lowercase hex>"

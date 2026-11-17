@@ -250,6 +250,52 @@ defmodule Precompiled.HostNativeCheckTest do
     refute File.exists?(Path.join(c.lib, "x"))
   end
 
+  # The portal checks both at ingest; the signed manifest is what the
+  # client trusts, so a wrong entry (a build filed under another triple, a
+  # library its origins leave out) is refused here too, from the bytes.
+  test "on, a priv library for another machine is not installed", c do
+    config = config(c, true)
+    x86 = File.read!(Path.expand("../fixtures/elf/nif_x86_64.so", __DIR__))
+    entry = host_native(c.f)
+    entry = %{entry | "priv" => [file(c.f, "priv/native/libx.so", x86, 33261)]}
+    publish(c.f, %{"builds" => [], "builds_host_native" => [entry]})
+
+    {report, out} = run(c, config)
+    assert report.hits == 0
+    assert out =~ "priv/native/libx.so is not a 64-bit aarch64-linux-gnu library"
+    refute File.exists?(Path.join(c.lib, "x"))
+  end
+
+  test "on, a priv library its origins do not name is not installed", c do
+    config = config(c, true)
+    entry = host_native(c.f)
+    extra = file(c.f, "priv/native/libextra.so", @so, 33261)
+
+    publish(c.f, %{
+      "builds" => [],
+      "builds_host_native" => [%{entry | "priv" => entry["priv"] ++ [extra]}]
+    })
+
+    {report, out} = run(c, config)
+    assert report.hits == 0
+    assert out =~ "priv/native/libextra.so has no checksum-pinned origin"
+    refute File.exists?(Path.join(c.lib, "x"))
+
+    # Nor one outside priv, which a beam may load_nif from all the same
+    # (staging refuses any file in ebin but beams and the .app).
+    ebin = file(c.f, "ebin/libx.so", @so, 33188)
+
+    publish(c.f, %{
+      "builds" => [],
+      "builds_host_native" => [%{entry | "ebin" => entry["ebin"] ++ [ebin]}]
+    })
+
+    {report, out} = run(c, config)
+    assert report.hits == 0
+    assert out =~ ~s("ebin/libx.so" does not belong in ebin)
+    refute File.exists?(Path.join(c.lib, "x"))
+  end
+
   test "a regular hit still wins with the opt-in on", c do
     config = config(c, true)
     pure = entry(c.f, "pure_elixir", %{})
