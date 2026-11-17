@@ -285,7 +285,7 @@ defmodule Precompiled.Check do
   # provenance: removed, so Mix compiles it from source in this same run.
   defp recheck(installed, batch, env) do
     Enum.reduce(installed, {[], []}, fn dep, {revoked, replaced} ->
-      {sha, _path} = manifest_ref(batch, Atom.to_string(dep.name))
+      {sha, _path} = manifest_ref(batch, package(dep))
 
       case recheck_one(
              dep,
@@ -538,7 +538,7 @@ defmodule Precompiled.Check do
     installed_sha = Map.get(candidate, :installed_sha)
 
     try do
-      {sha, path} = manifest_ref(batch, sname)
+      {sha, path} = manifest_ref(batch, package(candidate))
 
       # A fresh candidate: Mix compiles it unless it is installed now, so a
       # provenance file left by an earlier install must not vouch for
@@ -548,7 +548,8 @@ defmodule Precompiled.Check do
       result =
         with sha when is_binary(sha) <-
                sha || {:miss, Reason.new(:not_in_batch, [], "not in batch")},
-             {:ok, manifest} <- config |> Fetch.manifest(sname, sha, path) |> Reason.of_manifest(),
+             {:ok, manifest} <-
+               config |> Fetch.manifest(package(candidate), sha, path) |> Reason.of_manifest(),
              reads = scan_reads(config, env, sname, candidate.lock_entry),
              :ok <- scan_in_time(reads),
              match_ctx = ctx(candidate, env, config, config_fun, reads),
@@ -794,6 +795,18 @@ defmodule Precompiled.Check do
       {:hit, Map.put(stats, :stripped, stripped?(Path.join(env.build_lib, sname), sname))}
     end
   end
+
+  # The Hex package a candidate's lock entry names: what the portal builds
+  # and the batch names manifests by. It is not always the app, the lock
+  # key Mix installs, compiles and loads it as: `{:eini, hex: :eini_beam}`
+  # locks `eini: {:hex, :eini_beam, ...}`, and `eini` is another package.
+  # Only the manifest is looked up by it; everything on disk (deps/,
+  # _build, the .app) and the build's dependency closure, which the
+  # portal records by lock key too, stay by app.
+  defp package(%{lock_entry: {:hex, pkg, _, _, _, _, _, _}}) when is_atom(pkg),
+    do: Atom.to_string(pkg)
+
+  defp package(%{name: name}), do: Atom.to_string(name)
 
   # A batch that carries the v2 map names the format-2 document; otherwise
   # the format-1 one, which Manifest translates.

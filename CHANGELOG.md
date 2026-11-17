@@ -27,6 +27,16 @@
   non-regular file is still refused. One that keeps changing is
   downloaded again; the bytes are re-hashed either way.
 
+* A dependency declared under another name than its Hex package
+  (`{:eini, "~> 2.2", hex: :eini_beam}`, locked as
+  `eini: {:hex, :eini_beam, ...}`) is looked up by its Hex package,
+  `eini_beam`, not by the app, which here is the name of another Hex
+  package. The build still installs as the app Mix expects. Before, the
+  other package's manifest was read; its builds missed, since the lock's
+  outer checksum (`package_checksum`) is the real package's, so the dep
+  never got its own build. `mix precompiled.report` sends such a line
+  under the Hex package name too, as its lock entry already was.
+
 ## v0.7.2 - 2026-11-17
 
 * Host-native builds, opt-in: with `config :precompiled, host_native: true`

@@ -282,26 +282,41 @@ defmodule Precompiled.Report do
     assemble(report, contact,
       public?: &MapSet.member?(public, &1),
       place: place(report["context"], public),
-      lock: &lock_closure(where.lock, &1, @max_lock)
+      lock: &lock_closure(where.lock, &1, @max_lock),
+      package: &package_name(where.lock, &1)
     )
+  end
+
+  # A line names the app, the lock key; the portal knows the Hex package
+  # the lock entry names (`{:eini, hex: :eini_beam}` locks
+  # `eini: {:hex, :eini_beam, ...}`), as the lock entries sent name it.
+  defp package_name(lock, name) do
+    case Enum.find(lock, fn {app, _} -> is_atom(app) and Atom.to_string(app) == name end) do
+      {_app, {:hex, pkg, _, _, _, _, _, _}} when is_atom(pkg) -> Atom.to_string(pkg)
+      _ -> name
+    end
   end
 
   @doc false
   # The body of a report: `report` is a report.json (or a device's last
   # install, in the same shape); `:public?` says which lines may be sent,
-  # `:place` is the {target, system, system_version} to send, and `:lock`
-  # gives the lock entries of the sent lines' names.
+  # `:place` is the {target, system, system_version} to send, `:lock`
+  # gives the lock entries of the sent lines' names, and `:package`, when
+  # given, the Hex package a line's name (its app) is sent as.
   @spec assemble(map(), String.t() | nil, keyword()) :: map()
   def assemble(report, contact, opts) do
     ctx = report["context"]
     public? = Keyword.fetch!(opts, :public?)
     {target, system, system_version} = Keyword.fetch!(opts, :place)
 
-    lines =
+    package = Keyword.get(opts, :package, & &1)
+
+    kept =
       report["lines"]
       |> Enum.filter(&(well_formed?(&1) and public?.(&1["name"])))
       |> Enum.take(@max_lines)
-      |> Enum.map(&line(&1, system == @custom))
+
+    lines = Enum.map(kept, &line(%{&1 | "name" => package.(&1["name"])}, system == @custom))
 
     %{
       "format" => 1,
@@ -314,7 +329,7 @@ defmodule Precompiled.Report do
       "system" => system,
       "system_version" => system_version,
       "lines" => lines,
-      "lock" => Keyword.fetch!(opts, :lock).(Enum.map(lines, & &1["name"])),
+      "lock" => Keyword.fetch!(opts, :lock).(Enum.map(kept, & &1["name"])),
       "contact" => text(contact)
     }
     |> Map.reject(fn {_k, v} -> is_nil(v) end)

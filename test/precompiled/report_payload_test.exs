@@ -160,6 +160,18 @@ defmodule Precompiled.ReportPayloadTest do
     refute Map.has_key?(payload, "contact")
   end
 
+  test "a line is sent as the Hex package its lock entry names, not the app", %{tmp_dir: dir} do
+    # `{:eini, hex: :eini_beam}`: the app is eini, the Hex package eini_beam,
+    # and eini is another package the portal must not be told about.
+    eini = {:hex, :eini_beam, "2.2.5", "i", [:rebar3], [], "hexpm", String.duplicate("a", 64)}
+    w = where(dir, %{lock: Map.put(@lock, :eini, eini)})
+    rep = report([l("eini", "miss", "not_in_batch", []), l("jason", "miss", "not_in_batch", [])])
+
+    payload = Report.payload(w, rep, nil)
+    assert Enum.map(payload["lines"], & &1["name"]) == ["eini_beam", "jason"]
+    assert Enum.map(payload["lock"], & &1["name"]) == ["eini_beam", "jason", "decimal"]
+  end
+
   test "context, os and client fields", %{tmp_dir: dir} do
     payload = Report.payload(where(dir), report([]), "@me")
 
