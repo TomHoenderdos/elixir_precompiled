@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+* A project whose config sets `config :elixir, :time_zone_database, ...`
+  (ex_nvr's `Tzdata.TimeZoneDatabase`, a dependency not compiled yet when
+  this library runs) no longer FAILs every dependency with
+  `batch malformed`. The batch's time checks asked the configured time
+  zone database for plain UTC arithmetic; they now name the UTC-only one.
+  Like any other config, the key is compared where a build recorded it
+  under `compile_env`, and otherwise ignored.
 ## v0.7.2 - 2026-11-17
 
 * Host-native builds, opt-in: with `config :precompiled, host_native: true`

@@ -430,9 +430,19 @@ defmodule Precompiled.Trust do
   def clock_floor(), do: @clock_floor
 
   @doc false
+  # UTC arithmetic, with the UTC-only database named: DateTime.add/3
+  # otherwise asks the configured one, and a project's
+  # `config :elixir, :time_zone_database, Tzdata.TimeZoneDatabase` names a
+  # dependency that is not compiled yet when this runs.
   @spec now(map()) :: DateTime.t()
-  def now(config),
-    do: DateTime.add(DateTime.utc_now(), Map.get(config, :clock_offset_seconds, 0), :second)
+  def now(config) do
+    DateTime.add(
+      DateTime.utc_now(),
+      Map.get(config, :clock_offset_seconds, 0),
+      :second,
+      Calendar.UTCOnlyTimeZoneDatabase
+    )
+  end
 
   # :source_unreachable is set when the source could not be reached and
   # this is the cached batch.
