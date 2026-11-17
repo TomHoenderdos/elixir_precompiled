@@ -45,3 +45,49 @@ defmodule Precompiled.ChildProjectTest do
     assert File.read!(marker) =~ ~r/^(offline|online) jason-1\.4\.5$/
   end
 end
+
+defmodule Precompiled.ChildProjectLockTest do
+  # Changes the VM's env: never async.
+  use ExUnit.Case, async: false
+  alias Precompiled.ChildProject, as: C
+
+  @moduletag :tmp_dir
+
+  # Mix has no OS build lock before 1.18.
+  if Version.match?(System.version(), ">= 1.18.0") do
+    # A Mix build lock nobody releases, as Mix's own can be (ci.yml): this
+    # VM holds the child's for the child's whole run. Waiting on it, the
+    # child would time out; without the lock it compiles.
+    @tag timeout: 120_000
+    test "a child never waits on a Mix build lock", %{tmp_dir: dir} do
+      proj = Path.join(dir, "proj")
+      File.mkdir_p!(proj)
+
+      File.write!(Path.join(proj, "mix.exs"), """
+      defmodule LockProj.MixProject do
+        use Mix.Project
+        def project, do: [app: :lock_proj, version: "0.1.0", deps: []]
+      end
+      """)
+
+      out = holding_build_lock(Path.join(proj, "_build/dev"), fn -> compile(proj) end)
+      refute out =~ "Waiting for lock", out
+    end
+
+    # Mix locks a build dir by its path, the child's here. CI turns the
+    # lock off for this VM, whose env a child inherits: it is on for the
+    # whole call, so only the harness can turn it off for the child.
+    defp holding_build_lock(build_path, fun) do
+      saved = System.get_env("MIX_OS_CONCURRENCY_LOCK")
+      System.delete_env("MIX_OS_CONCURRENCY_LOCK")
+
+      try do
+        Mix.Project.with_build_lock([deps_build_path: build_path], fun)
+      after
+        if saved, do: System.put_env("MIX_OS_CONCURRENCY_LOCK", saved)
+      end
+    end
+
+    defp compile(proj), do: C.mix!(proj, ["compile"], [], timeout: 30)
+  end
+end

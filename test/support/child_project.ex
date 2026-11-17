@@ -14,6 +14,11 @@ defmodule Precompiled.ChildProject do
   # HEX_OFFLINE=1 and touches no network at all; otherwise the command is
   # retried once online, into the private HEX_HOME.
   #
+  # A child runs without Mix's OS build lock (MIX_OS_CONCURRENCY_LOCK=0):
+  # it owns its tmp project, and Mix 1.18 to 1.20.5 can wait on that lock
+  # forever, its own included (.github/workflows/ci.yml). A child that
+  # outlives its timeout is killed and its run reads as timed out.
+  #
   # MIX_HOME is shared on purpose: it holds the Hex archive and rebar, which
   # the children only read.
   import ExUnit.Assertions
@@ -21,6 +26,8 @@ defmodule Precompiled.ChildProject do
 
   @alias ~s(["deps.compile precompiled", "precompiled.deps", "deps.loadpaths"])
   @timeout_s 300
+  # Seconds between the timeout's TERM and its KILL.
+  @kill_after_s 10
 
   @spec alias_value() :: String.t()
   def alias_value(), do: @alias
@@ -188,7 +195,11 @@ defmodule Precompiled.ChildProject do
         {"PRECOMPILED_HOME", Path.join(Path.dirname(proj), "home")}
       ] ++ env
 
-    cmd!(argv, Path.dirname(proj), [cd: proj, env: env] ++ Keyword.take(opts, [:packages]))
+    cmd!(
+      argv,
+      Path.dirname(proj),
+      [cd: proj, env: env] ++ Keyword.take(opts, [:packages, :timeout])
+    )
   end
 
   @doc """
@@ -207,8 +218,9 @@ defmodule Precompiled.ChildProject do
 
   @doc """
   Runs `argv` with `base/hex` as its HEX_HOME, seeded with `:packages`
-  (default jason 1.4.5). `offline: false` skips the offline attempt, for a
-  child that needs the network anyway. Raises on a non-zero exit.
+  (default jason 1.4.5), under a `:timeout` (seconds, default 300).
+  `offline: false` skips the offline attempt, for a child that needs the
+  network anyway. Raises on a non-zero exit.
   """
   @spec cmd!([String.t()], Path.t(), keyword()) :: String.t()
   def cmd!([exe | args], base, opts) do
@@ -220,7 +232,7 @@ defmodule Precompiled.ChildProject do
       &run_cmd(
         exe,
         args,
-        Keyword.put(opts, :env, Keyword.get(opts, :env, []) ++ hex_env(hex_home, &1))
+        Keyword.put(opts, :env, Keyword.get(opts, :env, []) ++ child_env(hex_home, &1))
       )
 
     {out, status} = run.(offline?)
@@ -234,20 +246,40 @@ defmodule Precompiled.ChildProject do
         {out, status}
       end
 
-    assert status == 0, "#{Enum.join([exe | args], " ")} exited #{status}:\n" <> out
+    assert status == 0,
+           "#{Enum.join([exe | args], " ")} #{failure(status, opts)}:\n" <> out
+
     out
   end
+
+  # GNU timeout exits 124 when the TERM ended the command, 137 when it took
+  # the KILL.
+  defp failure(status, opts) when status in [124, 137] do
+    if System.find_executable("timeout"),
+      do: "timed out after #{Keyword.get(opts, :timeout, @timeout_s)} s",
+      else: "exited #{status}"
+  end
+
+  defp failure(status, _opts), do: "exited #{status}"
 
   @doc "The HEX_HOME pair every child env carries; HEX_OFFLINE only when offline."
   @spec hex_env(Path.t(), boolean()) :: [{String.t(), String.t() | nil}]
   def hex_env(hex_home, offline?),
     do: [{"HEX_HOME", hex_home}, {"HEX_OFFLINE", if(offline?, do: "1")}]
 
+  # Last in the env, so a caller's env cannot override it.
+  defp child_env(hex_home, offline?),
+    do: hex_env(hex_home, offline?) ++ [{"MIX_OS_CONCURRENCY_LOCK", "0"}]
+
   defp run_cmd(exe, args, opts) do
     {exe, args} =
       case System.find_executable("timeout") do
-        nil -> {exe, args}
-        timeout -> {timeout, [to_string(@timeout_s), exe | args]}
+        nil ->
+          {exe, args}
+
+        timeout ->
+          seconds = to_string(Keyword.get(opts, :timeout, @timeout_s))
+          {timeout, ["-k", to_string(@kill_after_s), seconds, exe | args]}
       end
 
     cmd_opts = [env: opts[:env], stderr_to_stdout: true] ++ Keyword.take(opts, [:cd])
