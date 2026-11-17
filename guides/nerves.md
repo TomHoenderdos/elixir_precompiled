@@ -55,4 +55,13 @@ reuses the first.
 
 Everything above runs on your build machine, during [`mix firmware`](https://hexdocs.pm/nerves/Mix.Tasks.Firmware.html). To
 install a library on a running device, from IEx on the device, see
-[On a device](device.md).
+[On a device](device.md):
+
+```elixir
+Precompiled.install(:recon)
+Precompiled.report()
+```
+
+`Precompiled.report()` shows the last install's HIT/MISS/FAIL lines and
+sends them to the portal only after you answer yes
+([Reporting a miss from a device](device.md#reporting-a-miss-from-a-device)).

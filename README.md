@@ -80,7 +80,13 @@ On a running Nerves device, from an IEx shell:
 
 ```elixir
 Precompiled.install(:recon)
+Precompiled.report()
 ```
+
+`Precompiled.report()` shows the last install's HIT/MISS/FAIL lines and,
+only after you answer yes, sends them to the portal, so a miss on your
+device can be fixed (see
+[On a device](https://hexdocs.pm/precompiled/device.html#reporting-a-miss-from-a-device)).
 
 `PRECOMPILED=0` turns it off.
 
@@ -101,7 +107,6 @@ global rebar3 config that changes compile options, `ERL_COMPILER_OPTIONS`,
 `mix precompiled.report` sends the last build's HIT/MISS/FAIL report,
 after showing it and asking (see
 [Troubleshooting](https://hexdocs.pm/precompiled/troubleshooting.html#reporting-a-miss)).
-On a device, `Precompiled.report()` does the same for the last `Precompiled.install/2`.
 
 ## Guides
 
