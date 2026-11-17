@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.7.2 - 2026-11-17
 
 * Host-native builds, opt-in: with `config :precompiled, host_native: true`
   (under `Mix.install/2`, `config: [precompiled: [host_native: true]]`) a
