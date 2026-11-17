@@ -117,10 +117,11 @@ defmodule Precompiled.Match do
 
   defp select_regular(manifest, ctx) do
     {system, system_version} = ctx.system
+    mode = Precompiled.ErlCompilerEnv.options(machine_env(ctx))
 
-    case builds(manifest, ctx.version, Map.get(ctx, :env_closure)) do
+    case builds(manifest, ctx.version, Map.get(ctx, :env_closure), mode) do
       [] ->
-        {:miss, Reason.new(:not_built_version, [ctx.version], "not built for #{ctx.version}")}
+        {:miss, not_built(manifest, ctx, mode)}
 
       builds ->
         results = Enum.map(builds, &{&1, check(&1, ctx)})
@@ -146,10 +147,35 @@ defmodule Precompiled.Match do
   # it nil (no tree read) the lock decides at depth 1, which would take a
   # world build where Mix compiles a dep further down without one of them.
   # The device layer never reads them (Precompiled.Device.Rules).
-  defp builds(manifest, version, env_closure) do
+  #
+  # With ERL_COMPILER_OPTIONS exactly `[deterministic]` (`mode`
+  # :deterministic), the same lists come from the version's `deterministic`
+  # object instead, and from nowhere else: builds compiled with that option
+  # (deterministic_ok/2), which no other project may take.
+  defp builds(manifest, version, env_closure, mode) do
     v = get_in(manifest, ["versions", version]) || %{}
+    v = if mode == :deterministic, do: deterministic(v), else: v
     List.wrap(v["builds"]) ++ List.wrap(v["builds_with_inputs"]) ++ world(v, env_closure)
   end
+
+  defp deterministic(%{"deterministic" => %{} = lists}), do: lists
+  defp deterministic(_v), do: %{}
+
+  # No build to judge: in deterministic mode, of a version built without
+  # the option, the reason says what is missing.
+  defp not_built(manifest, ctx, :deterministic) do
+    if builds(manifest, ctx.version, Map.get(ctx, :env_closure), :none) == [],
+      do: not_built(manifest, ctx, :none),
+      else:
+        Reason.new(
+          :deterministic_not_built,
+          [ctx.version],
+          "no ERL_COMPILER_OPTIONS=deterministic build of #{ctx.version} yet"
+        )
+  end
+
+  defp not_built(_manifest, ctx, _mode),
+    do: Reason.new(:not_built_version, [ctx.version], "not built for #{ctx.version}")
 
   defp world(%{"builds_closure" => list}, env_closure)
        when is_list(list) and is_list(env_closure),
@@ -515,6 +541,7 @@ defmodule Precompiled.Match do
       fn -> build_method_ok(b, ctx) end,
       fn -> rebar3_global_ok(b, ctx) end,
       fn -> Precompiled.ErlCompilerEnv.check(machine_env(ctx)) end,
+      fn -> deterministic_ok(b, ctx) end,
       fn -> compile_inputs_ok(build["target"], b, ctx) end,
       fn -> toolchain_reason(b) end,
       fn -> elixir_reason(b["elixir"], ctx.elixir) end,
@@ -739,6 +766,31 @@ defmodule Precompiled.Match do
       do: Precompiled.Rebar3Config.check(machine_env(ctx)),
       else: :ok
   end
+
+  # A build compiled with ERL_COMPILER_OPTIONS=deterministic
+  # (`build.erl_compiler_options`) differs from a compile without it
+  # (`module_info(:compile)` has no `options` or `source`, and an Erlang
+  # module's `?FILE` is the source's base name), so it serves exactly the
+  # projects that set exactly that option, and they take nothing else.
+  # ErlCompilerEnv.check/1 has refused every other value before this.
+  defp deterministic_ok(b, ctx) do
+    case {Precompiled.ErlCompilerEnv.options(machine_env(ctx)), b["erl_compiler_options"]} do
+      {:deterministic, ["deterministic"]} ->
+        :ok
+
+      {:deterministic, _} ->
+        erl_options_miss("ERL_COMPILER_OPTIONS is deterministic, this build was made without it")
+
+      {_, nil} ->
+        :ok
+
+      {_, _} ->
+        erl_options_miss("built with ERL_COMPILER_OPTIONS=deterministic, this project is not")
+    end
+  end
+
+  defp erl_options_miss(text),
+    do: {:miss, Reason.new(:erl_compiler_options, ["ERL_COMPILER_OPTIONS"], text)}
 
   # The environment the machine's own settings are read from (HOME, the
   # ERL_* variables): what a compile here sees. Kept apart from :getenv,

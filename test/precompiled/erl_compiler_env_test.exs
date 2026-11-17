@@ -63,7 +63,11 @@ defmodule Precompiled.ErlCompilerEnvTest do
       assert {:miss, reason} = check(env)
       assert reason.code == :erl_compiler_options
       assert reason.args == ["ERL_COMPILER_OPTIONS"]
-      assert reason.text == "ERL_COMPILER_OPTIONS is set, which changes every compile"
+
+      assert reason.text ==
+               "ERL_COMPILER_OPTIONS is set to options other than exactly deterministic, " <>
+                 "which change compiled code; only deterministic has precompiled builds"
+
       refute reason.text =~ "SECRET_FLAG"
       refute Enum.any?(reason.args, &(&1 =~ "SECRET"))
     end
@@ -77,6 +81,39 @@ defmodule Precompiled.ErlCompilerEnvTest do
       end
 
       assert {:ok, _, _} = Match.select(doc(@build), ctx(%{"HOME" => dir}, manager: "mix"))
+    end
+
+    test "is read as OTP reads it: only exactly [deterministic] is deterministic" do
+      options = &ErlCompilerEnv.options(fn "ERL_COMPILER_OPTIONS" -> &1 end)
+
+      for value <- [
+            "deterministic",
+            "[deterministic]",
+            " [ deterministic ] ",
+            "\tdeterministic\n"
+          ],
+          do: assert(options.(value) == :deterministic, value)
+
+      for value <- [nil, "", "  "], do: assert(options.(value) == :none)
+
+      for value <- [
+            "[deterministic, deterministic]",
+            "[deterministic,debug_info]",
+            "debug_info",
+            "deterministic.",
+            "[deterministic",
+            "{d,'TEST'}",
+            "[]",
+            "'deterministic'x",
+            "\"deterministic\"",
+            <<255, 0>>
+          ],
+          do: assert(options.(value) == :other, inspect(value))
+    end
+
+    test "deterministic passes the machine check, which leaves the build to Match",
+         %{tmp_dir: dir} do
+      assert :ok = check(%{"HOME" => dir, "ERL_COMPILER_OPTIONS" => "deterministic"})
     end
   end
 

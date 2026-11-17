@@ -20,7 +20,12 @@ defmodule Precompiled.Manifest do
   # whose compile_inputs Match checks, and builds_closure (0.7.0): world
   # builds, which Match reads only where it knows the env's closure. A
   # builds_closure that is not a list is dropped, so the version's other
-  # builds still serve.
+  # builds still serve. A version's `deterministic` object holds the same
+  # lists for builds compiled with ERL_COMPILER_OPTIONS=deterministic, which
+  # Match reads, in place of the version's own, only in a project that sets
+  # exactly that option; one whose `builds` is not a list, or whose
+  # `builds_with_inputs` is there and not a list, is dropped, as is its
+  # `builds_closure` alone when that is not a list.
 
   @spec normalize(map()) :: {:ok, map()} | {:fail, String.t()}
   def normalize(%{"format" => 2, "versions" => versions} = doc) when is_map(versions) do
@@ -58,10 +63,22 @@ defmodule Precompiled.Manifest do
 
   @dropped_unless_list ["builds_closure", "builds_host_native"]
 
-  defp drop_bad_lists({version, v}),
-    do:
-      {version,
-       Map.reject(v, fn {k, list} -> k in @dropped_unless_list and not is_list(list) end)}
+  defp drop_bad_lists({version, v}) do
+    v = Map.reject(v, fn {k, list} -> k in @dropped_unless_list and not is_list(list) end)
+
+    case v do
+      %{"deterministic" => lists} ->
+        if is_map(lists) and version_ok?(lists),
+          do: {version, Map.put(v, "deterministic", Map.reject(lists, &bad_closure?/1))},
+          else: {version, Map.delete(v, "deterministic")}
+
+      _ ->
+        {version, v}
+    end
+  end
+
+  defp bad_closure?({"builds_closure", list}), do: not is_list(list)
+  defp bad_closure?(_entry), do: false
 
   defp builds(entries) do
     for {target, entry} <- entries do

@@ -75,7 +75,8 @@ defmodule Precompiled.Reason do
     os_type_differs: "built on {0}, this machine is {1}",
     triple_differs: "built for {0}, this machine is {1}",
     nif_version_newer: "built for NIF {0}, this VM has {1}",
-    origin_unverified: "{0} not in the package's checksum file"
+    origin_unverified: "{0} not in the package's checksum file",
+    deterministic_not_built: "no ERL_COMPILER_OPTIONS=deterministic build of {0} yet"
   ]
 
   @codes Keyword.keys(@templates)

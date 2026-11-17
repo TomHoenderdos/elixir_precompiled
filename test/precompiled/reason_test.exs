@@ -17,11 +17,11 @@ defmodule Precompiled.ReasonTest do
              env_differs env_set_at_build env_all config_unrecorded config_order_differs
              rebar3_global_config erl_compiler_options platform_define_differs
              endian_differs os_type_differs triple_differs nif_version_newer
-             origin_unverified)a
+             origin_unverified deterministic_not_built)a
 
   test "the codes are exactly the table shared with the portal" do
     assert Reason.codes() == @shared
-    assert length(Reason.codes()) == 50
+    assert length(Reason.codes()) == 51
   end
 
   test "the codes for matching across releases render their templates" do
@@ -52,6 +52,11 @@ defmodule Precompiled.ReasonTest do
       assert Reason.render(code, args) == text
       assert Reason.new(code, args).text == text
     end
+  end
+
+  test "the code for a version with no deterministic build renders its template" do
+    assert Reason.render(:deterministic_not_built, ["1.4.5"]) ==
+             "no ERL_COMPILER_OPTIONS=deterministic build of 1.4.5 yet"
   end
 
   test "templates render args and never the text a reason was made from" do

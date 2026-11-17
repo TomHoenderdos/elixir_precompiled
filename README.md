@@ -99,7 +99,8 @@ by default (see
 
 On your build machine nothing is installed while something outside the
 project would make your own compile differ from the published build: a
-global rebar3 config that changes compile options, `ERL_COMPILER_OPTIONS`,
+global rebar3 config that changes compile options, `ERL_COMPILER_OPTIONS`
+(other than exactly `deterministic`, which takes builds compiled with it),
 `ERL_LIBS`, compiler-affecting `ERL_*FLAGS`/`ELIXIR_ERL_OPTIONS`, or a
 `.erlang` file. The line names the variable or file (never its value); see
 [Troubleshooting](https://hexdocs.pm/precompiled/troubleshooting.html).

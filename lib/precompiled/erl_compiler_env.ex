@@ -14,7 +14,12 @@ defmodule Precompiled.ErlCompilerEnv do
   #   compile:forms, but it appends the same list itself
   #   (elixir_erl_compiler:env_compiler_options/0, without
   #   warnings_as_errors) to every module it compiles, so Elixir-only
-  #   packages change too (`[no_line_info]` gives other beams).
+  #   packages change too (`[no_line_info]` gives other beams). One value
+  #   has builds of its own: exactly `[deterministic]` (or the bare term,
+  #   which OTP reads as the same list), which the portal builds a sibling
+  #   of each toolchain build with. `options/1` tells the three apart, and
+  #   Match then takes only those builds (`build.erl_compiler_options`);
+  #   any other value misses as before.
   # - ERL_FLAGS, ERL_AFLAGS, ERL_ZFLAGS: emulator arguments for every
   #   `erl`, the one Mix runs in and the one rebar3 runs in. Among them,
   #   `-env` sets ERL_COMPILER_OPTIONS, `-eval`/`-s`/`-run`/`-S` run code,
@@ -61,16 +66,40 @@ defmodule Precompiled.ErlCompilerEnv do
     end
   end
 
-  defp compiler_options(getenv) do
+  @doc false
+  # ERL_COMPILER_OPTIONS read as OTP's compile:env_default_opts/0 reads it
+  # (erl_scan:string/1, then erl_parse:parse_term/1 with a dot appended; a
+  # term that is not a list is the list of that term): `:none` when unset
+  # or blank, `:deterministic` when that is exactly `[deterministic]`, with
+  # no other term and no repeat, and `:other` for anything else, a value
+  # that does not parse included (OTP ignores those; this does not guess).
+  @spec options(getenv()) :: :none | :deterministic | :other
+  def options(getenv) do
     case getenv.("ERL_COMPILER_OPTIONS") do
-      v when is_binary(v) ->
-        if String.trim(v) == "",
-          do: :ok,
-          else:
-            miss(
-              "ERL_COMPILER_OPTIONS",
-              "ERL_COMPILER_OPTIONS is set, which changes every compile"
-            )
+      v when is_binary(v) -> if String.trim(v) == "", do: :none, else: parse(v)
+      _ -> :none
+    end
+  end
+
+  defp parse(value) do
+    with {:ok, tokens, _end} <- :erl_scan.string(String.to_charlist(value)),
+         {:ok, term} <- :erl_parse.parse_term(tokens ++ [{:dot, :erl_anno.new(1)}]) do
+      if term in [:deterministic, [:deterministic]], do: :deterministic, else: :other
+    else
+      _ -> :other
+    end
+  rescue
+    _ -> :other
+  end
+
+  defp compiler_options(getenv) do
+    case options(getenv) do
+      :other ->
+        miss(
+          "ERL_COMPILER_OPTIONS",
+          "ERL_COMPILER_OPTIONS is set to options other than exactly deterministic, " <>
+            "which change compiled code; only deterministic has precompiled builds"
+        )
 
       _ ->
         :ok

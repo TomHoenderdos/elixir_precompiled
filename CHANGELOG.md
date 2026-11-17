@@ -38,6 +38,18 @@
   never got its own build. `mix precompiled.report` sends such a line
   under the Hex package name too, as its lock entry already was.
 
+* `ERL_COMPILER_OPTIONS=deterministic` (or `[deterministic]`, read as OTP
+  reads it) no longer makes every dependency miss: such a project takes
+  only builds the portal compiled with exactly that option, listed under a
+  version's `deterministic` object (the same `builds`, `builds_with_inputs`
+  and `builds_closure` lists, each read as the version's own) and marked
+  `build.erl_compiler_options: ["deterministic"]`, and never a build made
+  without it. A project without the option never takes one of those. A
+  version with builds but none of those misses with the new reason code
+  `deterministic_not_built`. Clients before this release never read the
+  object. Any other value still misses, now as `ERL_COMPILER_OPTIONS is set
+  to options other than exactly deterministic, ...`.
+
 ## v0.7.2 - 2026-11-17
 
 * Host-native builds, opt-in: with `config :precompiled, host_native: true`

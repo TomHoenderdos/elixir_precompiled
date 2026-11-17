@@ -179,10 +179,20 @@ compares the whole tree. Releases before 0.7.0 do not read it at all.
 - Some settings on your machine change every compile, of any
   dependency, and no build records them, so while one is in place
   nothing matches (`... can change every compile`):
-  - `ERL_COMPILER_OPTIONS` set to anything but blanks. The Erlang
-    compiler adds it to every `.erl` file Mix or rebar3 compiles, and
-    Elixir adds it (without `warnings_as_errors`) to every module it
-    compiles, so pure Elixir packages differ too.
+  - `ERL_COMPILER_OPTIONS` set to anything but blanks or exactly
+    `deterministic`. The Erlang compiler adds it to every `.erl` file Mix
+    or rebar3 compiles, and Elixir adds it (without `warnings_as_errors`)
+    to every module it compiles, so pure Elixir packages differ too. It is
+    read as OTP reads it, so `deterministic` and `[deterministic]` are the
+    same value; anything else (another option beside it, a repeat, a value
+    that does not parse) misses as `... is set to options other than
+    exactly deterministic ...`. With exactly `deterministic` (what
+    nerves_livebook, Nix's `buildMix` and Guix set) only builds the portal
+    compiled with that option are taken, from a version's `deterministic`
+    list, judged by every other rule as usual; a version that has builds
+    but none of those misses as `no ERL_COMPILER_OPTIONS=deterministic
+    build of VERSION yet` (`deterministic_not_built`). A project without
+    the option never takes one of those builds.
   - `ERL_LIBS` set to anything but blanks. Every app under it is on the
     code path a dependency's `mix.exs` and compile can probe: Mix prunes
     it only partly and late, and not at all under `Mix.install/2`.
