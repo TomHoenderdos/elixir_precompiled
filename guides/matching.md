@@ -193,6 +193,13 @@ compares the whole tree. Releases before 0.7.0 do not read it at all.
     but none of those misses as `no ERL_COMPILER_OPTIONS=deterministic
     build of VERSION yet` (`deterministic_not_built`). A project without
     the option never takes one of those builds.
+    Elixir 1.18 and later read the variable once per VM, on its first
+    compile (`mix.exs` itself), and compile every later module with that
+    value, while rebar3 and `compile.erlang` read it afresh. So it must be
+    set before Mix starts or in `mix.exs` outside any function, as
+    nerves_livebook does: set later (in `project/0`, `config/config.exs`)
+    or cleared, every dependency misses as `ERL_COMPILER_OPTIONS changed
+    after this VM's first Elixir compile, ...`.
   - `ERL_LIBS` set to anything but blanks. Every app under it is on the
     code path a dependency's `mix.exs` and compile can probe: Mix prunes
     it only partly and late, and not at all under `Mix.install/2`.

@@ -49,6 +49,12 @@
   `deterministic_not_built`. Clients before this release never read the
   object. Any other value still misses, now as `ERL_COMPILER_OPTIONS is set
   to options other than exactly deterministic, ...`.
+  The value must also be what this VM's Elixir compiles with: Elixir 1.18+
+  reads the variable once, on the VM's first compile (mix.exs itself), so
+  a project that sets it later (in `project/0` or `config/config.exs`) or
+  clears it misses as `ERL_COMPILER_OPTIONS changed after this VM's first
+  Elixir compile, ...`: its Elixir deps compile without the option while
+  rebar3 and `compile.erlang` see it.
 
 ## v0.7.2 - 2026-11-17
 

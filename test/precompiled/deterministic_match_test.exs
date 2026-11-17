@@ -60,13 +60,42 @@ defmodule Precompiled.DeterministicMatchTest do
         config: fn _app, _path -> :error end,
         prefer: nil,
         manager: "mix",
-        machine_env: &Map.get(env, &1)
+        machine_env: &Map.get(env, &1),
+        # A VM whose Elixir has not read the variable yet: the env decides.
+        elixir_compiler_options: fn -> :undefined end
       },
       Map.new(over)
     )
   end
 
   defp sha({:ok, %{"ebin" => [%{"sha256" => sha}]}, _target}), do: sha
+
+  # Elixir 1.18+ reads ERL_COMPILER_OPTIONS once per VM, on its first
+  # compile (mix.exs itself), and compiles every later module with what it
+  # read. A project that sets the variable later (in `project/0` or
+  # config/config.exs) compiles its Elixir deps without it, while rebar3
+  # and compile.erlang see it: no build is that compile.
+  test "a variable set or cleared after Elixir read it misses, sibling or plain",
+       %{tmp_dir: dir} do
+    for {value, cached} <- [{"deterministic", []}, {nil, [:deterministic]}] do
+      ctx = ctx(dir, value, elixir_compiler_options: fn -> cached end)
+
+      assert {:miss, %{code: :erl_compiler_options, args: ["ERL_COMPILER_OPTIONS"], text: text}} =
+               Match.select_reason(both(), ctx),
+             inspect(value)
+
+      assert text =~ "after this VM's first Elixir compile"
+    end
+
+    assert both()
+           |> Match.select(
+             ctx(dir, "deterministic", elixir_compiler_options: fn -> [:deterministic] end)
+           )
+           |> sha() == "det"
+
+    assert both() |> Match.select(ctx(dir, nil, elixir_compiler_options: fn -> [] end)) |> sha() ==
+             "plain"
+  end
 
   test "a deterministic project takes the sibling, in either spelling", %{tmp_dir: dir} do
     for value <- ["deterministic", "[deterministic]"] do

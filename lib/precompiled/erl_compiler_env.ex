@@ -17,9 +17,15 @@ defmodule Precompiled.ErlCompilerEnv do
   #   packages change too (`[no_line_info]` gives other beams). One value
   #   has builds of its own: exactly `[deterministic]` (or the bare term,
   #   which OTP reads as the same list), which the portal builds a sibling
-  #   of each toolchain build with. `options/1` tells the three apart, and
+  #   of each toolchain build with. `options/2` tells them apart, and
   #   Match then takes only those builds (`build.erl_compiler_options`);
-  #   any other value misses as before.
+  #   any other value misses as before. Elixir 1.18+ reads the variable
+  #   once per VM, on its first compile (mix.exs itself), into a
+  #   persistent term, and compiles every later module of the VM with what
+  #   it read, while rebar3, make and compile.erlang read it afresh. So a
+  #   project that sets it later (in `project/0` or config/config.exs), or
+  #   clears it, compiles its Elixir deps one way and its Erlang code the
+  #   other: no build is that compile, and it misses.
   # - ERL_FLAGS, ERL_AFLAGS, ERL_ZFLAGS: emulator arguments for every
   #   `erl`, the one Mix runs in and the one rebar3 runs in. Among them,
   #   `-env` sets ERL_COMPILER_OPTIONS, `-eval`/`-s`/`-run`/`-S` run code,
@@ -55,11 +61,13 @@ defmodule Precompiled.ErlCompilerEnv do
              -code_path_choice -compiler -elixir -mix -stdlib -extra)
 
   @type getenv :: (String.t() -> String.t() | nil)
+  # What this VM's Elixir compiles modules with (`elixir_cached/0`).
+  @type cached :: (-> term())
 
   @doc false
-  @spec check(getenv()) :: :ok | {:miss, Reason.t()}
-  def check(getenv) do
-    with :ok <- compiler_options(getenv),
+  @spec check(getenv(), cached()) :: :ok | {:miss, Reason.t()}
+  def check(getenv, cached \\ &elixir_cached/0) do
+    with :ok <- compiler_options(getenv, cached),
          :ok <- erl_libs(getenv),
          :ok <- flags(getenv) do
       erlangrc(getenv)
@@ -73,8 +81,31 @@ defmodule Precompiled.ErlCompilerEnv do
   # or blank, `:deterministic` when that is exactly `[deterministic]`, with
   # no other term and no repeat, and `:other` for anything else, a value
   # that does not parse included (OTP ignores those; this does not guess).
-  @spec options(getenv()) :: :none | :deterministic | :other
-  def options(getenv) do
+  # `:stale` when the value is `:none` or `:deterministic` but this VM's
+  # Elixir already compiles with other options (`cached`, `elixir_cached/0`):
+  # the variable changed after its first compile.
+  @spec options(getenv(), cached()) :: :none | :deterministic | :other | :stale
+  def options(getenv, cached \\ &elixir_cached/0) do
+    case {env_options(getenv), cached.()} do
+      {:other, _} -> :other
+      {mode, :undefined} -> mode
+      {:none, []} -> :none
+      {:deterministic, [:deterministic]} -> :deterministic
+      _ -> :stale
+    end
+  end
+
+  @doc false
+  # The compiler options Elixir (1.18 and later) read from
+  # ERL_COMPILER_OPTIONS on this VM's first compile, without
+  # warnings_as_errors, and compiles every later module with
+  # (elixir_erl_compiler:env_compiler_options/0's persistent term), or
+  # `:undefined` when it has not read them: before any compile, or on an
+  # Elixir that reads the variable for each module.
+  @spec elixir_cached() :: term()
+  def elixir_cached(), do: :persistent_term.get(:elixir_erl_compiler, :undefined)
+
+  defp env_options(getenv) do
     case getenv.("ERL_COMPILER_OPTIONS") do
       v when is_binary(v) -> if String.trim(v) == "", do: :none, else: parse(v)
       _ -> :none
@@ -92,13 +123,21 @@ defmodule Precompiled.ErlCompilerEnv do
     _ -> :other
   end
 
-  defp compiler_options(getenv) do
-    case options(getenv) do
+  defp compiler_options(getenv, cached) do
+    case options(getenv, cached) do
       :other ->
         miss(
           "ERL_COMPILER_OPTIONS",
           "ERL_COMPILER_OPTIONS is set to options other than exactly deterministic, " <>
             "which change compiled code; only deterministic has precompiled builds"
+        )
+
+      :stale ->
+        miss(
+          "ERL_COMPILER_OPTIONS",
+          "ERL_COMPILER_OPTIONS changed after this VM's first Elixir compile, which fixed " <>
+            "the options its Elixir modules compile with; set it before Mix starts, " <>
+            "or in mix.exs outside any function"
         )
 
       _ ->

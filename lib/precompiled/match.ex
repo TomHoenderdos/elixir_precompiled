@@ -29,6 +29,9 @@ defmodule Precompiled.Match do
           # The same, for the machine's settings every compile sees: the
           # global rebar3 config, ERL_COMPILER_OPTIONS, ERL_*FLAGS, .erlang.
           optional(:machine_env) => (String.t() -> String.t() | nil),
+          # The options this VM's Elixir compiles with (tests); default
+          # Precompiled.ErlCompilerEnv.elixir_cached/0.
+          optional(:elixir_compiler_options) => (-> term()),
           optional(:compile_order) => Precompiled.Env.compile_order() | nil,
           # The package's transitive deps as Mix loads them in the current
           # env (Env.closure/2), nil when unknown: then the lock decides.
@@ -117,7 +120,7 @@ defmodule Precompiled.Match do
 
   defp select_regular(manifest, ctx) do
     {system, system_version} = ctx.system
-    mode = Precompiled.ErlCompilerEnv.options(machine_env(ctx))
+    mode = Precompiled.ErlCompilerEnv.options(machine_env(ctx), elixir_compiler_options(ctx))
 
     case builds(manifest, ctx.version, Map.get(ctx, :env_closure), mode) do
       [] ->
@@ -540,7 +543,7 @@ defmodule Precompiled.Match do
     [
       fn -> build_method_ok(b, ctx) end,
       fn -> rebar3_global_ok(b, ctx) end,
-      fn -> Precompiled.ErlCompilerEnv.check(machine_env(ctx)) end,
+      fn -> Precompiled.ErlCompilerEnv.check(machine_env(ctx), elixir_compiler_options(ctx)) end,
       fn -> deterministic_ok(b, ctx) end,
       fn -> compile_inputs_ok(build["target"], b, ctx) end,
       fn -> toolchain_reason(b) end,
@@ -772,9 +775,11 @@ defmodule Precompiled.Match do
   # (`module_info(:compile)` has no `options` or `source`, and an Erlang
   # module's `?FILE` is the source's base name), so it serves exactly the
   # projects that set exactly that option, and they take nothing else.
-  # ErlCompilerEnv.check/1 has refused every other value before this.
+  # ErlCompilerEnv.check/2 has refused every other value before this.
   defp deterministic_ok(b, ctx) do
-    case {Precompiled.ErlCompilerEnv.options(machine_env(ctx)), b["erl_compiler_options"]} do
+    mode = Precompiled.ErlCompilerEnv.options(machine_env(ctx), elixir_compiler_options(ctx))
+
+    case {mode, b["erl_compiler_options"]} do
       {:deterministic, ["deterministic"]} ->
         :ok
 
@@ -796,6 +801,10 @@ defmodule Precompiled.Match do
   # ERL_* variables): what a compile here sees. Kept apart from :getenv,
   # which compile_inputs compares, so each can be given on its own.
   defp machine_env(ctx), do: Map.get(ctx, :machine_env, &System.get_env/1)
+
+  # What this VM's Elixir compiles modules with (ErlCompilerEnv.elixir_cached/0).
+  defp elixir_compiler_options(ctx),
+    do: Map.get(ctx, :elixir_compiler_options, &Precompiled.ErlCompilerEnv.elixir_cached/0)
 
   defp manager_ok(nil, _running), do: :ok
   defp manager_ok(built, built) when is_binary(built), do: :ok

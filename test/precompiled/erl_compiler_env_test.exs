@@ -84,7 +84,7 @@ defmodule Precompiled.ErlCompilerEnvTest do
     end
 
     test "is read as OTP reads it: only exactly [deterministic] is deterministic" do
-      options = &ErlCompilerEnv.options(fn "ERL_COMPILER_OPTIONS" -> &1 end)
+      options = &ErlCompilerEnv.options(fn "ERL_COMPILER_OPTIONS" -> &1 end, fn -> :undefined end)
 
       for value <- [
             "deterministic",
@@ -113,7 +113,28 @@ defmodule Precompiled.ErlCompilerEnvTest do
 
     test "deterministic passes the machine check, which leaves the build to Match",
          %{tmp_dir: dir} do
-      assert :ok = check(%{"HOME" => dir, "ERL_COMPILER_OPTIONS" => "deterministic"})
+      env = %{"HOME" => dir, "ERL_COMPILER_OPTIONS" => "deterministic"}
+      assert :ok = ErlCompilerEnv.check(&Map.get(env, &1), fn -> [:deterministic] end)
+    end
+
+    test "is held to what this VM's Elixir read on its first compile" do
+      options = &ErlCompilerEnv.options(fn "ERL_COMPILER_OPTIONS" -> &1 end, &2)
+
+      assert options.("deterministic", fn -> [:deterministic] end) == :deterministic
+      assert options.(nil, fn -> [] end) == :none
+      assert options.("deterministic", fn -> [] end) == :stale
+      assert options.(nil, fn -> [:deterministic] end) == :stale
+      assert options.("[no_line_info]", fn -> [] end) == :other
+
+      # By default this VM's own: Elixir 1.18+ has read it by now (this test
+      # module was compiled here, without the variable); 1.17 reads it per
+      # module and keeps nothing.
+      expected =
+        if :persistent_term.get(:elixir_erl_compiler, :undefined) == :undefined,
+          do: :deterministic,
+          else: :stale
+
+      assert ErlCompilerEnv.options(fn "ERL_COMPILER_OPTIONS" -> "deterministic" end) == expected
     end
   end
 
