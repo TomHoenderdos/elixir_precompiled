@@ -12,9 +12,10 @@ which builds Hex packages for the host, on each supported Elixir/OTP
 toolchain, and for Nerves systems, signs a batch index every 15 minutes, and
 serves files by SHA-256. Besides a build with and one without a package's
 optional dependencies, it also builds packages with the optional
-dependencies a typical Phoenix app has, so a fresh `mix phx.new` app gets
-most of its dependencies prebuilt. A dependency is installed only when a
-build matches the project on every rule in
+dependencies a typical Phoenix or Nerves app has, so a fresh `mix phx.new`
+or `mix nerves.new` app gets most of its dependencies prebuilt. A
+dependency is installed only when a build matches the project on every
+rule in
 [What matches](https://hexdocs.pm/precompiled/matching.html), including
 being compiled with exactly the dependencies Mix compiles it with in your
 project and env; everything else compiles as before, and nothing this
