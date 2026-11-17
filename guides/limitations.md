@@ -72,16 +72,11 @@ In every case the dependency ends up compiled, never wrong.
 ## Nerves
 
 **Released nerves serves only `pure_elixir` builds.** Nerves 1.x has no
-`Nerves.build_plan/0`, so the system isn't known. Use the fork for system
-builds; see [Nerves](nerves.md).
+`Nerves.build_plan/0`, so the system isn't known on your build machine;
+see [Nerves](nerves.md).
 
 **System builds may have stripped beams.** Protocols they define are not
 consolidated, and Dialyzer has no types for them. A run says how many.
-
-**The fork's hook does its own setup under `precompiled.*` tasks.** The
-library does nothing under `help`, `clean` and `precompiled.*`, but the
-fork's `nerves.init` still runs its setup first. *Fix:* the fork's skip
-list should name `precompiled.*` too (a change on the fork's side).
 
 ## On a device
 
