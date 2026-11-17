@@ -650,8 +650,17 @@ defmodule Precompiled.CheckTest do
     assert_received {:report, {:ok, %{fails: 0, misses: 2}}}
     assert out =~ ~r/ash 3\.5\.2\s+MISS\s+candidate crashed: :boom/
     # Thrown mid-install: nothing of it stays for Mix to take as compiled.
+    # The staging dir's name is unique per install (staging_path/2 makes a
+    # new one each call), so it is looked for by the dep's prefix.
     refute File.exists?(Path.join(lib, "ash"))
-    refute File.exists?(Precompiled.Fetch.staging_path(lib, :ash))
+    assert staged(lib, "ash") == []
+  end
+
+  defp staged(lib, dep) do
+    case File.ls(Path.join(lib, ".precompiled")) do
+      {:ok, names} -> Enum.filter(names, &String.starts_with?(&1, dep <> "."))
+      {:error, _} -> []
+    end
   end
 
   describe "installed builds are rechecked against the current batch" do
