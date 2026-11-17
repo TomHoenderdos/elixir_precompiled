@@ -399,8 +399,9 @@ defmodule Precompiled.Check do
   end
 
   # Unlinked workers under a supervisor of this run: a worker that dies
-  # outright (killed, or a crash one/5 cannot catch) is one FAIL line for
-  # its dep, never an exit that takes the caller and the build with it.
+  # outright (killed, or a crash one/5 cannot catch) is one line for its
+  # dep (crashed/3), never an exit that takes the caller and the build with
+  # it.
   defp install_lines(candidates, config, batch, env, config_fun) do
     {:ok, sup} = Task.Supervisor.start_link()
 
@@ -624,19 +625,24 @@ defmodule Precompiled.Check do
   # A candidate whose check crashed is a bug here, not a verdict on its
   # build: a MISS, with nothing of a half-finished install left behind (no
   # staging dir, no build dir carrying Mix's marker), so Mix compiles it.
+  # A build dir that will not go is a FAIL naming the file, as for a
+  # revoke: what is left of it may still carry the marker.
   defp crashed(dep, env, why) do
     sname = Atom.to_string(dep.name)
     for dir <- Fetch.staging_dirs(env.build_lib, dep.name, :own), do: File.rm_rf(dir)
-    _ = File.rm_rf(Path.join(env.build_lib, sname))
+    line = %{name: sname, version: dep.version, bytes: 0, detail: "candidate crashed: #{why}"}
 
-    %{
-      name: sname,
-      version: dep.version,
-      bytes: 0,
-      status: :miss,
-      detail: "candidate crashed: #{why}",
-      reason: {:internal, []}
-    }
+    case remove(env.build_lib, sname) do
+      :ok ->
+        Map.merge(line, %{status: :miss, reason: {:internal, []}})
+
+      {:error, removal} ->
+        Map.merge(line, %{
+          status: :fail,
+          detail: "#{line.detail}; #{removal}",
+          reason: {:remove_failed, []}
+        })
+    end
   end
 
   @doc false

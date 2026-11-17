@@ -10,11 +10,13 @@ ExUnit.start()
 # them with `mix test --only integration`. The one test that needs the
 # public portal is tagged :production alone, so `--only integration` never
 # reaches it: run it with `mix test --only production`.
-# Tests tagged :linux need a Linux device file (/dev/full).
+# Tests tagged :linux need a Linux device file (/dev/full). Tests tagged
+# :non_root need permission bits to stop a write, which root ignores.
 ExUnit.configure(
   exclude: [
     integration: true,
     production: true,
-    linux: not match?({:unix, :linux}, :os.type())
+    linux: not match?({:unix, :linux}, :os.type()),
+    non_root: not match?({:unix, _}, :os.type()) or System.cmd("id", ["-u"]) == {"0\n", 0}
   ]
 )

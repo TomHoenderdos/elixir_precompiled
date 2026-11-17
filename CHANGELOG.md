@@ -16,7 +16,8 @@
   unchecked; it used to read as `batch malformed` on every line. One
   while checking a single dependency is that dependency's MISS,
   `candidate crashed: <error>`, with nothing of a half-finished install
-  left behind.
+  left behind; a build dir that will not go is a FAIL naming the file
+  (reason code `remove_failed`), as for a revoked build.
 
 * A cache entry that another writer replaced with the same bytes while
   it was being read no longer FAILs the dependency with `cache refused

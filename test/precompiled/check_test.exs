@@ -629,6 +629,53 @@ defmodule Precompiled.CheckTest do
     env: env,
     lib: lib
   } do
+    publish_ash_reading_config(f)
+    out = run_capturing(config, env, config_fun: fn _, _ -> throw(:boom) end)
+    assert_received {:report, {:ok, %{fails: 0, misses: 2}}}
+    assert out =~ ~r/ash 3\.5\.2\s+MISS\s+candidate crashed: :boom/
+    # Thrown mid-install: nothing of it stays for Mix to take as compiled.
+    # The staging dir's name is unique per install (staging_path/2 makes a
+    # new one each call), so it is looked for by the dep's prefix.
+    refute File.exists?(Path.join(lib, "ash"))
+    assert staged(lib, "ash") == []
+  end
+
+  # Permission bits stop the removal; root ignores them (test_helper.exs).
+  @tag :non_root
+  test "a crashed candidate whose build dir will not go is a FAIL naming the file", %{
+    f: f,
+    config: config,
+    env: env,
+    lib: lib
+  } do
+    # What a crash may leave: a build dir carrying Mix's marker, here with
+    # an entry that cannot be removed, so the dir does not go.
+    locked = Path.join(lib, "ash/priv/locked")
+    File.mkdir_p!(locked)
+    File.write!(Path.join(locked, "file"), "")
+    File.mkdir_p!(Path.join(lib, "ash/.mix"))
+    File.write!(Path.join(lib, "ash/.mix/compile.elixir_scm"), "")
+    File.chmod!(locked, 0o555)
+    on_exit(fn -> File.chmod(locked, 0o755) end)
+
+    publish_ash_reading_config(f)
+    out = run_capturing(config, env, config_fun: fn _, _ -> throw(:boom) end)
+    assert_received {:report, {:ok, %{lines: lines}}}
+
+    assert [%{name: "ash", status: :fail, reason: {:remove_failed, []}, detail: detail}, _] =
+             lines
+
+    assert detail =~ "candidate crashed: :boom"
+    # The file named depends on where File.rm_rf/1 stops: the locked one,
+    # or the dir it could not empty.
+    assert detail =~ "; revoke failed: #{Path.join(lib, "ash")}"
+    assert out =~ ~r/ash 3\.5\.2\s+FAIL\s+candidate crashed: :boom/
+    assert staged(lib, "ash") == []
+  end
+
+  # ash's only build, its .app recording a compile_env item: the staged
+  # .app is checked against the project's config mid-install.
+  defp publish_ash_reading_config(f) do
     e = good_entry(f, "ash", "1.31.0")
 
     app =
@@ -646,14 +693,6 @@ defmodule Precompiled.CheckTest do
       end)
 
     F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [e]}}}})
-    out = run_capturing(config, env, config_fun: fn _, _ -> throw(:boom) end)
-    assert_received {:report, {:ok, %{fails: 0, misses: 2}}}
-    assert out =~ ~r/ash 3\.5\.2\s+MISS\s+candidate crashed: :boom/
-    # Thrown mid-install: nothing of it stays for Mix to take as compiled.
-    # The staging dir's name is unique per install (staging_path/2 makes a
-    # new one each call), so it is looked for by the dep's prefix.
-    refute File.exists?(Path.join(lib, "ash"))
-    assert staged(lib, "ash") == []
   end
 
   defp staged(lib, dep) do
