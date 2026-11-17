@@ -207,4 +207,49 @@ defmodule Precompiled.AppEnvTest do
     assert statuses(report) == [{"ash", :hit}, {"jason", :miss}]
     assert report.fails == 0
   end
+
+  describe "a crash while checking the batch" do
+    # A client bug, simulated: a clock offset no config could carry makes
+    # the batch's time checks raise.
+    defp crashing(config), do: Map.put(config, :clock_offset_seconds, :not_a_number)
+
+    test "is every candidate's MISS with an honest reason, never a FAIL", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      F.publish(f, ash_only(f))
+      report = run(crashing(config), env)
+      assert statuses(report) == [{"ash", :miss}, {"jason", :miss}]
+      assert report.fails == 0
+
+      for line <- report.lines do
+        assert line.reason == {:internal, []}
+        assert line.detail =~ "trust check crashed: "
+        refute line.detail =~ "malformed"
+      end
+
+      refute File.exists?(Path.join(lib, "ash"))
+    end
+
+    test "removes an installed build, so Mix compiles it, and says why", %{
+      f: f,
+      config: config,
+      env: env,
+      lib: lib
+    } do
+      F.publish(f, ash_only(f))
+      assert [{"ash", :hit} | _] = statuses(run(config, env))
+      installed = %{env | candidates: [], installed: [:ash]}
+
+      report = run(crashing(config), installed)
+
+      assert [%{name: "ash", status: :miss, reason: {:internal, []}, detail: detail}] =
+               report.lines
+
+      assert detail =~ "trust check crashed: "
+      refute File.exists?(Path.join(lib, "ash"))
+    end
+  end
 end

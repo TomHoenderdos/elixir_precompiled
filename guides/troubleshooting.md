@@ -302,5 +302,7 @@ mean what they do above, for your machine's OTP and libraries.
 | Line | Meaning | What to do |
 | --- | --- | --- |
 | `internal error, compiling from source` | A bug in this library. Your build carries on. | Please [report it](https://github.com/TomHoenderdos/elixir_precompiled/issues) with the line. |
+| `MISS  trust check crashed: <error>` | A bug in this library while checking the root or batch; nothing was refused. Every dependency compiles from source, installed builds too. | Please report it with the line. |
+| `MISS  candidate crashed: <error>` | A bug in this library while checking that one dependency. It compiles from source; the rest are checked as usual. | Please report it with the line. |
 
 Still stuck? See [Known limitations](limitations.md).

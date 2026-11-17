@@ -9,6 +9,15 @@
   zone database for plain UTC arithmetic; they now name the UTC-only one.
   Like any other config, the key is compared where a build recorded it
   under `compile_env`, and otherwise ignored.
+* A crash in this library is never a FAIL or a refusal any more. One
+  while checking the root or batch is every dependency's MISS,
+  `trust check crashed: <error>` (reason code `internal`), and an
+  installed build is removed, so Mix compiles it, rather than kept
+  unchecked; it used to read as `batch malformed` on every line. One
+  while checking a single dependency is that dependency's MISS,
+  `candidate crashed: <error>`, with nothing of a half-finished install
+  left behind.
+
 ## v0.7.2 - 2026-11-17
 
 * Host-native builds, opt-in: with `config :precompiled, host_native: true`

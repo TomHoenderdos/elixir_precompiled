@@ -12,7 +12,8 @@ defmodule Precompiled.Trust do
   cached file, or whatever a server hands back), so every helper is written
   to return an error tuple instead of raising, and the public functions that
   touch the network or disk also carry a function-level `rescue` as a second
-  line of defense.
+  line of defense. A raise caught there is reported as this library
+  crashing (`"trust check crashed: "`), never as the input being refused.
 
   A batch read from a bundle (`bundle: true`) is bounded by its own expiry
   instead of the 24 h staleness rule. A bundle's `offline.json`
@@ -191,7 +192,7 @@ defmodule Precompiled.Trust do
       end
     end
   rescue
-    _ -> {:error, "root document at #{config.root_path} is invalid"}
+    e -> crashed(Exception.message(e))
   end
 
   defp expiry_outcome(config, root, adopted) do
@@ -494,8 +495,24 @@ defmodule Precompiled.Trust do
         online_batch(config, root, fetch, cached, dir)
     end
   rescue
-    _ -> {:error, "batch malformed"}
+    e -> crashed(Exception.message(e))
   end
+
+  @crashed "trust check crashed: "
+
+  @doc false
+  # What a function-level rescue here returns. Every refusal is a returned
+  # error and every helper that reads untrusted bytes is total, so a raise
+  # is this library failing, not the document: it is named as such and
+  # never as a refusal (a misleading "malformed"). Check makes it every
+  # dependency's MISS.
+  @spec crashed(String.t()) :: {:error, String.t()}
+  def crashed(why) when is_binary(why), do: {:error, @crashed <> why}
+
+  @doc false
+  @spec crashed?(term()) :: boolean()
+  def crashed?(why) when is_binary(why), do: String.starts_with?(why, @crashed)
+  def crashed?(_why), do: false
 
   defp online_batch(config, root, fetch, cached, dir) do
     case fetch.(config.source <> "/batch.json", cached && cached.etag) do
@@ -773,7 +790,7 @@ defmodule Precompiled.Trust do
       {:error, "offline documents are only read from a file:// source"}
     end
   rescue
-    _ -> {:error, "offline document malformed"}
+    e -> crashed(Exception.message(e))
   end
 
   defp file_source?(%{source: source}) when is_binary(source),

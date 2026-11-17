@@ -623,7 +623,12 @@ defmodule Precompiled.CheckTest do
     assert length(warnings) == 1
   end
 
-  test "a throw inside a candidate is that candidate's FAIL", %{f: f, config: config, env: env} do
+  test "a throw inside a candidate is that candidate's MISS, naming the crash", %{
+    f: f,
+    config: config,
+    env: env,
+    lib: lib
+  } do
     e = good_entry(f, "ash", "1.31.0")
 
     app =
@@ -642,8 +647,11 @@ defmodule Precompiled.CheckTest do
 
     F.publish(f, %{"ash" => %{"versions" => %{"3.5.2" => %{"builds" => [e]}}}})
     out = run_capturing(config, env, config_fun: fn _, _ -> throw(:boom) end)
-    assert_received {:report, {:ok, %{fails: 1, misses: 1}}}
-    assert out =~ ~r/ash 3\.5\.2\s+FAIL\s+candidate crashed: :boom/
+    assert_received {:report, {:ok, %{fails: 0, misses: 2}}}
+    assert out =~ ~r/ash 3\.5\.2\s+MISS\s+candidate crashed: :boom/
+    # Thrown mid-install: nothing of it stays for Mix to take as compiled.
+    refute File.exists?(Path.join(lib, "ash"))
+    refute File.exists?(Precompiled.Fetch.staging_path(lib, :ash))
   end
 
   describe "installed builds are rechecked against the current batch" do
@@ -1870,7 +1878,7 @@ defmodule Precompiled.CheckTest do
     assert File.dir?(Path.join(lib, ".precompiled/home/files"))
   end
 
-  test "a worker that dies outright is one FAIL, leaves nothing behind, and the rest install",
+  test "a worker that dies outright is one MISS, leaves nothing behind, and the rest install",
        %{f: f, config: config, env: env, lib: lib} do
     killer = %{
       "app" => "jason",
@@ -1898,10 +1906,10 @@ defmodule Precompiled.CheckTest do
     end
 
     out = run_capturing(config, env, config_fun: config_fun)
-    assert_received {:report, {:ok, %{hits: 1, fails: 1, lines: lines}}}
-    assert [%{name: "ash", status: :hit}, %{name: "jason", status: :fail, detail: detail}] = lines
+    assert_received {:report, {:ok, %{hits: 1, fails: 0, lines: lines}}}
+    assert [%{name: "ash", status: :hit}, %{name: "jason", status: :miss, detail: detail}] = lines
     assert detail =~ "candidate crashed: :killed"
-    assert out =~ ~r/jason 1\.4\.5\s+FAIL/
+    assert out =~ ~r/jason 1\.4\.5\s+MISS/
     refute File.exists?(Path.join(lib, "jason"))
     refute File.exists?(staged)
     assert File.exists?(Path.join(lib, "ash/.mix/compile.elixir_scm"))

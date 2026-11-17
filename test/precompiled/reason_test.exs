@@ -113,6 +113,10 @@ defmodule Precompiled.ReasonTest do
     for why <- ["batch signature invalid", "batch stale: issued ...", "root signature invalid"] do
       assert %Reason{code: :verify_failed, text: ^why} = Reason.of_batch_error(why, "")
     end
+
+    # A crash in the trust check is this library's, never a refusal.
+    {:error, why} = Precompiled.Trust.crashed("boom")
+    assert %Reason{code: :internal, text: ^why} = Reason.of_batch_error(why)
   end
 
   test "manifest results" do

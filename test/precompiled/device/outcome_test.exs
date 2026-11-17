@@ -92,6 +92,12 @@ defmodule Precompiled.Device.OutcomeTest do
                %{"version" => "1.2.0", "status" => "fail", "reason_code" => "fetch_failed"},
                %{"version" => nil}
              ] = lines
+
+      # A trust check that crashed refused nothing: a MISS naming it.
+      {:error, crashed} = Precompiled.Trust.crashed("boom")
+
+      assert [%{"status" => "miss", "reason_code" => "internal"}] =
+               Outcome.refused([{:demo_a, "1.2.0"}], crashed)
     end
   end
 

@@ -229,11 +229,25 @@ defmodule Precompiled.Check do
         lines
 
       {:error, why} ->
-        # No fresh batch, no verdict: installed builds stay as they are,
-        # and their line says so rather than reading as a source compile.
-        Enum.map(candidates, &revoke_line(&1, :fail, Reason.of_batch_error(why))) ++
-          Enum.map(installed, &kept_line(&1, why))
+        if Trust.crashed?(why),
+          do: crashed_lines(candidates, installed, env, why),
+          else: refused_lines(candidates, installed, why)
     end
+  end
+
+  # No fresh batch, no verdict: installed builds stay as they are, and
+  # their line says so rather than reading as a source compile.
+  defp refused_lines(candidates, installed, why) do
+    Enum.map(candidates, &revoke_line(&1, :fail, Reason.of_batch_error(why))) ++
+      Enum.map(installed, &kept_line(&1, why))
+  end
+
+  # The batch check crashed: this library failed, the batch was not judged.
+  # Every dependency compiles from source, an installed build too, since
+  # nothing rechecked it; each line names the crash.
+  defp crashed_lines(candidates, installed, env, why) do
+    miss = &revoke_line(&1, :miss, Reason.new(:internal, [], why))
+    Enum.map(candidates, miss) ++ Enum.map(installed, &revoke(&1, env, miss.(&1)))
   end
 
   # Installed builds Mix will not compile this run, as candidates (with
@@ -412,20 +426,7 @@ defmodule Precompiled.Check do
 
   # Nothing of a dead worker's install may stay behind: no staging dir and
   # no build dir carrying Mix's marker, so Mix compiles the dep.
-  defp worker_died(dep, reason, env) do
-    sname = Atom.to_string(dep.name)
-    for dir <- Fetch.staging_dirs(env.build_lib, dep.name, :own), do: File.rm_rf(dir)
-    _ = File.rm_rf(Path.join(env.build_lib, sname))
-
-    %{
-      name: sname,
-      version: dep.version,
-      bytes: 0,
-      status: :fail,
-      detail: "candidate crashed: #{inspect(reason)}",
-      reason: {:internal, []}
-    }
-  end
+  defp worker_died(dep, reason, env), do: crashed(dep, env, inspect(reason))
 
   defp debug(msg), do: if(Config.debug?(), do: Output.info(msg))
 
@@ -574,13 +575,9 @@ defmodule Precompiled.Check do
       if replacing? and not stays?(result), do: _ = remove(env.build_lib, sname)
       line_for(base, result)
     rescue
-      e ->
-        if replacing?, do: _ = remove(env.build_lib, sname)
-        crashed(base, Exception.message(e))
+      e -> crashed(candidate, env, Exception.message(e))
     catch
-      kind, reason when kind in [:exit, :throw] ->
-        if replacing?, do: _ = remove(env.build_lib, sname)
-        crashed(base, inspect(reason))
+      kind, reason when kind in [:exit, :throw] -> crashed(candidate, env, inspect(reason))
     end
   end
 
@@ -623,13 +620,23 @@ defmodule Precompiled.Check do
   defp stays?({:kept_unchecked, _}), do: true
   defp stays?(_), do: false
 
-  defp crashed(base, why),
-    do:
-      Map.merge(base, %{
-        status: :fail,
-        detail: "candidate crashed: #{why}",
-        reason: {:internal, []}
-      })
+  # A candidate whose check crashed is a bug here, not a verdict on its
+  # build: a MISS, with nothing of a half-finished install left behind (no
+  # staging dir, no build dir carrying Mix's marker), so Mix compiles it.
+  defp crashed(dep, env, why) do
+    sname = Atom.to_string(dep.name)
+    for dir <- Fetch.staging_dirs(env.build_lib, dep.name, :own), do: File.rm_rf(dir)
+    _ = File.rm_rf(Path.join(env.build_lib, sname))
+
+    %{
+      name: sname,
+      version: dep.version,
+      bytes: 0,
+      status: :miss,
+      detail: "candidate crashed: #{why}",
+      reason: {:internal, []}
+    }
+  end
 
   @doc false
   # The systems table the batch names, or nil: none named, or one that

@@ -129,7 +129,11 @@ defmodule Precompiled.Reason do
   @spec of_batch_error(String.t(), String.t()) :: t()
   def of_batch_error(why, suffix \\ "") do
     code =
-      if String.starts_with?(why, "batch unavailable"), do: :fetch_failed, else: :verify_failed
+      cond do
+        Precompiled.Trust.crashed?(why) -> :internal
+        String.starts_with?(why, "batch unavailable") -> :fetch_failed
+        true -> :verify_failed
+      end
 
     new(code, [], why <> suffix)
   end

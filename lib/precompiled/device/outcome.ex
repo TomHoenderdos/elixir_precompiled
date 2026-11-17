@@ -103,11 +103,13 @@ defmodule Precompiled.Device.Outcome do
 
   @doc false
   # The requests' lines when the batch itself was refused: nothing was
-  # planned, so only an exact version is known.
+  # planned, so only an exact version is known. A trust check that crashed
+  # refused nothing: a MISS naming the crash.
   @spec refused([{atom(), String.t() | nil}], String.t()) :: [line()]
   def refused(requests, why) do
     reason = Reason.of_batch_error(why)
-    for {app, req} <- requests, do: line(app, exact(req), :fail, reason)
+    status = if reason.code == :internal, do: :miss, else: :fail
+    for {app, req} <- requests, do: line(app, exact(req), status, reason)
   end
 
   defp exact(req) when is_binary(req) do
