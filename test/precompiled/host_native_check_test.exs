@@ -160,6 +160,15 @@ defmodule Precompiled.HostNativeCheckTest do
 
   defp lines(report), do: Enum.map(report.lines, &Map.delete(&1, :seconds))
 
+  # The printed run without its timings and without Mix's `==> app` compile
+  # banner, which only the first run in a fresh build prints on some Elixir
+  # versions.
+  defp printed(out) do
+    out
+    |> String.replace(~r/^==> .*\n/m, "")
+    |> String.replace(~r/[\d.]+ s\b/, "")
+  end
+
   test "off: the list is never read and the run is what it was without it", c do
     config = config(c, false)
     publish(c.f, %{"builds" => [firmware(c.f)]})
@@ -169,7 +178,7 @@ defmodule Precompiled.HostNativeCheckTest do
     publish(c.f, %{"builds" => [firmware(c.f)], "builds_host_native" => [host_native(c.f)]})
     {with, out2} = run(c, config)
     assert lines(with) == lines(without)
-    assert String.replace(out2, ~r/[\d.]+ s\b/, "") == String.replace(out, ~r/[\d.]+ s\b/, "")
+    assert printed(out2) == printed(out)
     refute File.exists?(Path.join(c.lib, "x"))
   end
 
