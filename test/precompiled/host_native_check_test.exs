@@ -251,6 +251,23 @@ defmodule Precompiled.HostNativeCheckTest do
     refute File.exists?(Path.join(c.lib, "x"))
   end
 
+  # A revoked build leaves the manifest: the next run with a fresh batch
+  # matches the install again, finds nothing, and removes it, so Mix
+  # compiles the dep from source in that same run.
+  test "on, an installed host-native build the manifest no longer lists goes", c do
+    config = config(c, true)
+    publish(c.f, %{"builds" => [firmware(c.f)], "builds_host_native" => [host_native(c.f)]})
+    {report, _} = run(c, config)
+    assert report.hits == 1
+
+    publish(c.f, %{"builds" => [firmware(c.f)]})
+    c = %{c | env: %{c.env | candidates: [], installed: [:x]}}
+    {report, out} = run(c, config)
+    assert report.misses == 1
+    assert out =~ ~r/x 1\.0\.0\s+MISS\s+not built for host/
+    refute File.exists?(Path.join(c.lib, "x"))
+  end
+
   # The portal checks both at ingest; the signed manifest is what the
   # client trusts, so a wrong entry (a build filed under another triple, a
   # library its origins leave out) is refused here too, from the bytes.
