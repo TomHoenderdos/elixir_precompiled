@@ -363,6 +363,14 @@ defmodule Precompiled.ForeignPrivFilesTest do
     assert :ok = ForeignPrivFiles.mark_owners(Path.join(lib, "nowhere"))
   end
 
+  test "mark_owners matches dirs that differ only in case", %{lib: lib} do
+    kino = kino_dir(lib)
+    File.mkdir_p!(Path.join(kino, "priv/assets/kinodb_cell"))
+    app!(lib, "kino_db", "Elixir.KinoDB.Cell")
+    assert :ok = ForeignPrivFiles.mark_owners(lib)
+    assert unmarked?(lib, "kino_db")
+  end
+
   # Marks are removed only inside the build lib, never through a link.
   test "mark_owners never follows a linked dep dir or .mix", %{lib: lib, tmp_dir: dir} do
     kino = kino_dir(lib)

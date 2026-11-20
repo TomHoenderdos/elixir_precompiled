@@ -209,6 +209,28 @@ defmodule Precompiled.ForeignPrivMatchTest do
     end
   end
 
+  test "V4 counts dirs that differ only in case as one" do
+    a = String.duplicate("a", 26)
+
+    build =
+      writer_build(%{
+        "ebin" =>
+          writer_build()["ebin"] ++
+            [
+              %{
+                "path" => "ebin/Elixir.Kino.Vegalite.beam",
+                "sha256" => String.duplicate("e", 64),
+                "size" => 1,
+                "mode" => 33_188
+              }
+            ],
+        "foreign_priv" => [entry(), entry(%{"path" => "priv/assets/Kino_Vegalite/#{a}.tar.gz"})]
+      })
+
+    m = doc(%{"builds" => [], "foreign_priv" => %{"builds" => [build]}})
+    assert {:miss, %{code: :malformed_entry}} = Match.select_reason(m, ctx())
+  end
+
   test "both archive modes the portal may write pass V2" do
     for mode <- [0o644, 0o100644] do
       m =
