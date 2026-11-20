@@ -485,6 +485,7 @@ defmodule Precompiled.ForeignPrivCheckTest do
     )
 
     File.write!(Path.join(lib, "proj/.mix/compile.elixir_scm"), "scm")
+    File.write!(Path.join(lib, "proj/.mix/compile.fetch"), "")
     File.mkdir_p!(Path.join(lib, "kino/priv/assets/ProjWidget"))
 
     F.publish(
@@ -501,5 +502,6 @@ defmodule Precompiled.ForeignPrivCheckTest do
     refute File.exists?(Path.join(lib, "kino"))
     refute File.exists?(Path.join(lib, "kino_vega_lite"))
     refute File.exists?(Path.join(lib, "proj/.mix/compile.elixir_scm"))
+    refute File.exists?(Path.join(lib, "proj/.mix/compile.fetch"))
   end
 end

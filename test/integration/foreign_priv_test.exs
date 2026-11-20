@@ -181,6 +181,71 @@ defmodule Precompiled.Integration.ForeignPrivTest do
     assert_archives!(mix!(on_proj, ["run", "--no-start", "-e", @run_time]))
   end
 
+  # Kino installed precompiled, the writer compiled by Mix into it (the batch
+  # serves kino alone), then kino removed by this library: Mix compiles kino,
+  # which wipes kino's build dir, and must then compile the writer again,
+  # whose own compile writes its archives back. Mix 1.17 and 1.18 recompile
+  # a dep whose .mix/compile.fetch is gone, 1.19 and later one whose
+  # .mix/compile.elixir_scm is.
+  test "a Mix-built writer compiles again after kino's removal", %{tmp_dir: dir} do
+    f = F.new(dir)
+    F.publish(f, %{}, sequence: 1)
+    source = C.plain!(Path.join(dir, "off"), f, deps: deps())
+    mix!(source, ["deps.get"])
+    mix!(source, ["compile"], [{"PRECOMPILED", "0"}])
+    off = Path.join(source, "_build/dev/lib")
+    lock = Mix.Dep.Lock.read(Path.join(source, "mix.lock"))
+
+    kino =
+      f
+      |> C.build_entry(Path.join(off, "kino"), elem(lock[:kino], 7))
+      |> with_priv(f, Path.join(off, "kino"), app_dirs(Path.join(off, "kino"), "kino"))
+      |> put_build(%{"foreign_priv_target" => "kino", "deps" => build_deps(lock, :kino)})
+
+    F.publish(
+      f,
+      %{
+        "kino" => %{
+          "versions" => %{"0.19.1" => %{"builds" => [], "foreign_priv" => %{"builds" => [kino]}}}
+        }
+      },
+      sequence: 2
+    )
+
+    for {arm, how} <- [except: :except, disabled: :disabled] do
+      proj = C.plain!(Path.join(dir, Atom.to_string(arm)), f, deps: deps())
+      File.cp!(Path.join(source, "mix.lock"), Path.join(proj, "mix.lock"))
+      mix!(proj, ["deps.get"])
+      out = mix!(proj, ["compile"])
+      assert out =~ ~r/precompiled: kino 0\.19\.1\s+HIT/, out
+      assert out =~ ~r/==> kino_vega_lite\n/, out
+      assert_archives!(mix!(proj, ["run", "--no-start", "-e", @run_time]))
+
+      again =
+        case how do
+          :except ->
+            File.write!(
+              Path.join(proj, "config/config.exs"),
+              "\nconfig :precompiled, except: [:kino]\n",
+              [:append]
+            )
+
+            again = mix!(proj, ["compile"])
+            assert again =~ ~r/precompiled: kino 0\.19\.1\s+MISS\s+excepted/, again
+            again
+
+          :disabled ->
+            mix!(proj, ["compile"], [{"PRECOMPILED", "0"}])
+        end
+
+      assert again =~ ~r/==> kino\n/, again
+      assert again =~ ~r/==> kino_vega_lite\n/, again
+      lib = Path.join(proj, "_build/dev/lib")
+      assert assets(lib) == assets(off)
+      assert_archives!(mix!(proj, ["run", "--no-start", "-e", @run_time], [{"PRECOMPILED", "0"}]))
+    end
+  end
+
   defp put_build(entry, fields), do: Map.update!(entry, "build", &Map.merge(&1, fields))
 
   # The `<d>` of every Elixir module the built `.app` lists.

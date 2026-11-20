@@ -399,7 +399,9 @@ Replacing kino keeps the `priv/assets/<d>` its new build does not ship
 (archives of Mix-built writers, of installed ones and of your project's
 own modules), and removing kino (a revoke, `:except`, `PRECOMPILED=0`,
 `mix precompiled.clean`) first marks each Mix-built dependency whose
-archive was in it, so Mix recompiles it after kino.
+archive was in it, so Mix recompiles it after kino: it removes both of
+Mix's marks of a compiled dependency, `.mix/compile.elixir_scm` (read from
+Elixir 1.19 on) and `.mix/compile.fetch` (read by 1.17 and 1.18).
 
 A device never installs a foreign priv build: `writes into kino's priv at
 compile time; not installed on a device`.
