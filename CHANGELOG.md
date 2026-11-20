@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.8.0 - 2026-11-xx
+## v0.8.0 - 2026-11-20
 
 * Foreign priv builds: a dependency whose compile packs Kino.JS assets into kino's priv
   (kino_vega_lite, kino_maplibre, ...) can now install precompiled. The portal lists such
