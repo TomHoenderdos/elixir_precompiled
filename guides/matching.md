@@ -391,6 +391,13 @@ archive. Only `priv/assets/<d>` for a `<d>` being placed is ever removed
 under kino's build dir, as Kino.JS removes it itself; a failure there is a
 FAIL, and Mix compiles the writer.
 
+The same holds for an installed writer this run cannot recheck (no fresh
+batch, or its manifest out of reach) and so keeps as it is: it is kept
+only while kino ends the run's installs settled as above and the archives
+its install recorded are on disk. Otherwise it misses and is removed, so
+a kino removed or reinstalled in the same run never leaves it without its
+archives.
+
 Every run checks an installed writer's archives on disk, not only when its
 manifest changed: each `priv/assets/<d>` must hold exactly its archive.
 When it does not (Mix recompiled kino, which wipes its build dir), the

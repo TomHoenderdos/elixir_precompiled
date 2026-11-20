@@ -423,6 +423,78 @@ defmodule Precompiled.ForeignPrivCheckTest do
   # Removing kino this run makes Mix compile it, which wipes kino's build
   # dir. A writer that never reaches Phase B (no fresh batch, or its
   # manifest out of reach) must not stay installed without its archives.
+  defp offline!() do
+    System.put_env("PRECOMPILED_OFFLINE", "1")
+    on_exit(fn -> System.delete_env("PRECOMPILED_OFFLINE") end)
+  end
+
+  defp clear_cache!(what) do
+    dir = Path.join(System.get_env("PRECOMPILED_HOME"), what)
+    File.rm_rf!(dir)
+    File.mkdir_p!(dir)
+  end
+
+  # The run's batch, fetched and cached, as an earlier run (or another
+  # project sharing the home) leaves it.
+  defp fetch_batch!() do
+    config =
+      Precompiled.Config.load()
+      |> Check.with_deadline()
+      |> Map.put(:dead_origins, Fetch.new_dead_origins())
+
+    {:ok, batch} = Check.fetch_batch(config)
+    {config, batch}
+  end
+
+  @writer_gone ~r/kino_vega_lite 0\.1\.13\s+MISS\s+writes into kino's priv; kino compiles from source in this run/
+
+  # F2: kino removed inside Phase A (its new manifest out of reach) while
+  # the writer's unchanged manifest is out of reach too.
+  test "kino removed in Phase A while a writer is kept without a recheck: the writer goes",
+       %{f: f, lib: lib, env: env} do
+    publish(f, kino_entry(f), writer_entry(f))
+    {{:ok, _}, _} = run(env)
+    assert File.exists?(placed(lib))
+
+    # A new batch: kino's manifest changed, the writer's did not.
+    publish(f, kino_entry(f, "a newer kino beam"), writer_entry(f), 2)
+    fetch_batch!()
+    clear_cache!("manifests")
+    offline!()
+    {{:ok, report}, out} = run(installed(env))
+    assert out =~ ~r/kino 0\.19\.1\s+MISS\s+offline: manifest not cached/, out
+    assert out =~ @writer_gone, out
+    assert report.misses == 2
+    refute File.exists?(Path.join(lib, "kino"))
+    refute File.exists?(Path.join(lib, "kino_vega_lite"))
+  end
+
+  # F2: the same with kino's Phase A install failing (a file it cannot fetch).
+  test "kino's install fails in Phase A while a writer is kept without a recheck: the writer goes",
+       %{f: f, lib: lib, env: env} do
+    publish(f, kino_entry(f), writer_entry(f))
+    {{:ok, _}, _} = run(env)
+    publish(f, kino_entry(f, "a newer kino beam"), writer_entry(f), 2)
+    {config, batch} = fetch_batch!()
+    kino_sha = batch.manifests_v2["kino"]
+    assert {:ok, _} = Fetch.manifest(config, "kino", kino_sha, "v2/manifests")
+
+    File.rm!(
+      Path.join([
+        System.get_env("PRECOMPILED_HOME"),
+        "manifests",
+        batch.manifests_v2["kino_vega_lite"] <> ".json"
+      ])
+    )
+
+    offline!()
+    {_, out} = run(installed(env))
+    assert out =~ ~r/kino 0\.19\.1\s+FAIL\s+offline: file not cached/, out
+    assert out =~ @writer_gone, out
+    refute File.exists?(Path.join(lib, "kino"))
+    refute File.exists?(Path.join(lib, "kino_vega_lite"))
+  end
+
   test "kino excepted under a refused batch: an installed writer goes too",
        %{f: f, lib: lib, env: env} do
     publish(f, kino_entry(f), writer_entry(f))
