@@ -229,8 +229,7 @@ defmodule Precompiled.Check do
             do: config,
             else: Map.put(config, :systems_table, systems_table(config, batch))
 
-        {lines, outcomes} =
-          install_lines(todo, Map.put(config, :removed, removed), batch, env, config_fun)
+        {lines, outcomes} = install_lines(todo, config, batch, env, config_fun)
 
         lines = revoked ++ lines ++ foreign_lines(outcomes, removed, config, env, config_fun)
         # Once a day, the cache back under its bound. Only after a run with
@@ -243,30 +242,46 @@ defmodule Precompiled.Check do
       {:error, why} ->
         if Trust.crashed?(why),
           do: crashed_lines(candidates, installed, env, why),
-          else: refused_lines(candidates, installed, removed, env, why)
+          else: refused_lines(candidates, installed, removed, config, env, why)
     end
   end
 
   # No fresh batch, no verdict: installed builds stay as they are, and
-  # their line says so rather than reading as a source compile. Not a
-  # writer whose kino this run removed (orphaned?/3).
-  defp refused_lines(candidates, installed, removed, env, why) do
+  # their line says so rather than reading as a source compile. An
+  # installed writer is kept only as kept_writer/4 decides: kino settled
+  # (installed and kept here, or Mix-built and current, and not removed)
+  # and its archives on disk.
+  defp refused_lines(candidates, installed, removed, config, env, why) do
+    outcomes =
+      Map.merge(Map.new(candidates, &{&1.name, :missed}), Map.new(installed, &{&1.name, :kept}))
+
+    state = fn -> target_state(outcomes, removed, env) end
+
     Enum.map(candidates, &revoke_line(&1, :fail, Reason.of_batch_error(why))) ++
       Enum.map(installed, fn dep ->
-        if orphaned?(env.build_lib, dep.name, removed),
-          do: revoke(dep, env, revoke_line(dep, :miss, target_compiles())),
-          else: kept_line(dep, why)
+        case recorded_foreign(env.build_lib, dep.name) do
+          nil ->
+            kept_line(dep, why)
+
+          entries ->
+            kept_writer(
+              %{candidate: dep, entries: entries, line: kept_line(dep, why)},
+              state.(),
+              config,
+              env
+            )
+        end
       end)
   end
 
-  # 0.8.0: an installed writer (its provenance names archives it placed
-  # into kino) whose kino this run removed, so Mix compiles kino and wipes
-  # them, and that Phase B never sees (no fresh batch, or its manifest out
-  # of reach): kept, it would be left without them. It goes too, as Phase B
-  # would remove it, and Mix compiles it after kino.
-  defp orphaned?(build_lib, name, removed) do
-    Atom.to_string(ForeignPriv.target()) in removed and
-      match?([_ | _], provenance_value(build_lib, name, "foreign"))
+  # 0.8.0: the archives an installed dep (not kino) placed into kino, as
+  # its provenance records them; nil for none, :malformed when they are not
+  # entries this client would place.
+  defp recorded_foreign(build_lib, name) do
+    case name != ForeignPriv.target() && provenance_value(build_lib, name, "foreign") do
+      v when v in [nil, false, []] -> nil
+      entries -> if ForeignPriv.recorded?(entries), do: entries, else: :malformed
+    end
   end
 
   defp target_compiles(), do: Reason.new(:foreign_priv_target_compiles, ["kino"])
@@ -474,21 +489,72 @@ defmodule Precompiled.Check do
   # build priv only when kino is settled there, so nothing Mix does later in
   # this run removes them; otherwise it misses and an installed one goes, so
   # Mix compiles it after kino.
+  #
+  # Writers Phase A kept without a recheck (their manifest out of reach) are
+  # decided here too, on kino's state once Phase A is over (kept_writer/4):
+  # Phase A may have removed kino since.
   defp foreign_lines(outcomes, removed, config, env, config_fun) do
-    deferred =
-      for({_name, {:defer, d}} <- outcomes, do: d)
-      |> Enum.sort_by(&Atom.to_string(&1.candidate.name))
+    work =
+      for({_name, {kind, d}} when kind in [:defer, :kept_writer] <- outcomes, do: {kind, d})
+      |> Enum.sort_by(fn {_kind, d} -> Atom.to_string(d.candidate.name) end)
 
-    if deferred == [] do
+    if work == [] do
       []
     else
       state = target_state(outcomes, removed, env)
-      claims = claims(deferred)
+      claims = claims(for {:defer, d} <- work, do: d)
 
-      deferred
-      |> Enum.map(&foreign_one(&1, state, claims, config, env, config_fun))
+      work
+      |> Enum.map(fn
+        {:defer, d} -> foreign_one(d, state, claims, config, env, config_fun)
+        {:kept_writer, k} -> kept_writer(k, state, config, env)
+      end)
       |> Enum.reject(&is_nil/1)
     end
+  end
+
+  # An installed writer kept without a recheck (Phase A's, or a refused
+  # batch's): its line stays only while kino is settled and the archives its
+  # provenance records are on disk. Otherwise it goes, as Phase B removes a
+  # writer, and Mix compiles it after kino.
+  defp kept_writer(%{candidate: c, entries: entries, line: line}, state, config, env) do
+    sname = Atom.to_string(c.name)
+
+    result =
+      case {state, entries} do
+        {_, :malformed} ->
+          {:miss, Reason.new(:revoked_provenance, [], "revoked: provenance unreadable")}
+
+        {:settled, entries} ->
+          recorded_on_disk(c, entries, config, env)
+
+        {:compiles, _} ->
+          {:miss, target_compiles()}
+
+        {:linked, _} ->
+          {:miss, Reason.new(:foreign_priv_target_linked, ["kino"])}
+
+        {:missing, _} ->
+          {:miss, Reason.new(:foreign_priv_target_missing, ["kino"])}
+      end
+
+    case result do
+      :kept ->
+        line
+
+      other ->
+        line_for(%{name: sname, version: c.version, bytes: 0}, drop_writer(other, env, sname))
+    end
+  rescue
+    e -> crashed(c, env, Exception.message(e))
+  catch
+    kind, reason when kind in [:exit, :throw] -> crashed(c, env, inspect(reason))
+  end
+
+  defp recorded_on_disk(_c, entries, _config, env) do
+    if ForeignPrivFiles.on_disk?(env.build_lib, entries),
+      do: :kept,
+      else: {:miss, target_compiles()}
   end
 
   # Kino is settled when Phase A placed or kept it, or when it is no
@@ -797,10 +863,9 @@ defmodule Precompiled.Check do
             result
             |> unreachable(replacing? and sha == installed_sha)
             |> verify_kept(candidate, env, config_fun)
-            |> kept_orphan(candidate, env, Map.get(config, :removed, []))
 
           if replacing? and not stays?(result), do: _ = remove(env.build_lib, sname)
-          {line_for(base, result), outcome(result)}
+          line_and_outcome(result, line_for(base, result), candidate, env)
       end
     rescue
       e -> {crashed(candidate, env, Exception.message(e)), :missed}
@@ -820,6 +885,17 @@ defmodule Precompiled.Check do
         |> Reason.of_install()
         |> installed_build(label)
   end
+
+  # 0.8.0: a writer kept without a recheck is decided after Phase A
+  # (foreign_lines/5), when kino's own outcome is known.
+  defp line_and_outcome({:kept_unchecked, _} = result, line, candidate, env) do
+    case recorded_foreign(env.build_lib, candidate.name) do
+      nil -> {line, outcome(result)}
+      entries -> {nil, {:kept_writer, %{candidate: candidate, entries: entries, line: line}}}
+    end
+  end
+
+  defp line_and_outcome(result, line, _candidate, _env), do: {line, outcome(result)}
 
   # What Phase A did with a candidate, for Phase B's kino.
   defp outcome({:hit, _}), do: :placed
@@ -866,16 +942,6 @@ defmodule Precompiled.Check do
   end
 
   defp verify_kept(result, _candidate, _env, _config_fun), do: result
-
-  # A writer kept without a recheck whose kino this run removed: a miss, so
-  # it goes (orphaned?/3).
-  defp kept_orphan({:kept_unchecked, _} = kept, candidate, env, removed) do
-    if orphaned?(env.build_lib, candidate.name, removed),
-      do: {:miss, target_compiles()},
-      else: kept
-  end
-
-  defp kept_orphan(result, _candidate, _env, _removed), do: result
 
   # A replaced install that neither stayed nor hit is removed: Mix compiles
   # it.

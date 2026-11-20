@@ -102,6 +102,19 @@ defmodule Precompiled.ForeignPriv do
   @spec none_reason(map()) :: :ok | {:miss, Reason.t()}
   def none_reason(build), do: if(none?(build), do: :ok, else: malformed())
 
+  @doc """
+  Whether the entries an install recorded in its provenance (`foreign`)
+  are archives this client would place: V1, V2 and V4 as for a manifest
+  entry. V3 was checked when they were placed, against the build's beams.
+  """
+  @spec recorded?(term()) :: boolean()
+  def recorded?(entries) do
+    is_list(entries) and entries != [] and length(entries) <= @max_entries and
+      Enum.all?(entries, &entry_ok?(&1, :any)) and
+      entries |> Enum.map(& &1["size"]) |> Enum.sum() <= @max_bytes and
+      length(Enum.uniq_by(entries, &dir/1)) == length(entries)
+  end
+
   defp malformed(), do: {:miss, Reason.new(:malformed_entry, [], "malformed entry")}
 
   defp entry_ok?(
@@ -110,7 +123,7 @@ defmodule Precompiled.ForeignPriv do
        )
        when is_binary(path) and is_binary(sha) and is_integer(size) and size >= 0 do
     Regex.match?(@path, path) and Fetch.safe_path?(path) and mode in @modes and
-      Regex.match?(@sha, sha) and MapSet.member?(dirs, dir(%{"path" => path}))
+      Regex.match?(@sha, sha) and (dirs == :any or MapSet.member?(dirs, dir(%{"path" => path})))
   end
 
   defp entry_ok?(_entry, _dirs), do: false
