@@ -446,7 +446,40 @@ defmodule Precompiled.ForeignPrivCheckTest do
     {config, batch}
   end
 
+  @writer_kept ~r/kino_vega_lite 0\.1\.13\s+KEPT\s+offline: manifest not cached; installed build kept/
   @writer_gone ~r/kino_vega_lite 0\.1\.13\s+MISS\s+writes into kino's priv; kino compiles from source in this run/
+
+  # F3: a writer kept without a recheck is still checked on disk; archives
+  # Mix wiped (it recompiled kino) are placed again from the cache, and a
+  # writer whose archives cannot be placed goes.
+  test "a writer kept without a recheck has its archives checked on disk",
+       %{f: f, lib: lib, env: env} do
+    publish(f, kino_entry(f), writer_entry(f))
+    {{:ok, _}, _} = run(env)
+    File.rm_rf!(Path.join(lib, "kino/priv/assets/Kino_VegaLite"))
+    clear_cache!("manifests")
+    offline!()
+    {_, out} = run(installed(env))
+    assert out =~ @writer_kept, out
+    assert File.read!(placed(lib)) == @archive
+
+    # No fresh batch at all: the same.
+    System.delete_env("PRECOMPILED_OFFLINE")
+    F.publish(f, %{}, sequence: 2, expires: "2020-01-01T00:00:00Z")
+    File.rm_rf!(Path.join(lib, "kino/priv/assets/Kino_VegaLite"))
+    {_, out} = run(installed(env))
+    assert out =~ "installed builds kept, not rechecked", out
+    assert File.read!(placed(lib)) == @archive
+
+    # Archives that cannot be placed again (offline, not cached): it goes.
+    File.rm_rf!(Path.join(lib, "kino/priv/assets/Kino_VegaLite"))
+    clear_cache!("files")
+    offline!()
+    {_, out} = run(installed(env))
+    assert out =~ ~r/kino_vega_lite 0\.1\.13\s+FAIL\s+install failed/, out
+    refute File.exists?(Path.join(lib, "kino_vega_lite"))
+    assert File.dir?(Path.join(lib, "kino"))
+  end
 
   # F2: kino removed inside Phase A (its new manifest out of reach) while
   # the writer's unchanged manifest is out of reach too.
