@@ -363,6 +363,26 @@ defmodule Precompiled.ForeignPrivFilesTest do
     assert :ok = ForeignPrivFiles.mark_owners(Path.join(lib, "nowhere"))
   end
 
+  # Marks are removed only inside the build lib, never through a link.
+  test "mark_owners never follows a linked dep dir or .mix", %{lib: lib, tmp_dir: dir} do
+    kino = kino_dir(lib)
+    File.mkdir_p!(Path.join(kino, "priv/assets/KinoDB_Cell"))
+
+    linked_app = Path.join(dir, "outside/kino_db")
+    app!(Path.dirname(linked_app), "kino_db", "Elixir.KinoDB.Cell")
+    File.ln_s!(linked_app, Path.join(lib, "kino_db"))
+
+    app!(lib, "kino_other", "Elixir.KinoDB.Cell")
+    linked_mix = Path.join(dir, "outside_mix")
+    File.rename!(Path.join(lib, "kino_other/.mix"), linked_mix)
+    File.ln_s!(linked_mix, Path.join(lib, "kino_other/.mix"))
+
+    assert :ok = ForeignPrivFiles.mark_owners(lib)
+    assert marked?(Path.dirname(linked_app), "kino_db")
+    assert File.exists?(Path.join(linked_mix, "compile.elixir_scm"))
+    assert File.exists?(Path.join(linked_mix, "compile.fetch"))
+  end
+
   test "Status.remove/2 of an installed kino marks the owners first", %{lib: lib} do
     kino = kino_dir(lib)
     File.mkdir_p!(Path.join(kino, ".mix"))
