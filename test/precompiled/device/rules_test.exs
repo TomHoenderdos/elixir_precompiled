@@ -737,6 +737,47 @@ defmodule Precompiled.Device.RulesTest do
       assert picked["build"]["run_id"] == "r1"
     end
 
+    # 0.8.0: a writer whose compile packs Kino.JS assets into kino's priv
+    # is listed only under foreign_priv, which a device never reads.
+    test "foreign_priv is never read; a writer found only there says so" do
+      entry = %{
+        "app" => "kino",
+        "path" => "priv/assets/X/uxwh53kfq2wszgf23hqwgkuiza.tar.gz",
+        "sha256" => String.duplicate("a", 64),
+        "size" => 1,
+        "mode" => 33_188
+      }
+
+      writer = Map.put(build(), "foreign_priv", [entry])
+      kino_own = put_in(build(), ["build", "foreign_priv_target"], "kino")
+
+      m = fn builds, foreign ->
+        %{
+          "format" => 2,
+          "versions" => %{
+            "1.0.0" => %{"builds" => builds, "foreign_priv" => %{"builds" => foreign}}
+          }
+        }
+      end
+
+      assert {:miss, %{code: :foreign_priv_device, args: ["kino"]}, "1.0.0"} =
+               Rules.select_coded(m.([], [writer]), "recon", nil, ctx())
+
+      assert {:miss, "writes into kino's priv at compile time; not installed on a device"} =
+               Rules.select(m.([], [writer]), "recon", nil, ctx())
+
+      # kino's own build there (no entries) is not read either.
+      assert {:miss, %{code: :not_built_version}, "1.0.0"} =
+               Rules.select_coded(m.([], [kino_own]), "recon", nil, ctx())
+
+      # A regular build beside it is judged as always.
+      assert {:ok, "1.0.0", _, _} = Rules.select(m.([build()], [writer]), "recon", nil, ctx())
+
+      # A regular-list build that carries foreign entries is a malformed entry.
+      assert {:miss, %{code: :malformed_entry}, _} =
+               Rules.select_coded(m.([writer], []), "recon", nil, ctx())
+    end
+
     defp order_item(default, seen, app \\ "fx_order_app", reader \\ "fx_order_reader") do
       %{
         "kind" => "config_order",

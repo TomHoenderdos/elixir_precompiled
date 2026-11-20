@@ -36,6 +36,7 @@ defmodule Precompiled.Device.Rules do
   # what that default resolved to and is not compared here.
 
   alias Precompiled.CompileInputs
+  alias Precompiled.ForeignPriv
   alias Precompiled.Match
   alias Precompiled.Reason
 
@@ -79,7 +80,10 @@ defmodule Precompiled.Device.Rules do
   # report sends, the text the line prints.
   defp check_coded(build, name, ctx) do
     b = build["build"] || %{}
-    if not is_map(b) or not lists_in_place?(build), do: throw(:malformed)
+    # A build carrying foreign priv entries (0.8.0) is never listed where a
+    # device reads; one that is cannot be installed without them.
+    if not is_map(b) or not lists_in_place?(build) or not ForeignPriv.none?(build),
+      do: throw(:malformed)
 
     acc = %{
       needs: [],
@@ -518,9 +522,30 @@ defmodule Precompiled.Device.Rules do
     Enum.reduce_while(versions, nil, fn v, first_miss ->
       case best_build(builds_of(manifest, v), name, ctx) do
         {:ok, build, verdict} -> {:halt, {:ok, v, build, verdict}}
-        {:miss, why} -> {:cont, first_miss || {:miss, why, v}}
+        {:miss, why} -> {:cont, first_miss || {:miss, foreign_only(why, manifest, v), v}}
       end
     end)
+  end
+
+  # A version built only as a foreign priv build (0.8.0): a writer that
+  # packs Kino.JS assets into kino's priv at compile time, which a device's
+  # content-addressed store cannot hold. Never installed here; said so. A
+  # foreign list of kino's own builds only (no entries) says nothing more.
+  defp foreign_only(why, manifest, v) do
+    if builds_of(manifest, v) == [] and foreign_writer?(manifest, v),
+      do: Reason.new(:foreign_priv_device, ["kino"]),
+      else: why
+  end
+
+  defp foreign_writer?(manifest, v) do
+    case manifest["versions"][v] do
+      %{"foreign_priv" => %{} = lists} ->
+        (List.wrap(lists["builds"]) ++ List.wrap(lists["builds_with_inputs"]))
+        |> Enum.any?(&(is_map(&1) and ForeignPriv.entries(&1) != []))
+
+      _ ->
+        false
+    end
   end
 
   # Both lists: builds_with_inputs holds builds whose compile_inputs are
