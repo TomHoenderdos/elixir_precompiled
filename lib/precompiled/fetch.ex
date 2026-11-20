@@ -12,7 +12,7 @@ defmodule Precompiled.Fetch do
   marker.
   """
 
-  alias Precompiled.{FileUtil, Manifest}
+  alias Precompiled.{FileUtil, ForeignPriv, ForeignPrivFiles, Manifest}
 
   @typep reason :: Precompiled.Reason.t()
 
@@ -745,6 +745,7 @@ defmodule Precompiled.Fetch do
           :ok = link.(dep, entry, staging, dest, Keyword.fetch!(opts, :deps_path))
           # Everything is in staging before _build changes: a failure up to
           # here leaves the old dep dir as it was.
+          carry_foreign(dep, entry, staging, dest, build_lib)
           File.rm_rf!(dest)
           File.mkdir_p!(build_lib)
           File.rename!(staging, dest)
@@ -756,8 +757,29 @@ defmodule Precompiled.Fetch do
       end
     rescue
       e ->
+        # Archives carried into staging go with it: their owners recompile.
+        if dep == ForeignPriv.target() do
+          case ForeignPrivFiles.unshipped(staging, entry) do
+            [] -> :ok
+            carried -> ForeignPrivFiles.mark_owners(build_lib, carried)
+          end
+        end
+
         File.rm_rf!(staging)
         {:fail, "install failed: #{Exception.message(e)}"}
+    end
+  end
+
+  # 0.8.0: kino's archives of other deps (and of the project) its new entry
+  # does not ship go along, so a replace never drops them; where they
+  # cannot (a staged priv that links to the sources), their Mix-built
+  # owners are marked to recompile after kino instead.
+  defp carry_foreign(dep, entry, staging, dest, build_lib) do
+    if dep == ForeignPriv.target() do
+      case ForeignPrivFiles.carry(dest, staging, entry) do
+        :ok -> :ok
+        :mark_owners -> ForeignPrivFiles.mark_owners(build_lib)
+      end
     end
   end
 
@@ -1062,6 +1084,13 @@ defmodule Precompiled.Fetch do
     kind, reason -> {:fail, "install failed: #{inspect({kind, reason})}"}
   end
 
+  @doc false
+  # One file of an entry, from the cache or a download, its size and sha256
+  # checked: what `install/6` stages, for the archives a foreign priv build
+  # places into kino (Precompiled.ForeignPrivFiles).
+  @spec fetch_verified(map(), map()) :: {:ok, binary(), boolean()} | {:fail, String.t()}
+  def fetch_verified(config, entry), do: fetch_file(config, entry)
+
   defp fetch_file(config, %{"sha256" => sha, "size" => size, "path" => path}) do
     case cached_file(config, sha, size) do
       {:ok, bytes} -> {:ok, bytes, true}
@@ -1196,6 +1225,7 @@ defmodule Precompiled.Fetch do
     %{"manifest_sha256" => sha, "manifest_path" => path, "batch_sequence" => seq}
     |> put_present("files_sha256", p[:files_sha256])
     |> put_present("source", p[:source])
+    |> put_present("foreign", p[:foreign])
     |> :json.encode()
     |> IO.iodata_to_binary()
   end
@@ -1218,8 +1248,16 @@ defmodule Precompiled.Fetch do
   writes them, and none of them is code the build's .app loads.
   """
   @spec installed_as?(Path.t(), atom(), map()) :: boolean()
-  def installed_as?(build_lib, dep, entry),
-    do: installed_at?(Path.join(build_lib, Atom.to_string(dep)), dep, entry, mix_priv_link: true)
+  def installed_as?(build_lib, dep, entry) do
+    foreign = if dep == ForeignPriv.target(), do: [foreign_priv: true], else: []
+
+    installed_at?(
+      Path.join(build_lib, Atom.to_string(dep)),
+      dep,
+      entry,
+      [mix_priv_link: true] ++ foreign
+    )
+  end
 
   @doc """
   `installed_as?/3` for a directory named anything (`<app>-<vsn>` in a
@@ -1235,7 +1273,8 @@ defmodule Precompiled.Fetch do
 
     validate(files, dep) == :ok and real_dir?(dir) and
       priv_ok?(dir, dep, entry, opts) and
-      on_disk(dir, tops(entry)) == {:ok, MapSet.new(files, & &1["path"])} and
+      dir |> on_disk(tops(dir, entry, opts)) |> drop_unshipped(dir, entry, opts) ==
+        {:ok, MapSet.new(files, & &1["path"])} and
       Enum.all?(files, &same_file?(dir, &1)) and modules_ok(dir, dep) == :ok
   rescue
     _ -> false
@@ -1243,7 +1282,29 @@ defmodule Precompiled.Fetch do
 
   defp ships_priv?(entry), do: (entry["priv"] || []) != []
 
-  defp tops(entry), do: if(ships_priv?(entry), do: ["ebin", "priv"], else: ["ebin"])
+  # With `foreign_priv: true` (kino in a Mix project's _build), a real priv
+  # the entry does not ship is walked too: it may hold only the archives of
+  # other deps and of the project, which drop_unshipped/4 passes over.
+  defp tops(dir, entry, opts) do
+    if ships_priv?(entry) or (opts[:foreign_priv] == true and real_dir?(Path.join(dir, "priv"))),
+      do: ["ebin", "priv"],
+      else: ["ebin"]
+  end
+
+  # 0.8.0: kino's priv/assets holds the Kino.JS archives of other deps and
+  # of the project beside its own. A `priv/assets/<d>` directory its entry
+  # ships no file in is not kino's (Precompiled.ForeignPrivFiles), and is
+  # not looked at; every file kino itself ships is still checked exactly.
+  defp drop_unshipped({:ok, paths}, dir, entry, opts) do
+    if opts[:foreign_priv] == true do
+      prefixes = for d <- ForeignPrivFiles.unshipped(dir, entry), do: "priv/assets/" <> d <> "/"
+      {:ok, MapSet.reject(paths, fn p -> String.starts_with?(p, prefixes) end)}
+    else
+      {:ok, paths}
+    end
+  end
+
+  defp drop_unshipped(other, _dir, _entry, _opts), do: other
 
   defp priv_ok?(dir, dep, entry, opts),
     do: ships_priv?(entry) or undeclared_priv_ok?(dir, dep, opts)
@@ -1253,6 +1314,7 @@ defmodule Precompiled.Fetch do
 
     case File.lstat(priv) do
       {:error, :enoent} -> true
+      {:ok, %File.Stat{type: :directory}} -> opts[:foreign_priv] == true
       {:ok, %File.Stat{type: :symlink}} -> opts[:mix_priv_link] == true and mix_link?(priv, dep)
       _ -> false
     end
