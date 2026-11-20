@@ -136,4 +136,44 @@ defmodule Precompiled.ManifestTest do
 
     assert {:ok, ^doc} = Manifest.normalize(doc)
   end
+
+  # foreign_priv (0.8.0) holds the builds whose compile wrote Kino.JS
+  # archives into kino's priv, and kino's own. A malformed one is dropped
+  # alone: the version and its other lists still serve.
+  test "format 2 keeps a well-formed foreign_priv, and drops a malformed one alone" do
+    good = %{
+      "builds" => [%{"target" => "pure_elixir"}],
+      "builds_closure" => [%{"target" => "pure_elixir"}]
+    }
+
+    doc = fn foreign ->
+      %{
+        "format" => 2,
+        "versions" => %{
+          "1.0.0" => %{
+            "builds" => [],
+            "foreign_priv" => foreign,
+            "deterministic" => %{"builds" => [], "foreign_priv" => foreign}
+          }
+        }
+      }
+    end
+
+    assert {:ok, %{"versions" => %{"1.0.0" => v}}} = Manifest.normalize(doc.(good))
+    assert v["foreign_priv"] == good
+    assert v["deterministic"]["foreign_priv"] == good
+
+    assert {:ok, %{"versions" => %{"1.0.0" => v}}} =
+             Manifest.normalize(doc.(Map.put(good, "builds_closure", "x")))
+
+    assert v["foreign_priv"] == Map.delete(good, "builds_closure")
+    assert v["deterministic"]["foreign_priv"] == Map.delete(good, "builds_closure")
+
+    for bad <- ["x", [], %{}, %{"builds" => "x"}, %{"builds" => [], "builds_with_inputs" => "x"}] do
+      assert {:ok, %{"versions" => %{"1.0.0" => v}}} = Manifest.normalize(doc.(bad)), inspect(bad)
+      refute Map.has_key?(v, "foreign_priv")
+      refute Map.has_key?(v["deterministic"], "foreign_priv")
+      assert v["builds"] == []
+    end
+  end
 end
