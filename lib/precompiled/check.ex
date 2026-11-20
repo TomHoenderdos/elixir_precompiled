@@ -515,7 +515,8 @@ defmodule Precompiled.Check do
 
   # An installed writer kept without a recheck (Phase A's, or a refused
   # batch's): its line stays only while kino is settled and the archives its
-  # provenance records are on disk. Otherwise it goes, as Phase B removes a
+  # provenance records are on disk, placed again from the cache when they
+  # are not (Mix recompiled kino). Otherwise it goes, as Phase B removes a
   # writer, and Mix compiles it after kino.
   defp kept_writer(%{candidate: c, entries: entries, line: line}, state, config, env) do
     sname = Atom.to_string(c.name)
@@ -551,10 +552,17 @@ defmodule Precompiled.Check do
     kind, reason when kind in [:exit, :throw] -> crashed(c, env, inspect(reason))
   end
 
-  defp recorded_on_disk(_c, entries, _config, env) do
-    if ForeignPrivFiles.on_disk?(env.build_lib, entries),
-      do: :kept,
-      else: {:miss, target_compiles()}
+  defp recorded_on_disk(c, entries, config, env) do
+    if ForeignPrivFiles.on_disk?(env.build_lib, entries) do
+      :kept
+    else
+      with {:ok, staging} <- ForeignPrivFiles.stage(config, c.name, entries, env.build_lib),
+           :ok <- ForeignPrivFiles.place(env.build_lib, staging, entries) do
+        :kept
+      else
+        {:fail, why} -> {:fail, Reason.new(:install_failed, [], install_failed(why))}
+      end
+    end
   end
 
   # Kino is settled when Phase A placed or kept it, or when it is no

@@ -16,8 +16,8 @@
   (`foreign_priv_conflict`), and under a rule this client does not know
   (`foreign_priv_rule_unknown`). A device never installs one (`foreign_priv_device`).
 
-* Every run checks an installed writer's archives on disk and places them again when Mix
-  removed them; replacing kino keeps the archives it does not ship; removing kino makes Mix
+* Every run checks an installed writer's archives on disk, offline and without a fresh
+  batch too, and places them again when Mix removed them; replacing kino keeps the archives it does not ship; removing kino makes Mix
   recompile the dependencies whose archives were in it.
 
 * Upgrading from 0.7.x: kino itself is listed for 0.8.0 only, so an older client compiles
