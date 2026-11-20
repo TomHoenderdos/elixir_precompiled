@@ -38,7 +38,11 @@ defmodule Precompiled.PortalPayload do
                   symbol_version_missing system_unknown system_bound_compile
                   env_differs env_set_at_build env_all config_unrecorded
                   config_order_differs rebar3_global_config erl_compiler_options
-                  platform_define_differs endian_differs os_type_differs)
+                  platform_define_differs endian_differs os_type_differs
+                  triple_differs nif_version_newer origin_unverified deterministic_not_built
+                  foreign_priv_target_compiles foreign_priv_target_missing
+                  foreign_priv_target_linked foreign_priv_conflict foreign_priv_rule_unknown
+                  foreign_priv_device)
 
   @top ~w(format client built_at elixir otp os target system system_version lines lock contact)
   @os_keys ~w(family arch)

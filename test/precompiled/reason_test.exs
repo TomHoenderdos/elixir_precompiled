@@ -17,11 +17,19 @@ defmodule Precompiled.ReasonTest do
              env_differs env_set_at_build env_all config_unrecorded config_order_differs
              rebar3_global_config erl_compiler_options platform_define_differs
              endian_differs os_type_differs triple_differs nif_version_newer
-             origin_unverified deterministic_not_built)a
+             origin_unverified deterministic_not_built foreign_priv_target_compiles
+             foreign_priv_target_missing foreign_priv_target_linked foreign_priv_conflict
+             foreign_priv_rule_unknown foreign_priv_device)a
 
   test "the codes are exactly the table shared with the portal" do
     assert Reason.codes() == @shared
-    assert length(Reason.codes()) == 51
+    assert length(Reason.codes()) == 57
+  end
+
+  # The device report tests' copy of the portal's check accepts exactly
+  # these codes, in this order.
+  test "the portal payload copy knows every code, in order" do
+    assert Precompiled.PortalPayload.known_codes() == Enum.map(Reason.codes(), &Atom.to_string/1)
   end
 
   test "the codes for matching across releases render their templates" do
@@ -57,6 +65,26 @@ defmodule Precompiled.ReasonTest do
   test "the code for a version with no deterministic build renders its template" do
     assert Reason.render(:deterministic_not_built, ["1.4.5"]) ==
              "no ERL_COMPILER_OPTIONS=deterministic build of 1.4.5 yet"
+  end
+
+  test "the codes for foreign priv builds render their templates" do
+    for {code, args, text} <- [
+          {:foreign_priv_target_compiles, ["kino"],
+           "writes into kino's priv; kino compiles from source in this run"},
+          {:foreign_priv_target_missing, ["kino"],
+           "writes into kino's priv; kino is not in this build"},
+          {:foreign_priv_target_linked, ["kino"],
+           "writes into kino's priv, which links to its sources"},
+          {:foreign_priv_conflict, ["kino", "Kino_VegaLite", "kino_other"],
+           "writes kino's priv/assets/Kino_VegaLite, which kino_other also claims"},
+          {:foreign_priv_rule_unknown, ["kino", "kino_js_v9"],
+           "writes into kino's priv under rule kino_js_v9, which this client does not know"},
+          {:foreign_priv_device, ["kino"],
+           "writes into kino's priv at compile time; not installed on a device"}
+        ] do
+      assert Reason.render(code, args) == text
+      assert Reason.new(code, args).text == text
+    end
   end
 
   test "templates render args and never the text a reason was made from" do

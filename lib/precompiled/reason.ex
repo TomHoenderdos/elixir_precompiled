@@ -76,7 +76,14 @@ defmodule Precompiled.Reason do
     triple_differs: "built for {0}, this machine is {1}",
     nif_version_newer: "built for NIF {0}, this VM has {1}",
     origin_unverified: "{0} not in the package's checksum file",
-    deterministic_not_built: "no ERL_COMPILER_OPTIONS=deterministic build of {0} yet"
+    deterministic_not_built: "no ERL_COMPILER_OPTIONS=deterministic build of {0} yet",
+    foreign_priv_target_compiles: "writes into {0}'s priv; {0} compiles from source in this run",
+    foreign_priv_target_missing: "writes into {0}'s priv; {0} is not in this build",
+    foreign_priv_target_linked: "writes into {0}'s priv, which links to its sources",
+    foreign_priv_conflict: "writes {0}'s priv/assets/{1}, which {2} also claims",
+    foreign_priv_rule_unknown:
+      "writes into {0}'s priv under rule {1}, which this client does not know",
+    foreign_priv_device: "writes into {0}'s priv at compile time; not installed on a device"
   ]
 
   @codes Keyword.keys(@templates)
