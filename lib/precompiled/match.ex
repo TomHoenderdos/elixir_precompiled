@@ -9,7 +9,7 @@ defmodule Precompiled.Match do
   so every rule is testable without a network or a build.
   """
 
-  alias Precompiled.{HostNative, Reason}
+  alias Precompiled.{ForeignPriv, HostNative, Reason}
 
   @typep reason :: Reason.t()
 
@@ -108,9 +108,15 @@ defmodule Precompiled.Match do
   def select_reason(manifest, ctx) do
     case select_regular(manifest, ctx) do
       {:miss, reason} = miss ->
-        case host_native_builds(manifest, ctx) do
-          [] -> miss
-          builds -> select_host_native(builds, ctx, reason)
+        miss =
+          case host_native_builds(manifest, ctx) do
+            [] -> miss
+            builds -> select_host_native(builds, ctx, reason)
+          end
+
+        case miss do
+          {:miss, reason} -> select_foreign(foreign_builds(manifest, ctx), ctx, reason, miss)
+          hit -> hit
         end
 
       hit ->
@@ -127,7 +133,7 @@ defmodule Precompiled.Match do
         {:miss, not_built(manifest, ctx, mode)}
 
       builds ->
-        results = Enum.map(builds, &{&1, check(&1, ctx)})
+        results = Enum.map(builds, &{&1, check(&1, ctx, fn b, c -> regular_rules(b, c) end)})
 
         case Enum.filter(results, &match?({_, {:ok, _}}, &1)) do
           [] ->
@@ -214,7 +220,7 @@ defmodule Precompiled.Match do
     case Enum.filter(results, &match?({_, {:ok, _}}, &1)) do
       [] ->
         if regular.code in [:not_built_target, :not_built_version],
-          do: {:miss, closest_host_native(results, ctx)},
+          do: {:miss, closest(results, ctx)},
           else: {:miss, regular}
 
       ok ->
@@ -223,10 +229,69 @@ defmodule Precompiled.Match do
     end
   end
 
-  defp closest_host_native(results, ctx) do
+  # The build of `results` (all misses) that passed the most rules, the
+  # first listed of a tie, named in the reason's `closest`.
+  defp closest(results, ctx) do
     best = results |> Enum.map(fn {_, {:miss, _, n}} -> n end) |> Enum.max()
     {build, {:miss, reason, _}} = Enum.find(results, fn {_, {:miss, _, n}} -> n == best end)
     %{reason | closest: describe(build, ctx)}
+  end
+
+  # 0.8.0: a version's `foreign_priv` lists (in deterministic mode, its
+  # `deterministic` object's), read only after the regular lists and the
+  # host-native ones missed; `builds_closure` only with an env closure, as
+  # the regular one. Clients before 0.8.0 never read them, so a writer whose
+  # compile packs Kino.JS assets into kino's priv stays out of their reach,
+  # and so does kino itself, listed there too (its builds carry no entries).
+  defp foreign_builds(manifest, ctx) do
+    mode = Precompiled.ErlCompilerEnv.options(machine_env(ctx), elixir_compiler_options(ctx))
+    v = get_in(manifest, ["versions", ctx.version]) || %{}
+    v = if mode == :deterministic, do: deterministic(v), else: v
+
+    case v do
+      %{"foreign_priv" => %{} = lists} ->
+        List.wrap(lists["builds"]) ++
+          List.wrap(lists["builds_with_inputs"]) ++ world(lists, Map.get(ctx, :env_closure))
+
+      _ ->
+        []
+    end
+  end
+
+  # A passing foreign build, picked as a regular one is. When none passes,
+  # the regular miss stands unless it only said that no build was made for
+  # this system or version: then the foreign build that came furthest
+  # explains it.
+  defp select_foreign([], _ctx, _regular, miss), do: miss
+
+  defp select_foreign(builds, ctx, regular, _miss) do
+    {_system, system_version} = ctx.system
+    results = Enum.map(builds, &{&1, check(&1, ctx, fn b, c -> foreign_rules(b, c) end)})
+
+    case Enum.filter(results, &match?({_, {:ok, _}}, &1)) do
+      [] ->
+        if regular.code in [:not_built_target, :not_built_version],
+          do: {:miss, closest(results, ctx)},
+          else: {:miss, regular}
+
+      ok ->
+        {build, _} =
+          ok |> nearest_release(system_version) |> Enum.min_by(fn {b, _} -> rank(b, ctx) end)
+
+        {:ok, build, build["target"]}
+    end
+  end
+
+  # Every regular rule, then, for a build with entries, the rule it was
+  # judged by and V1-V4 (Precompiled.ForeignPriv). A build without entries
+  # (kino's own, listed here so no client before 0.8.0 installs kino) is a
+  # regular build.
+  defp foreign_rules(build, ctx) do
+    if ForeignPriv.none?(build),
+      do: rules(build, ctx),
+      else:
+        rules(build, ctx) ++
+          [fn -> ForeignPriv.rule_reason(build) end, fn -> ForeignPriv.entries_reason(build) end]
   end
 
   # The passing builds made for the release closest to the project's: the
@@ -273,6 +338,10 @@ defmodule Precompiled.Match do
   mode, in path order. Two manifest entries with the same hash install the
   same files. nil for an entry with a malformed file list, or a path with a
   NUL or newline, which could pass one file off as another's line.
+
+  A build's `foreign_priv` entries (0.8.0), when it has any, are hashed
+  after its own files, apart from them; an entry without any hashes as it
+  did before.
   """
   @spec files_hash(map()) :: String.t() | nil
   def files_hash(entry) do
@@ -281,7 +350,11 @@ defmodule Precompiled.Match do
       |> Enum.map(&file_line/1)
       |> Enum.sort()
 
-    Base.encode16(:crypto.hash(:sha256, lines), case: :lower)
+    # 0.8.0: the archives a build places into kino's priv. An entry without
+    # any hashes as it always did, so no install is redone for it.
+    foreign = entry |> ForeignPriv.entries() |> Enum.map(&file_line/1) |> Enum.sort()
+    data = if foreign == [], do: lines, else: [lines, "foreign_priv\n", foreign]
+    Base.encode16(:crypto.hash(:sha256, data), case: :lower)
   rescue
     _ -> nil
   end
@@ -481,7 +554,7 @@ defmodule Precompiled.Match do
 
   defp foreign?(_, _), do: false
 
-  defp check(build, ctx, rules_of \\ &rules/2) do
+  defp check(build, ctx, rules_of) do
     build
     |> rules_of.(ctx)
     |> Enum.reduce_while({:ok, 0}, fn rule, {:ok, n} ->
@@ -500,6 +573,12 @@ defmodule Precompiled.Match do
     b = build["build"] || %{}
     [fn -> target_reason(build["target"], b, ctx.system, ctx) end | build_rules(build, b, ctx)]
   end
+
+  # A build in a regular list must carry no foreign entries: Phase A
+  # installs it without placing any archive (0.8.0; the portal never lists
+  # one there).
+  defp regular_rules(build, ctx),
+    do: rules(build, ctx) ++ [fn -> ForeignPriv.none_reason(build) end]
 
   # A host-native build passes the rules of any host build, with the
   # triple in place of the target, and then its own: its compile inputs
@@ -520,7 +599,8 @@ defmodule Precompiled.Match do
         fn -> otp_full_reason(b["otp_full"], host.otp_full) end,
         fn -> HostNative.nif_reason(b["nif_version"], host.nif_version) end,
         fn -> HostNative.needs_reason(b, host) end,
-        fn -> HostNative.origins_reason(b["origins"], host.deps_path, ctx.name) end
+        fn -> HostNative.origins_reason(b["origins"], host.deps_path, ctx.name) end,
+        fn -> ForeignPriv.none_reason(build) end
       ]
   end
 
