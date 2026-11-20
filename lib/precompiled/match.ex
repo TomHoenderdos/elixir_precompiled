@@ -284,14 +284,18 @@ defmodule Precompiled.Match do
 
   # Every regular rule, then, for a build with entries, the rule it was
   # judged by and V1-V4 (Precompiled.ForeignPriv). A build without entries
-  # (kino's own, listed here so no client before 0.8.0 installs kino) is a
-  # regular build.
+  # is a regular build only as kino's own (listed here so no client before
+  # 0.8.0 installs kino): ForeignPriv.own_reason/2.
   defp foreign_rules(build, ctx) do
     if ForeignPriv.none?(build),
-      do: rules(build, ctx),
+      do: rules(build, ctx) ++ [fn -> ForeignPriv.own_reason(build, ctx.name) end],
       else:
         rules(build, ctx) ++
-          [fn -> ForeignPriv.rule_reason(build) end, fn -> ForeignPriv.entries_reason(build) end]
+          [
+            fn -> ForeignPriv.writer_reason(ctx.name) end,
+            fn -> ForeignPriv.rule_reason(build) end,
+            fn -> ForeignPriv.entries_reason(build) end
+          ]
   end
 
   # The passing builds made for the release closest to the project's: the

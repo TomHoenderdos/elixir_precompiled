@@ -371,6 +371,10 @@ before anything is downloaded:
   in the directory of one of the build's own modules, one archive per
   directory, at most 64 of them and 10 MiB in all, else `malformed entry`.
 
+A build there without archives is taken only as kino's own (it names
+kino as its `foreign_priv_target`); for any other package it is a
+`malformed entry`, and so is a kino build there that places archives.
+
 The writer is then installed after every other dependency of the run,
 writers one at a time by name, and only into a kino that nothing later in
 this run removes:

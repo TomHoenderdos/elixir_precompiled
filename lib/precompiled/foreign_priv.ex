@@ -72,6 +72,24 @@ defmodule Precompiled.ForeignPriv do
   @spec dir(map()) :: String.t()
   def dir(%{"path" => path}), do: path |> Path.split() |> Enum.at(2)
 
+  @doc """
+  A foreign-list build without entries passes only as kino's own build
+  (the portal's 0b: `build.foreign_priv_target` is kino, the package is
+  kino). Any other would install without the archives its compile writes.
+  """
+  @spec own_reason(map(), String.t()) :: :ok | {:miss, Reason.t()}
+  def own_reason(build, name) do
+    target = Atom.to_string(@target)
+
+    if name == target and get_in(build, ["build", "foreign_priv_target"]) == target,
+      do: :ok,
+      else: malformed()
+  end
+
+  @doc "A foreign-list build with entries passes only for a package other than kino."
+  @spec writer_reason(String.t()) :: :ok | {:miss, Reason.t()}
+  def writer_reason(name), do: if(name == Atom.to_string(@target), do: malformed(), else: :ok)
+
   @doc "The build's rule is one this client knows."
   @spec rule_reason(map()) :: :ok | {:miss, Reason.t()}
   def rule_reason(build) do

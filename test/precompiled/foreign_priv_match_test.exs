@@ -306,6 +306,63 @@ defmodule Precompiled.ForeignPrivMatchTest do
     assert {:miss, %{code: :malformed_entry}} = Match.select_reason(m, ctx())
   end
 
+  # Only kino's own 0b builds are listed there without entries; anything
+  # else without them would install with no archive.
+  test "an entry-less foreign build is taken only as kino's own" do
+    kino_ctx = ctx(%{name: "kino", version: "0.19.1", lock_entry: @kino})
+
+    kino_build =
+      writer_build(
+        %{"foreign_priv" => nil, "ebin" => []},
+        %{
+          "foreign_priv_rule" => nil,
+          "foreign_priv_target" => "kino",
+          "deps" => %{},
+          "package_checksum" => "KOUTER"
+        }
+      )
+
+    in_list = fn version, build ->
+      %{
+        "format" => 2,
+        "versions" => %{version => %{"builds" => [], "foreign_priv" => %{"builds" => [build]}}}
+      }
+    end
+
+    assert {:ok, _, _} = Match.select_reason(in_list.("0.19.1", kino_build), kino_ctx)
+
+    # kino's build without its target, or with entries.
+    for bad <- [
+          put_in(kino_build, ["build", "foreign_priv_target"], nil),
+          put_in(kino_build, ["build", "foreign_priv_target"], "kino_db"),
+          Map.put(kino_build, "foreign_priv", [
+            entry(%{"path" => "priv/assets/Kino_HTML/#{@h}.tar.gz"})
+          ])
+          |> put_in(["build", "foreign_priv_rule"], "kino_js_v1")
+          |> Map.put("ebin", [
+            %{
+              "path" => "ebin/Elixir.Kino.HTML.beam",
+              "sha256" => String.duplicate("b", 64),
+              "size" => 1,
+              "mode" => 33_188
+            }
+          ])
+        ] do
+      assert {:miss, %{code: :malformed_entry}} =
+               Match.select_reason(in_list.("0.19.1", bad), kino_ctx),
+             inspect(bad["build"])
+    end
+
+    # Any other package's build without entries, target or not.
+    for over <- [%{}, %{"foreign_priv_target" => "kino"}] do
+      plain =
+        writer_build(%{"foreign_priv" => []}, Map.merge(%{"foreign_priv_rule" => nil}, over))
+
+      assert {:miss, %{code: :malformed_entry}} =
+               Match.select_reason(in_list.("0.1.13", plain), ctx())
+    end
+  end
+
   test "a regular miss that is not not_built stands over a foreign one" do
     plain = writer_build(%{"foreign_priv" => nil}, %{"foreign_priv_rule" => nil, "otp" => "28"})
 
