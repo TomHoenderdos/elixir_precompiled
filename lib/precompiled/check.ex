@@ -219,6 +219,7 @@ defmodule Precompiled.Check do
 
         {revoked, replaced} = recheck(installed, batch, env)
         todo = candidates ++ replaced
+        removed = removed ++ Enum.map(revoked, & &1.name)
 
         # The systems table is read once per run, and only when a candidate
         # will be matched against it on a Nerves system: a host project
@@ -228,8 +229,9 @@ defmodule Precompiled.Check do
             do: config,
             else: Map.put(config, :systems_table, systems_table(config, batch))
 
-        {lines, outcomes} = install_lines(todo, config, batch, env, config_fun)
-        removed = removed ++ Enum.map(revoked, & &1.name)
+        {lines, outcomes} =
+          install_lines(todo, Map.put(config, :removed, removed), batch, env, config_fun)
+
         lines = revoked ++ lines ++ foreign_lines(outcomes, removed, config, env, config_fun)
         # Once a day, the cache back under its bound. Only after a run with
         # a verified batch: a refused one changes nothing on disk (R14). A
@@ -241,16 +243,33 @@ defmodule Precompiled.Check do
       {:error, why} ->
         if Trust.crashed?(why),
           do: crashed_lines(candidates, installed, env, why),
-          else: refused_lines(candidates, installed, why)
+          else: refused_lines(candidates, installed, removed, env, why)
     end
   end
 
   # No fresh batch, no verdict: installed builds stay as they are, and
-  # their line says so rather than reading as a source compile.
-  defp refused_lines(candidates, installed, why) do
+  # their line says so rather than reading as a source compile. Not a
+  # writer whose kino this run removed (orphaned?/3).
+  defp refused_lines(candidates, installed, removed, env, why) do
     Enum.map(candidates, &revoke_line(&1, :fail, Reason.of_batch_error(why))) ++
-      Enum.map(installed, &kept_line(&1, why))
+      Enum.map(installed, fn dep ->
+        if orphaned?(env.build_lib, dep.name, removed),
+          do: revoke(dep, env, revoke_line(dep, :miss, target_compiles())),
+          else: kept_line(dep, why)
+      end)
   end
+
+  # 0.8.0: an installed writer (its provenance names archives it placed
+  # into kino) whose kino this run removed, so Mix compiles kino and wipes
+  # them, and that Phase B never sees (no fresh batch, or its manifest out
+  # of reach): kept, it would be left without them. It goes too, as Phase B
+  # would remove it, and Mix compiles it after kino.
+  defp orphaned?(build_lib, name, removed) do
+    Atom.to_string(ForeignPriv.target()) in removed and
+      match?([_ | _], provenance_value(build_lib, name, "foreign"))
+  end
+
+  defp target_compiles(), do: Reason.new(:foreign_priv_target_compiles, ["kino"])
 
   # The batch check crashed: this library failed, the batch was not judged.
   # Every dependency compiles from source, an installed build too, since
@@ -387,8 +406,15 @@ defmodule Precompiled.Check do
     }
 
   defp provenance_field(build_lib, dep, key) do
+    case provenance_value(build_lib, dep, key) do
+      value when is_binary(value) -> value
+      _ -> nil
+    end
+  end
+
+  defp provenance_value(build_lib, dep, key) do
     with {:ok, bytes} <- File.read(Fetch.provenance_path(build_lib, dep)),
-         %{^key => value} when is_binary(value) <- decode_json(bytes) do
+         %{^key => value} <- decode_json(bytes) do
       value
     else
       _ -> nil
@@ -509,7 +535,7 @@ defmodule Precompiled.Check do
           {:miss, Reason.new(:foreign_priv_conflict, ["kino", dir, claimer])}
 
         {:compiles, _} ->
-          {:miss, Reason.new(:foreign_priv_target_compiles, ["kino"])}
+          {:miss, target_compiles()}
 
         {:linked, _} ->
           {:miss, Reason.new(:foreign_priv_target_linked, ["kino"])}
@@ -771,6 +797,7 @@ defmodule Precompiled.Check do
             result
             |> unreachable(replacing? and sha == installed_sha)
             |> verify_kept(candidate, env, config_fun)
+            |> kept_orphan(candidate, env, Map.get(config, :removed, []))
 
           if replacing? and not stays?(result), do: _ = remove(env.build_lib, sname)
           {line_for(base, result), outcome(result)}
@@ -839,6 +866,16 @@ defmodule Precompiled.Check do
   end
 
   defp verify_kept(result, _candidate, _env, _config_fun), do: result
+
+  # A writer kept without a recheck whose kino this run removed: a miss, so
+  # it goes (orphaned?/3).
+  defp kept_orphan({:kept_unchecked, _} = kept, candidate, env, removed) do
+    if orphaned?(env.build_lib, candidate.name, removed),
+      do: {:miss, target_compiles()},
+      else: kept
+  end
+
+  defp kept_orphan(result, _candidate, _env, _removed), do: result
 
   # A replaced install that neither stayed nor hit is removed: Mix compiles
   # it.
