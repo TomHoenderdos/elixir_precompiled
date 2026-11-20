@@ -34,6 +34,7 @@ defmodule Precompiled.Env.MixProject do
       mix_target: Atom.to_string(Mix.target()),
       build_methods: build_methods_from(deps),
       present_deps: present_deps_from(deps),
+      compiled_ok: compiled_ok_from(deps),
       compile_order:
         Precompiled.CompileOrder.from_deps(
           deps,
@@ -72,6 +73,11 @@ defmodule Precompiled.Env.MixProject do
   @spec present_deps_from([Mix.Dep.t()]) :: Env.present_deps()
   def present_deps_from(deps),
     do: Map.new(deps, &{&1.app, &1.deps |> Enum.map(fn child -> child.app end) |> Enum.sort()})
+
+  @doc "The apps Mix loaded as compiled (`{:ok, _}`), which Phase B may place archives into."
+  @spec compiled_ok_from([Mix.Dep.t()]) :: MapSet.t(atom())
+  def compiled_ok_from(deps),
+    do: for(%Mix.Dep{app: app, status: {:ok, _}} <- deps, into: MapSet.new(), do: app)
 
   @doc false
   # The closure of nerves' children as Mix loaded them: each Mix.Dep names

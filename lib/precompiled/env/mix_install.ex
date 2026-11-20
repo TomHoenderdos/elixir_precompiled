@@ -33,20 +33,24 @@ defmodule Precompiled.Env.MixInstall do
   # loads it from Mix. Without it rule 9 has nothing to go on, and every
   # candidate misses. `order`: the order Mix.install/2's deps.compile walks
   # the install project's deps in (Install.resolve/4); nil leaves every
-  # config_order item unknown.
+  # config_order item unknown. `compiled_ok`: the deps Mix loaded there as
+  # compiled and current (Install.resolve/4); nil, and Phase B places no
+  # archive into a kino this run did not install.
   @spec load(
           Path.t(),
           [term()],
           Env.build_methods(),
           Env.present_deps() | nil,
-          Env.compile_order() | nil
+          Env.compile_order() | nil,
+          MapSet.t(atom()) | nil
         ) :: Env.t()
   def load(
         project_dir,
         deps,
         methods \\ {:unknown, "not loaded"},
         present \\ nil,
-        order \\ nil
+        order \\ nil,
+        compiled_ok \\ nil
       ) do
     lock = Mix.Dep.Lock.read(Path.join(project_dir, "mix.lock"))
     build_lib = Path.join([project_dir, "_build", Atom.to_string(Mix.env()), "lib"])
@@ -70,7 +74,8 @@ defmodule Precompiled.Env.MixInstall do
       installed_envs: Map.new(installed, &{&1, Map.get(envs, &1, "prod")}),
       build_methods: methods,
       present_deps: present,
-      compile_order: order
+      compile_order: order,
+      compiled_ok: compiled_ok
     }
   end
 

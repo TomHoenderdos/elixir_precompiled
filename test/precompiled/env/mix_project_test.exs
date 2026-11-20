@@ -159,4 +159,17 @@ defmodule Precompiled.Env.MixProjectTest do
 
     assert MixProject.nerves_children_from([child.(:ash, [])]) == nil
   end
+
+  # 0.8.0: Phase B places a writer's archives into a kino Mix built only
+  # when Mix loaded it as compiled and current.
+  test "compiled_ok_from keeps the deps Mix loaded as compiled" do
+    deps = [
+      %Mix.Dep{app: :kino, status: {:ok, nil}, scm: Hex.SCM, opts: []},
+      %Mix.Dep{app: :kino_vega_lite, status: :compile, scm: Hex.SCM, opts: []},
+      %Mix.Dep{app: :table, status: {:noappfile, {"a", "b"}}, scm: Hex.SCM, opts: []},
+      %Mix.Dep{app: :git_dep, status: {:ok, "1.0.0"}, scm: Mix.SCM.Git, opts: []}
+    ]
+
+    assert MixProject.compiled_ok_from(deps) == MapSet.new([:kino, :git_dep])
+  end
 end
