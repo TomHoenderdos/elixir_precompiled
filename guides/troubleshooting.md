@@ -261,6 +261,22 @@ A `MISS` line names the rule that the closest build broke, then that build
 | `MISS  ERL_COMPILER_OPTIONS changed after this VM's first Elixir compile, ...` | Rule 8: Elixir 1.18+ reads the variable once, on the VM's first compile, so one set in `project/0` or `config/config.exs` (or cleared there) reaches rebar3 and `compile.erlang` but not your Elixir deps. Set it in the shell, or in `mix.exs` outside any function. |
 | `MISS  no ERL_COMPILER_OPTIONS=deterministic build of VERSION yet` | Rule 8 (`deterministic_not_built`): your project sets `ERL_COMPILER_OPTIONS=deterministic`, and the portal has builds of this version, but none compiled with that option yet. It compiles from source until one is published. If you set it for delta firmware updates (nerves_livebook), a precompiled build is already the same bytes in every firmware, so a run without it installs builds. |
 
+### Dependencies that write into kino's priv
+
+A Kino.JS writer (see
+[Foreign priv builds](matching.md#foreign-priv-builds-kino-js-writers))
+misses on lines of its own. Each leaves it compiling from source, after
+kino; the code in brackets is the `reason_code` a report carries.
+
+| Line | Meaning | What to do |
+| --- | --- | --- |
+| `MISS  writes into kino's priv; kino compiles from source in this run` (`foreign_priv_target_compiles`) | kino itself compiles in this run (it missed, is in `:except`, was revoked, or Mix has not compiled it yet), which would wipe the writer's archives. | Nothing to fix; once kino is installed or compiled, the next run installs the writer. |
+| `MISS  writes into kino's priv, which links to its sources` (`foreign_priv_target_linked`) | kino's build `priv` is a link into `deps/kino`: a kino that ships `priv/`, which nothing here writes through. | Nothing to fix; it compiles from source. |
+| `MISS  writes into kino's priv; kino is not in this build` (`foreign_priv_target_missing`) | Mix counts kino as compiled, but `_build/<env>/lib/kino` is not there, or not a plain directory. | Run `mix deps.compile kino`, or let it compile. |
+| `MISS  writes kino's priv/assets/Kino_VegaLite, which other also claims` (`foreign_priv_conflict`) | Another dependency, another writer of this run, kino itself, or your project has a module for the same asset directory. | Nothing to fix; both compile from source. |
+| `MISS  writes into kino's priv under rule kino_js_v2, which this client does not know` (`foreign_priv_rule_unknown`) | The build was made under a newer rule than this client knows. | Upgrade `precompiled`. |
+| `writes into kino's priv at compile time; not installed on a device` (`foreign_priv_device`) | On a device: the version's only builds place archives into kino's priv, which a device's store cannot take. | Ship the dependency in the firmware. |
+
 ### Builds from another release of your system
 
 These lines come from rule 1, when the only builds are for other
