@@ -30,7 +30,8 @@ defmodule Precompiled.Env do
           build_methods: build_methods(),
           compile_order: compile_order() | nil,
           present_deps: present_deps() | nil,
-          config_unreadable: String.t() | nil
+          config_unreadable: String.t() | nil,
+          compiled_ok: MapSet.t(atom()) | nil
         }
 
   @typedoc """
@@ -100,7 +101,13 @@ defmodule Precompiled.Env do
             # Why the compile-time config the deps compile with could not be
             # read (Mix.install/2's config_path:), nil when it was: then no
             # compile-time config read can be checked.
-            config_unreadable: nil
+            config_unreadable: nil,
+            # The deps Mix loaded as compiled and current (status {:ok, _}),
+            # in the project or in Mix.install/2's install project: a kino
+            # among them that this run neither installs nor removes is one
+            # Phase B may place a writer's archives into (0.8.0). nil when
+            # Mix's deps were not read: then none is.
+            compiled_ok: nil
 
   @doc """
   The locked Hex entries among `apps`, in the order given. `envs` names each

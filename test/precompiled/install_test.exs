@@ -77,8 +77,12 @@ defmodule Precompiled.InstallTest do
     loaded = fn -> [dep.(:pkg, [here]), here] end
     project = Path.join(dir, "loaded")
 
-    assert {methods, present, order} = quiet(fn -> Install.resolve(project, [], [], loaded) end)
+    assert {methods, present, order, compiled_ok} =
+             quiet(fn -> Install.resolve(project, [], [], loaded) end)
+
     assert present == %{pkg: [:here], here: []}
+    # Neither loaded as compiled (status {:ok, _}).
+    assert compiled_ok == MapSet.new()
     assert methods[:pkg] == %{manager: "mix", overrides: []}
     # The order deps.compile walks, read from the same list.
     assert Precompiled.CompileOrder.apps(order) == ["pkg", "here"]
@@ -87,19 +91,19 @@ defmodule Precompiled.InstallTest do
     other = Path.join(dir, "broken")
 
     assert quiet(fn -> Install.resolve(other, [], [], boom) end) ==
-             {{:unknown, "lock is broken"}, nil, nil}
+             {{:unknown, "lock is broken"}, nil, nil, nil}
 
     # A dep whose children are not the shape Mix gives: the tree is unknown
     # (lock-only matching), the build methods are still read.
     odd = fn -> [%{dep.(:pkg, []) | deps: :nope}] end
     third = Path.join(dir, "odd")
-    assert {%{pkg: _}, nil, nil} = quiet(fn -> Install.resolve(third, [], [], odd) end)
+    assert {%{pkg: _}, nil, nil, _ok} = quiet(fn -> Install.resolve(third, [], [], odd) end)
   end
 
   test "a child that is not an atom leaves the tree unknown", %{tmp_dir: dir} do
     pkg = %Mix.Dep{app: :pkg, scm: Hex.SCM, opts: [], manager: :mix, deps: [%{app: "here"}]}
 
-    assert {%{pkg: _}, nil, _order} =
+    assert {%{pkg: _}, nil, _order, _ok} =
              quiet(fn -> Install.resolve(Path.join(dir, "p"), [], [], fn -> [pkg] end) end)
   end
 
@@ -172,7 +176,7 @@ defmodule Precompiled.InstallTest do
     File.mkdir_p!(project)
     Mix.Dep.Lock.write(%{x: @x, y: @y2, z: @z}, file: Path.join(project, "mix.lock"))
 
-    {_methods, present, _order} =
+    {_methods, present, _order, _ok} =
       quiet(fn -> Install.resolve(project, [], [lockfile: external], lock_load()) end)
 
     # The lock Mix.install/2 compiles from, and the marker that makes it skip
@@ -190,7 +194,10 @@ defmodule Precompiled.InstallTest do
     other = Path.join(dir, "unpinned")
     File.mkdir_p!(other)
     Mix.Dep.Lock.write(%{x: @x, y: @y2, z: @z}, file: Path.join(other, "mix.lock"))
-    {_methods, unpinned, _order} = quiet(fn -> Install.resolve(other, [], [], lock_load()) end)
+
+    {_methods, unpinned, _order, _ok} =
+      quiet(fn -> Install.resolve(other, [], [], lock_load()) end)
+
     assert unpinned.x == [:z]
   end
 
@@ -211,7 +218,7 @@ defmodule Precompiled.InstallTest do
     Mix.Dep.Lock.write(%{x: @x, y: @y2, z: @z}, file: Path.join(project, "mix.lock"))
     deps = [{:pinner, path: src}]
 
-    {_methods, present, _order} =
+    {_methods, present, _order, _ok} =
       quiet(fn -> Install.resolve(project, deps, [lockfile: :pinner], lock_load()) end)
 
     assert present.x == []
@@ -237,6 +244,42 @@ defmodule Precompiled.InstallTest do
 
     assert_received {:env, %Precompiled.Env{present_deps: %{pkg: [:here], here: []}} = env}
     assert Precompiled.CompileOrder.apps(env.compile_order) == ["pkg", "here"]
+  end
+
+  # Review Focus 1: Livebook and Mix.install with a kino Mix built there.
+  test "a Mix.install whose kino Mix built ok hands Check compiled_ok", %{config: config} do
+    parent = self()
+
+    kino = %Mix.Dep{
+      app: :kino,
+      scm: Hex.SCM,
+      opts: [],
+      manager: :mix,
+      deps: [],
+      status: {:ok, nil}
+    }
+
+    writer = %Mix.Dep{
+      app: :kino_vega_lite,
+      scm: Hex.SCM,
+      opts: [],
+      manager: :mix,
+      deps: [kino],
+      status: :compile
+    }
+
+    capture_io(fn ->
+      assert Install.run([], [], config,
+               installer: fn _, _ -> :ok end,
+               in_project?: false,
+               check: &send(parent, {:env, &1}),
+               load: fn -> [writer, kino] end
+             ) == :ok
+    end)
+
+    assert_received {:env, %Precompiled.Env{compiled_ok: ok}}
+    assert MapSet.member?(ok, :kino)
+    refute MapSet.member?(ok, :kino_vega_lite)
   end
 
   defp configured_run(config, mix_opts) do

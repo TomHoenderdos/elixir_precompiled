@@ -67,7 +67,7 @@ defmodule Precompiled.Install do
     # Mix.install/2's config: may hold the opt-in (`precompiled: [host_native: true]`).
     config = Config.with_host_native(config)
 
-    {methods, present, order} =
+    {methods, present, order, compiled_ok} =
       resolve(dir, deps, mix_opts, Keyword.get(test_opts, :load, &Mix.Dep.load_and_cache/0))
 
     with {:unknown, why} <- methods do
@@ -83,7 +83,7 @@ defmodule Precompiled.Install do
 
     # Mix.install/2 runs whatever happened here; it compiles what is missing.
     try do
-      env = Env.MixInstall.load(dir, deps, methods, present, order)
+      env = Env.MixInstall.load(dir, deps, methods, present, order, compiled_ok)
       _ = run_check(check, %{env | config_unreadable: unreadable}, config)
     rescue
       e -> internal_error(Exception.message(e))
@@ -293,9 +293,12 @@ defmodule Precompiled.Install do
   # loads and compiles that same list right after, in the same project, from
   # the same lock, env and target: its deps.loadpaths runs deps.compile over
   # Mix.Dep.load_and_cache/0, as in a Mix project. `load` stands in for
-  # Mix.Dep.load_and_cache/0 in tests.
+  # Mix.Dep.load_and_cache/0 in tests. The fourth element is the deps Mix
+  # loaded as compiled and current (Env.MixProject.compiled_ok_from/1), nil
+  # when they did not load.
   @spec resolve(Path.t(), [term()], keyword(), (-> [Mix.Dep.t()])) ::
-          {Env.build_methods(), Env.present_deps() | nil, Env.compile_order() | nil}
+          {Env.build_methods(), Env.present_deps() | nil, Env.compile_order() | nil,
+           MapSet.t(atom()) | nil}
   def resolve(dir, deps, mix_opts, load \\ &Mix.Dep.load_and_cache/0) do
     System.put_env(Keyword.get(mix_opts, :system_env, []))
     File.mkdir_p!(dir)
@@ -372,7 +375,7 @@ defmodule Precompiled.Install do
     do: dir |> in_install_project(deps, mix_opts, fn -> load_deps(load) end) |> elem(0)
 
   # Never cached past this call: Mix.install/2 loads its own deps. Deps that
-  # do not load leave all three unknown: every candidate misses on rule 9.
+  # do not load leave all four unknown: every candidate misses on rule 9.
   # The partition count is read after resolve/4 put the system_env: Mix.install/2
   # partitions its deps.compile by it as a Mix project does.
   defp load_deps(load) do
@@ -380,12 +383,13 @@ defmodule Precompiled.Install do
     deps = load.()
 
     {Env.MixProject.build_methods_from(deps), present_deps(deps),
-     compile_order(deps, System.get_env("MIX_OS_DEPS_COMPILE_PARTITION_COUNT"))}
+     compile_order(deps, System.get_env("MIX_OS_DEPS_COMPILE_PARTITION_COUNT")),
+     compiled_ok(deps)}
   rescue
-    e -> {{:unknown, Exception.message(e)}, nil, nil}
+    e -> {{:unknown, Exception.message(e)}, nil, nil, nil}
   catch
     :exit, reason when stop?(reason) -> exit(reason)
-    kind, reason -> {{:unknown, Exception.format_banner(kind, reason)}, nil, nil}
+    kind, reason -> {{:unknown, Exception.format_banner(kind, reason)}, nil, nil, nil}
   after
     Mix.Dep.clear_cached()
   end
@@ -401,6 +405,14 @@ defmodule Precompiled.Install do
          is_atom(app) and is_list(children) and Enum.all?(children, &is_atom/1)
        end),
        do: tree
+  rescue
+    _ -> nil
+  end
+
+  # As present_deps/1: deps in a shape it cannot be read from leave it
+  # unknown, nil, and Phase B places nothing into a kino Mix built there.
+  defp compiled_ok(deps) do
+    Env.MixProject.compiled_ok_from(deps)
   rescue
     _ -> nil
   end

@@ -19,6 +19,7 @@ defmodule Precompiled.Check do
     Match,
     Output,
     Reason,
+    Status,
     Trust
   }
 
@@ -94,8 +95,13 @@ defmodule Precompiled.Check do
     debug_skipped(skipped)
     config_fun = config_view(Keyword.get(opts, :config_fun, &CompileEnv.lookup/2), env)
 
+    # An excepted install is removed this run, so Mix compiles it: Phase B
+    # places nothing into a kino that goes (0.8.0).
+    removed = Enum.map(excepted, &Atom.to_string(&1.name))
+
     lines =
-      except_lines(excepted, env) ++ lines_for(candidates, installed, config, env, config_fun)
+      except_lines(excepted, env) ++
+        lines_for(candidates, installed, removed, config, env, config_fun)
 
     # Installs kept on a refused or missing batch are one warning, not a
     # FAIL line each: an offline warm build is a correct build. The
@@ -199,9 +205,9 @@ defmodule Precompiled.Check do
   end
 
   # Nothing left that needs the batch (only excepted installs): no fetch.
-  defp lines_for([], [], _config, _env, _config_fun), do: []
+  defp lines_for([], [], _removed, _config, _env, _config_fun), do: []
 
-  defp lines_for(candidates, installed, config, env, config_fun) do
+  defp lines_for(candidates, installed, removed, config, env, config_fun) do
     case fetch_batch(config) do
       {:ok, batch} ->
         # Files may come from the project's own :content origins; by-sha
@@ -222,7 +228,9 @@ defmodule Precompiled.Check do
             do: config,
             else: Map.put(config, :systems_table, systems_table(config, batch))
 
-        lines = revoked ++ install_lines(todo, config, batch, env, config_fun)
+        {lines, outcomes} = install_lines(todo, config, batch, env, config_fun)
+        removed = removed ++ Enum.map(revoked, & &1.name)
+        lines = revoked ++ lines ++ foreign_lines(outcomes, removed, config, env, config_fun)
         # Once a day, the cache back under its bound. Only after a run with
         # a verified batch: a refused one changes nothing on disk (R14). A
         # project with nothing to check never gets here, so it never gc's
@@ -407,29 +415,194 @@ defmodule Precompiled.Check do
   # Unlinked workers under a supervisor of this run: a worker that dies
   # outright (killed, or a crash one/5 cannot catch) is one line for its
   # dep (crashed/3), never an exit that takes the caller and the build with
-  # it.
+  # it. Phase A of a run: the lines, and each candidate's outcome by name
+  # (placed, kept, missed, or deferred to Phase B).
   defp install_lines(candidates, config, batch, env, config_fun) do
     {:ok, sup} = Task.Supervisor.start_link()
 
     try do
-      sup
-      |> Task.Supervisor.async_stream_nolink(
-        candidates,
-        &one(&1, config, batch, env, config_fun),
-        max_concurrency: 8,
-        timeout: :infinity,
-        ordered: true
-      )
-      |> Enum.zip(candidates)
-      |> Enum.map(fn
-        {{:ok, line}, _dep} -> line
-        {{:exit, reason}, dep} -> worker_died(dep, reason, env)
-      end)
-      |> Enum.reject(&is_nil/1)
+      results =
+        sup
+        |> Task.Supervisor.async_stream_nolink(
+          candidates,
+          &one(&1, config, batch, env, config_fun),
+          max_concurrency: 8,
+          timeout: :infinity,
+          ordered: true
+        )
+        |> Enum.zip(candidates)
+        |> Enum.map(fn
+          {{:ok, {line, outcome}}, dep} -> {dep.name, line, outcome}
+          {{:exit, reason}, dep} -> {dep.name, worker_died(dep, reason, env), :missed}
+        end)
+
+      {for({_name, line, _outcome} <- results, line != nil, do: line),
+       Map.new(results, fn {name, _line, outcome} -> {name, outcome} end)}
     after
       Supervisor.stop(sup)
     end
   end
+
+  # 0.8.0 Phase B (foreign priv builds): once every Phase A install is
+  # over, one writer at a time, by name. A writer's archives go into kino's
+  # build priv only when kino is settled there, so nothing Mix does later in
+  # this run removes them; otherwise it misses and an installed one goes, so
+  # Mix compiles it after kino.
+  defp foreign_lines(outcomes, removed, config, env, config_fun) do
+    deferred =
+      for({_name, {:defer, d}} <- outcomes, do: d)
+      |> Enum.sort_by(&Atom.to_string(&1.candidate.name))
+
+    if deferred == [] do
+      []
+    else
+      state = target_state(outcomes, removed, env)
+      claims = claims(deferred)
+
+      deferred
+      |> Enum.map(&foreign_one(&1, state, claims, config, env, config_fun))
+      |> Enum.reject(&is_nil/1)
+    end
+  end
+
+  # Kino is settled when Phase A placed or kept it, or when it is no
+  # candidate, Mix loaded it as compiled and current, and this run removed
+  # nothing of it; then its build dir decides (ForeignPrivFiles). Anything
+  # else is a kino Mix compiles after this.
+  defp target_state(outcomes, removed, env) do
+    kino = ForeignPriv.target()
+
+    settled? =
+      case Map.fetch(outcomes, kino) do
+        {:ok, outcome} ->
+          outcome in [:placed, :kept]
+
+        :error ->
+          Atom.to_string(kino) not in removed and env.compiled_ok != nil and
+            MapSet.member?(env.compiled_ok, kino)
+      end
+
+    if settled?, do: ForeignPrivFiles.target_state(env.build_lib), else: :compiles
+  end
+
+  # Every `<d>` a deferred writer of this run places, with the writers that
+  # place it.
+  defp claims(deferred) do
+    for %{candidate: c, entry: entry} <- deferred,
+        d <- entry |> ForeignPriv.entries() |> Enum.map(&ForeignPriv.dir/1) |> Enum.uniq(),
+        reduce: %{} do
+      acc -> Map.update(acc, d, [Atom.to_string(c.name)], &[Atom.to_string(c.name) | &1])
+    end
+  end
+
+  defp foreign_one(%{candidate: c} = d, state, claims, config, env, config_fun) do
+    sname = Atom.to_string(c.name)
+    base = %{name: sname, version: c.version, bytes: 0}
+    entries = ForeignPriv.entries(d.entry)
+
+    result =
+      case {state, conflict(entries, sname, claims, env)} do
+        {:settled, nil} ->
+          place_writer(d, entries, config, env, config_fun)
+
+        {:settled, {dir, claimer}} ->
+          {:miss, Reason.new(:foreign_priv_conflict, ["kino", dir, claimer])}
+
+        {:compiles, _} ->
+          {:miss, Reason.new(:foreign_priv_target_compiles, ["kino"])}
+
+        {:linked, _} ->
+          {:miss, Reason.new(:foreign_priv_target_linked, ["kino"])}
+
+        {:missing, _} ->
+          {:miss, Reason.new(:foreign_priv_target_missing, ["kino"])}
+      end
+
+    base |> line_for(result |> drop_writer(env, sname) |> installed_build(d.label))
+  rescue
+    e -> crashed(c, env, Exception.message(e))
+  catch
+    kind, reason when kind in [:exit, :throw] -> crashed(c, env, inspect(reason))
+  end
+
+  # A writer that neither stayed nor hit goes when this library installed
+  # it (Status.remove/2; one Mix built stays as it is), so Mix compiles it,
+  # after kino.
+  defp drop_writer(result, env, sname) do
+    if stays?(result) do
+      result
+    else
+      case Status.remove(env.build_lib, sname) do
+        {:error, why} -> {:fail, Reason.new(:remove_failed, [], why)}
+        _removed_or_not_installed -> result
+      end
+    end
+  end
+
+  # V5: the directory is also claimed by another writer this run (then both
+  # miss), by kino's own modules, or by any other dependency's .app in the
+  # build lib.
+  defp conflict(entries, writer, claims, env) do
+    owners = ForeignPrivFiles.owned_dirs(env.build_lib, writer)
+
+    entries
+    |> Enum.map(&ForeignPriv.dir/1)
+    |> Enum.uniq()
+    |> Enum.find_value(fn d ->
+      claimer =
+        Enum.find(Map.get(claims, d, []) |> Enum.sort(), &(&1 != writer)) ||
+          Enum.find_value(owners, fn {app, dirs} -> if d in dirs, do: app end)
+
+      if claimer, do: {d, claimer}
+    end)
+  end
+
+  # Kept when the writer's own files are what is on disk (as place/6
+  # decides) and so are its archives; its archives alone placed again when
+  # only they are not; else staged and placed, then the writer installed.
+  defp place_writer(
+         %{candidate: c, entry: entry, provenance: p},
+         entries,
+         config,
+         env,
+         config_fun
+       ) do
+    kept_files? =
+      Map.get(c, :installed_hash) == p.files_sha256 and is_binary(p.files_sha256) and
+        (p.sha == Map.get(c, :installed_sha) or Fetch.installed_as?(env.build_lib, c.name, entry))
+
+    if kept_files? and ForeignPrivFiles.on_disk?(env.build_lib, entries) do
+      keep(c, p, env, config_fun)
+    else
+      with {:ok, staging} <- ForeignPrivFiles.stage(config, c.name, entries, env.build_lib),
+           :ok <- ForeignPrivFiles.place(env.build_lib, staging, entries) do
+        if kept_files?,
+          do: keep(c, p, env, config_fun),
+          else:
+            c
+            |> install(entry, p, config, env, config_fun)
+            |> Reason.of_install()
+            |> with_archives(entries)
+      else
+        {:fail, why} ->
+          {:fail, Reason.new(:install_failed, [], install_failed(why))}
+      end
+    end
+  end
+
+  defp install_failed("install failed" <> _ = why), do: why
+  defp install_failed(why), do: "install failed: " <> why
+
+  # A HIT that placed archives says how many; their bytes count with the
+  # writer's own.
+  defp with_archives({:hit, stats}, entries),
+    do:
+      {:hit,
+       stats
+       |> Map.put(:archives, length(entries))
+       |> Map.update(:bytes, 0, &(&1 + Enum.sum(Enum.map(entries, fn e -> e["size"] end))))}
+
+  defp with_archives(other, _entries), do: other
 
   # Nothing of a dead worker's install may stay behind: no staging dir and
   # no build dir carrying Mix's marker, so Mix compiles the dep.
@@ -568,31 +741,70 @@ defmodule Precompiled.Check do
              :ok <- scan_in_time(reads),
              match_ctx = ctx(candidate, env, config, config_fun, reads),
              {:ok, entry, _system_key} <- Match.select_reason(manifest, match_ctx) do
-          provenance = %{
-            sha: sha,
-            path: path,
-            sequence: batch.sequence,
-            files_sha256: Match.files_hash(entry),
-            source: Map.get(config, :source)
-          }
+          provenance =
+            put_foreign(
+              %{
+                sha: sha,
+                path: path,
+                sequence: batch.sequence,
+                files_sha256: Match.files_hash(entry),
+                source: Map.get(config, :source)
+              },
+              entry
+            )
 
-          candidate
-          |> place(entry, provenance, config, env, config_fun)
-          |> Reason.of_install()
-          |> installed_build(Match.describe(entry, match_ctx))
+          place_or_defer(
+            candidate,
+            entry,
+            provenance,
+            Match.describe(entry, match_ctx),
+            {config, env, config_fun}
+          )
         end
 
-      result =
-        result
-        |> unreachable(replacing? and sha == installed_sha)
-        |> verify_kept(candidate, env, config_fun)
+      case result do
+        {:defer, d} ->
+          {nil, {:defer, d}}
 
-      if replacing? and not stays?(result), do: _ = remove(env.build_lib, sname)
-      line_for(base, result)
+        result ->
+          result =
+            result
+            |> unreachable(replacing? and sha == installed_sha)
+            |> verify_kept(candidate, env, config_fun)
+
+          if replacing? and not stays?(result), do: _ = remove(env.build_lib, sname)
+          {line_for(base, result), outcome(result)}
+      end
     rescue
-      e -> crashed(candidate, env, Exception.message(e))
+      e -> {crashed(candidate, env, Exception.message(e)), :missed}
     catch
-      kind, reason when kind in [:exit, :throw] -> crashed(candidate, env, inspect(reason))
+      kind, reason when kind in [:exit, :throw] ->
+        {crashed(candidate, env, inspect(reason)), :missed}
+    end
+  end
+
+  # 0.8.0: a build that places archives into kino waits for Phase B.
+  defp place_or_defer(candidate, entry, provenance, label, {config, env, config_fun}) do
+    if ForeignPriv.entries(entry) != [],
+      do: {:defer, %{candidate: candidate, entry: entry, provenance: provenance, label: label}},
+      else:
+        candidate
+        |> place(entry, provenance, config, env, config_fun)
+        |> Reason.of_install()
+        |> installed_build(label)
+  end
+
+  # What Phase A did with a candidate, for Phase B's kino.
+  defp outcome({:hit, _}), do: :placed
+  defp outcome(:kept), do: :kept
+  defp outcome({:kept_unchecked, _}), do: :kept
+  defp outcome(_missed_or_failed), do: :missed
+
+  # The archives an install places into kino, in its provenance.
+  defp put_foreign(provenance, entry) do
+    case ForeignPriv.entries(entry) do
+      [] -> provenance
+      entries -> Map.put(provenance, :foreign, entries)
     end
   end
 
@@ -893,7 +1105,7 @@ defmodule Precompiled.Check do
       reason: {:hit, []},
       detail:
         "#{mb(bytes)} MB#{if cached == files, do: ", cached", else: ""}" <>
-          build_suffix(stats[:build])
+          build_suffix(stats[:build]) <> archives_suffix(stats[:archives])
     })
   end
 
@@ -919,6 +1131,11 @@ defmodule Precompiled.Check do
 
   defp build_suffix(label) when is_binary(label), do: "; build " <> label
   defp build_suffix(_label), do: ""
+
+  defp archives_suffix(n) when is_integer(n),
+    do: "; #{n} archive#{if n == 1, do: "", else: "s"} into kino"
+
+  defp archives_suffix(_n), do: ""
 
   # A host-native build's staged files, from their bytes (the staging dir
   # holds `ebin/<app>.app`): every ELF file a library of this machine that
