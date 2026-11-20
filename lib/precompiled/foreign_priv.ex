@@ -60,6 +60,14 @@ defmodule Precompiled.ForeignPriv do
   def dir_name("Elixir." <> name) when name != "", do: String.replace(name, ".", "_")
   def dir_name(_module), do: nil
 
+  @doc """
+  `<d>` as it is compared: case-folded, since on a file system that folds
+  case (macOS's default, Windows) two names that differ only in case are
+  one directory.
+  """
+  @spec fold(String.t()) :: String.t()
+  def fold(d), do: String.downcase(d)
+
   @doc "An entry's `<d>`."
   @spec dir(map()) :: String.t()
   def dir(%{"path" => path}), do: path |> Path.split() |> Enum.at(2)
@@ -78,7 +86,8 @@ defmodule Precompiled.ForeignPriv do
   V1 to V4 (before any fetch): every entry for kino, at an archive path
   `Fetch.safe_path?/1` takes, mode 0644, in a directory of one of the
   build's own beams (its `ebin` list, which `Fetch.modules_ok/2` ties to
-  its `.app` at install), one entry per directory, at most 64, 10 MiB in all.
+  its `.app` at install), one entry per directory (case-folded, `fold/1`),
+  at most 64, 10 MiB in all.
   """
   @spec entries_reason(map()) :: :ok | {:miss, Reason.t()}
   def entries_reason(build) do
@@ -89,7 +98,7 @@ defmodule Precompiled.ForeignPriv do
       is_list(entries) and length(entries) <= @max_entries and
         Enum.all?(entries, &entry_ok?(&1, dirs)) and
         entries |> Enum.map(& &1["size"]) |> Enum.sum() <= @max_bytes and
-        length(Enum.uniq_by(entries, &dir/1)) == length(entries)
+        length(Enum.uniq_by(entries, &fold(dir(&1)))) == length(entries)
 
     if ok?, do: :ok, else: malformed()
   end
@@ -112,7 +121,7 @@ defmodule Precompiled.ForeignPriv do
     is_list(entries) and entries != [] and length(entries) <= @max_entries and
       Enum.all?(entries, &entry_ok?(&1, :any)) and
       entries |> Enum.map(& &1["size"]) |> Enum.sum() <= @max_bytes and
-      length(Enum.uniq_by(entries, &dir/1)) == length(entries)
+      length(Enum.uniq_by(entries, &fold(dir(&1)))) == length(entries)
   end
 
   defp malformed(), do: {:miss, Reason.new(:malformed_entry, [], "malformed entry")}

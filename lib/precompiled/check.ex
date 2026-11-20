@@ -589,7 +589,11 @@ defmodule Precompiled.Check do
   # place it.
   defp claims(deferred) do
     for %{candidate: c, entry: entry} <- deferred,
-        d <- entry |> ForeignPriv.entries() |> Enum.map(&ForeignPriv.dir/1) |> Enum.uniq(),
+        d <-
+          entry
+          |> ForeignPriv.entries()
+          |> Enum.map(&ForeignPriv.fold(ForeignPriv.dir(&1)))
+          |> Enum.uniq(),
         reduce: %{} do
       acc -> Map.update(acc, d, [Atom.to_string(c.name)], &[Atom.to_string(c.name) | &1])
     end
@@ -641,7 +645,8 @@ defmodule Precompiled.Check do
 
   # V5: the directory is also claimed by another writer this run (then both
   # miss), by kino's own modules, or by any other dependency's .app in the
-  # build lib.
+  # build lib. Names are compared case-folded (ForeignPriv.fold/1): on a file
+  # system that folds case they are one directory.
   defp conflict(entries, writer, claims, env) do
     owners = ForeignPrivFiles.owned_dirs(env.build_lib, writer)
 
@@ -649,9 +654,13 @@ defmodule Precompiled.Check do
     |> Enum.map(&ForeignPriv.dir/1)
     |> Enum.uniq()
     |> Enum.find_value(fn d ->
+      folded = ForeignPriv.fold(d)
+
       claimer =
-        Enum.find(Map.get(claims, d, []) |> Enum.sort(), &(&1 != writer)) ||
-          Enum.find_value(owners, fn {app, dirs} -> if d in dirs, do: app end)
+        Enum.find(Map.get(claims, folded, []) |> Enum.sort(), &(&1 != writer)) ||
+          Enum.find_value(owners, fn {app, dirs} ->
+            if folded in Enum.map(dirs, &ForeignPriv.fold/1), do: app
+          end)
 
       if claimer, do: {d, claimer}
     end)

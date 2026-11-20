@@ -356,6 +356,77 @@ defmodule Precompiled.ForeignPrivCheckTest do
     refute File.exists?(placed(lib))
   end
 
+  # Default APFS and NTFS fold case: Kino_VegaLite and Kino_Vegalite are one
+  # directory there, so V5 compares names case-folded everywhere.
+  test "asset dirs that differ only in case conflict", %{f: f, lib: lib, env: env} do
+    for owner <- ["other", "kino"] do
+      File.rm_rf!(lib)
+      publish(f, if(owner == "kino", do: nil, else: kino_entry(f)), writer_entry(f))
+      File.mkdir_p!(Path.join(lib, "#{owner}/ebin"))
+
+      File.write!(
+        Path.join(lib, "#{owner}/ebin/#{owner}.app"),
+        "{application, #{owner}, [{vsn, \"0.19.1\"}, {modules, ['Elixir.Kino.Vegalite']}]}.\n"
+      )
+
+      env =
+        if owner == "kino",
+          do: %{env | candidates: tl(env.candidates), compiled_ok: MapSet.new([:kino])},
+          else: env
+
+      {_, out} = run(env)
+      assert out =~ "writes kino's priv/assets/Kino_VegaLite, which #{owner} also claims", out
+      refute File.exists?(placed(lib))
+    end
+  end
+
+  test "two writers whose dirs differ only in case both miss", %{f: f, lib: lib, env: env} do
+    twin = writer_entry(f, "twin", "kino_twin", "1.0.0", "TOUTER")
+
+    twin_app =
+      "{application, kino_twin, [{vsn, \"1.0.0\"}, {modules, ['Elixir.Kino.Vegalite']}]}.\n"
+
+    twin = %{
+      twin
+      | "ebin" => [
+          file(f, "ebin/Elixir.Kino.Vegalite.beam", "twin beam"),
+          file(f, "ebin/kino_twin.app", twin_app)
+        ],
+        "foreign_priv" => [
+          Map.put(file(f, "priv/assets/Kino_Vegalite/#{@h}.tar.gz", "twin"), "app", "kino")
+        ]
+    }
+
+    F.publish(f, %{
+      "kino" => %{
+        "versions" => %{
+          "0.19.1" => %{"builds" => [], "foreign_priv" => %{"builds" => [kino_entry(f)]}}
+        }
+      },
+      "kino_vega_lite" => %{
+        "versions" => %{
+          "0.1.13" => %{"builds" => [], "foreign_priv" => %{"builds" => [writer_entry(f)]}}
+        }
+      },
+      "kino_twin" => %{
+        "versions" => %{"1.0.0" => %{"builds" => [], "foreign_priv" => %{"builds" => [twin]}}}
+      }
+    })
+
+    env = %{
+      env
+      | candidates: env.candidates ++ [%{name: :kino_twin, version: "1.0.0", lock_entry: @twin}],
+        lock: Map.put(env.lock, :kino_twin, @twin)
+    }
+
+    {{:ok, report}, out} = run(env)
+    assert report.hits == 1, out
+    assert out =~ "writes kino's priv/assets/Kino_VegaLite, which kino_twin also claims"
+    assert out =~ "writes kino's priv/assets/Kino_Vegalite, which kino_vega_lite also claims"
+    refute File.exists?(placed(lib))
+    refute File.exists?(Path.join(lib, "kino/priv/assets/Kino_Vegalite"))
+  end
+
   # The rename into a priv/assets this user cannot write fails after the
   # target was found settled and the archive staged.
   @tag :non_root

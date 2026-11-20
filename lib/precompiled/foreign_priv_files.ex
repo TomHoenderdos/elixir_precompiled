@@ -228,7 +228,7 @@ defmodule Precompiled.ForeignPrivFiles do
   """
   @spec mark_owners(Path.t(), [String.t()]) :: :ok
   def mark_owners(build_lib, also \\ []) do
-    dirs = MapSet.new(assets_dirs(build_lib) ++ also)
+    dirs = MapSet.new(assets_dirs(build_lib) ++ also, &ForeignPriv.fold/1)
 
     with true <- MapSet.size(dirs) > 0,
          :directory <- lstat_type(build_lib),
@@ -238,7 +238,7 @@ defmodule Precompiled.ForeignPrivFiles do
             app not in [@target, ".precompiled"],
             real_dirs?(build_lib, [app, Path.join(app, ".mix")]),
             d <- app_dirs(build_lib, app),
-            MapSet.member?(dirs, d),
+            MapSet.member?(dirs, ForeignPriv.fold(d)),
             uniq: true,
             do: app
 
