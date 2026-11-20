@@ -3,19 +3,18 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 defmodule Precompiled.ForeignPrivFiles do
-  @moduledoc """
-  The files a foreign priv build places into kino's build `priv` (0.8.0):
-  staged and verified like an install's own, then put exactly where
-  Kino.JS's own compile of the writer puts them, `priv/assets/<d>/<h>.tar.gz`
-  under `<build_lib>/kino`, and checked there on every run.
-
-  Nothing under kino's build dir is ever deleted but `priv/assets/<d>` for a
-  `<d>` about to be placed, as Kino.JS's own `File.rm_rf!/1` does. Only
-  `priv` and `priv/assets` may be created. A kino replace carries over the
-  `priv/assets/<d>` its new entry does not ship (`carry/3`); a kino removal
-  makes Mix recompile the deps whose modules own the archives left there
-  (`mark_owners/1`). Mix-free: Check runs it in a release too.
-  """
+  @moduledoc false
+  # The files a foreign priv build places into kino's build `priv` (0.8.0):
+  # staged and verified like an install's own, then put exactly where
+  # Kino.JS's own compile of the writer puts them, `priv/assets/<d>/<h>.tar.gz`
+  # under `<build_lib>/kino`, and checked there on every run.
+  #
+  # Nothing under kino's build dir is ever deleted but `priv/assets/<d>` for a
+  # `<d>` about to be placed, as Kino.JS's own `File.rm_rf!/1` does. Only
+  # `priv` and `priv/assets` may be created. A kino replace carries over the
+  # `priv/assets/<d>` its new entry does not ship (`carry/3`); a kino removal
+  # makes Mix recompile the deps whose modules own the archives left there
+  # (`mark_owners/1`). Mix-free: Check runs it in a release too.
 
   alias Precompiled.{Fetch, ForeignPriv, Status}
 

@@ -3,19 +3,18 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 defmodule Precompiled.ForeignPriv do
-  @moduledoc """
-  Foreign priv builds (0.8.0): a build whose compile wrote Kino.JS asset
-  archives into kino's build `priv`, the one pattern the portal's judge
-  reviewed (rule `kino_js_v1`, kino 0.19.1). Its `foreign_priv` entries name
-  each archive by its path below kino's build dir,
-  `priv/assets/<d>/<h>.tar.gz`, where `<d>` is the writer's module `M`
-  without `Elixir.` and with every `.` replaced by `_`.
-
-  This client knows one target, kino, and one rule. A build under a rule it
-  does not know misses (`foreign_priv_rule_unknown`); entries it cannot
-  place exactly as Kino.JS would are a malformed entry (V1-V4, checked
-  before anything is fetched). Mix-free: Check runs it in a release too.
-  """
+  @moduledoc false
+  # Foreign priv builds (0.8.0): a build whose compile wrote Kino.JS asset
+  # archives into kino's build `priv`, the one pattern the portal's judge
+  # reviewed (rule `kino_js_v1`, kino 0.19.1). Its `foreign_priv` entries name
+  # each archive by its path below kino's build dir,
+  # `priv/assets/<d>/<h>.tar.gz`, where `<d>` is the writer's module `M`
+  # without `Elixir.` and with every `.` replaced by `_`.
+  #
+  # This client knows one target, kino, and one rule. A build under a rule it
+  # does not know misses (`foreign_priv_rule_unknown`); entries it cannot
+  # place exactly as Kino.JS would are a malformed entry (V1-V4, checked
+  # before anything is fetched). Mix-free: Check runs it in a release too.
 
   alias Precompiled.{Fetch, Reason}
 
