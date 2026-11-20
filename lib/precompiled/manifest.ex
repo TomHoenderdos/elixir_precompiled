@@ -26,6 +26,13 @@ defmodule Precompiled.Manifest do
   # exactly that option; one whose `builds` is not a list, or whose
   # `builds_with_inputs` is there and not a list, is dropped, as is its
   # `builds_closure` alone when that is not a list.
+  #
+  # `foreign_priv` (0.8.0), at a version and inside its `deterministic`
+  # object: an object of the same lists, builds whose compile wrote Kino.JS
+  # archives into kino's priv, and kino's own builds; read only after the
+  # regular lists missed (`Precompiled.Match`). One whose `builds` is not a
+  # list, or whose `builds_with_inputs` is there and not a list, is dropped
+  # alone, as is its `builds_closure` alone when that is not a list.
 
   @spec normalize(map()) :: {:ok, map()} | {:fail, String.t()}
   def normalize(%{"format" => 2, "versions" => versions} = doc) when is_map(versions) do
@@ -64,18 +71,34 @@ defmodule Precompiled.Manifest do
   @dropped_unless_list ["builds_closure", "builds_host_native"]
 
   defp drop_bad_lists({version, v}) do
-    v = Map.reject(v, fn {k, list} -> k in @dropped_unless_list and not is_list(list) end)
+    v =
+      v
+      |> Map.reject(fn {k, list} -> k in @dropped_unless_list and not is_list(list) end)
+      |> keep_foreign()
 
     case v do
       %{"deterministic" => lists} ->
         if is_map(lists) and version_ok?(lists),
-          do: {version, Map.put(v, "deterministic", Map.reject(lists, &bad_closure?/1))},
+          do:
+            {version,
+             Map.put(v, "deterministic", lists |> Map.reject(&bad_closure?/1) |> keep_foreign())},
           else: {version, Map.delete(v, "deterministic")}
 
       _ ->
         {version, v}
     end
   end
+
+  # 0.8.0: a version's (or its `deterministic` object's) `foreign_priv`, the
+  # builds whose compile wrote into kino's priv, kept only as an object of
+  # lists; anything else is dropped alone, never the version.
+  defp keep_foreign(%{"foreign_priv" => lists} = v) do
+    if is_map(lists) and version_ok?(lists),
+      do: Map.put(v, "foreign_priv", Map.reject(lists, &bad_closure?/1)),
+      else: Map.delete(v, "foreign_priv")
+  end
+
+  defp keep_foreign(v), do: v
 
   defp bad_closure?({"builds_closure", list}), do: not is_list(list)
   defp bad_closure?(_entry), do: false
