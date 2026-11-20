@@ -20,6 +20,8 @@ defmodule Precompiled.ForeignPrivFiles do
   alias Precompiled.{Fetch, ForeignPriv, Status}
 
   @target "kino"
+  # Mix's marks of a compiled dep (Fetch writes both on an install).
+  @mix_marks ~w(compile.elixir_scm compile.fetch)
 
   @doc """
   Whether kino's build dir can take archives: `:settled` when
@@ -214,9 +216,12 @@ defmodule Precompiled.ForeignPrivFiles do
   Before kino's build dir goes: every dep in `build_lib` whose `.app` lists
   a module that owns a `priv/assets/<d>` in it (or a `<d>` of `also`,
   archives about to go with it from elsewhere), and that is not a client
-  install, has Mix's `.mix/compile.elixir_scm` removed, Mix's own "fetched"
-  mark, so Mix recompiles it after kino. A client install is left to the
-  next run's check of its archives.
+  install, loses Mix's marks of a compiled dep, so Mix recompiles it after
+  kino: `.mix/compile.elixir_scm` (what Mix 1.19 and later read) and
+  `.mix/compile.fetch` (what Mix 1.17 and 1.18 read; its fetcher removes
+  it from the parents of a dep it fetched). Each is a no-op on the Mix that
+  does not read it. A client install is left to this run's check of its
+  archives (Precompiled.Check).
   """
   @spec mark_owners(Path.t(), [String.t()]) :: :ok
   def mark_owners(build_lib, also \\ []) do
@@ -234,7 +239,8 @@ defmodule Precompiled.ForeignPrivFiles do
 
       for app <- owners,
           not Status.installed?(build_lib, app),
-          do: File.rm(Path.join([build_lib, app, ".mix", "compile.elixir_scm"]))
+          mark <- @mix_marks,
+          do: File.rm(Path.join([build_lib, app, ".mix", mark]))
     end
 
     :ok

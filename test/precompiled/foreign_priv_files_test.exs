@@ -88,8 +88,26 @@ defmodule Precompiled.ForeignPrivFilesTest do
       "{application, #{app}, [{vsn, \"1\"}, {modules, ['#{module}']}]}.\n"
     )
 
+    # Both of Mix's marks: Mix 1.19 and later recompile a dep without
+    # compile.elixir_scm, 1.17 and 1.18 one without compile.fetch.
     File.write!(Path.join([lib, app, ".mix/compile.elixir_scm"]), "scm")
+    File.write!(Path.join([lib, app, ".mix/compile.fetch"]), "")
   end
+
+  # Mix's "compiled" marks both still there, or both gone.
+  defp marked?(lib, app),
+    do:
+      Enum.all?(
+        ~w(compile.elixir_scm compile.fetch),
+        &File.exists?(Path.join([lib, app, ".mix", &1]))
+      )
+
+  defp unmarked?(lib, app),
+    do:
+      not Enum.any?(
+        ~w(compile.elixir_scm compile.fetch),
+        &File.exists?(Path.join([lib, app, ".mix", &1]))
+      )
 
   test "target_state/1: settled, linked or missing", %{lib: lib, tmp_dir: dir} do
     assert ForeignPrivFiles.target_state(lib) == :missing
@@ -251,7 +269,7 @@ defmodule Precompiled.ForeignPrivFilesTest do
     assert {:fail, "install failed: " <> _} =
              Fetch.install(config, :kino, kino_entry(f), @kino_lock, lib, deps_path: deps)
 
-    refute File.exists?(Path.join(lib, "kino_vega_lite/.mix/compile.elixir_scm"))
+    assert unmarked?(lib, "kino_vega_lite")
     assert Fetch.staging_dirs(lib, :kino, :own) == []
   end
 
@@ -316,9 +334,9 @@ defmodule Precompiled.ForeignPrivFilesTest do
     refute Status.installed?(lib, "kino_db")
 
     assert :ok = ForeignPrivFiles.mark_owners(lib)
-    refute File.exists?(Path.join(lib, "kino_db/.mix/compile.elixir_scm"))
-    assert File.exists?(Path.join(lib, "kino_vega_lite/.mix/compile.elixir_scm"))
-    assert File.exists?(Path.join(lib, "unrelated/.mix/compile.elixir_scm"))
+    assert unmarked?(lib, "kino_db")
+    assert marked?(lib, "kino_vega_lite")
+    assert marked?(lib, "unrelated")
 
     assert :ok = ForeignPrivFiles.mark_owners(Path.join(lib, "nowhere"))
   end
@@ -332,7 +350,7 @@ defmodule Precompiled.ForeignPrivFilesTest do
 
     assert :ok = Status.remove(lib, "kino")
     refute File.exists?(kino)
-    refute File.exists?(Path.join(lib, "kino_db/.mix/compile.elixir_scm"))
+    assert unmarked?(lib, "kino_db")
   end
 
   test "an install that places archives records them in its provenance",
