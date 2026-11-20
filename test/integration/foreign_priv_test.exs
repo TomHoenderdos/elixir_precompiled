@@ -6,11 +6,24 @@ defmodule Precompiled.Integration.ForeignPrivTest do
   # 0.8.0 against a local signed source: kino 0.19.1 and kino_vega_lite
   # 0.1.13 built from source here, published as the portal publishes them
   # (kino under `foreign_priv` with `foreign_priv_target`, the writer under
-  # `foreign_priv` with its archives), then installed precompiled in a fresh
-  # project and in Mix.install, and into a kino Mix built. Install versus
-  # source: the writer's beams equal, kino's priv/assets the same
-  # directories holding the same members, and the archive each beam names
-  # is on disk at run time.
+  # `foreign_priv` with its archives), then installed precompiled in fresh
+  # projects and in Mix.install, and taken through kino's lifecycle (spec 7,
+  # item 5).
+  #
+  # Install versus source (spec 7, items 1 to 4), against a second
+  # from-source build made later, never the one published: the ebin of each
+  # installed app equal (beams stripped, .app terms), kino's build dir
+  # holding the same files, its priv/assets the same dirs each holding one
+  # archive of the same name whose members are equal in name, order, type,
+  # size, mode, owner and bytes (only member mtimes may differ), and the
+  # archive each beam names on disk at run time.
+  #
+  # The second build is made in the first one's dir: kino's macros quote
+  # with `location: :keep`, so its beams (and those of modules that use
+  # them) carry the absolute path of the deps dir they were compiled from,
+  # and two builds in two dirs never have equal beams. An app Mix compiled
+  # in a test's own project is from source by definition; only its files,
+  # archives and run time are compared.
   use ExUnit.Case, async: false
 
   alias Precompiled.ChildProject, as: C
@@ -28,6 +41,8 @@ defmodule Precompiled.Integration.ForeignPrivTest do
     IO.puts(inspect(m) <> "=" <> to_string(File.regular?(m.__assets_info__().archive_path)))
   end
   """
+  @except "\nconfig :precompiled, except: [:kino]\n"
+  @both ["kino", "kino_vega_lite"]
 
   setup_all do
     start_supervised!(Precompiled.TestServer)
@@ -40,33 +55,161 @@ defmodule Precompiled.Integration.ForeignPrivTest do
 
   test "a writer installed precompiled is what Mix builds from source", %{tmp_dir: dir} do
     f = F.new(dir)
-    F.publish(f, %{}, sequence: 1)
+    %{ref: ref, lock_path: lock_path, kino: kino, writer: writer} = sources!(dir, f)
+    publish!(f, kino, writer, 2)
 
-    # OFF: the source build every comparison is against.
-    source = C.plain!(Path.join(dir, "off"), f, deps: deps())
+    # ON: a fresh project on the same lock.
+    on_proj = project!(dir, "on", f, lock_path)
+    out = mix!(on_proj, ["compile"])
+    assert out =~ ~r/precompiled: kino 0\.19\.1\s+HIT/, out
+    assert out =~ ~r/precompiled: kino_vega_lite 0\.1\.13\s+HIT.*; 2 archives into kino/, out
+    refute out =~ ~r/==> kino\n/, out
+    refute out =~ ~r/==> kino_vega_lite\n/, out
+    on = Path.join(on_proj, "_build/dev/lib")
+
+    # The installed archives are the published ones, not the reference
+    # build's bytes (its tar members carry another clock): what compare!/3
+    # checks below is their content.
+    for e <- writer["foreign_priv"] do
+      bytes = File.read!(Path.join([on, "kino", e["path"]]))
+      assert sha256(bytes) == e["sha256"], e["path"]
+      refute bytes == File.read!(Path.join([ref, "kino", e["path"]])), e["path"]
+    end
+
+    compare!(on, ref, @both)
+    assert_archives!(run!(on_proj))
+
+    # A second run writes nothing.
+    stats = mtimes(on)
+    Process.sleep(1100)
+    again = mix!(on_proj, ["compile"])
+    refute again =~ "HIT", again
+    refute again =~ "MISS", again
+    assert mtimes(on) == stats
+
+    # kino replaced (a changed manifest whose files differ): the writer is
+    # kept, its archives with it.
+    publish!(f, put_mode(kino, "ebin/kino.app", 0o100755), writer, 3)
+    replaced = mix!(on_proj, ["compile"])
+    assert replaced =~ ~r/precompiled: kino 0\.19\.1\s+HIT/, replaced
+    refute replaced =~ "kino_vega_lite", replaced
+    assert Bitwise.band(File.stat!(Path.join(on, "kino/ebin/kino.app")).mode, 0o111) != 0
+    compare!(on, ref, @both)
+    assert_archives!(run!(on_proj))
+
+    # Mix.install: the same engine, its own install project, on the same lock.
+    install_lib = mix_install!(dir, f, lock_path)
+    compare!(install_lib, ref, @both)
+
+    # kino excepted compiles from source, and so, after it, does the
+    # writer, whose own compile writes its archives again.
+    File.write!(Path.join(on_proj, "config/config.exs"), @except, [:append])
+    excepted = mix!(on_proj, ["compile"])
+    assert excepted =~ ~r/precompiled: kino 0\.19\.1\s+MISS\s+excepted/, excepted
+
+    assert excepted =~
+             ~r/precompiled: kino_vega_lite 0\.1\.13\s+MISS\s+writes into kino's priv; kino compiles from source in this run/,
+           excepted
+
+    assert excepted =~ ~r/==> kino_vega_lite\n/, excepted
+    compare!(on, ref, [])
+    assert_archives!(run!(on_proj))
+
+    # kino Mix-built and current: a writer Mix would compile again is
+    # installed, its archives placed into that kino.
+    config = Path.join(on_proj, "config/config.exs")
+    File.write!(config, String.replace(File.read!(config), @except, ""))
+    File.rm_rf!(Path.join(on, "kino_vega_lite"))
+    mix_built = mix!(on_proj, ["compile"])
+    refute mix_built =~ ~r/precompiled: kino 0\.19\.1/, mix_built
+
+    assert mix_built =~ ~r/precompiled: kino_vega_lite 0\.1\.13\s+HIT.*; 2 archives into kino/,
+           mix_built
+
+    refute mix_built =~ ~r/==> kino_vega_lite\n/, mix_built
+    compare!(on, ref, ["kino_vega_lite"])
+    assert_archives!(run!(on_proj))
+
+    # Disabled: every install goes, Mix compiles kino and then the writer,
+    # whose compile writes its archives.
+    off_proj = project!(dir, "disable", f, lock_path)
+    out = mix!(off_proj, ["compile"])
+    assert out =~ ~r/precompiled: kino_vega_lite 0\.1\.13\s+HIT/, out
+    disabled = mix!(off_proj, ["compile"], [{"PRECOMPILED", "0"}])
+    assert disabled =~ "precompiled: disabled; removed 2 installed builds", disabled
+    assert disabled =~ ~r/==> kino\n/, disabled
+    assert disabled =~ ~r/==> kino_vega_lite\n/, disabled
+    disabled_lib = Path.join(off_proj, "_build/dev/lib")
+    compare!(disabled_lib, ref, [])
+    assert_archives!(run!(off_proj, [{"PRECOMPILED", "0"}]))
+  end
+
+  # Kino installed precompiled, the writer compiled by Mix into it (the batch
+  # serves kino alone), then kino removed by this library: Mix compiles kino,
+  # which wipes kino's build dir, and must then compile the writer again,
+  # whose own compile writes its archives back. Mix 1.17 and 1.18 recompile
+  # a dep whose .mix/compile.fetch is gone, 1.19 and later one whose
+  # .mix/compile.elixir_scm is.
+  test "a Mix-built writer compiles again after kino's removal", %{tmp_dir: dir} do
+    f = F.new(dir)
+    %{ref: ref, lock_path: lock_path, kino: kino} = sources!(dir, f)
+    publish!(f, kino, nil, 2)
+
+    for arm <- [:except, :disabled] do
+      proj = project!(dir, Atom.to_string(arm), f, lock_path)
+      out = mix!(proj, ["compile"])
+      assert out =~ ~r/precompiled: kino 0\.19\.1\s+HIT/, out
+      assert out =~ ~r/==> kino_vega_lite\n/, out
+      assert_archives!(run!(proj))
+
+      again =
+        case arm do
+          :except ->
+            File.write!(Path.join(proj, "config/config.exs"), @except, [:append])
+            again = mix!(proj, ["compile"])
+            assert again =~ ~r/precompiled: kino 0\.19\.1\s+MISS\s+excepted/, again
+            again
+
+          :disabled ->
+            mix!(proj, ["compile"], [{"PRECOMPILED", "0"}])
+        end
+
+      assert again =~ ~r/==> kino\n/, again
+      assert again =~ ~r/==> kino_vega_lite\n/, again
+      compare!(Path.join(proj, "_build/dev/lib"), ref, [])
+      assert_archives!(run!(proj, [{"PRECOMPILED", "0"}]))
+    end
+  end
+
+  # Two from-source builds on one lock: the first, which the entries are
+  # published from (the fixture keeps their bytes), then, its _build
+  # removed, `ref`, built again in the same dir, which installs are
+  # compared with.
+  defp sources!(dir, f) do
+    F.publish(f, %{}, sequence: 1)
+    source = C.plain!(Path.join(dir, "src"), f, deps: deps())
     mix!(source, ["deps.get"])
     mix!(source, ["compile"], [{"PRECOMPILED", "0"}])
-    off = Path.join(source, "_build/dev/lib")
-    lock = Mix.Dep.Lock.read(Path.join(source, "mix.lock"))
-    outer = fn app -> elem(lock[app], 7) end
-
-    kino_dirs = app_dirs(Path.join(off, "kino"), "kino")
-    writer_dirs = app_dirs(Path.join(off, "kino_vega_lite"), "kino_vega_lite")
+    src = Path.join(source, "_build/dev/lib")
+    lock_path = Path.join(source, "mix.lock")
+    lock = Mix.Dep.Lock.read(lock_path)
+    kino_dirs = app_dirs(Path.join(src, "kino"), "kino")
+    writer_dirs = app_dirs(Path.join(src, "kino_vega_lite"), "kino_vega_lite")
     assert kino_dirs != [] and writer_dirs != []
 
     # Every archive in the source kino's priv is kino's own or the writer's.
-    for d <- assets(off), do: assert(d in kino_dirs or d in writer_dirs, d)
+    for d <- assets(src), do: assert(d in kino_dirs or d in writer_dirs, d)
 
     kino =
       f
-      |> C.build_entry(Path.join(off, "kino"), outer.(:kino))
-      |> with_priv(f, Path.join(off, "kino"), kino_dirs)
+      |> C.build_entry(Path.join(src, "kino"), elem(lock[:kino], 7))
+      |> with_priv(f, Path.join(src, "kino"), kino_dirs)
       |> put_build(%{"foreign_priv_target" => "kino", "deps" => build_deps(lock, :kino)})
 
     writer =
       f
-      |> C.build_entry(Path.join(off, "kino_vega_lite"), outer.(:kino_vega_lite))
-      |> with_foreign(f, off, writer_dirs)
+      |> C.build_entry(Path.join(src, "kino_vega_lite"), elem(lock[:kino_vega_lite], 7))
+      |> with_foreign(f, src, writer_dirs)
       |> put_build(%{
         "foreign_priv_rule" => "kino_js_v1",
         "deps" => build_deps(lock, :kino_vega_lite),
@@ -75,47 +218,55 @@ defmodule Precompiled.Integration.ForeignPrivTest do
 
     assert Map.keys(writer["build"]["deps"]) |> Enum.sort() == ~w(kino table vega_lite)
 
-    F.publish(
-      f,
-      %{
-        "kino" => %{
-          "versions" => %{"0.19.1" => %{"builds" => [], "foreign_priv" => %{"builds" => [kino]}}}
-        },
-        "kino_vega_lite" => %{
-          "versions" => %{
-            "0.1.13" => %{
-              "builds" => [],
-              "foreign_priv" => %{"builds" => [], "builds_with_inputs" => [writer]}
+    # Kino.JS stamps tar members with the wall clock: a second apart, the
+    # two builds' archives differ in bytes whatever their members.
+    File.rm_rf!(Path.join(source, "_build"))
+    Process.sleep(1100)
+    mix!(source, ["compile"], [{"PRECOMPILED", "0"}])
+    %{ref: src, lock_path: lock_path, kino: kino, writer: writer}
+  end
+
+  defp publish!(f, kino, writer, seq) do
+    writer_doc =
+      if writer,
+        do: %{
+          "kino_vega_lite" => %{
+            "versions" => %{
+              "0.1.13" => %{
+                "builds" => [],
+                "foreign_priv" => %{"builds" => [], "builds_with_inputs" => [writer]}
+              }
             }
           }
-        }
-      },
-      sequence: 2
+        },
+        else: %{}
+
+    F.publish(
+      f,
+      Map.merge(
+        %{
+          "kino" => %{
+            "versions" => %{
+              "0.19.1" => %{"builds" => [], "foreign_priv" => %{"builds" => [kino]}}
+            }
+          }
+        },
+        writer_doc
+      ),
+      sequence: seq
     )
+  end
 
-    # ON: a fresh project on the same lock.
-    on_proj = C.plain!(Path.join(dir, "on"), f, deps: deps())
-    File.cp!(Path.join(source, "mix.lock"), Path.join(on_proj, "mix.lock"))
-    mix!(on_proj, ["deps.get"])
-    out = mix!(on_proj, ["compile"])
-    assert out =~ ~r/precompiled: kino 0\.19\.1\s+HIT/, out
-    assert out =~ ~r/precompiled: kino_vega_lite 0\.1\.13\s+HIT.*; 2 archives into kino/, out
-    refute out =~ ~r/==> kino\n/, out
-    refute out =~ ~r/==> kino_vega_lite\n/, out
-    on = Path.join(on_proj, "_build/dev/lib")
+  defp project!(dir, name, f, lock_path) do
+    proj = C.plain!(Path.join(dir, name), f, deps: deps())
+    File.cp!(lock_path, Path.join(proj, "mix.lock"))
+    mix!(proj, ["deps.get"])
+    proj
+  end
 
-    compare!(on, off)
+  defp run!(proj, env \\ []), do: mix!(proj, ["run", "--no-start", "-e", @run_time], env)
 
-    # At run time the archive each beam names is there.
-    assert_archives!(mix!(on_proj, ["run", "--no-start", "-e", @run_time]))
-
-    # A second run writes nothing.
-    again = mix!(on_proj, ["compile"])
-    refute again =~ "HIT", again
-    refute again =~ "MISS", again
-    compare!(on, off)
-
-    # Mix.install: the same engine, its own install project, on the same lock.
+  defp mix_install!(dir, f, lock_path) do
     script = Path.join(dir, "install.exs")
 
     File.write!(script, """
@@ -123,7 +274,7 @@ defmodule Precompiled.Integration.ForeignPrivTest do
     Application.put_env(:precompiled, :root, #{inspect(f.root_path)})
 
     Precompiled.Host.install([{:kino, "== 0.19.1"}, {:kino_vega_lite, "== 0.1.13"}],
-      lockfile: #{inspect(Path.join(source, "mix.lock"))}
+      lockfile: #{inspect(lock_path)}
     )
 
     IO.puts("dir=" <> Mix.install_project_dir())
@@ -145,108 +296,18 @@ defmodule Precompiled.Integration.ForeignPrivTest do
     assert installed =~ ~r/precompiled: kino_vega_lite 0\.1\.13\s+HIT.*archives into kino/,
            installed
 
-    [install_dir] = Regex.run(~r/^dir=(.+)$/m, installed, capture: :all_but_first)
-    compare!(Path.join(install_dir, "_build/dev/lib"), off)
     assert_archives!(installed)
-
-    # Spec 7, item 5: kino excepted compiles from source, and so, after it,
-    # does the writer, whose own compile writes its archives again.
-    File.write!(
-      Path.join(on_proj, "config/config.exs"),
-      "\nconfig :precompiled, except: [:kino]\n",
-      [:append]
-    )
-
-    excepted = mix!(on_proj, ["compile"])
-    assert excepted =~ ~r/precompiled: kino 0\.19\.1\s+MISS\s+excepted/, excepted
-
-    assert excepted =~
-             ~r/precompiled: kino_vega_lite 0\.1\.13\s+MISS\s+writes into kino's priv; kino compiles from source in this run/,
-           excepted
-
-    assert assets(on) == assets(off)
-    assert_archives!(mix!(on_proj, ["run", "--no-start", "-e", @run_time]))
-
-    # Kino Mix-built and current: a writer Mix would compile again is
-    # installed, its archives placed into that kino.
-    File.rm_rf!(Path.join(on, "kino_vega_lite"))
-    mix_built = mix!(on_proj, ["compile"])
-    refute mix_built =~ ~r/precompiled: kino 0\.19\.1/, mix_built
-
-    assert mix_built =~ ~r/precompiled: kino_vega_lite 0\.1\.13\s+HIT.*; 2 archives into kino/,
-           mix_built
-
-    refute mix_built =~ ~r/==> kino_vega_lite\n/, mix_built
-    compare!(on, off)
-    assert_archives!(mix!(on_proj, ["run", "--no-start", "-e", @run_time]))
-  end
-
-  # Kino installed precompiled, the writer compiled by Mix into it (the batch
-  # serves kino alone), then kino removed by this library: Mix compiles kino,
-  # which wipes kino's build dir, and must then compile the writer again,
-  # whose own compile writes its archives back. Mix 1.17 and 1.18 recompile
-  # a dep whose .mix/compile.fetch is gone, 1.19 and later one whose
-  # .mix/compile.elixir_scm is.
-  test "a Mix-built writer compiles again after kino's removal", %{tmp_dir: dir} do
-    f = F.new(dir)
-    F.publish(f, %{}, sequence: 1)
-    source = C.plain!(Path.join(dir, "off"), f, deps: deps())
-    mix!(source, ["deps.get"])
-    mix!(source, ["compile"], [{"PRECOMPILED", "0"}])
-    off = Path.join(source, "_build/dev/lib")
-    lock = Mix.Dep.Lock.read(Path.join(source, "mix.lock"))
-
-    kino =
-      f
-      |> C.build_entry(Path.join(off, "kino"), elem(lock[:kino], 7))
-      |> with_priv(f, Path.join(off, "kino"), app_dirs(Path.join(off, "kino"), "kino"))
-      |> put_build(%{"foreign_priv_target" => "kino", "deps" => build_deps(lock, :kino)})
-
-    F.publish(
-      f,
-      %{
-        "kino" => %{
-          "versions" => %{"0.19.1" => %{"builds" => [], "foreign_priv" => %{"builds" => [kino]}}}
-        }
-      },
-      sequence: 2
-    )
-
-    for {arm, how} <- [except: :except, disabled: :disabled] do
-      proj = C.plain!(Path.join(dir, Atom.to_string(arm)), f, deps: deps())
-      File.cp!(Path.join(source, "mix.lock"), Path.join(proj, "mix.lock"))
-      mix!(proj, ["deps.get"])
-      out = mix!(proj, ["compile"])
-      assert out =~ ~r/precompiled: kino 0\.19\.1\s+HIT/, out
-      assert out =~ ~r/==> kino_vega_lite\n/, out
-      assert_archives!(mix!(proj, ["run", "--no-start", "-e", @run_time]))
-
-      again =
-        case how do
-          :except ->
-            File.write!(
-              Path.join(proj, "config/config.exs"),
-              "\nconfig :precompiled, except: [:kino]\n",
-              [:append]
-            )
-
-            again = mix!(proj, ["compile"])
-            assert again =~ ~r/precompiled: kino 0\.19\.1\s+MISS\s+excepted/, again
-            again
-
-          :disabled ->
-            mix!(proj, ["compile"], [{"PRECOMPILED", "0"}])
-        end
-
-      assert again =~ ~r/==> kino\n/, again
-      assert again =~ ~r/==> kino_vega_lite\n/, again
-      lib = Path.join(proj, "_build/dev/lib")
-      assert assets(lib) == assets(off)
-      assert_archives!(mix!(proj, ["run", "--no-start", "-e", @run_time], [{"PRECOMPILED", "0"}]))
-    end
+    [install_dir] = Regex.run(~r/^dir=(.+)$/m, installed, capture: :all_but_first)
+    Path.join(install_dir, "_build/dev/lib")
   end
 
   defp put_build(entry, fields), do: Map.update!(entry, "build", &Map.merge(&1, fields))
+
+  defp put_mode(entry, path, mode) do
+    Map.update!(entry, "ebin", fn files ->
+      Enum.map(files, &if(&1["path"] == path, do: %{&1 | "mode" => mode}, else: &1))
+    end)
+  end
 
   # The `<d>` of every Elixir module the built `.app` lists.
   defp app_dirs(lib, app) do
@@ -266,6 +327,14 @@ defmodule Precompiled.Integration.ForeignPrivTest do
       |> Path.wildcard()
       |> Enum.map(&Path.basename/1)
       |> Enum.sort()
+
+  defp sha256(bytes), do: Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
+
+  defp mtimes(lib) do
+    for path <- Path.wildcard(Path.join(lib, "{kino,kino_vega_lite}/**"), match_dot: true),
+        into: %{},
+        do: {path, File.lstat!(path, time: :posix).mtime}
+  end
 
   defp file_entry(f, path, rel) do
     bytes = File.read!(path)
@@ -290,8 +359,8 @@ defmodule Precompiled.Integration.ForeignPrivTest do
   defp own?(_rel, _own), do: true
 
   # The writer's archives: the dirs of its own modules under kino's priv.
-  defp with_foreign(entry, f, off, dirs) do
-    kino = Path.join(off, "kino")
+  defp with_foreign(entry, f, src, dirs) do
+    kino = Path.join(src, "kino")
 
     foreign =
       for d <- dirs, path <- Path.wildcard(Path.join([kino, "priv/assets", d, "*.tar.gz"])) do
@@ -323,28 +392,61 @@ defmodule Precompiled.Integration.ForeignPrivTest do
     for {d, _, _} <- deps, Map.has_key?(lock, d), do: d
   end
 
-  # Spec 7, items 1 to 3.
-  defp compare!(on, off) do
-    for app <- ["kino_vega_lite"], beam <- Path.wildcard(Path.join([off, app, "ebin/*.beam"])) do
-      other = Path.join([on, app, "ebin", Path.basename(beam)])
-      {:ok, {_, a}} = :beam_lib.strip(File.read!(beam))
-      {:ok, {_, b}} = :beam_lib.strip(File.read!(other))
-      assert a == b, Path.basename(beam)
+  # Spec 7, items 1 to 3, against the reference build `ref`; the ebin of
+  # each app in `installed` (the apps installed precompiled) file by file.
+  defp compare!(on, ref, installed) do
+    for app <- ["kino", "kino_vega_lite"] do
+      assert files(Path.join(on, app)) == files(Path.join(ref, app)), app
     end
 
-    assert assets(on) == assets(off)
+    for app <- installed, path <- Path.wildcard(Path.join([ref, app, "ebin/*"])) do
+      other = Path.join([on, app, "ebin", Path.basename(path)])
+      assert ebin_file(other) == ebin_file(path), Path.basename(path)
+    end
 
-    for d <- assets(off) do
-      [a] = Path.wildcard(Path.join([off, "kino/priv/assets", d, "*"]))
+    assert assets(on) == assets(ref)
+
+    for d <- assets(ref) do
+      [a] = Path.wildcard(Path.join([ref, "kino/priv/assets", d, "*"]))
       [b] = Path.wildcard(Path.join([on, "kino/priv/assets", d, "*"]))
       assert Path.basename(a) == Path.basename(b), d
       assert members(a) == members(b), d
     end
   end
 
+  # Every regular file under a build dir, but Mix's and this library's
+  # bookkeeping in .mix.
+  defp files(dir) do
+    dir
+    |> Path.join("**")
+    |> Path.wildcard(match_dot: true)
+    |> Enum.filter(&File.regular?/1)
+    |> Enum.map(&Path.relative_to(&1, dir))
+    |> Enum.reject(&String.starts_with?(&1, ".mix/"))
+    |> Enum.sort()
+  end
+
+  defp ebin_file(path) do
+    if String.ends_with?(path, ".beam") do
+      {:ok, {_, stripped}} = :beam_lib.strip(File.read!(path))
+      stripped
+    else
+      {:ok, terms} = :file.consult(String.to_charlist(path))
+      terms
+    end
+  end
+
+  # Every member in archive order: name, type, size, mode, owner and bytes;
+  # only the mtime may differ (spec 7, item 2).
   defp members(path) do
+    {:ok, table} = :erl_tar.table(String.to_charlist(path), [:compressed, :verbose])
     {:ok, files} = :erl_tar.extract(String.to_charlist(path), [:memory, :compressed])
-    Enum.sort(files)
+
+    headers =
+      for {name, type, size, _mtime, mode, uid, gid} <- table,
+          do: {name, type, size, mode, uid, gid}
+
+    {headers, files}
   end
 
   defp assert_archives!(out) do
