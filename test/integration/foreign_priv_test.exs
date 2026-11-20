@@ -7,9 +7,10 @@ defmodule Precompiled.Integration.ForeignPrivTest do
   # 0.1.13 built from source here, published as the portal publishes them
   # (kino under `foreign_priv` with `foreign_priv_target`, the writer under
   # `foreign_priv` with its archives), then installed precompiled in a fresh
-  # project and in Mix.install. Install versus source: the writer's beams
-  # equal, kino's priv/assets the same directories holding the same members,
-  # and the archive each beam names is on disk at run time.
+  # project and in Mix.install, and into a kino Mix built. Install versus
+  # source: the writer's beams equal, kino's priv/assets the same
+  # directories holding the same members, and the archive each beam names
+  # is on disk at run time.
   use ExUnit.Case, async: false
 
   alias Precompiled.ChildProject, as: C
@@ -164,6 +165,19 @@ defmodule Precompiled.Integration.ForeignPrivTest do
            excepted
 
     assert assets(on) == assets(off)
+    assert_archives!(mix!(on_proj, ["run", "--no-start", "-e", @run_time]))
+
+    # Kino Mix-built and current: a writer Mix would compile again is
+    # installed, its archives placed into that kino.
+    File.rm_rf!(Path.join(on, "kino_vega_lite"))
+    mix_built = mix!(on_proj, ["compile"])
+    refute mix_built =~ ~r/precompiled: kino 0\.19\.1/, mix_built
+
+    assert mix_built =~ ~r/precompiled: kino_vega_lite 0\.1\.13\s+HIT.*; 2 archives into kino/,
+           mix_built
+
+    refute mix_built =~ ~r/==> kino_vega_lite\n/, mix_built
+    compare!(on, off)
     assert_archives!(mix!(on_proj, ["run", "--no-start", "-e", @run_time]))
   end
 
