@@ -1,0 +1,32 @@
+# Dependabot: weekly grouped update PRs per ecosystem, as in autosift.
+# Only the library's own mix.lock is updated. The projects under
+# integration/ are test fixtures whose dependency versions are part of what
+# they test, so they are left out on purpose.
+version: 2
+
+updates:
+  - package-ecosystem: mix
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Amsterdam
+    groups:
+      hex:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Amsterdam
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(ci)"
