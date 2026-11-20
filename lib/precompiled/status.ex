@@ -16,7 +16,7 @@ defmodule Precompiled.Status do
   # removed; a link is removed as a link, never followed, so nothing
   # outside `<build_lib>/<dep>` goes.
 
-  alias Precompiled.Fetch
+  alias Precompiled.{Fetch, ForeignPriv, ForeignPrivFiles}
 
   @spec installed(Path.t()) :: [map()]
   def installed(build_lib) do
@@ -75,6 +75,11 @@ defmodule Precompiled.Status do
   def remove(build_lib, name) do
     case kind(build_lib, name) do
       :install ->
+        # 0.8.0: kino's priv holds other deps' Kino.JS archives; their
+        # Mix-built owners recompile after it.
+        if name == Atom.to_string(ForeignPriv.target()),
+          do: ForeignPrivFiles.mark_owners(build_lib)
+
         case File.rm_rf(Path.join(build_lib, name)) do
           {:ok, _} -> :ok
           {:error, reason, file} -> {:error, "#{file}: #{:file.format_error(reason)}"}
@@ -88,6 +93,12 @@ defmodule Precompiled.Status do
         :not_installed
     end
   end
+
+  @doc false
+  # Whether `<build_lib>/<name>` is a client install (see remove/2), not a
+  # dep Mix compiled.
+  @spec installed?(Path.t(), String.t()) :: boolean()
+  def installed?(build_lib, name), do: kind(build_lib, name) == :install
 
   defp install_names(build_lib),
     do: Enum.filter(dep_names(build_lib), &(kind(build_lib, &1) == :install))

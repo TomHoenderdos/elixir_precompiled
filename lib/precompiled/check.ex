@@ -13,6 +13,8 @@ defmodule Precompiled.Check do
     Env,
     Fetch,
     FileUtil,
+    ForeignPriv,
+    ForeignPrivFiles,
     HostNative,
     Match,
     Output,
@@ -392,6 +394,10 @@ defmodule Precompiled.Check do
   end
 
   defp remove(build_lib, sname) do
+    # 0.8.0: kino's priv holds other deps' Kino.JS archives; their Mix-built
+    # owners recompile after it.
+    if sname == Atom.to_string(ForeignPriv.target()), do: ForeignPrivFiles.mark_owners(build_lib)
+
     case File.rm_rf(Path.join(build_lib, sname)) do
       {:ok, _} -> :ok
       {:error, reason, file} -> {:error, "revoke failed: #{file}: #{:file.format_error(reason)}"}
@@ -428,6 +434,13 @@ defmodule Precompiled.Check do
   # Nothing of a dead worker's install may stay behind: no staging dir and
   # no build dir carrying Mix's marker, so Mix compiles the dep.
   defp worker_died(dep, reason, env), do: crashed(dep, env, inspect(reason))
+
+  defp ls(dir) do
+    case File.ls(dir) do
+      {:ok, names} -> names
+      _ -> []
+    end
+  end
 
   defp debug(msg), do: if(Config.debug?(), do: Output.info(msg))
 
@@ -629,7 +642,17 @@ defmodule Precompiled.Check do
   # revoke: what is left of it may still carry the marker.
   defp crashed(dep, env, why) do
     sname = Atom.to_string(dep.name)
-    for dir <- Fetch.staging_dirs(env.build_lib, dep.name, :own), do: File.rm_rf(dir)
+    staged = Fetch.staging_dirs(env.build_lib, dep.name, :own)
+
+    # A kino install that died between carrying other deps' archives into
+    # its staging dir and the rename: those go too, so their owners
+    # recompile.
+    if dep.name == ForeignPriv.target() do
+      also = Enum.flat_map(staged, &ls(Path.join(&1, "priv/assets")))
+      if also != [], do: ForeignPrivFiles.mark_owners(env.build_lib, also)
+    end
+
+    for dir <- staged, do: File.rm_rf(dir)
     line = %{name: sname, version: dep.version, bytes: 0, detail: "candidate crashed: #{why}"}
 
     case remove(env.build_lib, sname) do
