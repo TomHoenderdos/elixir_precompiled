@@ -223,17 +223,20 @@ defmodule Precompiled.ForeignPrivFiles do
   `.mix/compile.fetch` (what Mix 1.17 and 1.18 read; its fetcher removes
   it from the parents of a dep it fetched). Each is a no-op on the Mix that
   does not read it. A client install is left to this run's check of its
-  archives (Precompiled.Check).
+  archives (Precompiled.Check). Only real directories are read or written
+  in: never a linked dep dir, `.mix` or kino `priv`.
   """
   @spec mark_owners(Path.t(), [String.t()]) :: :ok
   def mark_owners(build_lib, also \\ []) do
-    dirs = MapSet.new(ls(Path.join([build_lib, @target, "priv/assets"])) ++ also)
+    dirs = MapSet.new(assets_dirs(build_lib) ++ also)
 
     with true <- MapSet.size(dirs) > 0,
+         :directory <- lstat_type(build_lib),
          {:ok, apps} <- File.ls(build_lib) do
       owners =
         for app <- apps,
             app not in [@target, ".precompiled"],
+            real_dirs?(build_lib, [app, Path.join(app, ".mix")]),
             d <- app_dirs(build_lib, app),
             MapSet.member?(dirs, d),
             uniq: true,
@@ -247,6 +250,19 @@ defmodule Precompiled.ForeignPrivFiles do
 
     :ok
   end
+
+  # The `<d>` names in kino's priv/assets, read only through real
+  # directories: archives behind a link (kino's priv linked to its sources)
+  # do not go with kino's build dir.
+  defp assets_dirs(build_lib) do
+    if real_dirs?(build_lib, ["", @target, "#{@target}/priv", "#{@target}/priv/assets"]),
+      do: ls(Path.join([build_lib, @target, "priv/assets"])),
+      else: []
+  end
+
+  # Each of `rels` under `base` an lstat'd real directory, never a link.
+  defp real_dirs?(base, rels),
+    do: Enum.all?(rels, &(lstat_type(Path.join(base, &1)) == :directory))
 
   @doc """
   `{app, dirs}` for every dep dir of `build_lib` but `except` (and the
