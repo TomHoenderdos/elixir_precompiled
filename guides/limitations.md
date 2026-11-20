@@ -28,6 +28,15 @@ carry the other release's version or settings.
 *Fix:* ship such a dependency in the firmware instead of installing it on
 the device.
 
+**A Kino.JS writer misses wherever kino compiles from source.** A
+dependency that packs Kino.JS assets into kino's priv (see
+[Foreign priv builds](matching.md#foreign-priv-builds-kino-js-writers))
+installs only into a kino that is installed precompiled or already
+compiled by Mix; when kino compiles in the same run, the writer compiles
+too.
+*Status:* measured first; a later release may place archives after Mix
+compiles kino.
+
 ## Trust
 
 **One key signs everything.** The portal holds one online key for both
@@ -93,6 +102,10 @@ than this library's build time. A batch that has really expired can still
 pass. The batch must still be signed and not older than one the device
 already saw. This goes away once bundles carry a signed `offline.json`,
 which needs no clock.
+
+**A Kino.JS writer never installs on a device.** Its archives belong in
+kino's own directory, which a device's store cannot take.
+*Impact:* Mix compiles it at firmware build time as before.
 
 **Open handles are not "in use".** `Precompiled.uninstall/2` sees code that
 is running, not resources that are open, like a GPIO handle.

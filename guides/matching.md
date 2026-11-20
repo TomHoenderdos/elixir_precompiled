@@ -343,6 +343,67 @@ above but the target holds, and also:
 
 A Nerves project, and a device, never read host-native builds.
 
+## Foreign priv builds (Kino.JS writers)
+
+A few packages write into another package's build dir when they compile:
+a module that uses `Kino.JS` with `assets_path:` packs its assets into an
+archive under kino's `priv`, `_build/<env>/lib/kino/priv/assets/<d>/<h>.tar.gz`,
+where `<d>` is the module's name with every `.` replaced by `_`
+(`Kino.VegaLite` gives `Kino_VegaLite`). The portal serves such a build
+only for the one pattern it reviewed (rule `kino_js_v1`, kino 0.19.1),
+under a version's `foreign_priv` object, which clients before 0.8.0 never
+read. kino's own builds are listed there too, so an older client compiles
+kino from source rather than install one that would lose those archives.
+
+The object holds the same lists as the version (`builds`,
+`builds_with_inputs`, `builds_closure`), and inside `deterministic` its
+own. It is read only after the regular builds, and the host-native ones,
+missed, in the same mode: a project that sets
+`ERL_COMPILER_OPTIONS=deterministic` reads only the one inside
+`deterministic`, and `builds_closure` is read only where the dependency
+closure is known, as for the regular lists. Every rule above applies. A
+build there that places archives (kino's own place none) must also pass,
+before anything is downloaded:
+
+- its rule is one this client knows (`kino_js_v1`), else
+  `foreign_priv_rule_unknown`;
+- every archive is for kino, at a path of exactly that shape, mode 0644,
+  in the directory of one of the build's own modules, one archive per
+  directory, at most 64 of them and 10 MiB in all, else `malformed entry`.
+
+The writer is then installed after every other dependency of the run,
+writers one at a time by name, and only into a kino that nothing later in
+this run removes:
+
+| kino in this run | The writer |
+| --- | --- |
+| installed or kept precompiled, or already compiled by Mix and current | HIT: `...; 1 archive into kino` |
+| compiles from source (a miss, `:except`, a revoked build, or not yet compiled) | MISS `writes into kino's priv; kino compiles from source in this run` |
+| its `priv` links to its sources | MISS `writes into kino's priv, which links to its sources` |
+| not in the build | MISS `writes into kino's priv; kino is not in this build` |
+
+It also misses, `writes kino's priv/assets/<d>, which <app> also claims`,
+when another writer of the run, kino's own modules or any other
+dependency's `.app` in the build has a module for the same directory;
+two writers of one directory both miss. On a miss an installed writer is
+removed, so Mix compiles it, after kino, and its compile writes its own
+archive. Only `priv/assets/<d>` for a `<d>` being placed is ever removed
+under kino's build dir, as Kino.JS removes it itself; a failure there is a
+FAIL, and Mix compiles the writer.
+
+Every run checks an installed writer's archives on disk, not only when its
+manifest changed: each `priv/assets/<d>` must hold exactly its archive.
+When it does not (Mix recompiled kino, which wipes its build dir), the
+archive is placed again from the cache, without reinstalling the writer.
+Replacing kino keeps the `priv/assets/<d>` its new build does not ship
+(archives of Mix-built writers, of installed ones and of your project's
+own modules), and removing kino (a revoke, `:except`, `PRECOMPILED=0`,
+`mix precompiled.clean`) first marks each Mix-built dependency whose
+archive was in it, so Mix recompiles it after kino.
+
+A device never installs a foreign priv build: `writes into kino's priv at
+compile time; not installed on a device`.
+
 ## On a device
 
 `Precompiled.install/2` chooses builds by the same rules and the same

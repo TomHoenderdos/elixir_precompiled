@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.8.0 - 2026-11-xx
+
+* Foreign priv builds: a dependency whose compile packs Kino.JS assets into kino's priv
+  (kino_vega_lite, kino_maplibre, ...) can now install precompiled. The portal lists such
+  builds, and kino's own, under a version's `foreign_priv` object, which earlier clients
+  never read. This client takes one only after the regular builds missed, and only while
+  kino itself is installed precompiled or already compiled by Mix in this project; the
+  writer's archives then go exactly where its own compile would put them.
+
+* A dependency that writes into kino's priv misses when kino compiles from source in the
+  same run (reason code `foreign_priv_target_compiles`), when kino's priv links to its
+  sources (`foreign_priv_target_linked`), when kino is not in the build
+  (`foreign_priv_target_missing`), when another module claims the same asset directory
+  (`foreign_priv_conflict`), and under a rule this client does not know
+  (`foreign_priv_rule_unknown`). A device never installs one (`foreign_priv_device`).
+
+* Every run checks an installed writer's archives on disk and places them again when Mix
+  removed them; replacing kino keeps the archives it does not ship; removing kino makes Mix
+  recompile the dependencies whose archives were in it.
+
+* Upgrading from 0.7.x: kino itself is listed for 0.8.0 only, so an older client compiles
+  kino from source.
+
 ## v0.7.3 - 2026-11-17
 
 * A project whose config sets `config :elixir, :time_zone_database, ...`
