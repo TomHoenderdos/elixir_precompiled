@@ -157,8 +157,8 @@ defmodule Precompiled.ForeignPrivFiles do
 
   @doc """
   The real `priv/assets/<d>` directories under kino dir `dir` that `entry`
-  ships no file in; none unless `priv` and `priv/assets` are real
-  directories.
+  ships no file in; none unless `dir`, `priv` and `priv/assets` are real
+  directories, so nothing behind a link is ever moved.
   """
   @spec unshipped(Path.t(), map()) :: [String.t()]
   def unshipped(dir, entry) do
@@ -169,7 +169,8 @@ defmodule Precompiled.ForeignPrivFiles do
 
     assets = Path.join(dir, "priv/assets")
 
-    with :directory <- lstat_type(Path.join(dir, "priv")),
+    with :directory <- lstat_type(dir),
+         :directory <- lstat_type(Path.join(dir, "priv")),
          :directory <- lstat_type(assets),
          {:ok, names} <- File.ls(assets) do
       names
@@ -187,7 +188,8 @@ defmodule Precompiled.ForeignPrivFiles do
   `staging/priv/assets/<d>`, so the replace keeps the archives of other
   deps and of the project. `:mark_owners` when `staging/priv` is not a real
   directory (a link Mix makes to the sources): nothing is moved, and the
-  caller marks the owners instead.
+  caller marks the owners instead. A `dest` that is not a real directory
+  carries nothing (`unshipped/2`).
   """
   @spec carry(Path.t(), Path.t(), map()) :: :ok | :mark_owners
   def carry(dest, staging, entry) do

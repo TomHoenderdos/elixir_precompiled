@@ -320,6 +320,28 @@ defmodule Precompiled.ForeignPrivFilesTest do
     assert File.dir?(Path.join(dest, "priv/assets/Kino_Other"))
   end
 
+  # A kino build dir that is a link (Mix never makes one): nothing behind it
+  # is moved; the install replaces the link as 0.7.3 did.
+  test "a kino build dir that is a link is never carried from",
+       %{f: f, lib: lib, config: config, deps: deps, tmp_dir: dir} do
+    outside = Path.join(dir, "outside")
+    File.mkdir_p!(Path.join(outside, "priv/assets/Kino_VegaLite"))
+    File.write!(Path.join(outside, "priv/assets/Kino_VegaLite/#{@h}.tar.gz"), "outside")
+    File.ln_s!(outside, Path.join(lib, "kino"))
+    entry = kino_entry(f)
+
+    assert ForeignPrivFiles.unshipped(Path.join(lib, "kino"), entry) == []
+    staging = Path.join(dir, "staging")
+    File.mkdir_p!(staging)
+    assert :ok = ForeignPrivFiles.carry(Path.join(lib, "kino"), staging, entry)
+    refute File.exists?(Path.join(staging, "priv/assets/Kino_VegaLite"))
+
+    assert {:ok, _} = Fetch.install(config, :kino, entry, @kino_lock, lib, deps_path: deps)
+    assert File.read!(Path.join(outside, "priv/assets/Kino_VegaLite/#{@h}.tar.gz")) == "outside"
+    assert File.lstat!(Path.join(lib, "kino")).type == :directory
+    refute File.exists?(Path.join(lib, "kino/priv/assets/Kino_VegaLite"))
+  end
+
   test "removing kino marks its Mix-built owners, never a client install", %{lib: lib} do
     kino = kino_dir(lib)
     for d <- ~w(KinoDB_Cell Kino_VegaLite), do: File.mkdir_p!(Path.join(kino, "priv/assets/#{d}"))
