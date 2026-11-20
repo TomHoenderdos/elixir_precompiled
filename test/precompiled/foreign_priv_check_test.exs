@@ -420,6 +420,57 @@ defmodule Precompiled.ForeignPrivCheckTest do
     assert File.read!(placed(lib)) == "a newer archive"
   end
 
+  # Removing kino this run makes Mix compile it, which wipes kino's build
+  # dir. A writer that never reaches Phase B (no fresh batch, or its
+  # manifest out of reach) must not stay installed without its archives.
+  test "kino excepted under a refused batch: an installed writer goes too",
+       %{f: f, lib: lib, env: env} do
+    publish(f, kino_entry(f), writer_entry(f))
+    {{:ok, _}, _} = run(env)
+    F.publish(f, %{}, sequence: 2, expires: "2020-01-01T00:00:00Z")
+    configure(source: F.base_url(), root: f.root_path, except: [:kino])
+    {{:ok, report}, out} = run(installed(env))
+    assert out =~ ~r/kino 0\.19\.1\s+MISS\s+excepted/, out
+
+    assert out =~
+             ~r/kino_vega_lite 0\.1\.13\s+MISS\s+writes into kino's priv; kino compiles from source in this run/,
+           out
+
+    assert report.misses == 2
+    refute File.exists?(Path.join(lib, "kino"))
+    refute File.exists?(Path.join(lib, "kino_vega_lite"))
+  end
+
+  test "kino excepted while the writer's manifest is out of reach: the writer goes too",
+       %{f: f, lib: lib, env: env} do
+    publish(f, kino_entry(f), writer_entry(f))
+    {{:ok, _}, _} = run(env)
+    home = System.get_env("PRECOMPILED_HOME")
+    File.rm_rf!(Path.join(home, "manifests"))
+    File.mkdir_p!(Path.join(home, "manifests"))
+    configure(source: F.base_url(), root: f.root_path, except: [:kino])
+    System.put_env("PRECOMPILED_OFFLINE", "1")
+    on_exit(fn -> System.delete_env("PRECOMPILED_OFFLINE") end)
+    {{:ok, _report}, out} = run(installed(env))
+
+    assert out =~
+             ~r/kino_vega_lite 0\.1\.13\s+MISS\s+writes into kino's priv; kino compiles from source in this run/,
+           out
+
+    refute File.exists?(Path.join(lib, "kino_vega_lite"))
+
+    # Without kino excepted, the same writer is kept, as any install.
+    System.delete_env("PRECOMPILED_OFFLINE")
+    configure(source: F.base_url(), root: f.root_path)
+    {{:ok, _}, _} = run(env)
+    File.rm_rf!(Path.join(home, "manifests"))
+    File.mkdir_p!(Path.join(home, "manifests"))
+    System.put_env("PRECOMPILED_OFFLINE", "1")
+    {_, out} = run(installed(env))
+    assert out =~ "installed build kept, not rechecked", out
+    assert File.dir?(Path.join(lib, "kino_vega_lite"))
+  end
+
   # Review Focus 5.
   test "a batch without the foreign object revokes the writer and kino, and Mix-built owners are marked",
        %{f: f, lib: lib, env: env} do
