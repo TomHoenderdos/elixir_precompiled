@@ -12,7 +12,7 @@ defmodule Precompiled.Fetch do
   marker.
   """
 
-  alias Precompiled.{FileUtil, ForeignPriv, ForeignPrivFiles, Manifest}
+  alias Precompiled.{FileUtil, ForeignPriv, ForeignPrivFiles, Manifest, Relocate}
 
   @typep reason :: Precompiled.Reason.t()
 
@@ -738,19 +738,19 @@ defmodule Precompiled.Fetch do
       # What a killed run left staged.
       for stale <- staging_dirs(build_lib, dep, :stale), do: File.rm_rf(stale)
 
-      case stage_verified(config, dep, entry, staging, verify_app: verify_app) do
-        {:ok, stats} ->
-          write_marker(staging, lock_entry)
-          write_provenance(staging, Keyword.get(opts, :provenance))
-          :ok = link.(dep, entry, staging, dest, Keyword.fetch!(opts, :deps_path))
-          # Everything is in staging before _build changes: a failure up to
-          # here leaves the old dep dir as it was.
-          carry_foreign(dep, entry, staging, dest, build_lib)
-          File.rm_rf!(dest)
-          File.mkdir_p!(build_lib)
-          File.rename!(staging, dest)
-          {:ok, stats}
-
+      with {:ok, stats} <- stage_verified(config, dep, entry, staging, verify_app: verify_app),
+           {:ok, relocated} <- relocate_staged(entry, staging, Keyword.get(opts, :relocate)) do
+        write_marker(staging, lock_entry)
+        write_provenance(staging, put_relocated(Keyword.get(opts, :provenance), relocated))
+        :ok = link.(dep, entry, staging, dest, Keyword.fetch!(opts, :deps_path))
+        # Everything is in staging before _build changes: a failure up to
+        # here leaves the old dep dir as it was.
+        carry_foreign(dep, entry, staging, dest, build_lib)
+        File.rm_rf!(dest)
+        File.mkdir_p!(build_lib)
+        File.rename!(staging, dest)
+        {:ok, stats}
+      else
         {:fail, _} = fail ->
           File.rm_rf!(staging)
           fail
@@ -769,6 +769,32 @@ defmodule Precompiled.Fetch do
         {:fail, "install failed: #{Exception.message(e)}"}
     end
   end
+
+  # 0.9.0: a relocated entry's beams (`relocation`), rewritten in staging to
+  # this project's slots (`:relocate`, Precompiled.Relocate.user_slots/2)
+  # once the served files are verified, and their new hashes and sizes,
+  # which the provenance records with the slots. Nothing for any other
+  # entry; without slots nothing is installed.
+  defp relocate_staged(%{"relocation" => %{} = record}, staging, %{} = slots) do
+    with :ok <- Relocate.apply_staged(staging, record, slots) do
+      files =
+        Map.new(record["files"], fn %{"path" => path} ->
+          bytes = File.read!(Path.join(staging, path))
+          {path, %{"sha256" => sha256(bytes), "size" => byte_size(bytes)}}
+        end)
+
+      {:ok, Map.put(slots, "files", files)}
+    end
+  end
+
+  defp relocate_staged(%{"relocation" => _}, _staging, _slots),
+    do: {:fail, "relocation refused: this project's paths are not its own real paths"}
+
+  defp relocate_staged(_entry, _staging, _slots), do: {:ok, nil}
+
+  defp put_relocated(nil, _relocated), do: nil
+  defp put_relocated(provenance, nil), do: provenance
+  defp put_relocated(provenance, relocated), do: Map.put(provenance, :relocated, relocated)
 
   # 0.8.0: kino's archives of other deps (and of the project) its new entry
   # does not ship go along, so a replace never drops them; where they
@@ -1206,6 +1232,13 @@ defmodule Precompiled.Fetch do
   def write_provenance_file(build_lib, dep, provenance) do
     path = provenance_path(build_lib, dep)
 
+    # 0.9.0: a kept relocated build keeps the record of its rewrite.
+    provenance =
+      case {provenance[:relocated], recorded_relocation(build_lib, dep)} do
+        {nil, %{} = relocated} -> Map.put(provenance, :relocated, relocated)
+        _ -> provenance
+      end
+
     doc = provenance_doc(provenance)
 
     cond do
@@ -1226,6 +1259,7 @@ defmodule Precompiled.Fetch do
     |> put_present("files_sha256", p[:files_sha256])
     |> put_present("source", p[:source])
     |> put_present("foreign", p[:foreign])
+    |> put_present("relocated", p[:relocated])
     |> :json.encode()
     |> IO.iodata_to_binary()
   end
@@ -1247,16 +1281,78 @@ defmodule Precompiled.Fetch do
   `consolidated` dir, Mix's `include` link) are not looked at: Mix
   writes them, and none of them is code the build's .app loads.
   """
-  @spec installed_as?(Path.t(), atom(), map()) :: boolean()
-  def installed_as?(build_lib, dep, entry) do
+  @spec installed_as?(Path.t(), atom(), map(), keyword()) :: boolean()
+  def installed_as?(build_lib, dep, entry, opts \\ []) do
     foreign = if dep == ForeignPriv.target(), do: [foreign_priv: true], else: []
 
-    installed_at?(
-      Path.join(build_lib, Atom.to_string(dep)),
-      dep,
-      entry,
-      [mix_priv_link: true] ++ foreign
-    )
+    case as_installed(entry, build_lib, dep, Keyword.get(opts, :relocate)) do
+      {:ok, entry} ->
+        installed_at?(
+          Path.join(build_lib, Atom.to_string(dep)),
+          dep,
+          entry,
+          [mix_priv_link: true] ++ foreign
+        )
+
+      :error ->
+        false
+    end
+  end
+
+  @doc """
+  0.9.0: whether `dep`'s install of the relocated `entry` was rewritten to
+  `slots`, by its provenance's record; always true for an entry that is not
+  relocated. Under an unchanged manifest the disk is not re-hashed, but a
+  moved project (other slots) must be installed again.
+  """
+  @spec relocated_for?(Path.t(), atom(), map(), map() | nil) :: boolean()
+  def relocated_for?(build_lib, dep, %{"relocation" => %{}}, slots) do
+    match?(
+      %{"deps" => d, "build" => b} when %{"deps" => d, "build" => b} == slots,
+      recorded_relocation(build_lib, dep)
+    ) and is_map(slots)
+  end
+
+  def relocated_for?(_build_lib, _dep, _entry, _slots), do: true
+
+  # A relocated entry as its install holds it: each rewritten beam's hash
+  # and size the provenance recorded for `slots`, the project's own.
+  defp as_installed(%{"relocation" => %{"files" => files}} = entry, build_lib, dep, slots)
+       when is_map(slots) and is_list(files) do
+    with true <- relocated_for?(build_lib, dep, entry, slots),
+         %{"files" => %{} = recorded} <- recorded_relocation(build_lib, dep),
+         paths = for(%{"path" => path} <- files, do: path),
+         true <- Enum.all?(paths, &match?(%{"sha256" => _, "size" => _}, recorded[&1])) do
+      ebin =
+        for file <- entry["ebin"] || [] do
+          case recorded[file["path"]] do
+            %{"sha256" => sha, "size" => size} -> %{file | "sha256" => sha, "size" => size}
+            nil -> file
+          end
+        end
+
+      {:ok, %{entry | "ebin" => ebin}}
+    else
+      _ -> :error
+    end
+  end
+
+  defp as_installed(%{"relocation" => _}, _build_lib, _dep, _slots), do: :error
+  defp as_installed(entry, _build_lib, _dep, _slots), do: {:ok, entry}
+
+  defp recorded_relocation(build_lib, dep) do
+    with {:ok, bytes} <- File.read(provenance_path(build_lib, dep)),
+         %{"relocated" => %{} = relocated} <- decode_provenance(bytes) do
+      relocated
+    else
+      _ -> nil
+    end
+  end
+
+  defp decode_provenance(bytes) do
+    :json.decode(bytes)
+  rescue
+    _ -> nil
   end
 
   @doc """

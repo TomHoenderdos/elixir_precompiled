@@ -1129,8 +1129,14 @@ defmodule Precompiled.Check do
     # the disk holds it is installed_as?'s call, or, under an unchanged
     # manifest, the check made when it was placed. verify_app (in keep/4)
     # runs either way.
+    # 0.9.0: a relocated build is this project's install only while it was
+    # rewritten to the project's paths: a moved project installs it again.
+    slots = relocate_slots(env)
+
     if provenance.files_sha256 == hash and
-         (same_manifest? or Fetch.installed_as?(env.build_lib, candidate.name, entry)),
+         Fetch.relocated_for?(env.build_lib, candidate.name, entry, slots) and
+         (same_manifest? or
+            Fetch.installed_as?(env.build_lib, candidate.name, entry, relocate: slots)),
        do: keep(candidate, provenance, env, config_fun),
        else: install(candidate, entry, provenance, config, env, config_fun)
   end
@@ -1163,7 +1169,8 @@ defmodule Precompiled.Check do
            Fetch.install(config, candidate.name, entry, candidate.lock_entry, env.build_lib,
              deps_path: env.deps_path,
              provenance: provenance,
-             verify_app: verify
+             verify_app: verify,
+             relocate: relocate_slots(env)
            ) do
       {:hit, Map.put(stats, :stripped, stripped?(Path.join(env.build_lib, sname), sname))}
     end
