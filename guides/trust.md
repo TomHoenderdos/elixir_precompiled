@@ -6,7 +6,10 @@ shows how each byte is checked before it is used, and what happens when a
 check fails.
 
 The short version: **nothing unsigned or unhashed is ever installed, and
-every failed check falls back to compiling from source.**
+every failed check falls back to compiling from source.** The one
+exception is a relocated build: its verified files are rewritten to your
+paths before they are installed (see
+[Relocated installs](#relocated-installs-0-9-0)).
 
 ## The chain
 
@@ -33,16 +36,23 @@ file             a beam, .app or priv file
 A relocated build is the one exception to "the files on disk are the signed
 files". Its signed files are fetched and verified like any other; then, in
 staging and before anything reaches `_build`, the beams its record names are
-rewritten in this VM: each recorded occurrence of the builder's deps or
-build path becomes yours, the literal re-encoded, the atom or line-table file
-name replaced in place, the module's md5, each fun's `old_uniq` and a default
-`vsn` taken again. Nothing else in the files changes; `CInf`, `Dbgi` and
-`Docs` keep the builder's paths, as in every served build. The client
-derives the occurrences from the served beams itself and installs nothing
-unless they are exactly the record's and no other file holds the builder's
-path. The installed beams then no longer hash to the manifest's `sha256`:
-the provenance records their own hashes with the paths they were rewritten
-to, and a later run checks the disk against those.
+rewritten in this VM: each occurrence of the builder's deps or build path
+becomes yours, the literal re-encoded, the atom or line-table file name
+replaced in place, a path in a persisted attribute (`Attr`) rewritten and
+the whole `Attr` chunk encoded again, the module's md5, each fun's
+`old_uniq` and a default `vsn` taken again. Nothing else in the files
+changes; `CInf`, `Dbgi` and `Docs` keep the builder's paths, as in every
+served build.
+
+The record is signed, but the client does not take it on trust. Its three
+roots must be the builder's own layout, byte for byte, as this library
+ships it; every served beam must have been compiled from the package's own
+dir under the record's deps path (its `CInf` source); the client derives
+the occurrences from the served beams itself and installs nothing unless
+they are exactly the record's and no other file holds the builder's path.
+The installed beams then no longer hash to the manifest's `sha256`: the
+provenance records their own hashes with the paths they were rewritten to,
+and a later run checks the disk against those.
 
 ## Where the source and root come from
 

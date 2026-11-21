@@ -37,13 +37,20 @@ too.
 *Status:* measured first; a later release may place archives after Mix
 compiles kino.
 
-**A relocated build is proven at two roots, not at yours.** The portal
-builds such a package at two roots unlike each other in every property a
-path here can have, and keeps it only when the two differ in the paths
-alone; this client relocates only to paths inside the envelope the two span
-(see [Relocated builds](matching.md#relocated-builds-paths-in-the-beams)).
-A value a compile derives from the path that is equal at both roots but not
-at yours, by a test both roots happen to pass, is not seen.
+**A relocated build is proven at three roots, not at yours.** The portal
+builds such a package at three roots that differ in length, depth, case,
+spaces, project dir name and the order of the deps and build paths, and
+that hold between them the words user paths hold (`/home/`, `/Users/`,
+`.cache/mix/installs`, `Library`, `Projects`, `projects`, `src`, `code`,
+`app`, `nix/store`, a dot-dir, `@` and `~`). It keeps the build only when
+the three differ in the paths alone, and this client relocates only to
+paths inside the envelope the three span: their characters, between their
+lengths and depths (see
+[Relocated builds](matching.md#relocated-builds-paths-in-the-beams)). What
+is not seen: a compile-time test of the path against a constant that none
+of the three roots holds (a prefix such as `/opt/` or `/srv/`, a word no
+root holds), or any test that answers the same at all three roots and
+otherwise at your path.
 *Fix:* list such a dependency in `:except`.
 
 ## Trust

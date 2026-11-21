@@ -450,15 +450,18 @@ then these, before anything is downloaded:
   into its dir, so `__DIR__` holds the spelling on disk, which a volume that
   ignores case (macOS by default) lets differ from the spelling Mix was
   given;
-- each lies inside the envelope of the builder's two roots
+- each lies inside the envelope of the builder's three roots
   (`relocated_path_envelope`): its characters among theirs, its length and
-  depth between theirs;
-- the record names beams of the entry's own `ebin`, well formed
+  depth between their shortest and longest, shallowest and deepest;
+- the record's three roots are the builder's own, as this library ships
+  them, and it names beams of the entry's own `ebin`, well formed
   (`relocation_refused`).
 
-At install, after every served file is verified, the client derives each
-beam's occurrences of the builder's paths itself and requires them to be
-the record's, finds none in any other file of the entry, and rewrites each
+At install, after every served file is verified, the client requires each
+beam to have been compiled from the package's own dir under the record's
+deps path (its `CInf` source), derives each beam's occurrences of the
+builder's paths itself and requires them to be the record's, finds none in
+any other file of the entry, and rewrites each
 occurrence to your paths exactly as your own compile would have written it:
 a literal re-encoded by this VM, an atom or file name in place, the module's
 md5 taken as this OTP takes it (`beam_lib:md5/1`), each fun's `old_uniq` and

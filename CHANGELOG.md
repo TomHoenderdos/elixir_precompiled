@@ -4,7 +4,7 @@
 
 * Relocated builds: a dependency whose own beams hold the path it was compiled at (fine's
   `Fine.include_dir/0`, a `__DIR__` literal, a path into its build's `priv`) can now install
-  precompiled. The portal builds it twice at two different roots and lists it under a
+  precompiled. The portal builds it at three different roots and lists it under a
   version's `relocated` object, which earlier clients never read, with the record of every
   occurrence of the builder's deps and build path. This client takes one only after every
   other list missed, rewrites each occurrence to this project's own deps and build path at
@@ -17,11 +17,15 @@
   path is not its own real path or the host is not unix (`relocated_paths`); when a path
   is not printable ASCII (`relocated_path_ascii`); when a component is spelled otherwise
   than its dir lists it, as `/users/me` for `/Users/me` on a volume that ignores case
-  (`relocated_path_spelling`); when a path is outside the envelope of the two roots the
-  portal proved the build at (`relocated_path_envelope`); and when the record does not
-  match the served beams or the rewrite would not be this VM's own compile
-  (`relocation_refused`). The client derives every occurrence from the served beams itself,
-  takes the md5 as this OTP does (`beam_lib:md5/1`) and checks every file of the entry.
+  (`relocated_path_spelling`); when a path is outside the envelope of the three roots the
+  portal proved the build at (`relocated_path_envelope`); and when the record's roots are
+  not the builder's own layout, a served beam was not compiled from the package's dir under
+  the record's deps path, the record does not match the served beams or the rewrite would
+  not be this VM's own compile (`relocation_refused`). The client derives every occurrence
+  from the served beams itself, takes the md5 as this OTP does (`beam_lib:md5/1`) and
+  checks every file of the entry. What the three roots cannot show: a compile-time test of
+  the path against a constant none of them holds, or one that answers the same at all
+  three and otherwise at this project's path; list such a dependency in `:except`.
 
 ## v0.8.0 - 2026-11-20
 
