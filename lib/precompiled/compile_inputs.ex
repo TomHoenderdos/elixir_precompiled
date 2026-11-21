@@ -215,7 +215,8 @@ defmodule Precompiled.CompileInputs do
        when is_binary(app) and map_size(item) == 3 do
     with {:ok, recorded} <- config_entries(item["entries"]) do
       here = Map.get(order, :user_config_all, &user_config_all/1).(app)
-      if here == {:ok, recorded}, do: :ok, else: config_all_differs(app)
+      # Exact: `1` and `1.0` are `==` but compile to other code.
+      if here === {:ok, recorded}, do: :ok, else: config_all_differs(app)
     end
   end
 

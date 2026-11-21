@@ -740,6 +740,22 @@ defmodule Precompiled.CompileInputsTest do
                )
     end
 
+    # An integer and a float compare equal with `==` but compile to other
+    # code (review S5 S3).
+    test "1 against 1.0 misses, at the top level and nested" do
+      for {recorded, here} <- [{1, 1.0}, {1.0, 1}, {[x: 1], [x: 1.0]}, {%{k: 1}, %{k: 1.0}}] do
+        item = all_item("tz", [entry("k", recorded)])
+
+        assert {:miss, %{code: :config_all_differs}} =
+                 CompileInputs.host(
+                   [item],
+                   &none/1,
+                   config_of(fn "tz" -> {:ok, %{"k" => here}} end)
+                 ),
+               inspect({recorded, here})
+      end
+    end
+
     test "a key more, a key less or another value misses, naming the app" do
       item = all_item("tz", [entry("data_dir", "/d")])
 

@@ -527,6 +527,16 @@ defmodule Precompiled.MatchTest do
       assert @differs = Match.compile_env_ok(ce_bin(small), fn _, _ -> {:ok, value} end)
     end
 
+    # An integer and a float compare equal with `==` but compile to other
+    # code (review S5 S3): the recorded value must be the project's exactly.
+    test "1 differs from 1.0, at the top level and nested" do
+      for {recorded, here} <- [{1, 1.0}, {1.0, 1}, {[x: 1], [x: 1.0]}, {%{k: 1}, %{k: 1.0}}] do
+        assert @differs = Match.compile_env_ok(ce_term(recorded), fn _, _ -> {:ok, here} end)
+      end
+
+      assert :ok = Match.compile_env_ok(ce_term(x: 1), fn _, _ -> {:ok, [x: 1]} end)
+    end
+
     test "a value over 64 KiB differs" do
       value = :binary.copy("a", 65_536)
       assert @differs = Match.compile_env_ok(ce_term(value), fn _, _ -> {:ok, value} end)

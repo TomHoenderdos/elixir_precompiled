@@ -1361,7 +1361,8 @@ defmodule Precompiled.Match do
   defp recorded_equals?(value, current) do
     with {:ok, bin} <- Base.url_decode64(value, padding: false),
          {:ok, term} <- Precompiled.SafeTerm.decode(bin, @max_recorded_bytes) do
-      term == current
+      # Exact: `1` and `1.0` are `==` but compile to other code.
+      term === current
     else
       _ -> false
     end

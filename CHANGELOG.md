@@ -44,6 +44,10 @@
   code `config_all_differs`). An app already loaded is compared only when its `.app` declares
   no env; a device misses. Earlier clients treat the item as malformed: a miss.
 
+* A build's recorded compile-time config value now matches the project's only when it is the same
+  term exactly: `1` no longer matches `1.0` (they compare equal but compile to other code), for
+  `compile_env` items and `config_all` entries alike.
+
 ## v0.8.0 - 2026-11-20
 
 * Foreign priv builds: a dependency whose compile packs Kino.JS assets into kino's priv
