@@ -416,7 +416,7 @@ defmodule Precompiled.Match do
 
   A build's `foreign_priv` entries (0.8.0), when it has any, are hashed
   after its own files, apart from them; an entry without any hashes as it
-  did before.
+  did before. So is a relocated build's `relocation` record (0.9.0).
   """
   @spec files_hash(map()) :: String.t() | nil
   def files_hash(entry) do
@@ -429,10 +429,21 @@ defmodule Precompiled.Match do
     # any hashes as it always did, so no install is redone for it.
     foreign = entry |> ForeignPriv.entries() |> Enum.map(&file_line/1) |> Enum.sort()
     data = if foreign == [], do: lines, else: [lines, "foreign_priv\n", foreign]
+    # 0.9.0: a relocated entry's record is part of what it installs.
+    data =
+      if is_map(entry["relocation"]),
+        do: [data, "relocation\n", relocation_line(entry)],
+        else: data
+
     Base.encode16(:crypto.hash(:sha256, data), case: :lower)
   rescue
     _ -> nil
   end
+
+  # The record as a term in the external format, deterministic for equal
+  # records whatever the JSON key order.
+  defp relocation_line(entry),
+    do: :erlang.term_to_binary(entry["relocation"], [:deterministic])
 
   defp file_line(%{"path" => p, "sha256" => s, "mode" => m})
        when is_binary(p) and is_binary(s) and is_integer(m) do

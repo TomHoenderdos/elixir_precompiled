@@ -164,4 +164,13 @@ defmodule Precompiled.RelocatedMatchTest do
     assert {:miss, reason} = Match.select_reason(m, det)
     refute reason.code in [:relocated_paths, :relocated_otp, :relocation_refused]
   end
+
+  test "files_hash covers the record: another record is another build" do
+    plain = Map.delete(relocated_build(), "relocation")
+    a = relocated_build()
+    b = relocated_build(%{"relocation" => put_in(record(), ["deps"], "/other/deps")})
+    assert Match.files_hash(a) != Match.files_hash(plain)
+    assert Match.files_hash(a) != Match.files_hash(b)
+    assert Match.files_hash(a) == Match.files_hash(relocated_build())
+  end
 end
