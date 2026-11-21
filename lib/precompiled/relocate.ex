@@ -126,20 +126,12 @@ defmodule Precompiled.Relocate do
   @spec record_problem(term(), [String.t()]) :: String.t() | nil
   def record_problem(%{"deps" => deps, "build" => build, "files" => files} = record, ebin)
       when is_list(files) and is_list(ebin) do
-    first = %{"deps" => deps, "build" => build}
-
     cond do
       record |> Map.keys() |> Enum.sort() != @record_keys ->
         "unknown keys"
 
-      match?({:refuse, _}, valid_slots(first)) ->
-        "bad paths"
-
-      match?({:refuse, _}, valid_slots(record["second"])) ->
-        "bad second paths"
-
-      not Enum.all?(Map.values(first) ++ Map.values(record["second"]), &printable?/1) ->
-        "a path not printable ASCII"
+      problem = roots_problem(%{"deps" => deps, "build" => build}, record["second"]) ->
+        problem
 
       files == [] or length(files) > @max_files ->
         "no files, or too many"
@@ -153,6 +145,22 @@ defmodule Precompiled.Relocate do
   end
 
   def record_problem(_record, _ebin), do: "not a relocation record"
+
+  defp roots_problem(first, second) do
+    cond do
+      match?({:refuse, _}, valid_slots(first)) ->
+        "bad paths"
+
+      match?({:refuse, _}, valid_slots(second)) ->
+        "bad second paths"
+
+      not Enum.all?(Map.values(first) ++ Map.values(second), &printable?/1) ->
+        "a path not printable ASCII"
+
+      true ->
+        nil
+    end
+  end
 
   defp file_path(%{"path" => path}), do: path
   defp file_path(file), do: file
@@ -216,25 +224,27 @@ defmodule Precompiled.Relocate do
     paths = [{"deps", deps_path}, {"build", build_path}]
 
     cond do
-      not (match?({:unix, _}, :os.type()) and :file.native_name_encoding() == :utf8) ->
+      not unix_utf8?() or not Enum.all?(paths, &is_binary(elem(&1, 1))) ->
         {:error, :relocated_paths, []}
 
-      not Enum.all?(paths, fn {_, p} -> is_binary(p) end) ->
-        {:error, :relocated_paths, []}
-
-      slot = Enum.find_value(paths, fn {s, p} -> if not printable?(p), do: s end) ->
+      slot = first_slot(paths, &(not printable?(&1))) ->
         {:error, :relocated_path_ascii, [slot]}
 
-      not Enum.all?(paths, fn {_, p} -> real?(p) end) or overlap?(deps_path, build_path) ->
+      not Enum.all?(paths, &real?(elem(&1, 1))) or overlap?(deps_path, build_path) ->
         {:error, :relocated_paths, []}
 
-      slot = Enum.find_value(paths, fn {s, p} -> if not spelled?(p), do: s end) ->
+      slot = first_slot(paths, &(not spelled?(&1))) ->
         {:error, :relocated_path_spelling, [slot]}
 
       true ->
         {:ok, %{"deps" => deps_path, "build" => build_path}}
     end
   end
+
+  defp unix_utf8?(),
+    do: match?({:unix, _}, :os.type()) and :file.native_name_encoding() == :utf8
+
+  defp first_slot(paths, bad?), do: Enum.find_value(paths, fn {s, p} -> if bad?.(p), do: s end)
 
   defp printable?(path), do: path =~ ~r/\A[\x20-\x7e]+\z/
 
