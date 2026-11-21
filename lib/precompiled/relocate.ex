@@ -82,6 +82,103 @@ defmodule Precompiled.Relocate do
     _ -> {:refuse, "unreadable beam"}
   end
 
+  @record_keys ["build", "deps", "files"]
+  @kinds ["binary", "charlist", "atom"]
+  @max_files 10_000
+
+  # Match's last rule for a relocated build (0.9.0): nil when this project
+  # can take it, else the miss. OTP 28 or later (OTP 27 compresses the
+  # literal table, which this rewrite never reads), this project's own
+  # slots (`ctx.relocate`, `user_slots/2`), ASCII paths for a charlist
+  # occurrence, and a record of the entry's own beams, well formed.
+  @spec reason(map(), map()) :: Precompiled.Reason.t() | nil
+  def reason(build, ctx) do
+    record = build["relocation"]
+    slots = Map.get(ctx, :relocate)
+    ebin = for %{"path" => path} when is_binary(path) <- build["ebin"] || [], do: path
+
+    cond do
+      otp_major(ctx.otp) < 28 ->
+        Precompiled.Reason.new(:relocated_otp, [])
+
+      slots == nil ->
+        Precompiled.Reason.new(:relocated_paths, [])
+
+      problem = record_problem(record, ebin) ->
+        Precompiled.Reason.new(:relocation_refused, [], "relocated build: #{problem}")
+
+      charlist?(record) and not ascii?(slots) ->
+        Precompiled.Reason.new(:relocated_paths, [])
+
+      true ->
+        nil
+    end
+  end
+
+  defp otp_major(otp) do
+    case Integer.parse(to_string(otp)) do
+      {n, _} -> n
+      :error -> 0
+    end
+  end
+
+  defp charlist?(%{"files" => files}),
+    do: Enum.any?(files, fn f -> Enum.any?(f["occurrences"], &(&1["kind"] == "charlist")) end)
+
+  # Why a relocation record is not one this client can apply, or nil: the
+  # builder's `deps` and `build` paths (absolute, distinct, neither inside
+  # the other) and `files`, a non-empty list of distinct beams of the
+  # entry's own `ebin`, each with at least one well-formed occurrence. The
+  # same check as the portal's at ingest (Compatibility.Relocation).
+  @spec record_problem(term(), [String.t()]) :: String.t() | nil
+  def record_problem(%{"deps" => deps, "build" => build, "files" => files} = record, ebin)
+      when is_list(files) and is_list(ebin) do
+    cond do
+      record |> Map.keys() |> Enum.sort() != @record_keys -> "unknown keys"
+      match?({:refuse, _}, valid_slots(%{"deps" => deps, "build" => build})) -> "bad paths"
+      files == [] or length(files) > @max_files -> "no files, or too many"
+      length(Enum.uniq_by(files, &file_path/1)) != length(files) -> "a file twice"
+      true -> Enum.find_value(files, &file_problem(&1, ebin))
+    end
+  end
+
+  def record_problem(_record, _ebin), do: "not a relocation record"
+
+  defp file_path(%{"path" => path}), do: path
+  defp file_path(file), do: file
+
+  defp file_problem(%{"path" => "ebin/" <> name = path, "occurrences" => [_ | _] = occs}, ebin) do
+    cond do
+      Path.basename(name) != name or Path.extname(name) != ".beam" -> "not a beam: #{path}"
+      path not in ebin -> "not a file of the build: #{path}"
+      length(occs) > @max_occurrences -> "too many occurrences"
+      not Enum.all?(occs, &occurrence?/1) -> "a malformed occurrence in #{path}"
+      true -> nil
+    end
+  end
+
+  defp file_problem(_file, _ebin), do: "a malformed file entry"
+
+  defp occurrence?(
+         %{"chunk" => chunk, "index" => i, "term" => term, "kind" => kind, "parts" => parts} =
+           occ
+       )
+       when map_size(occ) == 5 and chunk in @rewritten and is_integer(i) and i >= 0 and
+              is_list(term) and kind in @kinds and is_list(parts) do
+    Enum.all?(term, &(is_integer(&1) and &1 >= 0)) and template?(parts)
+  end
+
+  defp occurrence?(_occ), do: false
+
+  defp template?([_text, _slot | _] = parts) do
+    rem(length(parts), 2) == 1 and
+      parts
+      |> Enum.with_index()
+      |> Enum.all?(fn {part, i} -> is_binary(part) and (rem(i, 2) == 0 or part in @slots) end)
+  end
+
+  defp template?(_parts), do: false
+
   # This project's slots, `%{"deps" => deps_path, "build" => build_path}`,
   # when a relocated build may be installed into it: a unix host whose file
   # names are UTF-8, and both paths absolute, normalised and free of

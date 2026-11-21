@@ -114,9 +114,18 @@ defmodule Precompiled.Match do
             builds -> select_host_native(builds, ctx, reason)
           end
 
+        miss =
+          case miss do
+            {:miss, reason} -> select_foreign(foreign_builds(manifest, ctx), ctx, reason, miss)
+            hit -> hit
+          end
+
         case miss do
-          {:miss, reason} -> select_foreign(foreign_builds(manifest, ctx), ctx, reason, miss)
-          hit -> hit
+          {:miss, reason} ->
+            select_relocated(relocated_builds(manifest, ctx), ctx, reason, miss)
+
+          hit ->
+            hit
         end
 
       hit ->
@@ -255,6 +264,68 @@ defmodule Precompiled.Match do
 
       _ ->
         []
+    end
+  end
+
+  # 0.9.0: a version's `relocated` lists, read only after every other list
+  # missed; `builds_closure` only with an env closure, as the regular one.
+  # Clients before 0.9.0 never read them, so a build whose beams hold its
+  # builder's paths stays out of their reach. Never in deterministic mode:
+  # a relocated build has no sibling.
+  defp relocated_builds(manifest, ctx) do
+    mode = Precompiled.ErlCompilerEnv.options(machine_env(ctx), elixir_compiler_options(ctx))
+
+    case {mode, get_in(manifest, ["versions", ctx.version, "relocated"])} do
+      {:deterministic, _} ->
+        []
+
+      {_mode, %{} = lists} ->
+        List.wrap(lists["builds"]) ++
+          List.wrap(lists["builds_with_inputs"]) ++ world(lists, Map.get(ctx, :env_closure))
+
+      _ ->
+        []
+    end
+  end
+
+  # A passing relocated build, picked as a regular one is; when none passes,
+  # the miss stands unless it only said that nothing was built, then the
+  # relocated build that came furthest explains it.
+  defp select_relocated(builds, ctx, regular, miss),
+    do: select_listed(builds, ctx, regular, miss, &relocated_rules/2)
+
+  # Every regular rule, no foreign entries, then the relocation's own
+  # (Precompiled.Relocate.reason/2).
+  defp relocated_rules(build, ctx),
+    do:
+      rules(build, ctx) ++
+        [
+          fn -> ForeignPriv.none_reason(build) end,
+          fn ->
+            case Precompiled.Relocate.reason(build, ctx) do
+              nil -> :ok
+              reason -> {:miss, reason}
+            end
+          end
+        ]
+
+  defp select_listed([], _ctx, _regular, miss, _rules), do: miss
+
+  defp select_listed(builds, ctx, regular, _miss, rules) do
+    {_system, system_version} = ctx.system
+    results = Enum.map(builds, &{&1, check(&1, ctx, rules)})
+
+    case Enum.filter(results, &match?({_, {:ok, _}}, &1)) do
+      [] ->
+        if regular.code in [:not_built_target, :not_built_version],
+          do: {:miss, closest(results, ctx)},
+          else: {:miss, regular}
+
+      ok ->
+        {build, _} =
+          ok |> nearest_release(system_version) |> Enum.min_by(fn {b, _} -> rank(b, ctx) end)
+
+        {:ok, build, build["target"]}
     end
   end
 

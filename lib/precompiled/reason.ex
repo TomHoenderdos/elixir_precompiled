@@ -83,7 +83,10 @@ defmodule Precompiled.Reason do
     foreign_priv_conflict: "writes {0}'s priv/assets/{1}, which {2} also claims",
     foreign_priv_rule_unknown:
       "writes into {0}'s priv under rule {1}, which this client does not know",
-    foreign_priv_device: "writes into {0}'s priv at compile time; not installed on a device"
+    foreign_priv_device: "writes into {0}'s priv at compile time; not installed on a device",
+    relocated_paths: "relocated build: this project's paths are not its own real paths",
+    relocated_otp: "relocated build: needs OTP 28 or later",
+    relocation_refused: "relocated build: the rewrite refused"
   ]
 
   @codes Keyword.keys(@templates)

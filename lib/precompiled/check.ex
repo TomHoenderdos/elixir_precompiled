@@ -1068,9 +1068,21 @@ defmodule Precompiled.Check do
       overrides: Map.get(method, :overrides, []),
       build_method_unknown: Map.get(method, :unknown),
       systems: Map.get(config, :systems_table),
-      host_native: host_native(config, env)
+      host_native: host_native(config, env),
+      relocate: relocate_slots(env)
     }
   end
+
+  # 0.9.0: this project's slots for a relocated build (Precompiled.Relocate):
+  # its deps path and build path, each its own real path, on a host project
+  # only; nil on a device or a Nerves target, and then no relocated build
+  # matches.
+  defp relocate_slots(%{deps_path: deps, build_lib: lib} = env)
+       when is_binary(deps) and is_binary(lib) do
+    if host_project?(env), do: Precompiled.Relocate.user_slots(deps, Path.dirname(lib))
+  end
+
+  defp relocate_slots(_env), do: nil
 
   # The host-native builds' view of this machine, with the deps dir their
   # origins' checksum files are read from; nil unless with_native_host/3
