@@ -12,6 +12,10 @@ defmodule Precompiled.Integration.RelocateTest do
   # user's path.
   use ExUnit.Case, async: false
 
+  alias Precompiled.ChildProject, as: C
+  alias Precompiled.Fixture, as: F
+  alias Precompiled.Relocate
+
   @moduletag :integration
   @moduletag :tmp_dir
   @moduletag timeout: 600_000
@@ -20,10 +24,6 @@ defmodule Precompiled.Integration.RelocateTest do
     start_supervised!(Precompiled.TestServer)
     :ok
   end
-
-  alias Precompiled.ChildProject, as: C
-  alias Precompiled.Fixture, as: F
-  alias Precompiled.Relocate
 
   # On OTP 27 a relocated build is never installed (Precompiled.Relocate):
   # nothing here runs there.
