@@ -187,6 +187,9 @@ defmodule Precompiled.Reason do
         String.starts_with?(why, "downloaded .app: compile_env differs") -> :compile_env_differs
         String.starts_with?(why, @verify) -> :verify_failed
         String.starts_with?(why, @fetch) -> :fetch_failed
+        # The client re-review's R7: Precompiled.Relocate.apply_staged/4's
+        # refusal is the relocated build's own code.
+        String.starts_with?(why, "relocation refused: ") -> :relocation_refused
         true -> :install_failed
       end
 

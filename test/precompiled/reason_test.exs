@@ -180,7 +180,11 @@ defmodule Precompiled.ReasonTest do
           {"offline: file not cached (ebin/a.beam)", :fetch_failed},
           {"install failed: eacces", :install_failed},
           {"provenance write failed: :enospc", :install_failed},
-          {"cache refused (/x changed while being read)", :install_failed}
+          {"cache refused (/x changed while being read)", :install_failed},
+          # The client re-review's R7: a relocation refused at install is
+          # the relocated build's own code, not an install error.
+          {"relocation refused: ebin/a.beam: not compiled from the record's deps path",
+           :relocation_refused}
         ] do
       assert {:fail, %Reason{code: ^code, text: ^text}} = Reason.of_install({:fail, text})
     end

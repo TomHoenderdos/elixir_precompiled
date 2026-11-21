@@ -173,6 +173,37 @@ defmodule Precompiled.RelocatedMatchTest do
              )
   end
 
+  # The umbrella re-review's Q1: a dependent held only for its dependencies
+  # is listed under `relocated` with a record that names no file; it is
+  # taken as one, its envelope included.
+  test "a record with no files to rewrite is taken, inside the envelope only" do
+    empty = relocated_build(%{"relocation" => Map.put(record(), "files", [])})
+    assert {:ok, ^empty, _} = Match.select_reason(only_relocated(empty), ctx())
+
+    outside = %{@slots | "deps" => "/app/deps"}
+
+    assert {:miss, %{code: :relocated_path_envelope}} =
+             Match.select_reason(only_relocated(empty), ctx(%{relocate: {:ok, outside}}))
+  end
+
+  # The client re-review's R5: a build slot followed by anything but Mix's
+  # layout under a build path.
+  test "a record whose build path is followed by another dir is refused" do
+    for tail <- ["_x/lib/fine/priv", "/x/lib/fine/priv"] do
+      bad =
+        put_in(
+          record(),
+          ["files", Access.at(0), "occurrences", Access.at(0), "parts"],
+          ["", "build", tail]
+        )
+
+      assert {:miss, %{code: :relocation_refused, text: text}} =
+               Match.select_reason(only_relocated(relocated_build(%{"relocation" => bad})), ctx())
+
+      assert text =~ "a build path followed by"
+    end
+  end
+
   # The client review's N5: a regular list's build never carries a record.
   test "a regular build with a relocation record is a malformed entry" do
     m = doc(%{"builds" => [relocated_build()]})

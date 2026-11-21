@@ -81,38 +81,64 @@ defmodule Precompiled.Integration.RelocateTest do
 
   defp beam(proj), do: File.read!(Path.join(proj, "_build/dev/lib/fine/ebin/Elixir.Fine.beam"))
 
-  # The portal's builder, as its worker builds: fine compiled in
-  # `<dir>/work/proj` with the build path `_build/host`, the first of the
-  # builder's three roots under `dir` (the client's test-only
-  # `relocation_prefix`). Returns the project, its record's roots and
-  # fine's entry with its record.
+  # The portal's builder at its real roots: fine compiled from source in a
+  # project at `<dir>/work`, then moved to the worker's first root
+  # (`/work/proj/deps`, `/work/proj/_build/host`) by this client's own
+  # rewrite, and its CInf source set to `/work/proj/deps/fine/lib/fine.ex`:
+  # the beam the worker's compile there would write, but for `Dbgi` and
+  # `Docs`. The record is the real three roots (`pinned_record/1`), so the
+  # child projects, which build this library as every user does, take it
+  # with no test seam (the client re-review's R8). Returns the project, the
+  # served beam and fine's entry with its record.
   defp builder!(dir, f, deps) do
     builder = C.plain!(Path.join(dir, "work"), f, deps: deps)
-    pinned = Relocate.pinned_record(1, dir)
-    assert pinned["build"] == Path.join(builder, "_build/host")
     mix!(builder, ["deps.get"])
-    mix!(builder, ["compile"], [{"PRECOMPILED", "0"}, {"MIX_BUILD_PATH", pinned["build"]}])
+    mix!(builder, ["compile"], [{"PRECOMPILED", "0"}])
     lock = Mix.Dep.Lock.read(Path.join(builder, "mix.lock"))
-    fine = Path.join(pinned["build"], "lib/fine")
-    entry = C.build_entry(f, fine, elem(lock[:fine], 7))
-    served = File.read!(Path.join(fine, "ebin/Elixir.Fine.beam"))
-    assert {:ok, occs} = Relocate.occurrences(served, Map.take(pinned, ["deps", "build"]))
-    files = [%{"path" => "ebin/Elixir.Fine.beam", "occurrences" => occs}]
+    pinned = Relocate.pinned_record(1)
+    real = Map.take(pinned, ["deps", "build"])
+    built = File.read!(Path.join(builder, "_build/dev/lib/fine/ebin/Elixir.Fine.beam"))
+    {:ok, occs} = Relocate.occurrences(built, slots(builder))
+    {:ok, moved} = Relocate.relocate(built, occs, slots(builder), real)
+    served = with_source(moved, Path.join(real["deps"], "fine/lib/fine.ex"))
+
+    lib = Path.join(dir, "served/fine")
+    File.mkdir_p!(Path.dirname(lib))
+    File.cp_r!(Path.join(builder, "_build/dev/lib/fine"), lib)
+    File.write!(Path.join(lib, "ebin/Elixir.Fine.beam"), served)
+    entry = C.build_entry(f, lib, elem(lock[:fine], 7))
+
+    assert {:ok, [occ]} = Relocate.occurrences(served, real)
+    files = [%{"path" => "ebin/Elixir.Fine.beam", "occurrences" => [occ]}]
     {builder, served, Map.put(entry, "relocation", Map.put(pinned, "files", files))}
   end
 
-  # A user's project that takes records at the builder's roots under `dir`.
-  defp user!(dir, path, f, deps) do
-    user = C.plain!(Path.join(dir, path), f, deps: deps)
+  # `beam` with its CInf `source` set to `source`.
+  defp with_source(beam, source) do
+    {:ok, _module, chunks} = :beam_lib.all_chunks(beam)
+    {~c"CInf", cinf} = List.keyfind(chunks, ~c"CInf", 0)
 
-    File.write!(
-      Path.join(user, "config/config.exs"),
-      "config :precompiled, relocation_prefix: #{inspect(dir)}\n",
-      [:append]
-    )
+    info =
+      cinf
+      |> :erlang.binary_to_term()
+      |> List.keystore(:source, 0, {:source, String.to_charlist(source)})
 
-    user
+    chunks = List.keystore(chunks, ~c"CInf", 0, {~c"CInf", :erlang.term_to_binary(info)})
+    {:ok, bytes} = :beam_lib.build_module(chunks)
+    bytes
   end
+
+  # A clean real dir for the user's projects: inside the envelope of the
+  # real roots, whose characters are letters, digits, space and `._-/@~`
+  # (ExUnit's tmp dir holds a test's name, with its commas and quotes).
+  defp clean_base!() do
+    base = Path.join(System.tmp_dir!(), "s4i#{System.unique_integer([:positive])}")
+    File.mkdir_p!(base)
+    on_exit(fn -> File.rm_rf!(base) end)
+    File.cd!(base, &File.cwd!/0)
+  end
+
+  defp user!(base, path, f, deps), do: C.plain!(Path.join(base, path), f, deps: deps)
 
   defp stripped(beam) do
     {:ok, {_, plain}} = :beam_lib.strip(beam)
@@ -170,9 +196,10 @@ defmodule Precompiled.Integration.RelocateTest do
     {builder, served, entry} = builder!(dir, f, deps)
     lock_path = Path.join(builder, "mix.lock")
     publish!(f, entry, 2)
+    base = clean_base!()
 
     # A fresh project on the same lock: installed, relocated to its paths.
-    user = user!(dir, "home/someone/projects/app", f, deps)
+    user = user!(base, "home/someone/projects/app", f, deps)
     File.cp!(lock_path, Path.join(user, "mix.lock"))
     mix!(user, ["deps.get"])
     out = mix!(user, ["compile"])
@@ -196,7 +223,7 @@ defmodule Precompiled.Integration.RelocateTest do
     assert beam(user) == first
 
     # The project moved: installed again, relocated to its new paths.
-    moved = Path.join(dir, "elsewhere/a/much/longer/path/proj")
+    moved = Path.join(base, "elsewhere/a/much/longer/path/proj")
     File.mkdir_p!(Path.dirname(moved))
     File.rename!(user, moved)
     out = mix!(moved, ["compile"])
@@ -226,11 +253,12 @@ defmodule Precompiled.Integration.RelocateTest do
     {builder, _served, entry} = builder!(dir, f, deps)
     lock_path = Path.join(builder, "mix.lock")
     publish!(f, entry, 2)
+    base = clean_base!()
 
     # Mix.install, in its own install dir spelled as on disk: a HIT.
-    installs = Path.join(dir, "Installs")
+    installs = Path.join(base, "Installs")
     File.mkdir_p!(installs)
-    out = mix_install!(dir, f, lock_path, installs)
+    out = mix_install!(base, f, lock_path, installs)
     assert out =~ ~r/precompiled: fine 0\.2\.0\s+HIT/, out
     [install_dir] = Regex.run(~r/^dir=(.+)$/m, out, capture: :all_but_first)
     assert out =~ "include=" <> Path.join(install_dir, "deps/fine/c_include")
@@ -240,14 +268,14 @@ defmodule Precompiled.Integration.RelocateTest do
     if match?({:unix, :darwin}, :os.type()), do: assert(File.dir?(lower))
 
     if File.dir?(lower) do
-      other = mix_install!(dir, f, lock_path, lower, "again")
+      other = mix_install!(base, f, lock_path, lower, "again")
 
       assert other =~
                ~r/precompiled: fine 0\.2\.0\s+MISS\s+relocated build: this project's deps path is not spelled as on disk/,
              other
 
       # A project with MIX_DEPS_PATH, then MIX_BUILD_PATH, spelled otherwise.
-      user = user!(dir, "Case/App", f, deps)
+      user = user!(base, "Case/App", f, deps)
       File.cp!(lock_path, Path.join(user, "mix.lock"))
       mix!(user, ["deps.get"])
       down = String.downcase(user)
@@ -274,7 +302,6 @@ defmodule Precompiled.Integration.RelocateTest do
     File.write!(script, """
     Application.put_env(:precompiled, :source, #{inspect(F.base_url())})
     Application.put_env(:precompiled, :root, #{inspect(f.root_path)})
-    Application.put_env(:precompiled, :relocation_prefix, #{inspect(dir)})
     Precompiled.Host.install([{:fine, "== 0.2.0"}], lockfile: #{inspect(lock_path)})
     IO.puts("dir=" <> Mix.install_project_dir())
     IO.puts("include=" <> Fine.include_dir())

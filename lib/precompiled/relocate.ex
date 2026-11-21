@@ -16,8 +16,11 @@ defmodule Precompiled.Relocate do
   # fun's old_uniq its first 27 bits, and a default vsn (the old md5) the
   # new one. The portal's builder proved the same rewrite against compiles
   # at two other roots. The record's three roots must be the builder's own
-  # layout (pinned_problem/2) and every served beam's CInf source must lie
-  # in the package's dir under the record's deps path. It refuses what a
+  # layout (pinned_problem/2), every build slot in it followed by Mix's own
+  # layout under a build path, and every served beam's CInf source must lie
+  # in the package's dir under the record's deps path. A record may name no
+  # file: a package held only for a dependency, nothing of its own to
+  # rewrite, still held to the envelope and these checks. It refuses what a
   # compile at these paths would have written differently (two literals,
   # atoms or file names that become one, an atom over 255 code points), an
   # occurrence the record and the beam disagree on, and any builder path
@@ -126,9 +129,13 @@ defmodule Precompiled.Relocate do
   # Why a relocation record is not one this client can apply, or nil: the
   # builder's `deps` and `build` paths, `second` and `third` the same for
   # its other two builds (each pair absolute, printable ASCII, distinct,
-  # neither inside the other), and `files`, a non-empty list of distinct
-  # beams of the entry's own `ebin`, each with at least one well-formed
-  # occurrence. The same check as the portal's at ingest
+  # neither inside the other), and `files`, a list of distinct beams of the
+  # entry's own `ebin`, each with at least one well-formed occurrence, every
+  # `build` slot in it followed by nothing, `/lib/` or `/consolidated/`
+  # (Mix's layout under a build path, the client re-review's R5). `files`
+  # is empty for a dependent that passed only because a dependency was
+  # held: nothing in its own beams to rewrite, but the envelope and the
+  # source check still hold it. The same check as the portal's at ingest
   # (Compatibility.Relocation).
   @spec record_problem(term(), [String.t()]) :: String.t() | nil
   def record_problem(%{"deps" => deps, "build" => build, "files" => files} = record, ebin)
@@ -141,8 +148,8 @@ defmodule Precompiled.Relocate do
           roots_problem(%{"deps" => deps, "build" => build}, record["second"], record["third"]) ->
         problem
 
-      files == [] or length(files) > @max_files ->
-        "no files, or too many"
+      length(files) > @max_files ->
+        "too many files"
 
       length(Enum.uniq_by(files, &file_path/1)) != length(files) ->
         "a file twice"
@@ -171,14 +178,13 @@ defmodule Precompiled.Relocate do
 
   # The builder's three roots (the client re-review's R1), as
   # Compatibility.Relocation lays them out on the portal: the first its
-  # host compile's, the second under the container's home, the third under
-  # /Users, both of run token n. Copied here, so a record whose roots are
-  # not these (a portal that widened them, a wrong record) is refused
-  # whatever the portal checked. Test only: `config :precompiled,
-  # relocation_prefix: dir` puts all three under `dir`, so a test can
-  # compile at them; no record at the real roots matches then.
+  # host compile's, the second under /home/ncc-relocate (outside the
+  # container's HOME), the third under /Users, both of run token n. Copied
+  # here, so a record whose roots are not these (a portal that widened
+  # them, a wrong record) is refused whatever the portal checked. The
+  # layout is frozen: another one needs another record version.
   @first %{"deps" => "/work/proj/deps", "build" => "/work/proj/_build/host"}
-  @home "/home/nerves"
+  @home "/home/ncc-relocate"
   @users "/Users"
   @second_cache ".cache/mix/installs/elixir-1.20.5-erts-16.4.0.2"
   @second_dirs ["nix/store/src/code/projects", "x_y@z~0.d", "app"]
@@ -241,7 +247,17 @@ defmodule Precompiled.Relocate do
 
   def pinned_problem(_record, _prefix), do: "the record's roots are not the builder's"
 
-  defp relocation_prefix(), do: Application.get_env(:precompiled, :relocation_prefix, "")
+  # The client re-review's R8: a test-only seam. Only when this library is
+  # compiled in its own test env does `config :precompiled,
+  # relocation_prefix: dir` put the three roots under `dir`, so a unit test
+  # can compile at them (no record at the real roots matches then). Built
+  # as a dependency, as every user builds it, the prefix is "" and no
+  # config can change it.
+  if Mix.env() == :test do
+    defp relocation_prefix(), do: Application.get_env(:precompiled, :relocation_prefix, "")
+  else
+    defp relocation_prefix(), do: ""
+  end
 
   defp file_path(%{"path" => path}), do: path
   defp file_path(file), do: file
@@ -252,11 +268,34 @@ defmodule Precompiled.Relocate do
       path not in ebin -> "not a file of the build: #{path}"
       length(occs) > @max_occurrences -> "too many occurrences"
       not Enum.all?(occs, &occurrence?/1) -> "a malformed occurrence in #{path}"
+      tail = tails_problem(occs) -> "#{tail} in #{path}"
       true -> nil
     end
   end
 
   defp file_problem(_file, _ebin), do: "a malformed file entry"
+
+  # The client re-review's R5: nothing but Mix's own layout under a build
+  # path ties the build root to the beams, so the text after a `build` slot
+  # must be nothing, `/lib/...` or `/consolidated/...`.
+  defp tails_problem(occs) do
+    Enum.find_value(occs, fn %{"parts" => parts} ->
+      parts
+      |> Enum.chunk_every(2, 1, :discard)
+      |> Enum.find_value(fn
+        ["build", tail] ->
+          if not mix_layout?(tail), do: "a build path followed by #{inspect(tail, limit: 3)}"
+
+        _ ->
+          nil
+      end)
+    end)
+  end
+
+  defp mix_layout?(tail),
+    do:
+      tail == "" or String.starts_with?(tail, "/lib/") or
+        String.starts_with?(tail, "/consolidated/")
 
   defp occurrence?(
          %{"chunk" => chunk, "index" => i, "term" => term, "kind" => kind, "parts" => parts} =
@@ -411,7 +450,8 @@ defmodule Precompiled.Relocate do
   # all; and after the rewrite no rewritten beam holds one in any chunk but
   # `CInf`, `Dbgi` and `Docs`.
   @spec apply_staged(Path.t(), map(), slots(), atom() | String.t()) :: :ok | {:fail, String.t()}
-  def apply_staged(staging, %{"relocation" => %{"files" => [_ | _]} = record} = entry, to, app) do
+  def apply_staged(staging, %{"relocation" => %{"files" => files} = record} = entry, to, app)
+      when is_list(files) do
     from = Map.take(record, @slots)
     ebin = entry_paths(entry["ebin"])
     files = Map.new(record["files"], &{&1["path"], &1["occurrences"]})
@@ -429,7 +469,7 @@ defmodule Precompiled.Relocate do
     e -> {:fail, "relocation refused: #{Exception.message(e)}"}
   end
 
-  def apply_staged(_staging, _entry, _to, _app), do: {:fail, "relocation refused: no files"}
+  def apply_staged(_staging, _entry, _to, _app), do: {:fail, "relocation refused: no record"}
 
   defp entry_paths(files) when is_list(files),
     do: for(%{"path" => path} when is_binary(path) <- files, do: path)
@@ -473,9 +513,11 @@ defmodule Precompiled.Relocate do
         with :ok <- compiled_in(bytes, rel, source_dir) do
           case occurrences(bytes, from) do
             {:ok, found} ->
-              if Enum.sort(found) == Enum.sort(Map.get(files, rel, [])),
-                do: :ok,
-                else: {:refuse, "#{rel}: the record does not match the served beam"}
+              cond do
+                tail = tails_problem(found) -> {:refuse, "#{rel}: #{tail}"}
+                Enum.sort(found) == Enum.sort(Map.get(files, rel, [])) -> :ok
+                true -> {:refuse, "#{rel}: the record does not match the served beam"}
+              end
 
             {:refuse, why} ->
               {:refuse, "#{rel}: #{why}"}
@@ -497,7 +539,7 @@ defmodule Precompiled.Relocate do
          {:ok, info} when is_list(info) <- decode(data),
          source when is_list(source) <- List.keyfind(info, :source, 0) |> source_of(),
          {:ok, path} <- charlist(source),
-         true <- String.starts_with?(path, source_dir) do
+         true <- String.starts_with?(path, source_dir) and Path.expand(path) == path do
       :ok
     else
       {:refuse, why} -> {:refuse, "#{rel}: #{why}"}

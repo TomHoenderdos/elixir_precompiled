@@ -266,6 +266,53 @@ defmodule Precompiled.RelocatedInstallTest do
       end
     end
 
+    # The umbrella re-review's Q1: a dependent held only for its
+    # dependencies comes with a record that names no file; it installs as
+    # served, and its provenance still records the paths it was taken for.
+    test "a record with no files installs the served beams as they are", ctx do
+      plain = "defmodule RelocInstall.Plain do\n  def a, do: :a\nend\n"
+      dir = Path.join(ctx.builder, "deps/fx")
+
+      [{RelocInstall.Plain, served}] =
+        File.cd!(dir, fn -> Code.compile_string(plain, Path.join(dir, "lib/fx.ex")) end)
+
+      :code.delete(RelocInstall.Plain)
+      :code.purge(RelocInstall.Plain)
+      [_beam, app] = ctx.entry["ebin"]
+      app_bytes = "{application, fx, [{modules, ['Elixir.RelocInstall.Plain']}]}.\n"
+
+      entry = %{
+        ctx.entry
+        | "ebin" => [
+            file_entry(
+              F.file(ctx.f, served),
+              byte_size(served),
+              "ebin/Elixir.RelocInstall.Plain.beam"
+            ),
+            %{app | "sha256" => F.file(ctx.f, app_bytes), "size" => byte_size(app_bytes)}
+          ],
+          "relocation" => Map.put(ctx.entry["relocation"], "files", [])
+      }
+
+      to = slots(ctx.user)
+
+      assert {:ok, _} =
+               Fetch.install(ctx.config, :fx, entry, @lock_entry, ctx.lib,
+                 deps_path: ctx.deps,
+                 provenance: ctx.prov,
+                 relocate: to
+               )
+
+      assert File.read!(Path.join([ctx.lib, "fx", "ebin/Elixir.RelocInstall.Plain.beam"])) ==
+               served
+
+      assert Fetch.installed_as?(ctx.lib, :fx, entry, relocate: to)
+
+      refute Fetch.installed_as?(ctx.lib, :fx, entry,
+               relocate: slots(Path.join(ctx.user, "moved"))
+             )
+    end
+
     test "without this project's slots nothing is installed", ctx do
       assert {:fail, "relocation refused: " <> _} =
                Fetch.install(ctx.config, :fx, ctx.entry, @lock_entry, ctx.lib,

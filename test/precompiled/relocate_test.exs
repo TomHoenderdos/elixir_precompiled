@@ -375,6 +375,91 @@ defmodule Precompiled.RelocateTest do
     end
   end
 
+  describe "on OTP 28 or later, round 3" do
+    @describetag skip: not @otp28 and "relocated builds need OTP 28 or later"
+
+    # The client re-review's R5: nothing ties the build root to the beams
+    # but Mix's own layout under it. A build slot followed by anything but
+    # nothing, `/lib/` or `/consolidated/` is refused, in the record and
+    # in the occurrences derived from the served beam.
+    for {label, tail} <- [{"an underscore", "_x"}, {"another dir", "/x"}] do
+      test "a build path followed by #{label} is refused", ctx do
+        {builder, user} = roots(ctx)
+        path = "ebin/Elixir.RelocateTest.Tail.beam"
+        entry = entry(ctx, [path], [])
+        from = Map.take(entry["relocation"], ["deps", "build"])
+        body = "@p #{inspect(from["build"] <> unquote(tail) <> "/lib/fx/priv")}\ndef p, do: @p"
+        assert Path.dirname(from["deps"]) == builder
+        served = compile(builder, Tail, body)
+        {:ok, occs} = Relocate.occurrences(served, from)
+        assert [%{"parts" => ["", "build", unquote(tail) <> "/lib/fx/priv"]}] = occs
+        files = [%{"path" => path, "occurrences" => occs}]
+        entry = put_in(entry, ["relocation", "files"], files)
+
+        assert Relocate.record_problem(entry["relocation"], [path]) =~ "a build path followed by"
+
+        staging = Path.join(ctx.tmp_dir, "staging")
+        File.mkdir_p!(Path.join(staging, "ebin"))
+        File.write!(Path.join(staging, path), served)
+
+        assert {:fail, "relocation refused: " <> why} =
+                 Relocate.apply_staged(staging, entry, slots(user), :fx)
+
+        assert why =~ "a build path followed by"
+
+        # The derived occurrences are held to the rule too, whatever the
+        # record says.
+        assert {:fail, "relocation refused: " <> _} =
+                 Relocate.apply_staged(
+                   staging,
+                   put_in(entry, ["relocation", "files"], []),
+                   slots(user),
+                   :fx
+                 )
+      end
+    end
+
+    test "a build path followed by /lib/ is taken", ctx do
+      {builder, user} = roots(ctx)
+      path = "ebin/Elixir.RelocateTest.Lib.beam"
+      entry = entry(ctx, [path], [])
+      from = Map.take(entry["relocation"], ["deps", "build"])
+      body = "@p #{inspect(from["build"] <> "/lib/fx/priv")}\ndef p, do: @p"
+      served = compile(builder, Lib, body)
+      {:ok, occs} = Relocate.occurrences(served, from)
+      entry = put_in(entry, ["relocation", "files"], [%{"path" => path, "occurrences" => occs}])
+      staging = Path.join(ctx.tmp_dir, "staging")
+      File.mkdir_p!(Path.join(staging, "ebin"))
+      File.write!(Path.join(staging, path), served)
+      assert :ok = Relocate.apply_staged(staging, entry, slots(user), :fx)
+    end
+
+    # The umbrella re-review's Q1: a dependent held only for its
+    # dependencies is served as a relocated build with no file to rewrite:
+    # its beams must hold no builder path, and the envelope and the source
+    # check still hold.
+    test "a record with no files installs beams that hold no builder path", ctx do
+      {builder, user} = roots(ctx)
+      path = "ebin/Elixir.RelocateTest.Plain.beam"
+      entry = entry(ctx, [path], [])
+      assert Relocate.record_problem(entry["relocation"], [path]) == nil
+      served = compile(builder, Plain, "def a, do: :a")
+      staging = Path.join(ctx.tmp_dir, "staging")
+      File.mkdir_p!(Path.join(staging, "ebin"))
+      File.write!(Path.join(staging, path), served)
+      assert :ok = Relocate.apply_staged(staging, entry, slots(user), :fx)
+      assert File.read!(Path.join(staging, path)) == served
+
+      holder = compile(builder, Holder, @fine)
+      File.write!(Path.join(staging, path), holder)
+
+      assert {:fail, "relocation refused: " <> why} =
+               Relocate.apply_staged(staging, entry, slots(user), :fx)
+
+      assert why =~ "the record does not match the served beam"
+    end
+  end
+
   describe "on OTP 27" do
     @describetag skip: @otp28 and "OTP 27 only"
 
@@ -529,9 +614,9 @@ defmodule Precompiled.RelocateTest do
       "build" => "/work/proj/_build/host",
       "second" => %{
         "deps" =>
-          "/home/nerves/.cache/mix/installs/elixir-1.20.5-erts-16.4.0.2/ncc-relocate-7/nix/store/src/code/projects/x_y@z~0.d/app/deps",
+          "/home/ncc-relocate/.cache/mix/installs/elixir-1.20.5-erts-16.4.0.2/ncc-relocate-7/nix/store/src/code/projects/x_y@z~0.d/app/deps",
         "build" =>
-          "/home/nerves/.cache/mix/installs/elixir-1.20.5-erts-16.4.0.2/ncc-relocate-7/nix/store/src/code/projects/x_y@z~0.d/app/out.d/host-1"
+          "/home/ncc-relocate/.cache/mix/installs/elixir-1.20.5-erts-16.4.0.2/ncc-relocate-7/nix/store/src/code/projects/x_y@z~0.d/app/out.d/host-1"
       },
       "third" => %{
         "deps" =>
