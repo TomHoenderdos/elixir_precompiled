@@ -37,6 +37,8 @@ defmodule Precompiled.Match do
           # env (Env.closure/2), nil when unknown: then the lock decides.
           optional(:env_closure) => [atom()] | nil,
           optional(:user_config) => (String.t(), String.t() -> term()),
+          # The project's whole config of an app (CompileInputs.user_config_all/1).
+          optional(:user_config_all) => (String.t() -> term()),
           # With the host_native opt-in on a host project, this machine
           # (Precompiled.HostNative.host/0) and its deps dir; nil or absent
           # otherwise, and builds_host_native is never read.
@@ -750,7 +752,7 @@ defmodule Precompiled.Match do
               compile_order: Map.get(ctx, :compile_order),
               user_config: Map.get(ctx, :user_config, &Precompiled.CompileInputs.user_config/2)
             },
-            Map.take(ctx, [:rebar3_arch, :endian, :os_type, :mix_target])
+            Map.take(ctx, [:rebar3_arch, :endian, :os_type, :mix_target, :user_config_all])
           )
         )
       end

@@ -90,7 +90,8 @@ defmodule Precompiled.Reason do
     relocated_path_spelling: "relocated build: this project's {0} path is not spelled as on disk",
     relocated_path_ascii: "relocated build: this project's {0} path is not printable ASCII",
     relocated_path_envelope:
-      "relocated build: this project's {0} path is outside the paths it was proven at"
+      "relocated build: this project's {0} path is outside the paths it was proven at",
+    config_all_differs: "built with a different compile-time config of {0}"
   ]
 
   @codes Keyword.keys(@templates)

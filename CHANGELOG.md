@@ -37,6 +37,13 @@
   path; list such a dependency in `:except`. The roots' layout is fixed: another needs a new
   record version.
 
+* A build whose compile read one app's whole config (`Application.get_all_env/1`, tz's
+  compile-time check of its own options) carries a `config_all` compile input: the builder's
+  config of that app, every key. This client compares it with the project's config of the
+  app as a whole map: the same keys with the same values hit, anything else misses (reason
+  code `config_all_differs`). An app already loaded is compared only when its `.app` declares
+  no env; a device misses. Earlier clients treat the item as malformed: a miss.
+
 ## v0.8.0 - 2026-11-20
 
 * Foreign priv builds: a dependency whose compile packs Kino.JS assets into kino's priv

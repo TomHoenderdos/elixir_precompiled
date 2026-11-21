@@ -1035,6 +1035,11 @@ defmodule Precompiled.Check do
 
   defp user_config_view(_env), do: &Precompiled.CompileInputs.user_config/2
 
+  defp user_config_all_view(%{config_unreadable: why}) when is_binary(why),
+    do: fn _app -> :unknown end
+
+  defp user_config_all_view(_env), do: &Precompiled.CompileInputs.user_config_all/1
+
   @doc false
   # What Match reads for one candidate. `config.systems_table` is the
   # run's systems table (systems_table/2), nil without one.
@@ -1062,6 +1067,7 @@ defmodule Precompiled.Check do
       getenv: &System.get_env/1,
       compile_order: Map.get(env, :compile_order),
       user_config: user_config_view(env),
+      user_config_all: user_config_all_view(env),
       prefer: Map.get(candidate, :installed_hash),
       mix_target: Map.get(env, :mix_target) || "host",
       reads: reads,

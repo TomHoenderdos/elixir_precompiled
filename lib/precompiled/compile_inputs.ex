@@ -21,7 +21,10 @@ defmodule Precompiled.CompileInputs do
   # holds where the Nerves toolchain or system lives (CROSSCOMPILE): its
   # value cut at those two paths (split/2), compared with this project's
   # value cut at its own; only the name reaches a reason. A mix_target item
-  # is the target a firmware build's compile read through Mix.target/0.
+  # is the target a firmware build's compile read through Mix.target/0. A
+  # config_all item is the builder's whole config of one app, which the
+  # build's compile read with Application.get_all_env/1 (tz): this project's
+  # config of that app must be the same map; only the app reaches a reason.
 
   alias Precompiled.{CompileOrder, Reason, Rebar3Arch}
 
@@ -48,7 +51,8 @@ defmodule Precompiled.CompileInputs do
           optional(:rebar3_arch) => String.t(),
           optional(:endian) => :little | :big,
           optional(:os_type) => {atom(), atom()},
-          optional(:mix_target) => String.t()
+          optional(:mix_target) => String.t(),
+          optional(:user_config_all) => (String.t() -> {:ok, map()} | :unknown)
         }
 
   @spec host(term(), (String.t() -> String.t() | nil)) :: :ok | {:miss, Reason.t()}
@@ -205,6 +209,16 @@ defmodule Precompiled.CompileInputs do
     if built == running, do: :ok, else: {:miss, Reason.new(:rule8_target, [built, running])}
   end
 
+  # The build's compile read the app's whole env, which held the builder's
+  # config of it: this project's must be the same keys with the same values.
+  defp host_item(%{"kind" => "config_all", "app" => app} = item, _getenv, order)
+       when is_binary(app) and map_size(item) == 3 do
+    with {:ok, recorded} <- config_entries(item["entries"]) do
+      here = Map.get(order, :user_config_all, &user_config_all/1).(app)
+      if here == {:ok, recorded}, do: :ok, else: config_all_differs(app)
+    end
+  end
+
   defp host_item(item, _getenv, _order), do: whole(item)
 
   defp nerves_value(getenv, name) do
@@ -310,6 +324,62 @@ defmodule Precompiled.CompileInputs do
     end
   end
 
+  @doc false
+  # The project's whole config of `app`, read before this project's deps
+  # are loaded, as key name => value: {:ok, %{}} for an app no config names.
+  # A loaded app's env may hold its .app defaults too, which the build's
+  # read of an app it compiles did not see: it is read whole only when that
+  # .app declares no env, else :unknown.
+  @spec user_config_all(String.t()) :: {:ok, map()} | :unknown
+  def user_config_all(app) do
+    case existing_atom(app) do
+      {:ok, a} ->
+        if Application.spec(a, :vsn) == nil or app_env_defaults(a) == [],
+          do: {:ok, Map.new(Application.get_all_env(a), fn {k, v} -> {Atom.to_string(k), v} end)},
+          else: :unknown
+
+      :none ->
+        {:ok, %{}}
+    end
+  end
+
+  defp app_env_defaults(app) do
+    with file when is_list(file) <- :code.where_is_file(~c"#{app}.app"),
+         {:ok, [{:application, ^app, props}]} when is_list(props) <- :file.consult(file) do
+      Keyword.get(props, :env, [])
+    else
+      _ -> :unknown
+    end
+  end
+
+  # A config_all item's entries as key => decoded value: strictly sorted by
+  # key, each a %{"key", "value"} of strings. A value that does not decode
+  # to {:ok, term} (unrecordable) stands for nothing this project can hold.
+  defp config_entries(entries) when is_list(entries) do
+    keys = for %{"key" => key} <- entries, do: key
+
+    if Enum.all?(entries, &config_entry?/1) and keys == Enum.sort(Enum.uniq(keys)) and
+         length(keys) == length(entries),
+       do: {:ok, Map.new(entries, &{&1["key"], recorded_config(&1["value"])})},
+       else: malformed()
+  end
+
+  defp config_entries(_entries), do: malformed()
+
+  defp config_entry?(%{"key" => key, "value" => value} = entry),
+    do: map_size(entry) == 2 and is_binary(key) and key != "" and is_binary(value)
+
+  defp config_entry?(_entry), do: false
+
+  defp recorded_config(value) do
+    case decode(value) do
+      {:ok, {:ok, term}} -> term
+      _ -> make_ref()
+    end
+  end
+
+  defp config_all_differs(app), do: {:miss, Reason.new(:config_all_differs, [app])}
+
   defp existing_atom(name) do
     {:ok, String.to_existing_atom(name)}
   rescue
@@ -391,6 +461,19 @@ defmodule Precompiled.CompileInputs do
         "a device cannot check its firmware's"
 
     {:miss, Reason.new(:rule8_target, [built, "unknown"], text)}
+  end
+
+  # The firmware's config at its compile is not the device's to check: a
+  # miss, as for a set env item.
+  defp device_item(%{"kind" => "config_all", "app" => app} = item, _decidable?)
+       when is_binary(app) and map_size(item) == 3 do
+    with {:ok, _recorded} <- config_entries(item["entries"]) do
+      text =
+        "built reading the whole compile-time config of #{app}; " <>
+          "a device cannot check its firmware's"
+
+      {:miss, Reason.new(:config_all_differs, [app], text)}
+    end
   end
 
   defp device_item(item, _decidable?), do: whole(item)

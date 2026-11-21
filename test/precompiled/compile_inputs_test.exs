@@ -717,4 +717,110 @@ defmodule Precompiled.CompileInputsTest do
       end
     end
   end
+
+  describe "config_all" do
+    defp all_item(app, entries),
+      do: %{"kind" => "config_all", "app" => app, "entries" => entries}
+
+    defp entry(key, value), do: %{"key" => key, "value" => rec({:ok, value})}
+
+    defp config_of(config),
+      do: %{compile_order: nil, user_config: fn _, _ -> :error end, user_config_all: config}
+
+    test "the same whole config is a hit, an empty one included" do
+      item = all_item("tz", [entry("data_dir", "/d"), entry("reject_periods_before_year", 1990)])
+      here = fn "tz" -> {:ok, %{"data_dir" => "/d", "reject_periods_before_year" => 1990}} end
+      assert :ok = CompileInputs.host([item], &none/1, config_of(here))
+
+      assert :ok =
+               CompileInputs.host(
+                 [all_item("tz", [])],
+                 &none/1,
+                 config_of(fn _ -> {:ok, %{}} end)
+               )
+    end
+
+    test "a key more, a key less or another value misses, naming the app" do
+      item = all_item("tz", [entry("data_dir", "/d")])
+
+      for here <- [
+            %{},
+            %{"data_dir" => "/d", "http_client" => Tz.HTTP},
+            %{"data_dir" => "/elsewhere"}
+          ] do
+        assert {:miss, %{code: :config_all_differs, args: ["tz"], text: text}} =
+                 CompileInputs.host([item], &none/1, config_of(fn "tz" -> {:ok, here} end)),
+               inspect(here)
+
+        assert text == "built with a different compile-time config of tz"
+      end
+    end
+
+    test "a config this client cannot read whole misses" do
+      item = all_item("tz", [])
+
+      assert {:miss, %{code: :config_all_differs}} =
+               CompileInputs.host([item], &none/1, config_of(fn _ -> :unknown end))
+    end
+
+    test "an unrecordable value never matches" do
+      item = all_item("tz", [%{"key" => "k", "value" => "unrecordable"}])
+
+      assert {:miss, %{code: :config_all_differs}} =
+               CompileInputs.host([item], &none/1, config_of(fn _ -> {:ok, %{"k" => 1}} end))
+    end
+
+    test "an item of any other shape is malformed" do
+      good = entry("a", 1)
+
+      for bad <- [
+            Map.put(all_item("tz", []), "x", 1),
+            %{"kind" => "config_all", "app" => "tz"},
+            all_item(:tz, []),
+            all_item("tz", %{"a" => good["value"]}),
+            all_item("tz", [good, good]),
+            all_item("tz", [entry("b", 1), good]),
+            all_item("tz", [Map.put(good, "x", 1)]),
+            all_item("tz", [%{"key" => :a, "value" => good["value"]}])
+          ] do
+        assert {:miss, %{code: :malformed_entry}} =
+                 CompileInputs.host([bad], &none/1, config_of(fn _ -> {:ok, %{}} end)),
+               inspect(bad)
+
+        assert {:miss, %{code: :malformed_entry}} = CompileInputs.device([bad]), inspect(bad)
+      end
+    end
+
+    test "a device misses: its firmware's config at compile time is not here" do
+      assert {:miss, %{code: :config_all_differs, args: ["tz"], text: text}} =
+               CompileInputs.device([all_item("tz", [])])
+
+      assert text =~ "a device cannot check"
+    end
+
+    test "the running VM's config: an app nobody configured is empty" do
+      assert CompileInputs.user_config_all("precompiled_no_such_app_ever") == {:ok, %{}}
+
+      Application.put_env(:precompiled_test_config_all, :k, 1)
+      on_exit(fn -> Application.delete_env(:precompiled_test_config_all, :k) end)
+
+      assert CompileInputs.user_config_all("precompiled_test_config_all") == {:ok, %{"k" => 1}}
+
+      assert :ok =
+               CompileInputs.host(
+                 [all_item("precompiled_test_config_all", [entry("k", 1)])],
+                 &none/1
+               )
+    end
+
+    # A loaded app's env holds its .app defaults on top of the config: only
+    # an app whose .app declares no env still shows the config alone.
+    test "a loaded app is read whole only when its .app declares no env" do
+      :ok = Application.ensure_loaded(:eex)
+      assert CompileInputs.user_config_all("eex") == {:ok, %{}}
+
+      :ok = Application.ensure_loaded(:logger)
+      assert CompileInputs.user_config_all("logger") == :unknown
+    end
+  end
 end
