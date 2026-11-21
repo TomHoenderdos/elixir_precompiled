@@ -20,11 +20,12 @@ defmodule Precompiled.ReasonTest do
              origin_unverified deterministic_not_built foreign_priv_target_compiles
              foreign_priv_target_missing foreign_priv_target_linked foreign_priv_conflict
              foreign_priv_rule_unknown foreign_priv_device relocated_paths relocated_otp
-             relocation_refused)a
+             relocation_refused relocated_path_spelling relocated_path_ascii
+             relocated_path_envelope)a
 
   test "the codes are exactly the table shared with the portal" do
     assert Reason.codes() == @shared
-    assert length(Reason.codes()) == 60
+    assert length(Reason.codes()) == 63
   end
 
   # The device report tests' copy of the portal's check accepts exactly

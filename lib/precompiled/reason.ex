@@ -86,7 +86,11 @@ defmodule Precompiled.Reason do
     foreign_priv_device: "writes into {0}'s priv at compile time; not installed on a device",
     relocated_paths: "relocated build: this project's paths are not its own real paths",
     relocated_otp: "relocated build: needs OTP 28 or later",
-    relocation_refused: "relocated build: the rewrite refused"
+    relocation_refused: "relocated build: the rewrite refused",
+    relocated_path_spelling: "relocated build: this project's {0} path is not spelled as on disk",
+    relocated_path_ascii: "relocated build: this project's {0} path is not printable ASCII",
+    relocated_path_envelope:
+      "relocated build: this project's {0} path is outside the paths it was proven at"
   ]
 
   @codes Keyword.keys(@templates)

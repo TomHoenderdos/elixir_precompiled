@@ -49,6 +49,7 @@ defmodule Precompiled.Check do
   @spec check(map(), Env.t(), keyword()) :: :nothing_to_do | {:ok, report()}
   def check(config, %Env{} = env, opts \\ []) do
     started = System.monotonic_time(:millisecond)
+    env = %{env | relocate: relocate_slots(env)}
     {candidates, skipped} = candidates(env.candidates, env.lock, config.except, env.tooling)
 
     {excepted, installed} = installed(env, config.except)
@@ -1074,15 +1075,26 @@ defmodule Precompiled.Check do
   end
 
   # 0.9.0: this project's slots for a relocated build (Precompiled.Relocate):
-  # its deps path and build path, each its own real path, on a host project
-  # only; nil on a device or a Nerves target, and then no relocated build
-  # matches.
+  # `{:ok, slots}` or `{:error, code, args}` from user_slots/2, its deps path
+  # and build path, on a host project only; nil on a device or a Nerves
+  # target, and then no relocated build matches. Taken once per run (check/3
+  # puts it in the env).
+  defp relocate_slots(%{relocate: taken}) when taken != :unset, do: taken
+
   defp relocate_slots(%{deps_path: deps, build_lib: lib} = env)
        when is_binary(deps) and is_binary(lib) do
     if host_project?(env), do: Precompiled.Relocate.user_slots(deps, Path.dirname(lib))
   end
 
   defp relocate_slots(_env), do: nil
+
+  # The slots a relocated install rewrites to, or nil.
+  defp relocate_to(env) do
+    case relocate_slots(env) do
+      {:ok, slots} -> slots
+      _ -> nil
+    end
+  end
 
   # The host-native builds' view of this machine, with the deps dir their
   # origins' checksum files are read from; nil unless with_native_host/3
@@ -1131,7 +1143,7 @@ defmodule Precompiled.Check do
     # runs either way.
     # 0.9.0: a relocated build is this project's install only while it was
     # rewritten to the project's paths: a moved project installs it again.
-    slots = relocate_slots(env)
+    slots = relocate_to(env)
 
     if provenance.files_sha256 == hash and
          Fetch.relocated_for?(env.build_lib, candidate.name, entry, slots) and
@@ -1170,7 +1182,7 @@ defmodule Precompiled.Check do
              deps_path: env.deps_path,
              provenance: provenance,
              verify_app: verify,
-             relocate: relocate_slots(env)
+             relocate: relocate_to(env)
            ) do
       {:hit, Map.put(stats, :stripped, stripped?(Path.join(env.build_lib, sname), sname))}
     end

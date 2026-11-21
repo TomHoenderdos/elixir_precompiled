@@ -775,8 +775,8 @@ defmodule Precompiled.Fetch do
   # once the served files are verified, and their new hashes and sizes,
   # which the provenance records with the slots. Nothing for any other
   # entry; without slots nothing is installed.
-  defp relocate_staged(%{"relocation" => %{} = record}, staging, %{} = slots) do
-    with :ok <- Relocate.apply_staged(staging, record, slots) do
+  defp relocate_staged(%{"relocation" => %{} = record} = entry, staging, %{} = slots) do
+    with :ok <- Relocate.apply_staged(staging, entry, slots) do
       files =
         Map.new(record["files"], fn %{"path" => path} ->
           bytes = File.read!(Path.join(staging, path))

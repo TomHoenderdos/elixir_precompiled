@@ -107,7 +107,11 @@ defmodule Precompiled.Env do
             # among them that this run neither installs nor removes is one
             # Phase B may place a writer's archives into (0.8.0). nil when
             # Mix's deps were not read: then none is.
-            compiled_ok: nil
+            compiled_ok: nil,
+            # 0.9.0: this project's slots for a relocated build
+            # (Precompiled.Relocate.user_slots/2), taken once per run by
+            # Precompiled.Check; :unset until then.
+            relocate: :unset
 
   @doc """
   The locked Hex entries among `apps`, in the order given. `envs` names each

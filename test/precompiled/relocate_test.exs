@@ -44,6 +44,25 @@ defmodule Precompiled.RelocateTest do
     chunks ++ [List.keyfind(all, ~c"Attr", 0)]
   end
 
+  # An entry of `ebin` whose record lists `files`, its second root a long,
+  # deep path with every letter, so the user's root under the same tmp dir
+  # is inside the envelope.
+  defp entry(ctx, builder, ebin, files) do
+    second =
+      Path.join(
+        ctx.tmp_dir,
+        "Second Root.d/A-0123456789/abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ/proj"
+      )
+
+    record =
+      builder
+      |> slots()
+      |> Map.put("second", slots(second))
+      |> Map.put("files", files)
+
+    %{"ebin" => Enum.map(ebin, &%{"path" => &1}), "priv" => [], "relocation" => record}
+  end
+
   defp roots(ctx), do: {Path.join(ctx.tmp_dir, "work/proj"), Path.join(ctx.tmp_dir, "home/u/app")}
 
   @fine "@include_dir Path.expand(\"c_include\")\ndef include_dir, do: @include_dir"
@@ -103,16 +122,17 @@ defmodule Precompiled.RelocateTest do
       File.mkdir_p!(Path.join(staging, "ebin"))
       File.write!(Path.join(staging, "ebin/Elixir.RelocateTest.Staged.beam"), served)
 
-      record =
-        Map.put(slots(builder), "files", [
-          %{"path" => "ebin/Elixir.RelocateTest.Staged.beam", "occurrences" => occs}
-        ])
+      path = "ebin/Elixir.RelocateTest.Staged.beam"
+      entry = entry(ctx, builder, [path], [%{"path" => path, "occurrences" => occs}])
 
-      assert :ok = Relocate.apply_staged(staging, record, slots(user))
-      moved = File.read!(Path.join(staging, "ebin/Elixir.RelocateTest.Staged.beam"))
+      assert :ok = Relocate.apply_staged(staging, entry, slots(user))
+      moved = File.read!(Path.join(staging, path))
       assert stripped(moved) == stripped(own)
 
-      bad = Map.put(record, "files", [%{"path" => "ebin/../x.beam", "occurrences" => occs}])
+      bad =
+        put_in(entry, ["relocation", "files"], [
+          %{"path" => "ebin/../x.beam", "occurrences" => occs}
+        ])
 
       assert {:fail, "relocation refused: " <> _} =
                Relocate.apply_staged(staging, bad, slots(user))
@@ -127,23 +147,125 @@ defmodule Precompiled.RelocateTest do
     end
   end
 
-  test "user_slots needs real, absolute, separate paths", ctx do
-    real = Path.join(ctx.tmp_dir, "real")
-    File.mkdir_p!(Path.join(real, "deps"))
-    File.mkdir_p!(Path.join(real, "_build/dev"))
-    deps = Path.join(real, "deps")
-    build = Path.join(real, "_build/dev")
-    linked = Path.join(ctx.tmp_dir, "linked")
-    File.ln_s!(real, linked)
+  describe "user_slots/2" do
+    test "real, absolute, separate paths are this project's slots", ctx do
+      real = Path.join(ctx.tmp_dir, "real")
+      File.mkdir_p!(Path.join(real, "deps"))
+      File.mkdir_p!(Path.join(real, "_build/dev"))
+      deps = Path.join(real, "deps")
+      build = Path.join(real, "_build/dev")
+      linked = Path.join(ctx.tmp_dir, "linked")
+      File.ln_s!(real, linked)
 
-    # ExUnit's tmp dir is under the checkout; one under a link has no slots.
-    expected = if real_dir?(real), do: %{"deps" => deps, "build" => build}
-    assert Relocate.user_slots(deps, build) == expected
+      # ExUnit's tmp dir is under the checkout; one under a link has no slots.
+      if real_dir?(real),
+        do: assert(Relocate.user_slots(deps, build) == {:ok, %{"deps" => deps, "build" => build}})
 
-    assert Relocate.user_slots(Path.join(linked, "deps"), Path.join(linked, "_build/dev")) == nil
-    assert Relocate.user_slots("deps", build) == nil
-    assert Relocate.user_slots(deps, deps) == nil
-    assert Relocate.user_slots(deps <> "/../deps", build) == nil
+      for {d, b} <- [
+            {Path.join(linked, "deps"), Path.join(linked, "_build/dev")},
+            {"deps", build},
+            {deps, deps},
+            {deps <> "/../deps", build},
+            {Path.join(real, "missing"), build}
+          ] do
+        assert {:error, :relocated_paths, []} = Relocate.user_slots(d, b), inspect({d, b})
+      end
+    end
+
+    # The client review's B1: Mix compiles a dependency after a cd into it,
+    # so its `__DIR__` is the spelling on disk, whatever spelling Mix was
+    # given. Every component must be an exact entry of its parent's listing.
+    test "a path spelled otherwise than on disk is a miss of its own", ctx do
+      real = Path.join(ctx.tmp_dir, "Case/Home/App")
+      File.mkdir_p!(Path.join(real, "deps"))
+      File.mkdir_p!(Path.join(real, "_build/dev"))
+      other = Path.join(ctx.tmp_dir, "case/home/app")
+
+      result = Relocate.user_slots(Path.join(other, "deps"), Path.join(real, "_build/dev"))
+
+      if File.dir?(other) do
+        # A volume that ignores case (macOS by default).
+        assert result == {:error, :relocated_path_spelling, ["deps"]}
+      else
+        assert result == {:error, :relocated_paths, []}
+      end
+
+      build = Relocate.user_slots(Path.join(real, "deps"), Path.join(other, "_build/dev"))
+      refute match?({:ok, _}, build)
+    end
+
+    # The client review's B2: the builder's roots are printable ASCII, so a
+    # path that is not cannot be told apart from its other byte forms.
+    test "a path that is not printable ASCII is a miss of its own", ctx do
+      for name <- ["jos\u00e9", "tab\there", "new\nline", "del\x7f"] do
+        dir = Path.join([ctx.tmp_dir, name, "app"])
+        File.mkdir_p!(Path.join(dir, "deps"))
+        File.mkdir_p!(Path.join(dir, "_build/dev"))
+
+        assert {:error, :relocated_path_ascii, ["deps"]} =
+                 Relocate.user_slots(Path.join(dir, "deps"), Path.join(dir, "_build/dev")),
+               inspect(name)
+      end
+    end
+
+    @tag :non_root
+    test "a parent that cannot be listed is a miss", ctx do
+      dir = Path.join(ctx.tmp_dir, "locked")
+      File.mkdir_p!(Path.join(dir, "app/deps"))
+      File.mkdir_p!(Path.join(dir, "app/_build/dev"))
+      File.chmod!(dir, 0o311)
+
+      try do
+        assert {:error, :relocated_path_spelling, ["deps"]} =
+                 Relocate.user_slots(Path.join(dir, "app/deps"), Path.join(dir, "app/_build/dev"))
+      after
+        File.chmod!(dir, 0o755)
+      end
+    end
+  end
+
+  # The umbrella review's B1: the client relocates only to paths inside the
+  # envelope the builder's two roots span.
+  describe "envelope_reason/2" do
+    @first %{"deps" => "/work/proj/deps", "build" => "/work/proj/_build/host"}
+    @second %{
+      "deps" =>
+        "/tmp/ncc-relocate-1/A Long.Root-0123456789/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/x/y/The Project-2/Deps vendored_d",
+      "build" =>
+        "/tmp/ncc-relocate-1/A Long.Root-0123456789/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/x/y/The Project-2/Out.Build-3/Host 4"
+    }
+    @record Map.put(@first, "second", @second)
+
+    test "a path inside the envelope is taken" do
+      for user <- [
+            %{"deps" => "/home/u/app/deps", "build" => "/home/u/app/_build/dev"},
+            %{
+              "deps" => "/Users/alice/My Projects/my-app.2/deps",
+              "build" => "/Users/alice/My Projects/my-app.2/_build/dev"
+            }
+          ] do
+        assert Relocate.envelope_reason(@record, user) == nil, inspect(user)
+      end
+    end
+
+    test "a path outside the envelope is a miss of its own" do
+      inside = %{"deps" => "/home/u/app/deps", "build" => "/home/u/app/_build/dev"}
+
+      for {slot, path} <- [
+            {"deps", "/app/deps"},
+            {"deps", "/home/u+x/app/deps"},
+            {"deps", "/home/~u/app/deps"},
+            {"deps", "/" <> String.duplicate("a/", 20) <> "deps"},
+            {"deps", "/" <> String.duplicate("a", 300) <> "/deps"},
+            {"build", "/app/_build/dev"}
+          ] do
+        user = Map.put(inside, slot, path)
+
+        assert %{code: :relocated_path_envelope, args: [^slot]} =
+                 Relocate.envelope_reason(@record, user),
+               inspect(path)
+      end
+    end
   end
 
   defp real_dir?(path) do

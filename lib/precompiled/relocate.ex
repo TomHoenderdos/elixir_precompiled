@@ -82,7 +82,7 @@ defmodule Precompiled.Relocate do
     _ -> {:refuse, "unreadable beam"}
   end
 
-  @record_keys ["build", "deps", "files"]
+  @record_keys ["build", "deps", "files", "second"]
   @kinds ["binary", "charlist", "atom"]
   @max_files 10_000
 
@@ -94,26 +94,23 @@ defmodule Precompiled.Relocate do
   @spec reason(map(), map()) :: Precompiled.Reason.t() | nil
   def reason(build, ctx) do
     record = build["relocation"]
-    slots = Map.get(ctx, :relocate)
     ebin = for %{"path" => path} when is_binary(path) <- build["ebin"] || [], do: path
 
     cond do
       otp_major(ctx.otp) < 28 ->
         Precompiled.Reason.new(:relocated_otp, [])
 
-      slots == nil ->
-        Precompiled.Reason.new(:relocated_paths, [])
-
       problem = record_problem(record, ebin) ->
         Precompiled.Reason.new(:relocation_refused, [], "relocated build: #{problem}")
 
-      charlist?(record) and not ascii?(slots) ->
-        Precompiled.Reason.new(:relocated_paths, [])
-
       true ->
-        nil
+        slots_reason(record, Map.get(ctx, :relocate))
     end
   end
+
+  defp slots_reason(record, {:ok, slots}), do: envelope_reason(record, slots)
+  defp slots_reason(_record, {:error, code, args}), do: Precompiled.Reason.new(code, args)
+  defp slots_reason(_record, _none), do: Precompiled.Reason.new(:relocated_paths, [])
 
   defp otp_major(otp) do
     case Integer.parse(to_string(otp)) do
@@ -121,9 +118,6 @@ defmodule Precompiled.Relocate do
       :error -> 0
     end
   end
-
-  defp charlist?(%{"files" => files}),
-    do: Enum.any?(files, fn f -> Enum.any?(f["occurrences"], &(&1["kind"] == "charlist")) end)
 
   # Why a relocation record is not one this client can apply, or nil: the
   # builder's `deps` and `build` paths (absolute, distinct, neither inside
@@ -133,12 +127,29 @@ defmodule Precompiled.Relocate do
   @spec record_problem(term(), [String.t()]) :: String.t() | nil
   def record_problem(%{"deps" => deps, "build" => build, "files" => files} = record, ebin)
       when is_list(files) and is_list(ebin) do
+    first = %{"deps" => deps, "build" => build}
+
     cond do
-      record |> Map.keys() |> Enum.sort() != @record_keys -> "unknown keys"
-      match?({:refuse, _}, valid_slots(%{"deps" => deps, "build" => build})) -> "bad paths"
-      files == [] or length(files) > @max_files -> "no files, or too many"
-      length(Enum.uniq_by(files, &file_path/1)) != length(files) -> "a file twice"
-      true -> Enum.find_value(files, &file_problem(&1, ebin))
+      record |> Map.keys() |> Enum.sort() != @record_keys ->
+        "unknown keys"
+
+      match?({:refuse, _}, valid_slots(first)) ->
+        "bad paths"
+
+      match?({:refuse, _}, valid_slots(record["second"])) ->
+        "bad second paths"
+
+      not Enum.all?(Map.values(first) ++ Map.values(record["second"]), &printable?/1) ->
+        "a path not printable ASCII"
+
+      files == [] or length(files) > @max_files ->
+        "no files, or too many"
+
+      length(Enum.uniq_by(files, &file_path/1)) != length(files) ->
+        "a file twice"
+
+      true ->
+        Enum.find_value(files, &file_problem(&1, ebin))
     end
   end
 
@@ -179,76 +190,216 @@ defmodule Precompiled.Relocate do
 
   defp template?(_parts), do: false
 
-  # This project's slots, `%{"deps" => deps_path, "build" => build_path}`,
-  # when a relocated build may be installed into it: a unix host whose file
-  # names are UTF-8, and both paths absolute, normalised and free of
-  # symlinks all the way down, so each is the spelling every compile here
-  # sees (`__DIR__` comes from the real cwd, `:code.priv_dir/1` from the
-  # code path Mix sets). `nil` otherwise: the dependency compiles from
-  # source.
-  @spec user_slots(term(), term()) :: slots() | nil
+  # This project's slots, `{:ok, %{"deps" => deps_path, "build" =>
+  # build_path}}`, when a relocated build may be installed into it, else
+  # `{:error, code, args}`, a reason code for the miss:
+  #
+  #   * `relocated_paths`: not a unix host whose file names are UTF-8, or a
+  #     path that is not absolute and normalised, holds a symlink or a
+  #     component that is no directory, or the two paths overlap;
+  #   * `relocated_path_ascii`: a path with a byte that is not printable
+  #     ASCII. The builder's roots are, so its bytes and code points are
+  #     one; a compile here could make either of a path that is not (a
+  #     latin1 binary of a code-point path, a UTF-8 one), and the builder's
+  #     two-root proof cannot tell them apart;
+  #   * `relocated_path_spelling`: a component that is not an exact entry,
+  #     byte for byte, of its parent dir's listing, or a parent dir that
+  #     cannot be listed. Mix compiles a dependency after a cd into it, so
+  #     `__DIR__` and `File.cwd!/0` give the spelling on disk, which a
+  #     volume that ignores case or Unicode form lets differ from the
+  #     spelling Mix was given (`MIX_DEPS_PATH`, `MIX_BUILD_PATH`,
+  #     `deps_path:`, Mix.install's dir).
+  @spec user_slots(term(), term()) ::
+          {:ok, slots()}
+          | {:error, :relocated_paths | :relocated_path_ascii | :relocated_path_spelling,
+             [String.t()]}
   def user_slots(deps_path, build_path) do
-    if match?({:unix, _}, :os.type()) and :file.native_name_encoding() == :utf8 and
-         real?(deps_path) and real?(build_path) and not overlap?(deps_path, build_path),
-       do: %{"deps" => deps_path, "build" => build_path}
+    paths = [{"deps", deps_path}, {"build", build_path}]
+
+    cond do
+      not (match?({:unix, _}, :os.type()) and :file.native_name_encoding() == :utf8) ->
+        {:error, :relocated_paths, []}
+
+      not Enum.all?(paths, fn {_, p} -> is_binary(p) end) ->
+        {:error, :relocated_paths, []}
+
+      slot = Enum.find_value(paths, fn {s, p} -> if not printable?(p), do: s end) ->
+        {:error, :relocated_path_ascii, [slot]}
+
+      not Enum.all?(paths, fn {_, p} -> real?(p) end) or overlap?(deps_path, build_path) ->
+        {:error, :relocated_paths, []}
+
+      slot = Enum.find_value(paths, fn {s, p} -> if not spelled?(p), do: s end) ->
+        {:error, :relocated_path_spelling, [slot]}
+
+      true ->
+        {:ok, %{"deps" => deps_path, "build" => build_path}}
+    end
   end
 
+  defp printable?(path), do: path =~ ~r/\A[\x20-\x7e]+\z/
+
   defp real?(path) do
-    is_binary(path) and absolute?(path) and Path.expand(path) == path and
-      path |> Path.split() |> tl() |> Enum.scan("/", &Path.join(&2, &1)) |> Enum.all?(&dir?/1)
+    absolute?(path) and Path.expand(path) == path and
+      path |> prefixes() |> Enum.all?(&dir?/1)
   end
+
+  defp prefixes(path), do: path |> Path.split() |> tl() |> Enum.scan("/", &Path.join(&2, &1))
 
   defp dir?(path), do: match?({:ok, %File.Stat{type: :directory}}, File.lstat(path))
 
-  # The staged beams a relocated entry names, each rewritten in place from
-  # the builder's slots (the record's `deps` and `build`) to `to`: what
-  # `Precompiled.Fetch` does after staging and verifying the served files
-  # and before anything is renamed into `_build`. A charlist occurrence
-  # needs ASCII paths here: the builder's are, so its bytes and code points
-  # are one, and a compile here might have made either of a path that is
-  # not.
-  @spec apply_staged(Path.t(), map(), slots()) :: :ok | {:fail, String.t()}
-  def apply_staged(staging, %{"files" => [_ | _] = files} = record, to) do
-    from = Map.take(record, @slots)
-
-    Enum.reduce_while(files, :ok, fn file, :ok ->
-      case apply_file(staging, file, from, to) do
-        :ok -> {:cont, :ok}
-        {:refuse, why} -> {:halt, {:fail, "relocation refused: #{why}"}}
+  # Every component an exact entry of its parent's listing: no case
+  # folding, no Unicode normalisation.
+  defp spelled?(path) do
+    Enum.all?(prefixes(path), fn prefix ->
+      case File.ls(Path.dirname(prefix)) do
+        {:ok, names} -> Path.basename(prefix) in names
+        {:error, _} -> false
       end
     end)
   end
 
-  def apply_staged(_staging, _record, _to), do: {:fail, "relocation refused: no files"}
+  # The umbrella review's B1: the builder proved its build at two roots, the
+  # record's (`deps`, `build`) and the second build's (`second`), unlike in
+  # every property it could make them. A value its compile derived from a
+  # path that is equal at both is not seen by that proof; it is equal at
+  # this project's paths too when they are inside the envelope the roots
+  # span, for a threshold on a path's length or depth or a test of which
+  # characters it holds. So each of this project's paths must hold only
+  # characters of the two roots' paths for its slot, and lie between their
+  # lengths and their depths. nil when it does, else the miss.
+  @spec envelope_reason(map(), slots()) :: Precompiled.Reason.t() | nil
+  def envelope_reason(%{"second" => %{} = second} = record, user) do
+    Enum.find_value(@slots, fn slot ->
+      roots = [record[slot], second[slot]]
 
-  defp apply_file(
-         staging,
-         %{"path" => "ebin/" <> name = rel, "occurrences" => [_ | _] = occs},
-         from,
-         to
-       ) do
-    path = Path.join(staging, rel)
+      if not inside?(user[slot], roots),
+        do: Precompiled.Reason.new(:relocated_path_envelope, [slot])
+    end)
+  end
 
+  def envelope_reason(_record, _user),
+    do: Precompiled.Reason.new(:relocated_path_envelope, ["deps"])
+
+  defp inside?(path, [a, b]) when is_binary(path) and is_binary(a) and is_binary(b) do
+    chars = MapSet.new(:binary.bin_to_list(a <> b))
+
+    Enum.all?(:binary.bin_to_list(path), &MapSet.member?(chars, &1)) and
+      between?(byte_size(path), byte_size(a), byte_size(b)) and
+      between?(depth(path), depth(a), depth(b))
+  end
+
+  defp inside?(_path, _roots), do: false
+
+  defp between?(x, a, b), do: x >= min(a, b) and x <= max(a, b)
+  defp depth(path), do: length(Path.split(path)) - 1
+
+  # A relocated entry's staged files, verified and rewritten in place from
+  # the builder's slots (the record's `deps` and `build`) to `to`: what
+  # `Precompiled.Fetch` does after staging and verifying the served files
+  # and before anything is renamed into `_build`. The record is not trusted
+  # (the client review's S1): `to` must be printable ASCII and inside the
+  # envelope of the record's two roots; every beam of the entry's `ebin`
+  # has the occurrences of the builder's paths this client derives from it
+  # (`occurrences/2`, which refuses one in any chunk the rewrite does not
+  # reach, the module's name or a function's), and they must be exactly the
+  # ones the record lists for it, none for a beam it does not name; every
+  # other file of the entry, its `.app` and its `priv` included, holds no
+  # builder path at all; and after the rewrite no rewritten beam holds one
+  # in any chunk but `CInf`, `Dbgi` and `Docs`.
+  @spec apply_staged(Path.t(), map(), slots()) :: :ok | {:fail, String.t()}
+  def apply_staged(staging, %{"relocation" => %{"files" => [_ | _]} = record} = entry, to) do
+    from = Map.take(record, @slots)
+    ebin = entry_paths(entry["ebin"])
+    files = Map.new(record["files"], &{&1["path"], &1["occurrences"]})
+
+    with :ok <- target_problem(record, ebin, to),
+         :ok <- each(ebin, &derived(staging, &1, files, from)),
+         :ok <- each(entry_paths(entry["priv"]), &untouched(staging, &1, from)),
+         :ok <- each(Map.keys(files), &rewrite_file(staging, &1, files[&1], from, to)) do
+      :ok
+    else
+      {:refuse, why} -> {:fail, "relocation refused: #{why}"}
+    end
+  rescue
+    e -> {:fail, "relocation refused: #{Exception.message(e)}"}
+  end
+
+  def apply_staged(_staging, _entry, _to), do: {:fail, "relocation refused: no files"}
+
+  defp entry_paths(files) when is_list(files),
+    do: for(%{"path" => path} when is_binary(path) <- files, do: path)
+
+  defp entry_paths(_files), do: []
+
+  defp each(items, fun) do
+    Enum.reduce_while(items, :ok, fn item, :ok ->
+      case fun.(item) do
+        :ok -> {:cont, :ok}
+        refuse -> {:halt, refuse}
+      end
+    end)
+  end
+
+  defp target_problem(record, ebin, to) do
     cond do
-      Path.basename(name) != name or Path.extname(name) != ".beam" ->
-        {:refuse, "not a beam of the ebin: #{inspect(rel)}"}
+      problem = record_problem(record, ebin) ->
+        {:refuse, problem}
 
-      Enum.any?(occs, &(&1["kind"] == "charlist")) and not ascii?(to) ->
-        {:refuse, "a charlist path needs ASCII paths here"}
+      valid_slots(to) != :ok ->
+        valid_slots(to)
+
+      not Enum.all?(Map.values(to), &printable?/1) ->
+        {:refuse, "this project's paths are not ASCII"}
+
+      reason = envelope_reason(record, to) ->
+        {:refuse, reason.text}
 
       true ->
-        with {:ok, bytes} <- read(path),
-             {:ok, moved} <- relocate(bytes, occs, from, to) do
-          File.write!(path, moved)
-          :ok
-        end
+        :ok
     end
   end
 
-  defp apply_file(_staging, file, _from, _to),
-    do: {:refuse, "unreadable file entry #{inspect(file, limit: 3)}"}
+  # A beam's own occurrences, the record's for it; any other file, none.
+  defp derived(staging, rel, files, from) do
+    with {:ok, bytes} <- read(Path.join(staging, rel)) do
+      if Path.extname(rel) == ".beam" do
+        case occurrences(bytes, from) do
+          {:ok, found} ->
+            if Enum.sort(found) == Enum.sort(Map.get(files, rel, [])),
+              do: :ok,
+              else: {:refuse, "#{rel}: the record does not match the served beam"}
 
-  defp ascii?(slots), do: Enum.all?(Map.values(slots), &(&1 =~ ~r/\A[\x00-\x7f]*\z/))
+          {:refuse, why} ->
+            {:refuse, "#{rel}: #{why}"}
+        end
+      else
+        untouched_bytes(rel, bytes, from)
+      end
+    end
+  end
+
+  defp untouched(staging, rel, from) do
+    with {:ok, bytes} <- read(Path.join(staging, rel)), do: untouched_bytes(rel, bytes, from)
+  end
+
+  defp untouched_bytes(rel, bytes, from) do
+    if contains?(bytes, needles(from)),
+      do: {:refuse, "#{rel} holds the builder's path"},
+      else: :ok
+  end
+
+  defp rewrite_file(staging, rel, occs, from, to) do
+    path = Path.join(staging, rel)
+
+    with {:ok, bytes} <- read(path),
+         {:ok, moved} <- relocate(bytes, occs, from, to) do
+      File.write!(path, moved)
+      :ok
+    else
+      {:refuse, why} -> {:refuse, "#{rel}: #{why}"}
+    end
+  end
 
   defp read(path) do
     case File.read(path) do
@@ -1018,11 +1169,11 @@ defmodule Precompiled.Relocate do
 
   defp put_vsn(_attrs, _old, _new), do: {:refuse, "unreadable attributes"}
 
-  # No slot value of `from` may be left in a rewritten chunk.
+  # No slot value of `from` may be left in any chunk but the metadata.
   defp nothing_left(chunks, from, _to) do
     needles = needles(from)
 
-    case Enum.find(chunks, fn {id, data} -> id in @rewritten and contains?(data, needles) end) do
+    case Enum.find(chunks, fn {id, data} -> id not in @metadata and contains?(data, needles) end) do
       nil -> :ok
       {id, _} -> {:refuse, "a builder path is left in #{id}"}
     end

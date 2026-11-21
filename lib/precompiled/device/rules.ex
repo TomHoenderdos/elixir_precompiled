@@ -81,9 +81,11 @@ defmodule Precompiled.Device.Rules do
   defp check_coded(build, name, ctx) do
     b = build["build"] || %{}
     # A build carrying foreign priv entries (0.8.0) is never listed where a
-    # device reads; one that is cannot be installed without them.
-    if not is_map(b) or not lists_in_place?(build) or not ForeignPriv.none?(build),
-      do: throw(:malformed)
+    # device reads; one that is cannot be installed without them. Nor is a
+    # relocated one (0.9.0), whose beams hold its builder's paths.
+    if not is_map(b) or not lists_in_place?(build) or not ForeignPriv.none?(build) or
+         Map.has_key?(build, "relocation"),
+       do: throw(:malformed)
 
     acc = %{
       needs: [],

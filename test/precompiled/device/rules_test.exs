@@ -778,6 +778,25 @@ defmodule Precompiled.Device.RulesTest do
                Rules.select_coded(m.([writer], []), "recon", nil, ctx())
     end
 
+    # 0.9.0: a relocated build is listed only under `relocated`, which a
+    # device never reads; one in a regular list is a malformed entry.
+    test "relocated is never read; a relocation record in a regular list is malformed" do
+      relocated = Map.put(build(), "relocation", %{"deps" => "/work/proj/deps"})
+
+      m = fn builds, rel ->
+        %{
+          "format" => 2,
+          "versions" => %{"1.0.0" => %{"builds" => builds, "relocated" => %{"builds" => rel}}}
+        }
+      end
+
+      assert {:miss, %{code: :not_built_version}, "1.0.0"} =
+               Rules.select_coded(m.([], [relocated]), "recon", nil, ctx())
+
+      assert {:miss, %{code: :malformed_entry}, _} =
+               Rules.select_coded(m.([relocated], []), "recon", nil, ctx())
+    end
+
     defp order_item(default, seen, app \\ "fx_order_app", reader \\ "fx_order_reader") do
       %{
         "kind" => "config_order",

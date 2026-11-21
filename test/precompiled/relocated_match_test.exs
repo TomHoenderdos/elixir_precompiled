@@ -12,11 +12,18 @@ defmodule Precompiled.RelocatedMatchTest do
 
   @fine {:hex, :fine, "0.2.0", "i", [:mix], [], "hexpm", "FOUTER"}
   @slots %{"deps" => "/home/u/app/deps", "build" => "/home/u/app/_build/dev"}
+  @second %{
+    "deps" =>
+      "/tmp/ncc-relocate-1/Second Root.d/ABCDEFGHIJKLMNOPQRSTUVWXYZ/0123456789/abcdefghijklmnopqrstuvwxyz/x/y/The Project-2/Deps vendored_d",
+    "build" =>
+      "/tmp/ncc-relocate-1/Second Root.d/ABCDEFGHIJKLMNOPQRSTUVWXYZ/0123456789/abcdefghijklmnopqrstuvwxyz/x/y/The Project-2/Out.Build-3/Host 4"
+  }
 
   defp record(kind \\ "binary") do
     %{
       "deps" => "/work/proj/deps",
       "build" => "/work/proj/_build/host",
+      "second" => @second,
       "files" => [
         %{
           "path" => "ebin/Elixir.Fine.beam",
@@ -89,7 +96,7 @@ defmodule Precompiled.RelocatedMatchTest do
         config: fn _app, _path -> :error end,
         machine_env: fn _ -> nil end,
         elixir_compiler_options: fn -> :undefined end,
-        relocate: @slots
+        relocate: {:ok, @slots}
       },
       over
     )
@@ -121,6 +128,20 @@ defmodule Precompiled.RelocatedMatchTest do
              Match.select_reason(only_relocated(), ctx(%{relocate: nil}))
   end
 
+  test "this project's slots refused: the miss is user_slots/2's own" do
+    for code <- [:relocated_paths, :relocated_path_ascii, :relocated_path_spelling] do
+      assert {:miss, %{code: ^code}} =
+               Match.select_reason(only_relocated(), ctx(%{relocate: {:error, code, ["deps"]}}))
+    end
+  end
+
+  test "this project's paths outside the envelope of the two roots: relocated_path_envelope" do
+    outside = %{@slots | "deps" => "/app/deps"}
+
+    assert {:miss, %{code: :relocated_path_envelope}} =
+             Match.select_reason(only_relocated(), ctx(%{relocate: {:ok, outside}}))
+  end
+
   test "OTP before 28 never takes one: relocated_otp" do
     build = put_in(relocated_build()["build"]["otp"], "27")
 
@@ -128,14 +149,17 @@ defmodule Precompiled.RelocatedMatchTest do
              Match.select_reason(only_relocated(build), ctx(%{otp: "27"}))
   end
 
-  test "a charlist occurrence needs ASCII paths" do
-    build = relocated_build(%{"relocation" => record("charlist")})
-    assert {:ok, _, _} = Match.select_reason(only_relocated(build), ctx())
+  test "a record without the second build's roots is refused" do
+    bad = Map.delete(record(), "second")
 
-    utf8 = %{"deps" => "/home/jøn/app/deps", "build" => "/home/jøn/app/_build/dev"}
+    assert {:miss, %{code: :relocation_refused}} =
+             Match.select_reason(only_relocated(relocated_build(%{"relocation" => bad})), ctx())
+  end
 
-    assert {:miss, %{code: :relocated_paths}} =
-             Match.select_reason(only_relocated(build), ctx(%{relocate: utf8}))
+  # The client review's N5: a regular list's build never carries a record.
+  test "a regular build with a relocation record is a malformed entry" do
+    m = doc(%{"builds" => [relocated_build()]})
+    assert {:miss, %{code: :malformed_entry}} = Match.select_reason(m, ctx())
   end
 
   test "a record naming a file the entry does not ship is refused" do

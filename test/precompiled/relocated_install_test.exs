@@ -25,18 +25,18 @@ defmodule Precompiled.RelocatedInstallTest do
     do: %{"deps" => Path.join(root, "deps"), "build" => Path.join(root, "_build/dev")}
 
   # fine's shape, compiled from `<root>/deps/fx`.
-  defp compile(root) do
+  defp compile(root, module \\ @module) do
     dir = Path.join(root, "deps/fx")
     File.mkdir_p!(dir)
 
     source =
-      "defmodule #{inspect(@module)} do\n@d Path.expand(\"c_include\")\ndef d, do: @d\nend\n"
+      "defmodule #{inspect(module)} do\n@d Path.expand(\"c_include\")\ndef d, do: @d\nend\n"
 
-    [{@module, beam}] =
+    [{^module, beam}] =
       File.cd!(dir, fn -> Code.compile_string(source, Path.join(dir, "lib/fx.ex")) end)
 
-    :code.delete(@module)
-    :code.purge(@module)
+    :code.delete(module)
+    :code.purge(module)
     beam
   end
 
@@ -89,7 +89,12 @@ defmodule Precompiled.RelocatedInstallTest do
       "priv" => [],
       "build" => %{},
       "relocation" =>
-        Map.put(slots(builder), "files", [%{"path" => beam_path, "occurrences" => occs}])
+        slots(builder)
+        |> Map.put(
+          "second",
+          slots(Path.join(dir, "Second Root.d/A-0123456789/abcdefghijklmnopqrstuvwxyz/proj"))
+        )
+        |> Map.put("files", [%{"path" => beam_path, "occurrences" => occs}])
     }
 
     %{
@@ -154,6 +159,73 @@ defmodule Precompiled.RelocatedInstallTest do
       # A kept build's provenance rewrite keeps the record.
       assert :ok = Fetch.write_provenance_file(ctx.lib, :fx, %{ctx.prov | sequence: 2})
       assert Fetch.installed_as?(ctx.lib, :fx, ctx.entry, relocate: to)
+    end
+
+    # The client review's S1: the client derives every occurrence from the
+    # served beams itself and checks every file of the entry.
+    test "a record that does not match the served beams installs nothing", ctx do
+      fewer = put_in(ctx.entry, ["relocation", "files"], [])
+
+      other =
+        put_in(
+          ctx.entry,
+          ["relocation", "files", Access.at(0), "occurrences", Access.at(0), "index"],
+          7
+        )
+
+      for entry <- [fewer, other] do
+        assert {:fail, "relocation refused: " <> _} =
+                 Fetch.install(ctx.config, :fx, entry, @lock_entry, ctx.lib,
+                   deps_path: ctx.deps,
+                   provenance: ctx.prov,
+                   relocate: slots(ctx.user)
+                 )
+
+        refute File.exists?(Path.join(ctx.lib, "fx"))
+      end
+    end
+
+    test "a builder path in a file the record does not name installs nothing", ctx do
+      # A second beam that holds the builder's path, left out of the record.
+      second = compile(ctx.builder, RelocInstall.Other)
+      [beam, app] = ctx.entry["ebin"]
+      mods = "['Elixir.#{inspect(@module)}', 'Elixir.RelocInstall.Other']"
+      app_bytes = "{application, fx, [{modules, #{mods}}]}.\n"
+
+      entry = %{
+        ctx.entry
+        | "ebin" => [
+            beam,
+            file_entry(
+              F.file(ctx.f, second),
+              byte_size(second),
+              "ebin/Elixir.RelocInstall.Other.beam"
+            ),
+            %{app | "sha256" => F.file(ctx.f, app_bytes), "size" => byte_size(app_bytes)}
+          ]
+      }
+
+      assert {:fail, "relocation refused: " <> why} =
+               Fetch.install(ctx.config, :fx, entry, @lock_entry, ctx.lib,
+                 deps_path: ctx.deps,
+                 provenance: ctx.prov,
+                 relocate: slots(ctx.user)
+               )
+
+      assert why =~ "Elixir.RelocInstall.Other.beam"
+
+      # And a priv file that holds it.
+      text = "dir=" <> Path.join(ctx.builder, "deps/fx")
+      priv = [file_entry(F.file(ctx.f, text), byte_size(text), "priv/where.txt")]
+
+      assert {:fail, "relocation refused: " <> why} =
+               Fetch.install(ctx.config, :fx, %{ctx.entry | "priv" => priv}, @lock_entry, ctx.lib,
+                 deps_path: ctx.deps,
+                 provenance: ctx.prov,
+                 relocate: slots(ctx.user)
+               )
+
+      assert why =~ "priv/where.txt"
     end
 
     test "without this project's slots nothing is installed", ctx do

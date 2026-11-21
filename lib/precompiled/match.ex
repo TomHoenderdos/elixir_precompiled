@@ -359,13 +359,16 @@ defmodule Precompiled.Match do
   # 0.8.0 installs kino): ForeignPriv.own_reason/2.
   defp foreign_rules(build, ctx) do
     if ForeignPriv.none?(build),
-      do: rules(build, ctx) ++ [fn -> ForeignPriv.own_reason(build, ctx.name) end],
+      do:
+        rules(build, ctx) ++
+          [fn -> ForeignPriv.own_reason(build, ctx.name) end, fn -> unrelocated(build) end],
       else:
         rules(build, ctx) ++
           [
             fn -> ForeignPriv.writer_reason(ctx.name) end,
             fn -> ForeignPriv.rule_reason(build) end,
-            fn -> ForeignPriv.entries_reason(build) end
+            fn -> ForeignPriv.entries_reason(build) end,
+            fn -> unrelocated(build) end
           ]
   end
 
@@ -664,7 +667,16 @@ defmodule Precompiled.Match do
   # installs it without placing any archive (0.8.0; the portal never lists
   # one there).
   defp regular_rules(build, ctx),
-    do: rules(build, ctx) ++ [fn -> ForeignPriv.none_reason(build) end]
+    do:
+      rules(build, ctx) ++
+        [fn -> ForeignPriv.none_reason(build) end, fn -> unrelocated(build) end]
+
+  # 0.9.0: a relocation record belongs to a version's `relocated` list
+  # only, where Precompiled.Relocate.reason/2 checks it; anywhere else the
+  # build is malformed, and never installed as a byte copy or rewritten
+  # without those checks.
+  defp unrelocated(%{"relocation" => _}), do: malformed()
+  defp unrelocated(_build), do: :ok
 
   # A host-native build passes the rules of any host build, with the
   # triple in place of the target, and then its own: its compile inputs
@@ -686,7 +698,8 @@ defmodule Precompiled.Match do
         fn -> HostNative.nif_reason(b["nif_version"], host.nif_version) end,
         fn -> HostNative.needs_reason(b, host) end,
         fn -> HostNative.origins_reason(b["origins"], host.deps_path, ctx.name) end,
-        fn -> ForeignPriv.none_reason(build) end
+        fn -> ForeignPriv.none_reason(build) end,
+        fn -> unrelocated(build) end
       ]
   end
 
