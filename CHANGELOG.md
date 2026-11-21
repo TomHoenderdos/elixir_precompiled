@@ -46,7 +46,8 @@
 
 * A build's recorded compile-time config value now matches the project's only when it is the same
   term exactly: `1` no longer matches `1.0` (they compare equal but compile to other code), for
-  `compile_env` items and `config_all` entries alike.
+  `compile_env` items, `config_all` entries, the value a `config_order` item's reader saw, and
+  a host environment variable alike.
 
 ## v0.8.0 - 2026-11-20
 

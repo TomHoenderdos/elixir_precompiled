@@ -95,7 +95,7 @@ defmodule Precompiled.CompileInputs do
   @doc false
   # Whether the app's .app gives the key no value, as the build recorded it.
   @spec no_default?(term()) :: boolean()
-  def no_default?(default), do: is_binary(default) and decode(default) == {:ok, :error}
+  def no_default?(default), do: is_binary(default) and decode(default) === {:ok, :error}
 
   defp first_miss(items, check) do
     Enum.reduce_while(items, :ok, fn item, :ok ->
@@ -136,7 +136,7 @@ defmodule Precompiled.CompileInputs do
               is_binary(seen) do
     with {:ok, seen} <- decode(seen),
          {:ok, expected} <- expected(app, key, reader, default, order),
-         true <- expected == seen do
+         true <- expected === seen do
       :ok
     else
       _ -> {:miss, Reason.new(:config_order_differs, [app, key])}
@@ -302,7 +302,7 @@ defmodule Precompiled.CompileInputs do
         end
 
       {:loaded, env} ->
-        if decode(default) == {:ok, :error}, do: {:ok, env}, else: :unknown
+        if decode(default) === {:ok, :error}, do: {:ok, env}, else: :unknown
 
       :unreadable ->
         :unknown
@@ -541,7 +541,7 @@ defmodule Precompiled.CompileInputs do
   defp current(nil), do: :error
   defp current(value) when is_binary(value), do: {:ok, value}
 
-  defp recorded?(value, current), do: decode(value) == {:ok, current}
+  defp recorded?(value, current), do: decode(value) === {:ok, current}
 
   # A recorded value comes from a third-party build: decoded only by
   # SafeTerm, and anything it refuses (`unrecordable` included) is :error.

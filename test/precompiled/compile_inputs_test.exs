@@ -184,6 +184,26 @@ defmodule Precompiled.CompileInputsTest do
                )
     end
 
+    # A float is not its integer: 1 against 1.0 is a miss, by the default
+    # and by the user's config alike.
+    test "1 against 1.0 misses, from the default and from the user's config" do
+      before_r = [mdep(:a), mdep(:r)]
+      assert @differs = check(order_item(rec({:ok, 1}), rec({:ok, 1.0})), octx(before_r))
+      assert @differs = check(order_item(rec({:ok, 1.0}), rec({:ok, 1})), octx(before_r))
+
+      assert @differs =
+               check(
+                 order_item(rec({:ok, 1}), rec({:ok, 1})),
+                 octx([mdep(:r), mdep(:a)], fn "a", "k" -> {:ok, 1.0} end)
+               )
+
+      assert @differs =
+               check(
+                 order_item(rec({:ok, %{k: 1}}), rec({:ok, %{k: 1.0}})),
+                 octx(before_r)
+               )
+    end
+
     test "an app loaded here stands only without a .app default" do
       loaded = fn _, _ -> {:loaded, {:ok, 1}} end
 
