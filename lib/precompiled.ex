@@ -67,9 +67,10 @@ defmodule Precompiled do
   source have test seams (`:env`, `:clock_synchronized?`, `:root`, an
   `https` or loopback `:source`), and so do the directories the device's
   libraries are looked up in (`:lib_roots`, `/lib` and `/usr/lib`
-  otherwise). A call may pass them only while this
-  library's application env has `test_seams: true`, as its own test suite sets;
-  otherwise they are refused as unknown options, and the firmware's
+  otherwise). A call may pass them only when this library is built in its
+  own test env and its application env has `test_seams: true`, as its own
+  test suite sets; otherwise, as in every build a firmware or project
+  makes, they are refused as unknown options, and the firmware's
   `:device` config never sets them.
 
   `config :precompiled, :device, enabled: false` in the firmware
@@ -189,8 +190,8 @@ defmodule Precompiled do
                   ]
   # Test seams: they replace the device facts and the clock check, so a
   # call may pass them only while `:test_seams` is set in this library's
-  # application env (its own test suite, the qemu test). Otherwise they
-  # are unknown options.
+  # application env and the library was built in its own test env (its
+  # own test suite; seams?/0). Otherwise they are unknown options.
   # :root swaps the trust anchor: per call only as a seam, otherwise the
   # firmware's :device config sets it.
   # :lib_roots replaces /lib and /usr/lib, where the device's libraries
@@ -406,7 +407,7 @@ defmodule Precompiled do
   end
 
   defp report_opts(opts) do
-    known = if seams?(), do: @report_keys ++ @report_seams, else: @report_keys
+    known = @report_keys ++ seams(@report_seams)
 
     cond do
       not (is_list(opts) and Keyword.keyword?(opts)) -> {:error, {:bad_option, opts}}
@@ -529,18 +530,30 @@ defmodule Precompiled do
     case {Keyword.fetch(opts, :source), Keyword.fetch(opts, :content)} do
       {_, {:ok, content}} -> {:error, {:content_not_allowed, content}}
       {{:ok, "file://" <> _}, _} -> :ok
-      {{:ok, source}, _} -> if seams?(), do: :ok, else: {:error, {:source_not_allowed, source}}
+      {{:ok, source}, _} -> source_seam(source)
       _ -> :ok
     end
   end
 
-  defp seams?(), do: Application.get_env(:precompiled, :test_seams) == true
-
-  defp install_keys() do
-    if seams?(),
-      do: @install_keys ++ @seam_keys,
-      else: @install_keys
+  defp source_seam(source) do
+    if :source in seams([:source]),
+      do: :ok,
+      else: {:error, {:source_not_allowed, source}}
   end
+
+  # The open ones of `keys`, seam option keys: all of them while
+  # `:test_seams` is set, none otherwise. The client re-review's R10: the
+  # application env is read only when this library is built in its own
+  # test env (as R8's relocation_prefix). Built as a dependency, as every
+  # firmware and project builds it, none is ever open.
+  if Mix.env() == :test do
+    defp seams(keys),
+      do: if(Application.get_env(:precompiled, :test_seams) == true, do: keys, else: [])
+  else
+    defp seams(_keys), do: []
+  end
+
+  defp install_keys(), do: @install_keys ++ seams(@seam_keys)
 
   # Only the keys `known` documents: a misspelt one (dry_rn: true) is
   # refused rather than ignored, and :allow and :enabled are the

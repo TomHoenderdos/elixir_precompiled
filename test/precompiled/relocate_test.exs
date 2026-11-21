@@ -382,7 +382,9 @@ defmodule Precompiled.RelocateTest do
     # but Mix's own layout under it. A build slot followed by anything but
     # nothing, `/lib/` or `/consolidated/` is refused, in the record and
     # in the occurrences derived from the served beam.
-    for {label, tail} <- [{"an underscore", "_x"}, {"another dir", "/x"}] do
+    # The client re-review's R9: `/lib/x`, a build root moved down one app,
+    # is refused like any other tail Mix's layout does not have.
+    for {label, tail} <- [{"an underscore", "_x"}, {"another dir", "/x"}, {"/lib/x", "/lib/x"}] do
       test "a build path followed by #{label} is refused", ctx do
         {builder, user} = roots(ctx)
         path = "ebin/Elixir.RelocateTest.Tail.beam"
@@ -432,6 +434,30 @@ defmodule Precompiled.RelocateTest do
       File.mkdir_p!(Path.join(staging, "ebin"))
       File.write!(Path.join(staging, path), served)
       assert :ok = Relocate.apply_staged(staging, entry, slots(user), :fx)
+    end
+
+    # The client re-review's R9: the app under `lib` is one of the build's
+    # closure: the package itself or a key of the entry's `build.deps`.
+    test "a build path under an app outside the build's closure is refused", ctx do
+      {builder, user} = roots(ctx)
+      path = "ebin/Elixir.RelocateTest.Other.beam"
+      entry = entry(ctx, [path], [])
+      from = Map.take(entry["relocation"], ["deps", "build"])
+      body = "@p #{inspect(from["build"] <> "/lib/fy/priv")}\ndef p, do: @p"
+      served = compile(builder, Other, body)
+      {:ok, occs} = Relocate.occurrences(served, from)
+      entry = put_in(entry, ["relocation", "files"], [%{"path" => path, "occurrences" => occs}])
+      staging = Path.join(ctx.tmp_dir, "staging")
+      File.mkdir_p!(Path.join(staging, "ebin"))
+      File.write!(Path.join(staging, path), served)
+
+      assert {:fail, "relocation refused: " <> why} =
+               Relocate.apply_staged(staging, entry, slots(user), :fx)
+
+      assert why =~ "a build path followed by"
+
+      with_fy = Map.put(entry, "build", %{"deps" => %{"fy" => %{"version" => "1.0.0"}}})
+      assert :ok = Relocate.apply_staged(staging, with_fy, slots(user), :fx)
     end
 
     # The umbrella re-review's Q1: a dependent held only for its

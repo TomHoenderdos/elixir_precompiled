@@ -72,7 +72,9 @@ defmodule DeviceQemuTest do
       dev(":os.cmd(~c\"mount -o remount,exec /root\")")
     end
 
-    # The clock seam is refused unless test_seams is set on the guest.
+    # The clock seam is refused on the guest, test_seams set or not: the
+    # firmware builds this library as a dependency, where the seams are not
+    # compiled in (the client re-review's R10).
     assert dev("IO.inspect(Precompiled.install(:recon, clock_synchronized?: fn -> false end))") =~
              "{:error, {:bad_option, :clock_synchronized?}}"
 
@@ -80,7 +82,7 @@ defmodule DeviceQemuTest do
              "Application.put_env(:precompiled, :test_seams, true); " <>
                "r = Precompiled.install(:recon, clock_synchronized?: fn -> false end); " <>
                "Application.delete_env(:precompiled, :test_seams); IO.inspect(r)"
-           ) =~ "{:error, {:clock_unsynchronized,"
+           ) =~ "{:error, {:bad_option, :clock_synchronized?}}"
 
     # Back on an exec mount, the same install goes through.
     DeviceQemu.wait_online!()

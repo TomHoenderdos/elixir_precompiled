@@ -189,7 +189,12 @@ defmodule Precompiled.RelocatedMatchTest do
   # The client re-review's R5: a build slot followed by anything but Mix's
   # layout under a build path.
   test "a record whose build path is followed by another dir is refused" do
-    for tail <- ["_x/lib/fine/priv", "/x/lib/fine/priv"] do
+    for tail <- [
+          "_x/lib/fine/priv",
+          "/x/lib/fine/priv",
+          "/lib/x/lib/fine/priv",
+          "/lib/other/priv"
+        ] do
       bad =
         put_in(
           record(),
@@ -202,6 +207,20 @@ defmodule Precompiled.RelocatedMatchTest do
 
       assert text =~ "a build path followed by"
     end
+  end
+
+  # The client re-review's R9: the package's own app dir, with Mix's layout
+  # in it, is taken.
+  test "a record whose build path is followed by the package's own app dir is taken" do
+    ok =
+      put_in(
+        record(),
+        ["files", Access.at(0), "occurrences", Access.at(0), "parts"],
+        ["", "build", "/lib/fine/priv/c_include"]
+      )
+
+    build = relocated_build(%{"relocation" => ok})
+    assert {:ok, ^build, _} = Match.select_reason(only_relocated(build), ctx())
   end
 
   # The client review's N5: a regular list's build never carries a record.

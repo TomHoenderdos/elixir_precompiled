@@ -107,7 +107,9 @@ defmodule Precompiled.Relocate do
       otp_major(ctx.otp) < 28 ->
         Precompiled.Reason.new(:relocated_otp, [])
 
-      problem = record_problem(record, ebin) || pinned_problem(record) ->
+      problem =
+          record_problem(record, ebin, closure_apps(build, Map.get(ctx, :name))) ||
+            pinned_problem(record) ->
         Precompiled.Reason.new(:relocation_refused, [], "relocated build: #{problem}")
 
       true ->
@@ -131,15 +133,19 @@ defmodule Precompiled.Relocate do
   # its other two builds (each pair absolute, printable ASCII, distinct,
   # neither inside the other), and `files`, a list of distinct beams of the
   # entry's own `ebin`, each with at least one well-formed occurrence, every
-  # `build` slot in it followed by nothing, `/lib/` or `/consolidated/`
-  # (Mix's layout under a build path, the client re-review's R5). `files`
+  # `build` slot in it followed by Mix's own layout under a build path (the
+  # client re-review's R5 and R9): nothing, `/consolidated/...`, or
+  # `/lib/<app>/` and then `ebin`, `priv`, `include` or `.mix`, `<app>` one
+  # of `apps` (the build's closure, closure_apps/2) when given. `files`
   # is empty for a dependent that passed only because a dependency was
   # held: nothing in its own beams to rewrite, but the envelope and the
   # source check still hold it. The same check as the portal's at ingest
   # (Compatibility.Relocation).
-  @spec record_problem(term(), [String.t()]) :: String.t() | nil
-  def record_problem(%{"deps" => deps, "build" => build, "files" => files} = record, ebin)
-      when is_list(files) and is_list(ebin) do
+  @spec record_problem(term(), [String.t()], [String.t()] | nil) :: String.t() | nil
+  def record_problem(record, ebin, apps \\ nil)
+
+  def record_problem(%{"deps" => deps, "build" => build, "files" => files} = record, ebin, apps)
+      when is_list(files) and is_list(ebin) and (is_list(apps) or is_nil(apps)) do
     cond do
       record |> Map.keys() |> Enum.sort() != @record_keys ->
         "unknown keys"
@@ -155,11 +161,23 @@ defmodule Precompiled.Relocate do
         "a file twice"
 
       true ->
-        Enum.find_value(files, &file_problem(&1, ebin))
+        Enum.find_value(files, &file_problem(&1, ebin, apps))
     end
   end
 
-  def record_problem(_record, _ebin), do: "not a relocation record"
+  def record_problem(_record, _ebin, _apps), do: "not a relocation record"
+
+  # The build's closure apps, as Mix names their dirs under a build path:
+  # the package's own and its entry's `build.deps` keys.
+  defp closure_apps(entry, app) do
+    locked =
+      case entry["build"] do
+        %{"deps" => %{} = deps} -> Map.keys(deps)
+        _ -> []
+      end
+
+    Enum.uniq(if(is_nil(app), do: locked, else: [to_string(app) | locked]))
+  end
 
   defp roots_problem(first, second, third) do
     roots = [first, second, third]
@@ -262,40 +280,58 @@ defmodule Precompiled.Relocate do
   defp file_path(%{"path" => path}), do: path
   defp file_path(file), do: file
 
-  defp file_problem(%{"path" => "ebin/" <> name = path, "occurrences" => [_ | _] = occs}, ebin) do
+  defp file_problem(
+         %{"path" => "ebin/" <> name = path, "occurrences" => [_ | _] = occs},
+         ebin,
+         apps
+       ) do
     cond do
       Path.basename(name) != name or Path.extname(name) != ".beam" -> "not a beam: #{path}"
       path not in ebin -> "not a file of the build: #{path}"
       length(occs) > @max_occurrences -> "too many occurrences"
       not Enum.all?(occs, &occurrence?/1) -> "a malformed occurrence in #{path}"
-      tail = tails_problem(occs) -> "#{tail} in #{path}"
+      tail = tails_problem(occs, apps) -> "#{tail} in #{path}"
       true -> nil
     end
   end
 
-  defp file_problem(_file, _ebin), do: "a malformed file entry"
+  defp file_problem(_file, _ebin, _apps), do: "a malformed file entry"
 
-  # The client re-review's R5: nothing but Mix's own layout under a build
-  # path ties the build root to the beams, so the text after a `build` slot
-  # must be nothing, `/lib/...` or `/consolidated/...`.
-  defp tails_problem(occs) do
+  # The client re-review's R5 and R9: nothing but Mix's own layout under a
+  # build path ties the build root to the beams, so the text after a
+  # `build` slot must be that layout (mix_layout?/2).
+  defp tails_problem(occs, apps) do
     Enum.find_value(occs, fn %{"parts" => parts} ->
       parts
       |> Enum.chunk_every(2, 1, :discard)
-      |> Enum.find_value(fn
-        ["build", tail] ->
-          if not mix_layout?(tail), do: "a build path followed by #{inspect(tail, limit: 3)}"
-
-        _ ->
-          nil
-      end)
+      |> Enum.find_value(&tail_problem(&1, apps))
     end)
   end
 
-  defp mix_layout?(tail),
-    do:
-      tail == "" or String.starts_with?(tail, "/lib/") or
-        String.starts_with?(tail, "/consolidated/")
+  defp tail_problem(["build", tail], apps) do
+    if not mix_layout?(tail, apps), do: "a build path followed by #{inspect(tail, limit: 3)}"
+  end
+
+  defp tail_problem(_pair, _apps), do: nil
+
+  @app_dirs ~w(ebin priv include .mix)
+
+  # Nothing, `/consolidated/...`, or `/lib/<app>/<dir>` and below, `<dir>`
+  # one of an app's own dirs and `<app>` one of `apps` when given.
+  defp mix_layout?("", _apps), do: true
+  defp mix_layout?("/consolidated/" <> _, _apps), do: true
+
+  defp mix_layout?("/lib/" <> rest, apps) do
+    case String.split(rest, "/", parts: 3) do
+      [app, dir | _] when dir in @app_dirs and app not in ["", ".", ".."] ->
+        apps == nil or app in apps
+
+      _ ->
+        false
+    end
+  end
+
+  defp mix_layout?(_tail, _apps), do: false
 
   defp occurrence?(
          %{"chunk" => chunk, "index" => i, "term" => term, "kind" => kind, "parts" => parts} =
@@ -455,10 +491,16 @@ defmodule Precompiled.Relocate do
     from = Map.take(record, @slots)
     ebin = entry_paths(entry["ebin"])
     files = Map.new(record["files"], &{&1["path"], &1["occurrences"]})
-    source_dir = Path.join(record["deps"], to_string(app)) <> "/"
 
-    with :ok <- target_problem(record, ebin, to),
-         :ok <- each(ebin, &derived(staging, &1, files, from, source_dir)),
+    check = %{
+      files: files,
+      from: from,
+      source_dir: Path.join(record["deps"], to_string(app)) <> "/",
+      apps: closure_apps(entry, app)
+    }
+
+    with :ok <- target_problem(record, ebin, to, check.apps),
+         :ok <- each(ebin, &derived(staging, &1, check)),
          :ok <- each(entry_paths(entry["priv"]), &untouched(staging, &1, from)),
          :ok <- each(Map.keys(files), &rewrite_file(staging, &1, files[&1], from, to)) do
       :ok
@@ -485,9 +527,9 @@ defmodule Precompiled.Relocate do
     end)
   end
 
-  defp target_problem(record, ebin, to) do
+  defp target_problem(record, ebin, to, apps) do
     cond do
-      problem = record_problem(record, ebin) || pinned_problem(record) ->
+      problem = record_problem(record, ebin, apps) || pinned_problem(record) ->
         {:refuse, problem}
 
       valid_slots(to) != :ok ->
@@ -507,25 +549,28 @@ defmodule Precompiled.Relocate do
   # A beam compiled from its package's own dir under the record's deps
   # path, with its own occurrences the record's for it; any other file,
   # none.
-  defp derived(staging, rel, files, from, source_dir) do
+  defp derived(staging, rel, check) do
     with {:ok, bytes} <- read(Path.join(staging, rel)) do
       if Path.extname(rel) == ".beam" do
-        with :ok <- compiled_in(bytes, rel, source_dir) do
-          case occurrences(bytes, from) do
-            {:ok, found} ->
-              cond do
-                tail = tails_problem(found) -> {:refuse, "#{rel}: #{tail}"}
-                Enum.sort(found) == Enum.sort(Map.get(files, rel, [])) -> :ok
-                true -> {:refuse, "#{rel}: the record does not match the served beam"}
-              end
-
-            {:refuse, why} ->
-              {:refuse, "#{rel}: #{why}"}
-          end
-        end
+        with :ok <- compiled_in(bytes, rel, check.source_dir),
+             do: derived_matches(bytes, rel, check)
       else
-        untouched_bytes(rel, bytes, from)
+        untouched_bytes(rel, bytes, check.from)
       end
+    end
+  end
+
+  defp derived_matches(bytes, rel, check) do
+    case occurrences(bytes, check.from) do
+      {:ok, found} ->
+        cond do
+          tail = tails_problem(found, check.apps) -> {:refuse, "#{rel}: #{tail}"}
+          Enum.sort(found) == Enum.sort(Map.get(check.files, rel, [])) -> :ok
+          true -> {:refuse, "#{rel}: the record does not match the served beam"}
+        end
+
+      {:refuse, why} ->
+        {:refuse, "#{rel}: #{why}"}
     end
   end
 
