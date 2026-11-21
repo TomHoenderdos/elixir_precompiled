@@ -11,7 +11,8 @@
   install, exactly as this project's own compile would have written it (the literal
   re-encoded, the module's md5, fun uniqs and default `vsn` taken again), and records the
   rewritten files' hashes in the install's provenance. A moved project installs it again,
-  relocated to its new paths.
+  relocated to its new paths. A package listed there only because a dependency of it was
+  relocated comes with a record that names no file to rewrite; the same rules hold it.
 
 * A relocated build misses on OTP 27 (`relocated_otp`); when this project's deps or build
   path is not its own real path or the host is not unix (`relocated_paths`); when a path
@@ -23,9 +24,12 @@
   the record's deps path, the record does not match the served beams or the rewrite would
   not be this VM's own compile (`relocation_refused`). The client derives every occurrence
   from the served beams itself, takes the md5 as this OTP does (`beam_lib:md5/1`) and
-  checks every file of the entry. What the three roots cannot show: a compile-time test of
-  the path against a constant none of them holds, or one that answers the same at all
-  three and otherwise at this project's path; list such a dependency in `:except`.
+  checks every file of the entry. A build path in the record must be followed by nothing,
+  `/lib/` or `/consolidated/`. A refusal at install reports as `relocation_refused`. What
+  the three roots cannot show: a compile-time test of the path against a constant none of
+  them holds, or one that answers the same at all three and otherwise at this project's
+  path; list such a dependency in `:except`. The roots' layout is fixed: another needs a new
+  record version.
 
 ## v0.8.0 - 2026-11-20
 

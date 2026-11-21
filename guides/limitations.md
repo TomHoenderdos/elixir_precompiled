@@ -46,11 +46,13 @@ that hold between them the words user paths hold (`/home/`, `/Users/`,
 the three differ in the paths alone, and this client relocates only to
 paths inside the envelope the three span: their characters, between their
 lengths and depths (see
-[Relocated builds](matching.md#relocated-builds-paths-in-the-beams)). What
-is not seen: a compile-time test of the path against a constant that none
-of the three roots holds (a prefix such as `/opt/` or `/srv/`, a word no
-root holds), or any test that answers the same at all three roots and
-otherwise at your path.
+[Relocated builds](matching.md#relocated-builds-paths-in-the-beams)). The
+same holds for a package listed there because a dependency of it was
+relocated. What is not seen: a compile-time test of the path against a
+constant that none of the three roots holds (a prefix such as `/opt/` or
+`/srv/`, a word no root holds), or any test that answers the same at all
+three roots and otherwise at your path; for a package listed because of a
+dependency, that path is the dependency's.
 *Fix:* list such a dependency in `:except`.
 
 ## Trust

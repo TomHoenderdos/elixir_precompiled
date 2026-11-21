@@ -291,7 +291,8 @@ brackets is the `reason_code` a report carries.
 | `MISS  relocated build: this project's deps path is not printable ASCII` (`relocated_path_ascii`) | The path holds a byte outside printable ASCII (an accented letter, a tab). | Move the project to an ASCII path, or let it compile. |
 | `MISS  relocated build: this project's deps path is not spelled as on disk` (`relocated_path_spelling`) | A component of the path is spelled otherwise than its dir lists it, for example `/users/me` for `/Users/me` on a volume that ignores case, or its parent dir cannot be listed. | Spell the path as `ls` shows it (`cd` into the project and use `pwd -P`). |
 | `MISS  relocated build: this project's deps path is outside the paths it was proven at` (`relocated_path_envelope`) | The path is shorter, longer, shallower or deeper than the builder's three roots, or holds a character none has (`+`, `!`, `%` ...). | Nothing to fix; it compiles from source. |
-| `MISS  relocated build: ...` (`relocation_refused`) | The record does not match the served beams, or the rewrite would not be this VM's own compile. | Nothing to fix; report it if it repeats. |
+| `MISS  relocated build: ...` (`relocation_refused`) | The record does not match the served beams, its roots are not the builder's, or the rewrite would not be this VM's own compile. | Nothing to fix; report it if it repeats. |
+| `FAIL  relocation refused: ...` (`relocation_refused`) | At install: a served beam was not compiled from the package's dir under the record's deps path, or does not hold exactly the record's paths. Nothing was installed; the dependency compiles from source. | Nothing to fix; report it if it repeats. |
 
 ### Builds from another release of your system
 

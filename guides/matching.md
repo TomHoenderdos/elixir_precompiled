@@ -423,13 +423,21 @@ Some packages keep the path they were compiled at in their beams: fine's
 `Fine.include_dir/0` returns `Path.expand("c_include")` from fine's own dir,
 a `__DIR__` literal names the source dir, a path into the build's `priv` is
 taken at compile time. A byte copy of such a build would hold the portal
-builder's path, not yours. The portal builds such a package a second time
-at a root unlike the first in length, depth and every kind of character a
-path here may hold, and keeps it only when the two builds differ in those
-paths alone. It lists it under a version's `relocated` object, which clients
-before 0.9.0 never read, with a record of where each path sits: the
-builder's deps and build paths, the second build's, and per beam every
-occurrence (a literal, an atom, an attribute, a line-table file name).
+builder's path, not yours. The portal builds such a package again at two
+more roots, unlike the first and each other in length, depth, case, spaces,
+the project dir's name and the order of the deps and build paths, and keeps
+it only when the three builds differ in those paths alone. It lists it under
+a version's `relocated` object, which clients before 0.9.0 never read, with
+a record of where each path sits: the builder's deps and build paths, the
+other two builds', and per beam every occurrence (a literal, an atom, an
+attribute, a line-table file name).
+
+A package that depends on such a build is proven the same way, at the same
+three roots, and listed there too: its own beams often hold no path
+(the record names no file to rewrite), but what its compile took from the
+dependency was only proven at those roots, so every rule below holds it.
+The roots' layout is fixed: a record at any other roots is refused, and a
+portal that changed it would need a new record version.
 
 The object holds the same lists as the version (`builds`,
 `builds_with_inputs`, `builds_closure`). It is read last, after the regular,
@@ -454,14 +462,16 @@ then these, before anything is downloaded:
   (`relocated_path_envelope`): its characters among theirs, its length and
   depth between their shortest and longest, shallowest and deepest;
 - the record's three roots are the builder's own, as this library ships
-  them, and it names beams of the entry's own `ebin`, well formed
-  (`relocation_refused`).
+  them, and it names beams of the entry's own `ebin`, well formed, each
+  build path in it followed by nothing, `/lib/` or `/consolidated/` (Mix's
+  layout under a build path) (`relocation_refused`).
 
 At install, after every served file is verified, the client requires each
 beam to have been compiled from the package's own dir under the record's
 deps path (its `CInf` source), derives each beam's occurrences of the
-builder's paths itself and requires them to be the record's, finds none in
-any other file of the entry, and rewrites each
+builder's paths itself and requires them to be the record's (and each build
+path in them followed by Mix's layout), finds none in any other file of the
+entry, and rewrites each
 occurrence to your paths exactly as your own compile would have written it:
 a literal re-encoded by this VM, an atom or file name in place, the module's
 md5 taken as this OTP takes it (`beam_lib:md5/1`), each fun's `old_uniq` and
