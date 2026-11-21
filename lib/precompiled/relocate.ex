@@ -44,7 +44,7 @@ defmodule Precompiled.Relocate do
 
   @doc "The slot names: `deps` and `build`."
   @spec slots() :: [String.t()]
-  def slots, do: @slots
+  def slots(), do: @slots
 
   @doc """
   `beam` with each of `occurrences` rewritten from the slots `from` to the
@@ -642,11 +642,12 @@ defmodule Precompiled.Relocate do
     with :ok <- known_chunks(by_chunk),
          {:ok, chunks} <- rewrite(chunks, "LitT", by_chunk, &rewrite_literals(&1, &2, from, to)),
          {:ok, chunks} <- rewrite(chunks, "AtU8", by_chunk, &rewrite_atoms(&1, &2, from, to)),
-         {:ok, chunks} <- rewrite(chunks, "Line", by_chunk, &rewrite_lines(&1, &2, from, to)),
-         new = md5(chunks),
-         chunks = put_uniq(chunks, new),
-         {:ok, chunks} <- rewrite_attr(chunks, Map.get(by_chunk, "Attr", []), from, to, old, new) do
-      {:ok, chunks}
+         {:ok, chunks} <- rewrite(chunks, "Line", by_chunk, &rewrite_lines(&1, &2, from, to)) do
+      new = md5(chunks)
+
+      chunks
+      |> put_uniq(new)
+      |> rewrite_attr(Map.get(by_chunk, "Attr", []), from, to, old, new)
     end
   end
 
