@@ -13,9 +13,15 @@
   rewritten files' hashes in the install's provenance. A moved project installs it again,
   relocated to its new paths.
 
-* A relocated build misses on OTP 27 (`relocated_otp`), when this project's deps or build
-  path is not its own real path or the host is not unix (`relocated_paths`), and when the
-  rewrite finds the served beam is not the one recorded (`relocation_refused`).
+* A relocated build misses on OTP 27 (`relocated_otp`); when this project's deps or build
+  path is not its own real path or the host is not unix (`relocated_paths`); when a path
+  is not printable ASCII (`relocated_path_ascii`); when a component is spelled otherwise
+  than its dir lists it, as `/users/me` for `/Users/me` on a volume that ignores case
+  (`relocated_path_spelling`); when a path is outside the envelope of the two roots the
+  portal proved the build at (`relocated_path_envelope`); and when the record does not
+  match the served beams or the rewrite would not be this VM's own compile
+  (`relocation_refused`). The client derives every occurrence from the served beams itself,
+  takes the md5 as this OTP does (`beam_lib:md5/1`) and checks every file of the entry.
 
 ## v0.8.0 - 2026-11-20
 

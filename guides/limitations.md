@@ -37,6 +37,15 @@ too.
 *Status:* measured first; a later release may place archives after Mix
 compiles kino.
 
+**A relocated build is proven at two roots, not at yours.** The portal
+builds such a package at two roots unlike each other in every property a
+path here can have, and keeps it only when the two differ in the paths
+alone; this client relocates only to paths inside the envelope the two span
+(see [Relocated builds](matching.md#relocated-builds-paths-in-the-beams)).
+A value a compile derives from the path that is equal at both roots but not
+at yours, by a test both roots happen to pass, is not seen.
+*Fix:* list such a dependency in `:except`.
+
 ## Trust
 
 **One key signs everything.** The portal holds one online key for both

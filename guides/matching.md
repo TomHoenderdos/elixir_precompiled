@@ -417,6 +417,60 @@ Elixir 1.19 on) and `.mix/compile.fetch` (read by 1.17 and 1.18).
 A device never installs a foreign priv build: `writes into kino's priv at
 compile time; not installed on a device`.
 
+## Relocated builds (paths in the beams)
+
+Some packages keep the path they were compiled at in their beams: fine's
+`Fine.include_dir/0` returns `Path.expand("c_include")` from fine's own dir,
+a `__DIR__` literal names the source dir, a path into the build's `priv` is
+taken at compile time. A byte copy of such a build would hold the portal
+builder's path, not yours. The portal builds such a package a second time
+at a root unlike the first in length, depth and every kind of character a
+path here may hold, and keeps it only when the two builds differ in those
+paths alone. It lists it under a version's `relocated` object, which clients
+before 0.9.0 never read, with a record of where each path sits: the
+builder's deps and build paths, the second build's, and per beam every
+occurrence (a literal, an atom, an attribute, a line-table file name).
+
+The object holds the same lists as the version (`builds`,
+`builds_with_inputs`, `builds_closure`). It is read last, after the regular,
+host-native and foreign priv lists missed, and never in deterministic mode
+(a relocated build has no deterministic sibling). Every rule above applies,
+then these, before anything is downloaded:
+
+- OTP 28 or later (`relocated_otp`): OTP 27 compresses the literal table,
+  which the rewrite does not read;
+- this project's deps path and build path (`Mix.Project.deps_path/0` and
+  `build_path/0`, so also `MIX_DEPS_PATH`, `MIX_BUILD_PATH`, an umbrella's
+  `deps_path:` and `Mix.install/2`'s dir) are absolute, normalised and real
+  all the way down, no symlink in either, on a unix host (`relocated_paths`);
+- each is printable ASCII (`relocated_path_ascii`): the builder's are, and
+  a path with other bytes has more than one byte form a compile could take;
+- each component is spelled exactly as its parent dir lists it, byte for
+  byte (`relocated_path_spelling`): Mix compiles a dependency after a cd
+  into its dir, so `__DIR__` holds the spelling on disk, which a volume that
+  ignores case (macOS by default) lets differ from the spelling Mix was
+  given;
+- each lies inside the envelope of the builder's two roots
+  (`relocated_path_envelope`): its characters among theirs, its length and
+  depth between theirs;
+- the record names beams of the entry's own `ebin`, well formed
+  (`relocation_refused`).
+
+At install, after every served file is verified, the client derives each
+beam's occurrences of the builder's paths itself and requires them to be
+the record's, finds none in any other file of the entry, and rewrites each
+occurrence to your paths exactly as your own compile would have written it:
+a literal re-encoded by this VM, an atom or file name in place, the module's
+md5 taken as this OTP takes it (`beam_lib:md5/1`), each fun's `old_uniq` and
+a default `vsn` from it. Anything it cannot do so is `relocation_refused`,
+and nothing is installed. The install's provenance records the rewritten
+files' hashes with the paths they were rewritten to. A later run keeps the
+install while your paths are those; a moved project installs it again,
+relocated to its new paths.
+
+A device never installs a relocated build, and a relocation record in any
+list but `relocated` is a `malformed entry`.
+
 ## On a device
 
 `Precompiled.install/2` chooses builds by the same rules and the same

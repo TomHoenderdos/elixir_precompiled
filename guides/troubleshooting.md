@@ -277,6 +277,22 @@ kino; the code in brackets is the `reason_code` a report carries.
 | `MISS  writes into kino's priv under rule kino_js_v2, which this client does not know` (`foreign_priv_rule_unknown`) | The build was made under a newer rule than this client knows. | Upgrade `precompiled`. |
 | `writes into kino's priv at compile time; not installed on a device` (`foreign_priv_device`) | On a device: the version's only builds place archives into kino's priv, which a device's store cannot take. | Ship the dependency in the firmware. |
 
+### Dependencies whose beams hold their build's paths
+
+A relocated build (see
+[Relocated builds](matching.md#relocated-builds-paths-in-the-beams)) misses
+on lines of its own. Each leaves it compiling from source; the code in
+brackets is the `reason_code` a report carries.
+
+| Line | Meaning | What to do |
+| --- | --- | --- |
+| `MISS  relocated build: needs OTP 28 or later` (`relocated_otp`) | OTP 27 compresses the literal table, which the rewrite does not read. | Nothing to fix; it compiles from source. |
+| `MISS  relocated build: this project's paths are not its own real paths` (`relocated_paths`) | Your deps path or build path holds a symlink, is not absolute or normalised, does not exist yet, or the host is not unix. | Point `MIX_DEPS_PATH` / `MIX_BUILD_PATH` (or the project) at the real path, without a symlink. |
+| `MISS  relocated build: this project's deps path is not printable ASCII` (`relocated_path_ascii`) | The path holds a byte outside printable ASCII (an accented letter, a tab). | Move the project to an ASCII path, or let it compile. |
+| `MISS  relocated build: this project's deps path is not spelled as on disk` (`relocated_path_spelling`) | A component of the path is spelled otherwise than its dir lists it, for example `/users/me` for `/Users/me` on a volume that ignores case, or its parent dir cannot be listed. | Spell the path as `ls` shows it (`cd` into the project and use `pwd -P`). |
+| `MISS  relocated build: this project's deps path is outside the paths it was proven at` (`relocated_path_envelope`) | The path is shorter, longer or deeper than the builder's two roots, or holds a character neither has (`+`, `~`, `@` ...). | Nothing to fix; it compiles from source. |
+| `MISS  relocated build: ...` (`relocation_refused`) | The record does not match the served beams, or the rewrite would not be this VM's own compile. | Nothing to fix; report it if it repeats. |
+
 ### Builds from another release of your system
 
 These lines come from rule 1, when the only builds are for other

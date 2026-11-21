@@ -28,6 +28,22 @@ file             a beam, .app or priv file
 - The root is an Ed25519 key, valid until 2027-10-22.
 - Plain `http` sources are refused, except on loopback.
 
+## Relocated installs (0.9.0)
+
+A relocated build is the one exception to "the files on disk are the signed
+files". Its signed files are fetched and verified like any other; then, in
+staging and before anything reaches `_build`, the beams its record names are
+rewritten in this VM: each recorded occurrence of the builder's deps or
+build path becomes yours, the literal re-encoded, the atom or line-table file
+name replaced in place, the module's md5, each fun's `old_uniq` and a default
+`vsn` taken again. Nothing else in the files changes; `CInf`, `Dbgi` and
+`Docs` keep the builder's paths, as in every served build. The client
+derives the occurrences from the served beams itself and installs nothing
+unless they are exactly the record's and no other file holds the builder's
+path. The installed beams then no longer hash to the manifest's `sha256`:
+the provenance records their own hashes with the paths they were rewritten
+to, and a later run checks the disk against those.
+
 ## Where the source and root come from
 
 The source is the portal's API,
