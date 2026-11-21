@@ -2,6 +2,11 @@
 
 ## Unreleased (0.9.0)
 
+* Security: the device API's test seams (`:root`, `:env`, `:clock_synchronized?`, `:lib_roots` and a
+  per-call network `:source`, and `mix precompiled.report`'s `:gets` and `:interactive?`) are now
+  compiled in only when this library is built in its own test env. In 0.8.0, `config :precompiled,
+  test_seams: true` in a firmware or project opened them on any build; now no application env does.
+
 * Relocated builds: a dependency whose own beams hold the path it was compiled at (fine's
   `Fine.include_dir/0`, a `__DIR__` literal, a path into its build's `priv`) can now install
   precompiled. The portal builds it at three different roots and lists it under a
@@ -24,8 +29,9 @@
   the record's deps path, the record does not match the served beams or the rewrite would
   not be this VM's own compile (`relocation_refused`). The client derives every occurrence
   from the served beams itself, takes the md5 as this OTP does (`beam_lib:md5/1`) and
-  checks every file of the entry. A build path in the record must be followed by nothing,
-  `/lib/` or `/consolidated/`. A refusal at install reports as `relocation_refused`. What
+  checks every file of the entry. A build path in the record must be followed by Mix's own
+  layout under a build path: nothing, `/consolidated/...`, or `/lib/<app>/` and then `ebin`,
+  `priv`, `include` or `.mix`, `<app>` the package or one of its locked dependencies. A refusal at install reports as `relocation_refused`. What
   the three roots cannot show: a compile-time test of the path against a constant none of
   them holds, or one that answers the same at all three and otherwise at this project's
   path; list such a dependency in `:except`. The roots' layout is fixed: another needs a new

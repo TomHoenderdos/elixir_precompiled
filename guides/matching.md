@@ -463,8 +463,10 @@ then these, before anything is downloaded:
   depth between their shortest and longest, shallowest and deepest;
 - the record's three roots are the builder's own, as this library ships
   them, and it names beams of the entry's own `ebin`, well formed, each
-  build path in it followed by nothing, `/lib/` or `/consolidated/` (Mix's
-  layout under a build path) (`relocation_refused`).
+  build path in it followed by Mix's own layout under a build path: nothing,
+  `/consolidated/...`, or `/lib/<app>/` and then `ebin`, `priv`, `include`
+  or `.mix`, `<app>` the package or one of its locked dependencies
+  (`relocation_refused`).
 
 At install, after every served file is verified, the client requires each
 beam to have been compiled from the package's own dir under the record's
