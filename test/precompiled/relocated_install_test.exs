@@ -117,7 +117,11 @@ defmodule Precompiled.RelocatedInstallTest do
     }
   end
 
-  if String.to_integer(System.otp_release()) >= 28 do
+  @otp28 String.to_integer(System.otp_release()) >= 28
+
+  describe "on OTP 28 or later" do
+    @describetag skip: not @otp28 and "relocated builds need OTP 28 or later"
+
     test "the installed beam is the served one relocated to this project's paths", ctx do
       to = slots(ctx.user)
 
@@ -255,7 +259,11 @@ defmodule Precompiled.RelocatedInstallTest do
                  relocate: slots(ctx.user)
                )
     end
-  else
+  end
+
+  describe "on OTP 27" do
+    @describetag skip: @otp28 and "OTP 27 only"
+
     test "OTP 27: a relocated entry is never installed", ctx do
       assert {:fail, "relocation refused: " <> _} =
                Fetch.install(ctx.config, :fx, ctx.entry, @lock_entry, ctx.lib,

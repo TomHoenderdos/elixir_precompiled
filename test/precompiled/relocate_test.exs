@@ -117,7 +117,11 @@ defmodule Precompiled.RelocateTest do
 
   @fine "@include_dir Path.expand(\"c_include\")\ndef include_dir, do: @include_dir"
 
-  if @otp28 do
+  # OTP 27 compresses the literal table, which no rewrite reads: these run
+  # on OTP 28 and later, the one below on OTP 27 alone.
+  describe "on OTP 28 or later" do
+    @describetag skip: not @otp28 and "relocated builds need OTP 28 or later"
+
     # The client review's S2: the md5 as the running OTP takes it
     # (beam_lib:md5/1; OTP 29 adds Recs and DbgB). An Erlang module with
     # its own vsn, beam debug info and a fun: its FunT old_uniq comes from
@@ -184,7 +188,7 @@ defmodule Precompiled.RelocateTest do
 
     # The client review's S4: the limit on an atom is 255 code points, and
     # a beam's short atom table holds 255 bytes; nothing is truncated.
-    test "an atom over 255 code points, or over 255 bytes in a short table, is refused", ctx do
+    test "an atom over 255 code points, or over 255 bytes in a short table, is refused", _ctx do
       base = Path.join(System.tmp_dir!(), "s4atom#{System.unique_integer([:positive])}")
       on_exit(fn -> File.rm_rf!(base) end)
       builder = Path.join(base, "b")
@@ -278,7 +282,11 @@ defmodule Precompiled.RelocateTest do
       assert {:fail, "relocation refused: " <> _} =
                Relocate.apply_staged(staging, bad, slots(user))
     end
-  else
+  end
+
+  describe "on OTP 27" do
+    @describetag skip: @otp28 and "OTP 27 only"
+
     test "OTP 27's compressed literal table is not relocated", ctx do
       {builder, _user} = roots(ctx)
       served = compile(builder, Fine, @fine)
