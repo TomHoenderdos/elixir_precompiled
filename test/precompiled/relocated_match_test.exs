@@ -8,37 +8,28 @@ defmodule Precompiled.RelocatedMatchTest do
   # or later and with this project's paths its own real paths.
   use ExUnit.Case, async: true
 
-  alias Precompiled.Match
+  alias Precompiled.{Match, Relocate}
 
   @fine {:hex, :fine, "0.2.0", "i", [:mix], [], "hexpm", "FOUTER"}
   @slots %{"deps" => "/home/u/app/deps", "build" => "/home/u/app/_build/dev"}
-  @second %{
-    "deps" =>
-      "/tmp/ncc-relocate-1/Second Root.d/ABCDEFGHIJKLMNOPQRSTUVWXYZ/0123456789/abcdefghijklmnopqrstuvwxyz/x/y/The Project-2/Deps vendored_d",
-    "build" =>
-      "/tmp/ncc-relocate-1/Second Root.d/ABCDEFGHIJKLMNOPQRSTUVWXYZ/0123456789/abcdefghijklmnopqrstuvwxyz/x/y/The Project-2/Out.Build-3/Host 4"
-  }
-
+  # The builder's own three roots, as the portal's worker writes them.
   defp record(kind \\ "binary") do
-    %{
-      "deps" => "/work/proj/deps",
-      "build" => "/work/proj/_build/host",
-      "second" => @second,
-      "files" => [
-        %{
-          "path" => "ebin/Elixir.Fine.beam",
-          "occurrences" => [
-            %{
-              "chunk" => "LitT",
-              "index" => 0,
-              "term" => [],
-              "kind" => kind,
-              "parts" => ["", "deps", "/fine/c_include"]
-            }
-          ]
-        }
-      ]
-    }
+    1
+    |> Relocate.pinned_record()
+    |> Map.put("files", [
+      %{
+        "path" => "ebin/Elixir.Fine.beam",
+        "occurrences" => [
+          %{
+            "chunk" => "LitT",
+            "index" => 0,
+            "term" => [],
+            "kind" => kind,
+            "parts" => ["", "deps", "/fine/c_include"]
+          }
+        ]
+      }
+    ])
   end
 
   defp relocated_build(over \\ %{}) do
@@ -135,7 +126,7 @@ defmodule Precompiled.RelocatedMatchTest do
     end
   end
 
-  test "this project's paths outside the envelope of the two roots: relocated_path_envelope" do
+  test "this project's paths outside the envelope of the three roots: relocated_path_envelope" do
     outside = %{@slots | "deps" => "/app/deps"}
 
     assert {:miss, %{code: :relocated_path_envelope}} =
@@ -149,11 +140,37 @@ defmodule Precompiled.RelocatedMatchTest do
              Match.select_reason(only_relocated(build), ctx(%{otp: "27"}))
   end
 
-  test "a record without the second build's roots is refused" do
-    bad = Map.delete(record(), "second")
+  test "a record without the second or third build's roots is refused" do
+    for slot <- ["second", "third"] do
+      bad = Map.delete(record(), slot)
 
-    assert {:miss, %{code: :relocation_refused}} =
-             Match.select_reason(only_relocated(relocated_build(%{"relocation" => bad})), ctx())
+      assert {:miss, %{code: :relocation_refused}} =
+               Match.select_reason(only_relocated(relocated_build(%{"relocation" => bad})), ctx())
+    end
+  end
+
+  # The client re-review's R1: the client holds the record's roots to the
+  # builder's own layout, whatever the portal checked.
+  test "a record whose roots are not the builder's is refused" do
+    other = Relocate.pinned_record(2)
+
+    for bad <- [
+          put_in(record(), ["deps"], "/work/other/deps"),
+          put_in(record(), ["second", "deps"], other["second"]["deps"]),
+          put_in(record(), ["third"], other["third"]),
+          put_in(record(), ["third", "build"], "/Users/Ncc-Relocate 1/b")
+        ] do
+      assert {:miss, %{code: :relocation_refused, text: text}} =
+               Match.select_reason(only_relocated(relocated_build(%{"relocation" => bad})), ctx())
+
+      assert text =~ "the record's roots are not the builder's", inspect(bad)
+    end
+
+    assert {:ok, _, _} =
+             Match.select_reason(
+               only_relocated(relocated_build(%{"relocation" => Map.merge(record(), other)})),
+               ctx()
+             )
   end
 
   # The client review's N5: a regular list's build never carries a record.

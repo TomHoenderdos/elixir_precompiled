@@ -739,7 +739,7 @@ defmodule Precompiled.Fetch do
       for stale <- staging_dirs(build_lib, dep, :stale), do: File.rm_rf(stale)
 
       with {:ok, stats} <- stage_verified(config, dep, entry, staging, verify_app: verify_app),
-           {:ok, relocated} <- relocate_staged(entry, staging, Keyword.get(opts, :relocate)) do
+           {:ok, relocated} <- relocate_staged(dep, entry, staging, Keyword.get(opts, :relocate)) do
         write_marker(staging, lock_entry)
         write_provenance(staging, put_relocated(Keyword.get(opts, :provenance), relocated))
         :ok = link.(dep, entry, staging, dest, Keyword.fetch!(opts, :deps_path))
@@ -775,8 +775,8 @@ defmodule Precompiled.Fetch do
   # once the served files are verified, and their new hashes and sizes,
   # which the provenance records with the slots. Nothing for any other
   # entry; without slots nothing is installed.
-  defp relocate_staged(%{"relocation" => %{} = record} = entry, staging, %{} = slots) do
-    with :ok <- Relocate.apply_staged(staging, entry, slots) do
+  defp relocate_staged(dep, %{"relocation" => %{} = record} = entry, staging, %{} = slots) do
+    with :ok <- Relocate.apply_staged(staging, entry, slots, dep) do
       files =
         Map.new(record["files"], fn %{"path" => path} ->
           bytes = File.read!(Path.join(staging, path))
@@ -787,10 +787,10 @@ defmodule Precompiled.Fetch do
     end
   end
 
-  defp relocate_staged(%{"relocation" => _}, _staging, _slots),
+  defp relocate_staged(_dep, %{"relocation" => _}, _staging, _slots),
     do: {:fail, "relocation refused: this project's paths are not its own real paths"}
 
-  defp relocate_staged(_entry, _staging, _slots), do: {:ok, nil}
+  defp relocate_staged(_dep, _entry, _staging, _slots), do: {:ok, nil}
 
   defp put_relocated(nil, _relocated), do: nil
   defp put_relocated(provenance, nil), do: provenance

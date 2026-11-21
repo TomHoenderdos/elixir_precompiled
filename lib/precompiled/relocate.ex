@@ -6,20 +6,23 @@ defmodule Precompiled.Relocate do
   @moduledoc false
   # 0.9.0: relocated builds. A build whose beams bake the portal builder's
   # deps or build path (`build.relocation` of a relocated entry) is installed
-  # with each recorded occurrence rewritten to this project's own paths, as
-  # this project's own compile would have written it: a literal re-encoded
-  # with term_to_binary(term, [{:minor_version, 2}, :deterministic]) (the
+  # with each occurrence rewritten to this project's own paths, as this
+  # project's own compile would have written it: a literal re-encoded with
+  # term_to_binary(term, [{:minor_version, 2}, :deterministic]) (the
   # compiler's beam_dict:my_term_to_binary/1), an atom or a line-table file
-  # name rewritten in place, the module's md5 taken again over the essential
-  # chunks (AtU8, Code, StrT, ImpT, ExpT, FunT with every old_uniq zeroed,
-  # LitT, Meta), each fun's old_uniq its first 27 bits, and a default vsn
-  # (the old md5) the new one: beam_asm, OTP 28. The portal's builder proved
-  # the same rewrite against a second compile at another root. It refuses
-  # what a compile at these paths would have written differently (two
-  # literals, atoms or file names that become one, an atom over 255
-  # characters), a recorded occurrence the beam does not hold, and any
-  # builder path left in a rewritten chunk. Runs in the user's own VM, so a
-  # literal is encoded as the user's compiler would encode it.
+  # name rewritten in place, an attribute rewritten and the whole Attr chunk
+  # encoded again, the module's md5 taken again as the running OTP takes it
+  # (beam_lib:md5/1: OTP 29 adds Recs and DbgB to OTP 28's chunks), each
+  # fun's old_uniq its first 27 bits, and a default vsn (the old md5) the
+  # new one. The portal's builder proved the same rewrite against compiles
+  # at two other roots. The record's three roots must be the builder's own
+  # layout (pinned_problem/2) and every served beam's CInf source must lie
+  # in the package's dir under the record's deps path. It refuses what a
+  # compile at these paths would have written differently (two literals,
+  # atoms or file names that become one, an atom over 255 code points), an
+  # occurrence the record and the beam disagree on, and any builder path
+  # left in any chunk but CInf, Dbgi and Docs. Runs in the user's own VM, so
+  # a literal is encoded as the user's compiler would encode it.
   #
   # An occurrence: %{"chunk", "index", "term", "kind", "parts"}, as the
   # portal records it (Compatibility.Relocation): the chunk (LitT, AtU8,
@@ -81,15 +84,17 @@ defmodule Precompiled.Relocate do
     _ -> {:refuse, "unreadable beam"}
   end
 
-  @record_keys ["build", "deps", "files", "second"]
+  @record_keys ["build", "deps", "files", "second", "third"]
   @kinds ["binary", "charlist", "atom"]
   @max_files 10_000
 
   # Match's last rule for a relocated build (0.9.0): nil when this project
   # can take it, else the miss. OTP 28 or later (OTP 27 compresses the
-  # literal table, which this rewrite never reads), this project's own
-  # slots (`ctx.relocate`, `user_slots/2`), ASCII paths for a charlist
-  # occurrence, and a record of the entry's own beams, well formed.
+  # literal table, which this rewrite never reads), a record of the entry's
+  # own beams, well formed, at the builder's own three roots
+  # (pinned_problem/2), and this project's own slots (`ctx.relocate`,
+  # `user_slots/2`: real, printable ASCII, spelled as on disk) inside the
+  # envelope of those roots (envelope_reason/2).
   @spec reason(map(), map()) :: Precompiled.Reason.t() | nil
   def reason(build, ctx) do
     record = build["relocation"]
@@ -99,7 +104,7 @@ defmodule Precompiled.Relocate do
       otp_major(ctx.otp) < 28 ->
         Precompiled.Reason.new(:relocated_otp, [])
 
-      problem = record_problem(record, ebin) ->
+      problem = record_problem(record, ebin) || pinned_problem(record) ->
         Precompiled.Reason.new(:relocation_refused, [], "relocated build: #{problem}")
 
       true ->
@@ -119,10 +124,12 @@ defmodule Precompiled.Relocate do
   end
 
   # Why a relocation record is not one this client can apply, or nil: the
-  # builder's `deps` and `build` paths (absolute, distinct, neither inside
-  # the other) and `files`, a non-empty list of distinct beams of the
-  # entry's own `ebin`, each with at least one well-formed occurrence. The
-  # same check as the portal's at ingest (Compatibility.Relocation).
+  # builder's `deps` and `build` paths, `second` and `third` the same for
+  # its other two builds (each pair absolute, printable ASCII, distinct,
+  # neither inside the other), and `files`, a non-empty list of distinct
+  # beams of the entry's own `ebin`, each with at least one well-formed
+  # occurrence. The same check as the portal's at ingest
+  # (Compatibility.Relocation).
   @spec record_problem(term(), [String.t()]) :: String.t() | nil
   def record_problem(%{"deps" => deps, "build" => build, "files" => files} = record, ebin)
       when is_list(files) and is_list(ebin) do
@@ -130,7 +137,8 @@ defmodule Precompiled.Relocate do
       record |> Map.keys() |> Enum.sort() != @record_keys ->
         "unknown keys"
 
-      problem = roots_problem(%{"deps" => deps, "build" => build}, record["second"]) ->
+      problem =
+          roots_problem(%{"deps" => deps, "build" => build}, record["second"], record["third"]) ->
         problem
 
       files == [] or length(files) > @max_files ->
@@ -146,21 +154,94 @@ defmodule Precompiled.Relocate do
 
   def record_problem(_record, _ebin), do: "not a relocation record"
 
-  defp roots_problem(first, second) do
+  defp roots_problem(first, second, third) do
+    roots = [first, second, third]
+
     cond do
-      match?({:refuse, _}, valid_slots(first)) ->
+      Enum.any?(roots, &match?({:refuse, _}, valid_slots(&1))) ->
         "bad paths"
 
-      match?({:refuse, _}, valid_slots(second)) ->
-        "bad second paths"
-
-      not Enum.all?(Map.values(first) ++ Map.values(second), &printable?/1) ->
+      not Enum.all?(Enum.flat_map(roots, &Map.values/1), &printable?/1) ->
         "a path not printable ASCII"
 
       true ->
         nil
     end
   end
+
+  # The builder's three roots (the client re-review's R1), as
+  # Compatibility.Relocation lays them out on the portal: the first its
+  # host compile's, the second under the container's home, the third under
+  # /Users, both of run token n. Copied here, so a record whose roots are
+  # not these (a portal that widened them, a wrong record) is refused
+  # whatever the portal checked. Test only: `config :precompiled,
+  # relocation_prefix: dir` puts all three under `dir`, so a test can
+  # compile at them; no record at the real roots matches then.
+  @first %{"deps" => "/work/proj/deps", "build" => "/work/proj/_build/host"}
+  @home "/home/nerves"
+  @users "/Users"
+  @second_cache ".cache/mix/installs/elixir-1.20.5-erts-16.4.0.2"
+  @second_dirs ["nix/store/src/code/projects", "x_y@z~0.d", "app"]
+  @second_deps "deps"
+  @second_build "out.d/host-1"
+  @third_dirs [
+    "Library/Mobile Documents",
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "0123456789",
+    "abcdefghijklmnopqrstuvwxyz",
+    "Long Relocation.Path-0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz",
+    "x",
+    "Y",
+    "z-0",
+    "Projects",
+    "The Relocated.Project-2"
+  ]
+  @third_deps "Deps vendored_d"
+  @third_build "Build-3/Host 4"
+
+  @doc false
+  # The record's three roots for run token `n`, under `prefix` ("" outside
+  # tests): what pinned_problem/2 holds a record to.
+  @spec pinned_record(non_neg_integer(), String.t()) :: map()
+  def pinned_record(n, prefix \\ "") when is_integer(n) and n >= 0 and is_binary(prefix) do
+    second = Path.join([prefix <> @home, @second_cache, "ncc-relocate-#{n}" | @second_dirs])
+    third = Path.join([prefix <> @users, "Ncc-Relocate #{n}" | @third_dirs])
+
+    %{
+      "deps" => prefix <> @first["deps"],
+      "build" => prefix <> @first["build"],
+      "second" => %{
+        "deps" => Path.join(second, @second_deps),
+        "build" => Path.join(second, @second_build)
+      },
+      "third" => %{
+        "deps" => Path.join(third, @third_deps),
+        "build" => Path.join(third, @third_build)
+      }
+    }
+  end
+
+  # Why a record's three roots are not the builder's (pinned_record/2 for
+  # the run token its second root names), or nil: the portal's
+  # Compatibility.Relocation.pinned_problem/1, under `prefix`.
+  @spec pinned_problem(term(), term()) :: String.t() | nil
+  def pinned_problem(record, prefix \\ relocation_prefix())
+
+  def pinned_problem(%{"second" => %{"deps" => deps}} = record, prefix)
+      when is_binary(deps) and is_binary(prefix) do
+    with [_, digits] <- Regex.run(~r"/ncc-relocate-([0-9]{1,20})/", deps),
+         true <-
+           Map.take(record, ["deps", "build", "second", "third"]) ==
+             pinned_record(String.to_integer(digits), prefix) do
+      nil
+    else
+      _ -> "the record's roots are not the builder's"
+    end
+  end
+
+  def pinned_problem(_record, _prefix), do: "the record's roots are not the builder's"
+
+  defp relocation_prefix(), do: Application.get_env(:precompiled, :relocation_prefix, "")
 
   defp file_path(%{"path" => path}), do: path
   defp file_path(file), do: file
@@ -268,19 +349,24 @@ defmodule Precompiled.Relocate do
     end)
   end
 
-  # The umbrella review's B1: the builder proved its build at two roots, the
-  # record's (`deps`, `build`) and the second build's (`second`), unlike in
-  # every property it could make them. A value its compile derived from a
-  # path that is equal at both is not seen by that proof; it is equal at
-  # this project's paths too when they are inside the envelope the roots
-  # span, for a threshold on a path's length or depth or a test of which
-  # characters it holds. So each of this project's paths must hold only
-  # characters of the two roots' paths for its slot, and lie between their
-  # lengths and their depths. nil when it does, else the miss.
+  # The umbrella reviews' B1 and R1: the builder proved its build at three
+  # roots, the record's (`deps`, `build`), the second build's (`second`)
+  # and the third's (`third`), unlike in length, depth, case, spaces,
+  # project dir name and the order of the two paths. A value its compile
+  # derived from a path that is equal at all three is not seen by that
+  # proof; it is equal at this project's paths too when they are inside the
+  # envelope the roots span, for a threshold on a path's length or depth or
+  # a test of which characters it holds. So each of this project's paths
+  # must hold only characters of the three roots' paths for its slot, and
+  # lie between their shortest and longest and their shallowest and
+  # deepest. What no envelope bounds: a test against a constant none of the
+  # three roots holds (a prefix such as /opt/, a word), or one that answers
+  # the same at all three and otherwise at this project's path. nil when
+  # inside, else the miss.
   @spec envelope_reason(map(), slots()) :: Precompiled.Reason.t() | nil
-  def envelope_reason(%{"second" => %{} = second} = record, user) do
+  def envelope_reason(%{"second" => %{} = second, "third" => %{} = third} = record, user) do
     Enum.find_value(@slots, fn slot ->
-      roots = [record[slot], second[slot]]
+      roots = [record[slot], second[slot], third[slot]]
 
       if not inside?(user[slot], roots),
         do: Precompiled.Reason.new(:relocated_path_envelope, [slot])
@@ -290,40 +376,49 @@ defmodule Precompiled.Relocate do
   def envelope_reason(_record, _user),
     do: Precompiled.Reason.new(:relocated_path_envelope, ["deps"])
 
-  defp inside?(path, [a, b]) when is_binary(path) and is_binary(a) and is_binary(b) do
-    chars = MapSet.new(:binary.bin_to_list(a <> b))
+  defp inside?(path, roots) when is_binary(path) do
+    if Enum.all?(roots, &is_binary/1) do
+      chars = roots |> Enum.flat_map(&:binary.bin_to_list/1) |> MapSet.new()
+      lengths = Enum.map(roots, &byte_size/1)
+      depths = Enum.map(roots, &depth/1)
 
-    Enum.all?(:binary.bin_to_list(path), &MapSet.member?(chars, &1)) and
-      between?(byte_size(path), byte_size(a), byte_size(b)) and
-      between?(depth(path), depth(a), depth(b))
+      Enum.all?(:binary.bin_to_list(path), &MapSet.member?(chars, &1)) and
+        between?(byte_size(path), lengths) and between?(depth(path), depths)
+    else
+      false
+    end
   end
 
   defp inside?(_path, _roots), do: false
 
-  defp between?(x, a, b), do: x >= min(a, b) and x <= max(a, b)
+  defp between?(x, bounds), do: x >= Enum.min(bounds) and x <= Enum.max(bounds)
   defp depth(path), do: length(Path.split(path)) - 1
 
   # A relocated entry's staged files, verified and rewritten in place from
   # the builder's slots (the record's `deps` and `build`) to `to`: what
   # `Precompiled.Fetch` does after staging and verifying the served files
-  # and before anything is renamed into `_build`. The record is not trusted
-  # (the client review's S1): `to` must be printable ASCII and inside the
-  # envelope of the record's two roots; every beam of the entry's `ebin`
-  # has the occurrences of the builder's paths this client derives from it
+  # of dependency `app` and before anything is renamed into `_build`. The
+  # record is not trusted (the client review's S1, the client re-review's
+  # R1): its three roots must be the builder's own (pinned_problem/2); `to`
+  # must be printable ASCII and inside the envelope of those roots; every
+  # beam of the entry's `ebin` must have been compiled from a source in
+  # `app`'s dir under the record's deps path (its CInf `source`), and have
+  # the occurrences of the builder's paths this client derives from it
   # (`occurrences/2`, which refuses one in any chunk the rewrite does not
-  # reach, the module's name or a function's), and they must be exactly the
-  # ones the record lists for it, none for a beam it does not name; every
-  # other file of the entry, its `.app` and its `priv` included, holds no
-  # builder path at all; and after the rewrite no rewritten beam holds one
-  # in any chunk but `CInf`, `Dbgi` and `Docs`.
-  @spec apply_staged(Path.t(), map(), slots()) :: :ok | {:fail, String.t()}
-  def apply_staged(staging, %{"relocation" => %{"files" => [_ | _]} = record} = entry, to) do
+  # reach, the module's name or a function's), exactly the ones the record
+  # lists for it, none for a beam it does not name; every other file of the
+  # entry, its `.app` and its `priv` included, holds no builder path at
+  # all; and after the rewrite no rewritten beam holds one in any chunk but
+  # `CInf`, `Dbgi` and `Docs`.
+  @spec apply_staged(Path.t(), map(), slots(), atom() | String.t()) :: :ok | {:fail, String.t()}
+  def apply_staged(staging, %{"relocation" => %{"files" => [_ | _]} = record} = entry, to, app) do
     from = Map.take(record, @slots)
     ebin = entry_paths(entry["ebin"])
     files = Map.new(record["files"], &{&1["path"], &1["occurrences"]})
+    source_dir = Path.join(record["deps"], to_string(app)) <> "/"
 
     with :ok <- target_problem(record, ebin, to),
-         :ok <- each(ebin, &derived(staging, &1, files, from)),
+         :ok <- each(ebin, &derived(staging, &1, files, from, source_dir)),
          :ok <- each(entry_paths(entry["priv"]), &untouched(staging, &1, from)),
          :ok <- each(Map.keys(files), &rewrite_file(staging, &1, files[&1], from, to)) do
       :ok
@@ -334,7 +429,7 @@ defmodule Precompiled.Relocate do
     e -> {:fail, "relocation refused: #{Exception.message(e)}"}
   end
 
-  def apply_staged(_staging, _entry, _to), do: {:fail, "relocation refused: no files"}
+  def apply_staged(_staging, _entry, _to, _app), do: {:fail, "relocation refused: no files"}
 
   defp entry_paths(files) when is_list(files),
     do: for(%{"path" => path} when is_binary(path) <- files, do: path)
@@ -352,7 +447,7 @@ defmodule Precompiled.Relocate do
 
   defp target_problem(record, ebin, to) do
     cond do
-      problem = record_problem(record, ebin) ->
+      problem = record_problem(record, ebin) || pinned_problem(record) ->
         {:refuse, problem}
 
       valid_slots(to) != :ok ->
@@ -369,24 +464,49 @@ defmodule Precompiled.Relocate do
     end
   end
 
-  # A beam's own occurrences, the record's for it; any other file, none.
-  defp derived(staging, rel, files, from) do
+  # A beam compiled from its package's own dir under the record's deps
+  # path, with its own occurrences the record's for it; any other file,
+  # none.
+  defp derived(staging, rel, files, from, source_dir) do
     with {:ok, bytes} <- read(Path.join(staging, rel)) do
       if Path.extname(rel) == ".beam" do
-        case occurrences(bytes, from) do
-          {:ok, found} ->
-            if Enum.sort(found) == Enum.sort(Map.get(files, rel, [])),
-              do: :ok,
-              else: {:refuse, "#{rel}: the record does not match the served beam"}
+        with :ok <- compiled_in(bytes, rel, source_dir) do
+          case occurrences(bytes, from) do
+            {:ok, found} ->
+              if Enum.sort(found) == Enum.sort(Map.get(files, rel, [])),
+                do: :ok,
+                else: {:refuse, "#{rel}: the record does not match the served beam"}
 
-          {:refuse, why} ->
-            {:refuse, "#{rel}: #{why}"}
+            {:refuse, why} ->
+              {:refuse, "#{rel}: #{why}"}
+          end
         end
       else
         untouched_bytes(rel, bytes, from)
       end
     end
   end
+
+  # The client re-review's R1: the beam's CInf `source` (the file its
+  # compile read) is in `source_dir`, the package's dir under the record's
+  # deps path. A beam with no source (a `deterministic` compile) or one
+  # compiled elsewhere does not show the record's paths are its own.
+  defp compiled_in(bytes, rel, source_dir) do
+    with {:ok, chunks} <- chunks(bytes),
+         data when is_binary(data) <- chunk(chunks, "CInf"),
+         {:ok, info} when is_list(info) <- decode(data),
+         source when is_list(source) <- List.keyfind(info, :source, 0) |> source_of(),
+         {:ok, path} <- charlist(source),
+         true <- String.starts_with?(path, source_dir) do
+      :ok
+    else
+      {:refuse, why} -> {:refuse, "#{rel}: #{why}"}
+      _ -> {:refuse, "#{rel}: not compiled from the record's deps path"}
+    end
+  end
+
+  defp source_of({:source, source}), do: source
+  defp source_of(_none), do: nil
 
   defp untouched(staging, rel, from) do
     with {:ok, bytes} <- read(Path.join(staging, rel)), do: untouched_bytes(rel, bytes, from)

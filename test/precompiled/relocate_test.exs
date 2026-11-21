@@ -13,6 +13,7 @@ defmodule Precompiled.RelocateTest do
   @moduletag :tmp_dir
 
   @otp28 String.to_integer(System.otp_release()) >= 28
+  @otp29 String.to_integer(System.otp_release()) >= 29
 
   defp slots(root),
     do: %{"deps" => Path.join(root, "deps"), "build" => Path.join(root, "_build/dev")}
@@ -82,6 +83,28 @@ defmodule Precompiled.RelocateTest do
     beam
   end
 
+  # `beam` with its CInf `source` left out, as a deterministic compile
+  # writes it.
+  defp no_source(beam) do
+    {:ok, mod, chunks} = :beam_lib.all_chunks(beam)
+
+    chunks =
+      for {id, data} <- chunks do
+        if id == ~c"CInf",
+          do:
+            {id,
+             data
+             |> :erlang.binary_to_term()
+             |> List.keydelete(:source, 0)
+             |> :erlang.term_to_binary()},
+          else: {id, data}
+      end
+
+    {:ok, bytes} = :beam_lib.build_module(chunks)
+    _ = mod
+    bytes
+  end
+
   defp all_but_metadata(beam) do
     {:ok, _, chunks} = :beam_lib.all_chunks(beam)
     for {id, data} <- chunks, id not in [~c"CInf", ~c"Dbgi", ~c"Docs"], do: {id, data}
@@ -94,22 +117,19 @@ defmodule Precompiled.RelocateTest do
     chunks ++ [List.keyfind(all, ~c"Attr", 0)]
   end
 
-  # An entry of `ebin` whose record lists `files`, its second root a long,
-  # deep path with every letter, so the user's root under the same tmp dir
-  # is inside the envelope.
-  defp entry(ctx, builder, ebin, files) do
-    second =
-      Path.join(
-        ctx.tmp_dir,
-        "Second Root.d/A-0123456789/abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ/proj"
-      )
+  # The builder's three roots under `prefix` (pinned_record/2), which the
+  # client takes while `config :precompiled, relocation_prefix:` names it.
+  defp pin!(prefix) do
+    Application.put_env(:precompiled, :relocation_prefix, prefix)
+    on_exit(fn -> Application.delete_env(:precompiled, :relocation_prefix) end)
+    Relocate.pinned_record(1, prefix)
+  end
 
-    record =
-      builder
-      |> slots()
-      |> Map.put("second", slots(second))
-      |> Map.put("files", files)
-
+  # An entry of `ebin` whose record, the builder's roots under the tmp dir,
+  # lists `files`: the user's root under the same tmp dir is inside the
+  # envelope.
+  defp entry(ctx, ebin, files) do
+    record = ctx.tmp_dir |> pin!() |> Map.put("files", files)
     %{"ebin" => Enum.map(ebin, &%{"path" => &1}), "priv" => [], "relocation" => record}
   end
 
@@ -134,20 +154,31 @@ defmodule Precompiled.RelocateTest do
     # The client review's S2: the md5 as the running OTP takes it
     # (beam_lib:md5/1; OTP 29 adds Recs and DbgB). An Erlang module with
     # its own vsn, beam debug info and a fun: its FunT old_uniq comes from
-    # the md5, and nothing else would show a wrong one.
+    # the md5, and nothing else would show a wrong one. On OTP 29 also a
+    # native record whose default is the path (the client re-review's R4),
+    # so the module has a Recs chunk.
     test "an Erlang module with its own vsn, beam debug info and a fun", ctx do
       {builder, user} = roots(ctx)
 
-      body = """
-      -vsn("1.2").
-      -compile(beam_debug_info).
-      -export([f/0, g/0]).
-      f() -> ?FILE.
-      g() -> fun() -> ok end.
-      """
+      record =
+        if @otp29,
+          do: "-export([h/0]).\n-record #st{file = ?FILE}.\n",
+          else: ""
+
+      body =
+        record <>
+          """
+          -vsn("1.2").
+          -compile(beam_debug_info).
+          -export([f/0, g/0]).
+          f() -> ?FILE.
+          g() -> fun() -> ok end.
+          """ <> if(@otp29, do: "h() -> #st{}.\n", else: "")
 
       served = compile_erl(builder, :reloc_md5, body)
       own = compile_erl(user, :reloc_md5, body)
+      {:ok, _, chunks} = :beam_lib.all_chunks(served)
+      assert List.keymember?(chunks, ~c"Recs", 0) == @otp29
       assert {:ok, occs} = Relocate.occurrences(served, slots(builder))
       assert {:ok, moved} = Relocate.relocate(served, occs, slots(builder), slots(user))
       assert stripped(moved) == stripped(own)
@@ -271,15 +302,17 @@ defmodule Precompiled.RelocateTest do
       {builder, user} = roots(ctx)
       served = compile(builder, Staged, @fine)
       own = compile(user, Staged, @fine)
-      {:ok, occs} = Relocate.occurrences(served, slots(builder))
+      path = "ebin/Elixir.RelocateTest.Staged.beam"
+      entry = entry(ctx, [path], [])
+      from = Map.take(entry["relocation"], ["deps", "build"])
+      assert from["deps"] == Path.join(builder, "deps")
+      {:ok, occs} = Relocate.occurrences(served, from)
+      entry = put_in(entry, ["relocation", "files"], [%{"path" => path, "occurrences" => occs}])
       staging = Path.join(ctx.tmp_dir, "staging")
       File.mkdir_p!(Path.join(staging, "ebin"))
-      File.write!(Path.join(staging, "ebin/Elixir.RelocateTest.Staged.beam"), served)
+      File.write!(Path.join(staging, path), served)
 
-      path = "ebin/Elixir.RelocateTest.Staged.beam"
-      entry = entry(ctx, builder, [path], [%{"path" => path, "occurrences" => occs}])
-
-      assert :ok = Relocate.apply_staged(staging, entry, slots(user))
+      assert :ok = Relocate.apply_staged(staging, entry, slots(user), :fx)
       moved = File.read!(Path.join(staging, path))
       assert stripped(moved) == stripped(own)
 
@@ -289,7 +322,56 @@ defmodule Precompiled.RelocateTest do
         ])
 
       assert {:fail, "relocation refused: " <> _} =
-               Relocate.apply_staged(staging, bad, slots(user))
+               Relocate.apply_staged(staging, bad, slots(user), :fx)
+    end
+
+    # The client re-review's R1: the record's roots are the builder's own,
+    # and each served beam was compiled from the package's own dir under
+    # the record's deps path.
+    test "apply_staged refuses roots not the builder's, or a beam compiled elsewhere", ctx do
+      {builder, user} = roots(ctx)
+      path = "ebin/Elixir.RelocateTest.Where.beam"
+      entry = entry(ctx, [path], [])
+      from = Map.take(entry["relocation"], ["deps", "build"])
+      served = compile(builder, Where, @fine)
+      {:ok, occs} = Relocate.occurrences(served, from)
+      entry = put_in(entry, ["relocation", "files"], [%{"path" => path, "occurrences" => occs}])
+      staging = Path.join(ctx.tmp_dir, "staging")
+      File.mkdir_p!(Path.join(staging, "ebin"))
+
+      stage = fn beam -> File.write!(Path.join(staging, path), beam) end
+
+      # Another package's dir under the same deps path.
+      stage.(served)
+
+      assert {:fail, "relocation refused: " <> why} =
+               Relocate.apply_staged(staging, entry, slots(user), :fy)
+
+      assert why =~ "not compiled from the record's deps path"
+
+      # Compiled from the same package dir at another root.
+      elsewhere = Path.join(ctx.tmp_dir, "other/work/proj")
+      stage.(compile(elsewhere, Where, @fine))
+
+      assert {:fail, "relocation refused: " <> _} =
+               Relocate.apply_staged(staging, entry, slots(user), :fx)
+
+      # A beam with no source: a deterministic compile.
+      stage.(served)
+      assert :ok = Relocate.apply_staged(staging, entry, slots(user), :fx)
+      stage.(no_source(served))
+
+      assert {:fail, "relocation refused: " <> why} =
+               Relocate.apply_staged(staging, entry, slots(user), :fx)
+
+      assert why =~ "not compiled from the record's deps path"
+
+      # The builder's roots under no prefix: not these.
+      stage.(served)
+      Application.put_env(:precompiled, :relocation_prefix, "")
+
+      assert {:fail, "relocation refused: the record's roots are not the builder's"} =
+               Relocate.apply_staged(staging, entry, slots(user), :fx)
     end
   end
 
@@ -382,17 +464,10 @@ defmodule Precompiled.RelocateTest do
     end
   end
 
-  # The umbrella review's B1: the client relocates only to paths inside the
-  # envelope the builder's two roots span.
+  # The umbrella reviews' B1 and R1: the client relocates only to paths
+  # inside the envelope the builder's three roots span.
   describe "envelope_reason/2" do
-    @first %{"deps" => "/work/proj/deps", "build" => "/work/proj/_build/host"}
-    @second %{
-      "deps" =>
-        "/tmp/ncc-relocate-1/A Long.Root-0123456789/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/x/y/The Project-2/Deps vendored_d",
-      "build" =>
-        "/tmp/ncc-relocate-1/A Long.Root-0123456789/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/x/y/The Project-2/Out.Build-3/Host 4"
-    }
-    @record Map.put(@first, "second", @second)
+    @record Relocate.pinned_record(1)
 
     test "a path inside the envelope is taken" do
       for user <- [
@@ -400,10 +475,29 @@ defmodule Precompiled.RelocateTest do
             %{
               "deps" => "/Users/alice/My Projects/my-app.2/deps",
               "build" => "/Users/alice/My Projects/my-app.2/_build/dev"
-            }
+            },
+            %{
+              "deps" => "/home/u/.cache/mix/installs/elixir-1.19.1-erts-15.2/0a1b2c3d/deps",
+              "build" => "/home/u/.cache/mix/installs/elixir-1.19.1-erts-15.2/0a1b2c3d/_build/dev"
+            },
+            %{"deps" => "/srv/x_y@z~1/app/deps", "build" => "/srv/x_y@z~1/app/_build/dev"}
           ] do
         assert Relocate.envelope_reason(@record, user) == nil, inspect(user)
       end
+    end
+
+    test "the third root widens the envelope: upper case, spaces and long paths" do
+      deps =
+        "/Users/Alice Smith/Projects/" <> String.duplicate("Long Directory Name ", 6) <> "x/deps"
+
+      assert byte_size(deps) > byte_size(@record["second"]["deps"])
+      assert byte_size(deps) <= byte_size(@record["third"]["deps"])
+      user = %{"deps" => deps, "build" => "/home/u/app/_build/dev"}
+      assert Relocate.envelope_reason(@record, user) == nil
+
+      # Without the third root the same path is outside.
+      two = Map.put(@record, "third", Map.take(@record, ["deps", "build"]))
+      assert %{code: :relocated_path_envelope} = Relocate.envelope_reason(two, user)
     end
 
     test "a path outside the envelope is a miss of its own" do
@@ -412,7 +506,7 @@ defmodule Precompiled.RelocateTest do
       for {slot, path} <- [
             {"deps", "/app/deps"},
             {"deps", "/home/u+x/app/deps"},
-            {"deps", "/home/~u/app/deps"},
+            {"deps", "/home/u!x/app/deps"},
             {"deps", "/" <> String.duplicate("a/", 20) <> "deps"},
             {"deps", "/" <> String.duplicate("a", 300) <> "/deps"},
             {"build", "/app/_build/dev"}
@@ -423,6 +517,57 @@ defmodule Precompiled.RelocateTest do
                  Relocate.envelope_reason(@record, user),
                inspect(path)
       end
+    end
+  end
+
+  # The client re-review's R1: the same roots as the portal's
+  # Compatibility.Relocation.pinned_record/1, byte for byte. The umbrella's
+  # relocation test pins the same literal.
+  describe "pinned_problem/2" do
+    @pinned_7 %{
+      "deps" => "/work/proj/deps",
+      "build" => "/work/proj/_build/host",
+      "second" => %{
+        "deps" =>
+          "/home/nerves/.cache/mix/installs/elixir-1.20.5-erts-16.4.0.2/ncc-relocate-7/nix/store/src/code/projects/x_y@z~0.d/app/deps",
+        "build" =>
+          "/home/nerves/.cache/mix/installs/elixir-1.20.5-erts-16.4.0.2/ncc-relocate-7/nix/store/src/code/projects/x_y@z~0.d/app/out.d/host-1"
+      },
+      "third" => %{
+        "deps" =>
+          "/Users/Ncc-Relocate 7/Library/Mobile Documents/ABCDEFGHIJKLMNOPQRSTUVWXYZ/0123456789/abcdefghijklmnopqrstuvwxyz/Long Relocation.Path-0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz/x/Y/z-0/Projects/The Relocated.Project-2/Deps vendored_d",
+        "build" =>
+          "/Users/Ncc-Relocate 7/Library/Mobile Documents/ABCDEFGHIJKLMNOPQRSTUVWXYZ/0123456789/abcdefghijklmnopqrstuvwxyz/Long Relocation.Path-0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz/x/Y/z-0/Projects/The Relocated.Project-2/Build-3/Host 4"
+      }
+    }
+
+    test "the builder's own roots, byte for byte the portal's" do
+      assert Relocate.pinned_record(7) == @pinned_7
+      assert Relocate.pinned_problem(Map.put(@pinned_7, "files", []), "") == nil
+    end
+
+    test "any other root is refused" do
+      bad = "the record's roots are not the builder's"
+
+      for record <- [
+            put_in(@pinned_7, ["build"], "/work/proj/_build/dev"),
+            put_in(
+              @pinned_7,
+              ["second", "deps"],
+              String.replace(@pinned_7["second"]["deps"], "-7/", "-8/")
+            ),
+            put_in(@pinned_7, ["third"], Relocate.pinned_record(8)["third"]),
+            put_in(@pinned_7, ["third", "deps"], "/tmp/deps"),
+            Map.delete(@pinned_7, "third"),
+            %{},
+            nil
+          ] do
+        assert Relocate.pinned_problem(record, "") == bad, inspect(record)
+      end
+
+      # Under a prefix (tests), the real roots are not taken.
+      assert Relocate.pinned_problem(@pinned_7, "/tmp/x") == bad
+      assert Relocate.pinned_problem(Relocate.pinned_record(7, "/tmp/x"), "/tmp/x") == nil
     end
   end
 

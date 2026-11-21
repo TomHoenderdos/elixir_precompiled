@@ -53,6 +53,12 @@ defmodule Precompiled.RelocatedInstallTest do
       home: Path.join(dir, "home")
     }
 
+    # The builder's three roots under the tmp dir (the client's test-only
+    # `relocation_prefix`), its first build in `<dir>/work/proj`.
+    Application.put_env(:precompiled, :relocation_prefix, dir)
+    on_exit(fn -> Application.delete_env(:precompiled, :relocation_prefix) end)
+    pinned = Relocate.pinned_record(1, dir)
+    from = Map.take(pinned, ["deps", "build"])
     builder = Path.join(dir, "work/proj")
     user = Path.join(dir, "home/u/app")
     File.mkdir_p!(Path.join(user, "deps"))
@@ -61,7 +67,7 @@ defmodule Precompiled.RelocatedInstallTest do
     # OTP 27 compresses the literal table, which no rewrite reads: there the
     # occurrence is the one a portal would record on OTP 28.
     occs =
-      case Relocate.occurrences(served, slots(builder)) do
+      case Relocate.occurrences(served, from) do
         {:ok, occs} ->
           occs
 
@@ -88,13 +94,7 @@ defmodule Precompiled.RelocatedInstallTest do
       ],
       "priv" => [],
       "build" => %{},
-      "relocation" =>
-        slots(builder)
-        |> Map.put(
-          "second",
-          slots(Path.join(dir, "Second Root.d/A-0123456789/abcdefghijklmnopqrstuvwxyz/proj"))
-        )
-        |> Map.put("files", [%{"path" => beam_path, "occurrences" => occs}])
+      "relocation" => Map.put(pinned, "files", [%{"path" => beam_path, "occurrences" => occs}])
     }
 
     %{
@@ -103,6 +103,7 @@ defmodule Precompiled.RelocatedInstallTest do
       entry: entry,
       served: served,
       occs: occs,
+      from: from,
       builder: builder,
       user: user,
       lib: Path.join(user, "_build/dev/lib"),
@@ -133,7 +134,7 @@ defmodule Precompiled.RelocatedInstallTest do
                )
 
       installed = File.read!(Path.join([ctx.lib, "fx", ctx.beam_path]))
-      {:ok, expected} = Relocate.relocate(ctx.served, ctx.occs, slots(ctx.builder), to)
+      {:ok, expected} = Relocate.relocate(ctx.served, ctx.occs, ctx.from, to)
       assert installed == expected
       assert installed != ctx.served
 
@@ -230,6 +231,39 @@ defmodule Precompiled.RelocatedInstallTest do
                )
 
       assert why =~ "priv/where.txt"
+    end
+
+    # The client re-review's R1: each served beam was compiled from the
+    # package's own dir under the record's deps path, and the record's roots
+    # are the builder's.
+    test "a beam compiled outside the package's dir, or other roots, installs nothing", ctx do
+      [_beam, app] = ctx.entry["ebin"]
+      other = compile(Path.join(ctx.tmp_dir, "elsewhere/work/proj"))
+
+      moved = %{
+        ctx.entry
+        | "ebin" => [
+            file_entry(F.file(ctx.f, other), byte_size(other), ctx.beam_path),
+            app
+          ]
+      }
+
+      wider = put_in(ctx.entry, ["relocation", "second", "deps"], "/d")
+
+      for {entry, why} <- [
+            {moved, "not compiled from the record's deps path"},
+            {wider, "the record's roots are not the builder's"}
+          ] do
+        assert {:fail, "relocation refused: " <> got} =
+                 Fetch.install(ctx.config, :fx, entry, @lock_entry, ctx.lib,
+                   deps_path: ctx.deps,
+                   provenance: ctx.prov,
+                   relocate: slots(ctx.user)
+                 )
+
+        assert got =~ why
+        refute File.exists?(Path.join(ctx.lib, "fx"))
+      end
     end
 
     test "without this project's slots nothing is installed", ctx do
