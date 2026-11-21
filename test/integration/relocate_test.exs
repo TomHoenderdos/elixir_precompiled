@@ -12,77 +12,95 @@ defmodule Precompiled.Integration.RelocateTest do
   # user's path.
   use ExUnit.Case, async: false
 
-  alias Precompiled.ChildProject, as: C
-  alias Precompiled.Fixture, as: F
-  alias Precompiled.Relocate
-
   @moduletag :integration
   @moduletag :tmp_dir
   @moduletag timeout: 600_000
-
-  @packages ["fine-0.2.0"]
-  @include ~s|IO.puts("include=" <> Fine.include_dir())|
 
   setup_all do
     start_supervised!(Precompiled.TestServer)
     :ok
   end
 
-  defp project!(dir, path) do
-    proj = Path.join([dir, path, "proj"])
-    File.mkdir_p!(proj)
-
-    File.write!(Path.join(proj, "mix.exs"), """
-    defmodule P.MixProject do
-      use Mix.Project
-      def project, do: [app: :p, version: "0.1.0", deps: [{:fine, "== 0.2.0"}]]
-    end
-    """)
-
-    C.mix!(proj, ["deps.get"], [], packages: @packages)
-    C.mix!(proj, ["deps.compile"], [], packages: @packages)
-    proj
-  end
-
-  defp mix!(proj, args, env \\ []), do: C.mix!(proj, args, env, packages: @packages)
-
-  defp include(proj) do
-    out = mix!(proj, ["run", "--no-start", "-e", @include])
-    [path] = Regex.run(~r/^include=(.+)$/m, out, capture: :all_but_first)
-    path
-  end
-
-  defp publish!(f, entry, seq) do
-    F.publish(
-      f,
-      %{
-        "fine" => %{
-          "versions" => %{"0.2.0" => %{"builds" => [], "relocated" => %{"builds" => [entry]}}}
-        }
-      },
-      sequence: seq
-    )
-  end
-
-  defp put_mode(entry, path, mode) do
-    Map.update!(entry, "ebin", fn files ->
-      Enum.map(files, &if(&1["path"] == path, do: %{&1 | "mode" => mode}, else: &1))
-    end)
-  end
-
-  defp slots(proj),
-    do: %{"deps" => Path.join(proj, "deps"), "build" => Path.join(proj, "_build/dev")}
-
-  defp beam(proj), do: File.read!(Path.join(proj, "_build/dev/lib/fine/ebin/Elixir.Fine.beam"))
-
-  defp stripped(beam) do
-    {:ok, {_, plain}} = :beam_lib.strip(beam)
-    {:ok, _, chunks} = :beam_lib.all_chunks(plain)
-    {:ok, _, all} = :beam_lib.all_chunks(beam)
-    chunks ++ [List.keyfind(all, ~c"Attr", 0)]
-  end
-
+  # On OTP 27 a relocated build is never installed (Precompiled.Relocate):
+  # nothing here runs there.
   if String.to_integer(System.otp_release()) >= 28 do
+    alias Precompiled.ChildProject, as: C
+    alias Precompiled.Fixture, as: F
+    alias Precompiled.Relocate
+
+    @packages ["fine-0.2.0"]
+    @include ~s|IO.puts("include=" <> Fine.include_dir())|
+
+    defp project!(dir, path) do
+      proj = Path.join([dir, path, "proj"])
+      File.mkdir_p!(proj)
+
+      File.write!(Path.join(proj, "mix.exs"), """
+      defmodule P.MixProject do
+        use Mix.Project
+        def project, do: [app: :p, version: "0.1.0", deps: [{:fine, "== 0.2.0"}]]
+      end
+      """)
+
+      C.mix!(proj, ["deps.get"], [], packages: @packages)
+      C.mix!(proj, ["deps.compile"], [], packages: @packages)
+      proj
+    end
+
+    defp mix!(proj, args, env \\ []), do: C.mix!(proj, args, env, packages: @packages)
+
+    defp include(proj) do
+      out = mix!(proj, ["run", "--no-start", "-e", @include])
+      [path] = Regex.run(~r/^include=(.+)$/m, out, capture: :all_but_first)
+      path
+    end
+
+    defp publish!(f, entry, seq) do
+      F.publish(
+        f,
+        %{
+          "fine" => %{
+            "versions" => %{"0.2.0" => %{"builds" => [], "relocated" => %{"builds" => [entry]}}}
+          }
+        },
+        sequence: seq
+      )
+    end
+
+    defp put_mode(entry, path, mode) do
+      Map.update!(entry, "ebin", fn files ->
+        Enum.map(files, &if(&1["path"] == path, do: %{&1 | "mode" => mode}, else: &1))
+      end)
+    end
+
+    defp slots(proj),
+      do: %{"deps" => Path.join(proj, "deps"), "build" => Path.join(proj, "_build/dev")}
+
+    # The record's second root, as the portal's worker writes one: long and
+    # deep, with every letter and digit, a space, a dot and a dash, so the
+    # projects this test makes under `dir` are inside the envelope.
+    defp second(dir) do
+      root =
+        Path.join(
+          dir,
+          "Second Root.d/ABCDEFGHIJKLMNOPQRSTUVWXYZ/0123456789/abcdefghijklmnopqrstuvwxyz/x/y/z/w/v/u/proj-2"
+        )
+
+      %{
+        "deps" => Path.join(root, "Deps vendored_d"),
+        "build" => Path.join(root, "Out.Build-3/Host 4")
+      }
+    end
+
+    defp beam(proj), do: File.read!(Path.join(proj, "_build/dev/lib/fine/ebin/Elixir.Fine.beam"))
+
+    defp stripped(beam) do
+      {:ok, {_, plain}} = :beam_lib.strip(beam)
+      {:ok, _, chunks} = :beam_lib.all_chunks(plain)
+      {:ok, _, all} = :beam_lib.all_chunks(beam)
+      chunks ++ [List.keyfind(all, ~c"Attr", 0)]
+    end
+
     test "fine built at the builder's paths, relocated, is the user's own compile", %{
       tmp_dir: dir
     } do
@@ -98,8 +116,8 @@ defmodule Precompiled.Integration.RelocateTest do
                occ
 
       to = Relocate.user_slots(Path.join(user, "deps"), Path.join(user, "_build/dev"))
-      assert to == slots(user)
-      assert {:ok, moved} = Relocate.relocate(served, [occ], slots(builder), to)
+      assert to == {:ok, slots(user)}
+      assert {:ok, moved} = Relocate.relocate(served, [occ], slots(builder), slots(user))
 
       assert stripped(moved) == stripped(own)
       assert :beam_lib.md5(moved) == :beam_lib.md5(own)
@@ -139,7 +157,8 @@ defmodule Precompiled.Integration.RelocateTest do
       from = slots(builder)
       assert {:ok, occs} = Relocate.occurrences(beam(builder), from)
       files = [%{"path" => "ebin/Elixir.Fine.beam", "occurrences" => occs}]
-      entry = Map.put(entry, "relocation", Map.put(from, "files", files))
+      record = from |> Map.put("second", second(dir)) |> Map.put("files", files)
+      entry = Map.put(entry, "relocation", record)
       publish!(f, entry, 2)
 
       # A fresh project on the same lock: installed, relocated to its paths.
@@ -184,6 +203,90 @@ defmodule Precompiled.Integration.RelocateTest do
       own = beam(moved)
       assert stripped(installed) == stripped(own)
       assert :beam_lib.md5(installed) == :beam_lib.md5(own)
+    end
+
+    # The client review's B1, end to end: a project whose MIX_DEPS_PATH or
+    # MIX_BUILD_PATH, or a Mix.install whose MIX_INSTALL_DIR, is spelled
+    # otherwise than on disk misses; the same project and Mix.install
+    # spelled as on disk take the relocated build. Only on a volume that
+    # ignores case, where the other spelling names the same dir.
+    test "paths spelled otherwise than on disk miss; Mix.install takes it", %{tmp_dir: dir} do
+      f = F.new(dir)
+      F.publish(f, %{}, sequence: 1)
+      deps = ~s([{:fine, "== 0.2.0"}, #{C.own_dep()}])
+
+      builder = C.plain!(Path.join(dir, "w"), f, deps: deps)
+      mix!(builder, ["deps.get"])
+      mix!(builder, ["compile"], [{"PRECOMPILED", "0"}])
+      lock_path = Path.join(builder, "mix.lock")
+      lock = Mix.Dep.Lock.read(lock_path)
+      entry = C.build_entry(f, Path.join(builder, "_build/dev/lib/fine"), elem(lock[:fine], 7))
+      from = slots(builder)
+      {:ok, occs} = Relocate.occurrences(beam(builder), from)
+      files = [%{"path" => "ebin/Elixir.Fine.beam", "occurrences" => occs}]
+      record = from |> Map.put("second", second(dir)) |> Map.put("files", files)
+      publish!(f, Map.put(entry, "relocation", record), 2)
+
+      # Mix.install, in its own install dir spelled as on disk: a HIT.
+      installs = Path.join(dir, "Installs")
+      File.mkdir_p!(installs)
+      out = mix_install!(dir, f, lock_path, installs)
+      assert out =~ ~r/precompiled: fine 0\.2\.0\s+HIT/, out
+      [install_dir] = Regex.run(~r/^dir=(.+)$/m, out, capture: :all_but_first)
+      assert out =~ "include=" <> Path.join(install_dir, "deps/fine/c_include")
+
+      lower = String.downcase(installs)
+      # macOS volumes ignore case by default; there the branch below runs.
+      if match?({:unix, :darwin}, :os.type()), do: assert(File.dir?(lower))
+
+      if File.dir?(lower) do
+        other = mix_install!(dir, f, lock_path, lower, "again")
+
+        assert other =~
+                 ~r/precompiled: fine 0\.2\.0\s+MISS\s+relocated build: this project's deps path is not spelled as on disk/,
+               other
+
+        # A project with MIX_DEPS_PATH, then MIX_BUILD_PATH, spelled otherwise.
+        user = C.plain!(Path.join(dir, "Case/App"), f, deps: deps)
+        File.cp!(lock_path, Path.join(user, "mix.lock"))
+        mix!(user, ["deps.get"])
+        down = String.downcase(user)
+
+        for {var, value, slot} <- [
+              {"MIX_DEPS_PATH", Path.join(down, "deps"), "deps"},
+              {"MIX_BUILD_PATH", Path.join(down, "_build/dev"), "build"}
+            ] do
+          out = mix!(user, ["compile"], [{var, value}])
+
+          assert out =~
+                   ~r/precompiled: fine 0\.2\.0\s+MISS\s+relocated build: this project's #{slot} path is not spelled as on disk/,
+                 out
+
+          File.rm_rf!(Path.join(user, "_build"))
+          File.rm_rf!(Path.join(down, "_build"))
+        end
+      end
+    end
+
+    defp mix_install!(dir, f, lock_path, installs, tag \\ "first") do
+      script = Path.join(dir, "install-#{tag}.exs")
+
+      File.write!(script, """
+      Application.put_env(:precompiled, :source, #{inspect(F.base_url())})
+      Application.put_env(:precompiled, :root, #{inspect(f.root_path)})
+      Precompiled.Host.install([{:fine, "== 0.2.0"}], lockfile: #{inspect(lock_path)})
+      IO.puts("dir=" <> Mix.install_project_dir())
+      IO.puts("include=" <> Fine.include_dir())
+      """)
+
+      C.cmd!(["elixir", "-pa", C.own_ebin(), script], dir,
+        env: [
+          {"MIX_INSTALL_DIR", installs},
+          {"PRECOMPILED_HOME", Path.join(dir, "home-#{tag}")},
+          {"MIX_ENV", nil}
+        ],
+        packages: @packages
+      )
     end
   end
 end
