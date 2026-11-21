@@ -115,6 +115,15 @@ defmodule Precompiled.RelocateTest do
 
   defp roots(ctx), do: {Path.join(ctx.tmp_dir, "work/proj"), Path.join(ctx.tmp_dir, "home/u/app")}
 
+  # Roots under a short dir of the system's temp dir, for a test that makes
+  # an atom of a path: an atom holds at most 255 characters, and ExUnit's
+  # tmp dir under a checkout can be longer than that.
+  defp short_roots() do
+    base = Path.join(System.tmp_dir!(), "s4r#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf!(base) end)
+    {Path.join(base, "work/proj"), Path.join(base, "home/u/app")}
+  end
+
   @fine "@include_dir Path.expand(\"c_include\")\ndef include_dir, do: @include_dir"
 
   # OTP 27 compresses the literal table, which no rewrite reads: these run
@@ -160,8 +169,8 @@ defmodule Precompiled.RelocateTest do
 
     # The client review's S1 and N2: atom 1 is the module's name; no
     # record may rename it.
-    test "a record that names atom 1, the module's name, is refused", ctx do
-      {builder, user} = roots(ctx)
+    test "a record that names atom 1, the module's name, is refused", _ctx do
+      {builder, user} = short_roots()
       module = String.to_atom(Path.join(builder, "deps/fx/lib"))
 
       forms = [
@@ -225,14 +234,14 @@ defmodule Precompiled.RelocateTest do
       assert :beam_lib.md5(moved) == :beam_lib.md5(own)
     end
 
-    test "paths in maps, keyword lists, atoms and the build path", ctx do
+    test "paths in maps, keyword lists, atoms and the build path", _ctx do
       body = """
       @cfg %{file: Path.join(__DIR__, "x"), opts: [priv: Path.join(@build, "lib/fx/priv")]}
       @a String.to_atom(__DIR__)
       def cfg, do: {@cfg, @a, fn -> :ok end}
       """
 
-      {builder, user} = roots(ctx)
+      {builder, user} = short_roots()
       served = compile(builder, Deep, body)
       own = compile(user, Deep, body)
       assert {:ok, occs} = Relocate.occurrences(served, slots(builder))
