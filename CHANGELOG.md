@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased (0.9.0)
+
+* Relocated builds: a dependency whose own beams hold the path it was compiled at (fine's
+  `Fine.include_dir/0`, a `__DIR__` literal, a path into its build's `priv`) can now install
+  precompiled. The portal builds it twice at two different roots and lists it under a
+  version's `relocated` object, which earlier clients never read, with the record of every
+  occurrence of the builder's deps and build path. This client takes one only after every
+  other list missed, rewrites each occurrence to this project's own deps and build path at
+  install, exactly as this project's own compile would have written it (the literal
+  re-encoded, the module's md5, fun uniqs and default `vsn` taken again), and records the
+  rewritten files' hashes in the install's provenance. A moved project installs it again,
+  relocated to its new paths.
+
+* A relocated build misses on OTP 27 (`relocated_otp`), when this project's deps or build
+  path is not its own real path or the host is not unix (`relocated_paths`), and when the
+  rewrite finds the served beam is not the one recorded (`relocation_refused`).
+
 ## v0.8.0 - 2026-11-20
 
 * Foreign priv builds: a dependency whose compile packs Kino.JS assets into kino's priv
