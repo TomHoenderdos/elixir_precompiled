@@ -37,6 +37,56 @@ defmodule Precompiled.RelocateTest do
     beam
   end
 
+  # An Erlang module compiled from `<root>/deps/fx/src/<name>.erl`, as Mix
+  # compiles one: `?FILE` is that absolute path.
+  defp compile_erl(root, name, body) do
+    file = Path.join(root, "deps/fx/src/#{name}.erl")
+    File.mkdir_p!(Path.dirname(file))
+    File.write!(file, "-module(#{name}).\n" <> body)
+
+    {:ok, ^name, beam} =
+      File.cd!(Path.join(root, "deps/fx"), fn ->
+        :compile.file(String.to_charlist(file), [:binary, :report_errors])
+      end)
+
+    beam
+  end
+
+  # Dependency fxa's macro keeps its location; fxb's module uses it, so
+  # fxb's line table names fxa's file by its absolute path.
+  defp compile_keep(root) do
+    a_dir = Path.join(root, "deps/fxa")
+    b_dir = Path.join(root, "deps/fxb")
+    File.mkdir_p!(a_dir)
+    File.mkdir_p!(b_dir)
+
+    a = """
+    defmodule RelocateTest.KeepA do
+      defmacro __using__(_opts) do
+        quote location: :keep do
+          def hello, do: :hello
+        end
+      end
+    end
+    """
+
+    [{RelocateTest.KeepA, _}] =
+      File.cd!(a_dir, fn -> Code.compile_string(a, Path.join(a_dir, "lib/a.ex")) end)
+
+    b = "defmodule RelocateTest.KeepB do\n  use RelocateTest.KeepA\nend\n"
+
+    [{RelocateTest.KeepB, beam}] =
+      File.cd!(b_dir, fn -> Code.compile_string(b, Path.join(b_dir, "lib/b.ex")) end)
+
+    for m <- [RelocateTest.KeepA, RelocateTest.KeepB], do: :code.delete(m) && :code.purge(m)
+    beam
+  end
+
+  defp all_but_metadata(beam) do
+    {:ok, _, chunks} = :beam_lib.all_chunks(beam)
+    for {id, data} <- chunks, id not in [~c"CInf", ~c"Dbgi", ~c"Docs"], do: {id, data}
+  end
+
   defp stripped(beam) do
     {:ok, {_, plain}} = :beam_lib.strip(beam)
     {:ok, _, chunks} = :beam_lib.all_chunks(plain)
@@ -68,6 +118,97 @@ defmodule Precompiled.RelocateTest do
   @fine "@include_dir Path.expand(\"c_include\")\ndef include_dir, do: @include_dir"
 
   if @otp28 do
+    # The client review's S2: the md5 as the running OTP takes it
+    # (beam_lib:md5/1; OTP 29 adds Recs and DbgB). An Erlang module with
+    # its own vsn, beam debug info and a fun: its FunT old_uniq comes from
+    # the md5, and nothing else would show a wrong one.
+    test "an Erlang module with its own vsn, beam debug info and a fun", ctx do
+      {builder, user} = roots(ctx)
+
+      body = """
+      -vsn("1.2").
+      -compile(beam_debug_info).
+      -export([f/0, g/0]).
+      f() -> ?FILE.
+      g() -> fun() -> ok end.
+      """
+
+      served = compile_erl(builder, :reloc_md5, body)
+      own = compile_erl(user, :reloc_md5, body)
+      assert {:ok, occs} = Relocate.occurrences(served, slots(builder))
+      assert {:ok, moved} = Relocate.relocate(served, occs, slots(builder), slots(user))
+      assert stripped(moved) == stripped(own)
+      assert all_but_metadata(moved) == all_but_metadata(own)
+    end
+
+    # The client review's N2: a Line occurrence from a real compile, a
+    # macro of another dependency that keeps its location.
+    test "a line table file name from another dependency's macro", ctx do
+      {builder, user} = roots(ctx)
+      served = compile_keep(builder)
+      own = compile_keep(user)
+      assert {:ok, occs} = Relocate.occurrences(served, slots(builder))
+      assert Enum.any?(occs, &(&1["chunk"] == "Line"))
+      assert {:ok, moved} = Relocate.relocate(served, occs, slots(builder), slots(user))
+      assert stripped(moved) == stripped(own)
+      assert all_but_metadata(moved) == all_but_metadata(own)
+    end
+
+    # The client review's S1 and N2: atom 1 is the module's name; no
+    # record may rename it.
+    test "a record that names atom 1, the module's name, is refused", ctx do
+      {builder, user} = roots(ctx)
+      module = String.to_atom(Path.join(builder, "deps/fx/lib"))
+
+      forms = [
+        {:attribute, 1, :module, module},
+        {:attribute, 1, :export, [d: 0]},
+        {:function, 1, :d, 0, [{:clause, 1, [], [], [{:atom, 1, :ok}]}]}
+      ]
+
+      {:ok, ^module, served} = :compile.forms(forms, [:binary])
+
+      assert {:refuse, "a path in a module or function name"} =
+               Relocate.occurrences(served, slots(builder))
+
+      occ = %{
+        "chunk" => "AtU8",
+        "index" => 1,
+        "term" => [],
+        "kind" => "atom",
+        "parts" => ["", "deps", "/fx/lib"]
+      }
+
+      assert {:refuse, _} = Relocate.relocate(served, [occ], slots(builder), slots(user))
+    end
+
+    # The client review's S4: the limit on an atom is 255 code points, and
+    # a beam's short atom table holds 255 bytes; nothing is truncated.
+    test "an atom over 255 code points, or over 255 bytes in a short table, is refused", ctx do
+      base = Path.join(System.tmp_dir!(), "s4atom#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf!(base) end)
+      builder = Path.join(base, "b")
+      served = compile(builder, Atomic, "@a String.to_atom(__DIR__)\ndef a, do: @a")
+      {:ok, occs} = Relocate.occurrences(served, slots(builder))
+      marks = "/" <> String.duplicate("e\u0301", 130)
+
+      # 130 graphemes, 260 code points.
+      assert {:refuse, _} =
+               Relocate.relocate(served, occs, slots(builder), slots(Path.join(base, marks)))
+
+      short =
+        compile(
+          builder,
+          Short,
+          "@compile :no_long_atoms\n@a String.to_atom(__DIR__ <> String.duplicate(\"\u00e9\", 80))\ndef a, do: @a"
+        )
+
+      {:ok, occs} = Relocate.occurrences(short, slots(builder))
+      longer = Path.join(base, String.duplicate("b", 40))
+
+      assert {:refuse, _} = Relocate.relocate(short, occs, slots(builder), slots(longer))
+    end
+
     test "fine's literal, relocated, is the user's own compile", ctx do
       {builder, user} = roots(ctx)
       served = compile(builder, Fine, @fine)

@@ -32,7 +32,6 @@ defmodule Precompiled.Relocate do
   @slots ["deps", "build"]
   @metadata ~w(CInf Dbgi Docs)
   @rewritten ~w(LitT AtU8 Attr Line)
-  @essentials ~w(AtU8 Code StrT ImpT ExpT FunT LitT Meta)
   @max_term_bytes 4 * 1024 * 1024
   @max_occurrences 10_000
   @literal_opts [{:minor_version, 2}, :deterministic]
@@ -731,6 +730,18 @@ defmodule Precompiled.Relocate do
 
   defp atom_length(_rest, _format), do: :error
 
+  # The short atom table (`no_long_atoms`) holds a name's length in a byte:
+  # a longer name is refused, never truncated.
+  defp atom_bytes(:short, names) do
+    if Enum.all?(names, &(byte_size(&1) <= 255)),
+      do: :ok,
+      else: {:refuse, "an atom over 255 bytes in a short atom table"}
+  end
+
+  defp atom_bytes(:long, _names), do: :ok
+
+  defp code_points(s), do: s |> String.to_charlist() |> length()
+
   defp atom_chunk({:long, names}) do
     body = for name <- names, into: <<>>, do: <<compact_u(byte_size(name))::binary, name::binary>>
     <<-length(names)::signed-32, body::binary>>
@@ -885,14 +896,13 @@ defmodule Precompiled.Relocate do
   defp relocate_chunks(chunks, occs, from, to) do
     by_chunk = Enum.group_by(occs, & &1["chunk"])
 
-    old = md5(chunks)
-
-    with :ok <- known_chunks(by_chunk),
+    with {:ok, old} <- md5(chunks),
+         :ok <- uniq_is_md5(chunks, old),
+         :ok <- known_chunks(by_chunk),
          {:ok, chunks} <- rewrite(chunks, "LitT", by_chunk, &rewrite_literals(&1, &2, from, to)),
          {:ok, chunks} <- rewrite(chunks, "AtU8", by_chunk, &rewrite_atoms(&1, &2, from, to)),
-         {:ok, chunks} <- rewrite(chunks, "Line", by_chunk, &rewrite_lines(&1, &2, from, to)) do
-      new = md5(chunks)
-
+         {:ok, chunks} <- rewrite(chunks, "Line", by_chunk, &rewrite_lines(&1, &2, from, to)),
+         {:ok, new} <- md5(chunks) do
       chunks
       |> put_uniq(new)
       |> rewrite_attr(Map.get(by_chunk, "Attr", []), from, to, old, new)
@@ -1026,7 +1036,7 @@ defmodule Precompiled.Relocate do
   defp as_kind("charlist", s), do: {:ok, String.to_charlist(s)}
 
   defp as_kind("atom", s) do
-    if String.length(s) <= 255,
+    if code_points(s) <= 255,
       do: {:ok, String.to_atom(s)},
       else: {:refuse, "an atom over 255 characters"}
   end
@@ -1035,7 +1045,8 @@ defmodule Precompiled.Relocate do
 
   defp rewrite_atoms(data, occs, from, to) do
     with {:ok, {format, names}} <- atoms(data),
-         {:ok, names} <- rewrite_names(names, occs, 1, from, to, 255) do
+         {:ok, names} <- rewrite_names(names, occs, 1, from, to, 255),
+         :ok <- atom_bytes(format, names) do
       if length(Enum.uniq(names)) == length(names),
         do: {:ok, atom_chunk({format, names})},
         else: {:refuse, "two atoms would be one at these paths"}
@@ -1054,7 +1065,8 @@ defmodule Precompiled.Relocate do
   end
 
   # The names (atoms from 1, file names from 0) with each occurrence's index
-  # rewritten; an atom must stay at most `max` characters.
+  # rewritten; an atom must stay at most `max` code points, as OTP counts
+  # them, and atom 1, the module's name, is never rewritten.
   defp rewrite_names(names, occs, base, from, to, max) do
     indexed = names |> Enum.with_index(base) |> Map.new(fn {n, i} -> {i, n} end)
 
@@ -1064,7 +1076,8 @@ defmodule Precompiled.Relocate do
       with true <- is_map_key(acc, i) and occ["term"] == [],
            true <- Map.fetch!(acc, i) == render(occ["parts"], from),
            new = render(occ["parts"], to),
-           true <- max == nil or String.length(new) <= max do
+           true <- base != 1 or i != 1,
+           true <- max == nil or code_points(new) <= max do
         {:cont, {:ok, Map.put(acc, i, new)}}
       else
         _ -> {:halt, {:refuse, "the beam does not hold the recorded path"}}
@@ -1078,24 +1091,31 @@ defmodule Precompiled.Relocate do
     _ -> {:refuse, "an unreadable occurrence"}
   end
 
-  # `beam_asm:module_md5/1`: the essentials' data in their order, with
-  # every fun's `old_uniq` zeroed.
+  # The module's md5 as the running OTP takes it, `beam_lib:md5/1`: the
+  # chunks its `md5_chunks/0` lists (OTP 29 adds `Recs` and `DbgB` to
+  # OTP 28's), in that order, with every fun's `old_uniq` zeroed. The
+  # served beam was built on this OTP major (Match's `otp_reason`).
   defp md5(chunks) do
-    @essentials
-    |> Enum.flat_map(fn id ->
-      case chunk(chunks, id) do
-        nil -> []
-        data when id == "FunT" -> [zero_uniq(data)]
-        data -> [data]
-      end
-    end)
-    |> :erlang.md5()
+    case :beam_lib.md5(form(chunks)) do
+      {:ok, {_module, md5}} when byte_size(md5) == 16 -> {:ok, md5}
+      _ -> {:refuse, "no md5"}
+    end
   end
 
-  defp zero_uniq(<<count::32, table::binary>>),
-    do:
-      <<count::32,
-        for(<<keep::binary-size(20), _::32 <- table>>, into: <<>>, do: <<keep::binary, 0::32>>)::binary>>
+  # The compiler sets every fun's `old_uniq` to the first 27 bits of the
+  # module's md5: a served beam whose funs say otherwise was not hashed as
+  # this VM hashes it, and its rewrite would not be this VM's compile.
+  defp uniq_is_md5(chunks, <<uniq::27, _::101>>) do
+    case List.keyfind(chunks, "FunT", 0) do
+      {"FunT", <<_count::32, table::binary>>} ->
+        if Enum.all?(for(<<_::binary-size(20), u::32 <- table>>, do: u), &(&1 == uniq)),
+          do: :ok,
+          else: {:refuse, "the served md5 is not this VM's"}
+
+      nil ->
+        :ok
+    end
+  end
 
   defp put_uniq(chunks, <<uniq::27, _::101>>) do
     case List.keyfind(chunks, "FunT", 0) do
