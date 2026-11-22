@@ -31,10 +31,17 @@ defmodule Precompiled.ProbeInputs do
   # rule checks them), and their compile is the build's, since every input
   # of the closure is checked: they are not read.
   #
-  # A dep's sources are read as the portal reads a Hex tarball
+  # A dep's sources (and its mix.exs, which Mix evaluates before any dep
+  # compiles) are read as the portal reads a Hex tarball
   # (Compatibility.HexModules): every literal defmodule, defprotocol and
   # defimpl name with its nesting, every -module of an Erlang file, and a
-  # leex or yecc file's base name. No atom is created. Only a file that
+  # leex or yecc file's base name; and, beyond it, a module another macro
+  # may define from a literal alias (a def-named macro's first argument,
+  # EctoEnum's defenum, Mox's defmock; an alias beside a do-block, an inline
+  # embeds_one), each implementation an @derive inside a module defines, and
+  # any module under a protocol Protocol.derive/2 names. A module loaded in
+  # this VM now (the project's own mix.exs and config run before any dep
+  # compiles) counts as on the code path. No atom is created. Only a file that
   # holds the module's last name segment can define it under a literal
   # name, so only those are parsed. Such a file that defines a module under
   # a name it computes (defmodule or defprotocol of anything but a literal,
@@ -120,7 +127,7 @@ defmodule Precompiled.ProbeInputs do
       found = Enum.find(definers, &MapSet.member?(view.names, &1)) ->
         definer(shown, found)
 
-      on_code_path?(name <> ".beam") ->
+      on_code_path?(name <> ".beam") or loaded?(name) ->
         definer(shown, "code_path")
 
       true ->
@@ -284,6 +291,20 @@ defmodule Precompiled.ProbeInputs do
   defp walk({{:atom, "quote"}, _, args}, outers, name, scope, _quoted?),
     do: walk(args, outers, name, scope, true)
 
+  # `@derive Proto` (or a list, or `{Proto, opts}`) inside a module defines
+  # `Proto.Module` when its defstruct runs.
+  defp walk({:@, _, [{{:atom, "derive"}, _, [arg]}]}, outers, name, scope, quoted?),
+    do: derive_answer(arg, outers, name, scope, quoted?)
+
+  defp walk(
+         {{:., _, [{:__aliases__, _, [{:atom, "Protocol"}]}, {:atom, "derive"}]}, _, [proto | _]},
+         _outers,
+         name,
+         scope,
+         _quoted?
+       ),
+       do: under_protocol(proto, name, scope)
+
   defp walk(
          {{:., _, [{:__aliases__, _, [{:atom, "Module"}]}, {:atom, "create"}]}, _, _},
          _,
@@ -296,6 +317,31 @@ defmodule Precompiled.ProbeInputs do
   defp walk({{:., _, [{:__aliases__, _, [{:atom, "Code"}]}, {:atom, fun}]}, _, _}, _, _, _, _)
        when fun in @compile_calls,
        do: :unknown
+
+  # A macro other than the def forms that takes a literal alias first, or an
+  # alias beside a do-block (an inline `embeds_one :p, Name do`), may define
+  # a module of that name, named as defmodule names it.
+  defp walk({{:atom, fun}, _, [_ | _] = args} = node, outers, name, scope, quoted?)
+       when is_binary(fun) do
+    case macro_definition(fun, args, outers, name, scope, quoted?) do
+      :clear -> walk_call(node, outers, name, scope, quoted?)
+      answer -> answer
+    end
+  end
+
+  defp walk(
+         {{:., _, [_mod, {:atom, fun}]}, _, [_ | _] = args} = node,
+         outers,
+         name,
+         scope,
+         quoted?
+       )
+       when is_binary(fun) do
+    case macro_definition(fun, args, outers, name, scope, quoted?) do
+      :clear -> walk_call(node, outers, name, scope, quoted?)
+      answer -> answer
+    end
+  end
 
   defp walk({a, _meta, args}, outers, name, scope, quoted?),
     do:
@@ -317,6 +363,82 @@ defmodule Precompiled.ProbeInputs do
   end
 
   defp walk(_other, _outers, _name, _scope, _quoted?), do: :clear
+
+  defp walk_call({a, _meta, args}, outers, name, scope, quoted?),
+    do:
+      both(walk(a, outers, name, scope, quoted?), fn ->
+        walk(args, outers, name, scope, quoted?)
+      end)
+
+  # The def forms that define functions, macros, guards or a struct in the
+  # current module, never a module of their own.
+  @function_defs ~w(def defp defmacro defmacrop defguard defguardp defdelegate defstruct
+                    defexception defoverridable defn defnp deftransform deftransformp)
+
+  defp macro_definition(fun, [first | _] = args, outers, name, scope, quoted?) do
+    candidates =
+      cond do
+        fun in @function_defs -> []
+        String.starts_with?(fun, "def") and alias?(first) -> [first]
+        do_block?(args) -> args |> Enum.take(2) |> Enum.filter(&alias?/1)
+        true -> []
+      end
+
+    Enum.reduce_while(candidates, :clear, fn ast, :clear ->
+      case module_names(ast, outers, scope, quoted?) do
+        :unknown -> {:halt, :unknown}
+        names -> if name in names, do: {:halt, :defines}, else: {:cont, :clear}
+      end
+    end)
+  end
+
+  defp alias?({:__aliases__, _, _}), do: true
+  defp alias?(_ast), do: false
+
+  defp do_block?(args) do
+    case List.last(args) do
+      [{key, _} | _] = kw when key in [:do, {:atom, "do"}] -> is_list(kw)
+      _ -> false
+    end
+  end
+
+  # Each protocol `@derive` names, implemented for each name the enclosing
+  # module can have; one that is no literal alias could be any protocol.
+  defp derive_answer(_arg, [], _name, _scope, _quoted?), do: :clear
+  defp derive_answer(_arg, _outers, _name, _scope, true), do: :unknown
+
+  defp derive_answer(arg, outers, name, scope, false) do
+    protos = for p <- List.wrap(arg), do: derive_proto(p)
+
+    if Enum.any?(protos, &(&1 == :unknown)) do
+      if String.starts_with?(name, "Elixir."), do: :unknown, else: :clear
+    else
+      impls =
+        for p <- protos,
+            proto <- names_anywhere(p, scope.all) |> List.wrap(),
+            is_binary(proto),
+            o <- outers,
+            do: proto <> "." <> String.replace_prefix(o, "Elixir.", "")
+
+      if name in impls, do: :defines, else: :clear
+    end
+  end
+
+  defp derive_proto({:{}, _, [p | _]}), do: derive_proto(p)
+  defp derive_proto({p, _opts}), do: derive_proto(p)
+  defp derive_proto({:__aliases__, _, _} = p), do: p
+  defp derive_proto(_other), do: :unknown
+
+  # Protocol.derive(proto, for): some module under proto.
+  defp under_protocol(proto, name, scope) do
+    case names_anywhere(proto, scope.all) do
+      :unknown ->
+        :unknown
+
+      protos ->
+        if Enum.any?(protos, &String.starts_with?(name, &1 <> ".")), do: :unknown, else: :clear
+    end
+  end
 
   defp both(:clear, next), do: next.()
   defp both(answer, _next), do: answer
@@ -555,21 +677,21 @@ defmodule Precompiled.ProbeInputs do
   # :error.
   defp source_files(dir) do
     case File.lstat(dir) do
-      {:ok, %File.Stat{type: :directory}} -> walk_dir([dir], [], 0)
+      {:ok, %File.Stat{type: :directory}} -> walk_dir([dir], [], 0, dir)
       _ -> :error
     end
   end
 
-  defp walk_dir([], acc, _count), do: {:ok, Enum.sort(acc)}
+  defp walk_dir([], acc, _count, _root), do: {:ok, Enum.sort(acc)}
 
-  defp walk_dir([dir | rest], acc, count) do
+  defp walk_dir([dir | rest], acc, count, root) do
     case File.ls(dir) do
       {:ok, entries} ->
         entries
         |> Enum.reject(&(String.starts_with?(&1, ".") or &1 in @not_sources))
-        |> Enum.reduce_while({rest, acc, count}, &entry(Path.join(dir, &1), &2))
+        |> Enum.reduce_while({rest, acc, count}, &entry(Path.join(dir, &1), root, &2))
         |> case do
-          {rest, acc, count} -> walk_dir(rest, acc, count)
+          {rest, acc, count} -> walk_dir(rest, acc, count, root)
           :error -> :error
         end
 
@@ -578,17 +700,13 @@ defmodule Precompiled.ProbeInputs do
     end
   end
 
-  defp entry(path, {dirs, files, count}) do
+  defp entry(path, root, {dirs, files, count}) do
     case File.lstat(path) do
       {:ok, %File.Stat{type: :directory}} ->
         {:cont, {[path | dirs], files, count}}
 
       {:ok, %File.Stat{type: :regular}} ->
-        cond do
-          Path.extname(path) not in @source_exts -> {:cont, {dirs, files, count}}
-          count >= @max_files -> {:halt, :error}
-          true -> {:cont, {dirs, [path | files], count + 1}}
-        end
+        source(path, root, {dirs, files, count})
 
       {:ok, %File.Stat{type: :symlink}} ->
         {:halt, :error}
@@ -601,15 +719,37 @@ defmodule Precompiled.ProbeInputs do
     end
   end
 
+  defp source(path, root, {dirs, files, count}) do
+    cond do
+      Path.extname(path) not in @source_exts and not root_mix_exs?(path, root) ->
+        {:cont, {dirs, files, count}}
+
+      count >= @max_files ->
+        {:halt, :error}
+
+      true ->
+        {:cont, {dirs, [path | files], count + 1}}
+    end
+  end
+
+  # Mix evaluates every dep's mix.exs before it compiles any, in the same VM:
+  # a module one defines is loaded when the prober compiles.
+  defp root_mix_exs?(path, root), do: path == Path.join(root, "mix.exs")
+
   # --- applications ----------------------------------------------------------
 
   defp app_check(name, nil), do: unknown(name)
 
   defp app_check(name, view) do
     cond do
-      MapSet.member?(view.names, name) -> definer(name, name)
-      on_code_path?(name <> ".app") or shipped?(name) -> definer(name, "code_path")
-      true -> :ok
+      MapSet.member?(view.names, name) ->
+        definer(name, name)
+
+      on_code_path?(name <> ".app") or shipped?(name) or app_loaded?(name) ->
+        definer(name, "code_path")
+
+      true ->
+        :ok
     end
   end
 
@@ -622,6 +762,22 @@ defmodule Precompiled.ProbeInputs do
   end
 
   defp on_code_path?(file), do: :code.where_is_file(String.to_charlist(file)) != :non_existing
+
+  # Loaded in this VM now, on the code path or not: the project's own
+  # mix.exs and config are evaluated before any dep compiles, and what they
+  # define is loaded when one does. A name no atom has yet is no module.
+  defp loaded?(name) do
+    :erlang.module_loaded(String.to_existing_atom(name))
+  rescue
+    ArgumentError -> false
+  end
+
+  defp app_loaded?(name) do
+    atom = String.to_existing_atom(name)
+    Enum.any?(Application.loaded_applications(), &(elem(&1, 0) == atom))
+  rescue
+    ArgumentError -> false
+  end
 
   # An application whose .app is under OTP's or Elixir's own lib directory,
   # pruned from the code path or not.

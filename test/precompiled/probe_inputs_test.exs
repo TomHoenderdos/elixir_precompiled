@@ -120,6 +120,65 @@ defmodule Precompiled.ProbeInputsTest do
       assert check(module("Elixir.Some.Thing.Inside"), v) == :ok
     end
 
+    # A macro other than defmodule can define a module from a literal alias:
+    # EctoEnum's `defenum`, Mox's `defmock`, an inline `embeds_one ... do`,
+    # `@derive` and `Protocol.derive/2` (an implementation).
+    test "a module a DSL macro, @derive or an inline embed defines is found", %{tmp_dir: dir} do
+      cases = [
+        {"defenum Poison, :p, [:a]\n", "Elixir.Poison", :probe_definer},
+        {"defmodule Outer do\n  defenum Poison, :p, [:a]\nend\n", "Elixir.Outer.Poison",
+         :probe_definer},
+        {"Mox.defmock(Poison, for: B)\n", "Elixir.Poison", :probe_definer},
+        {"defmodule S do\n  embeds_one :p, Poison do\n  end\nend\n", "Elixir.S.Poison",
+         :probe_definer},
+        {"defmodule Money do\n  @derive [Jsn.Encoder]\n  defstruct [:a]\nend\n",
+         "Elixir.Jsn.Encoder.Money", :probe_definer},
+        {"defmodule Money do\n  @derive {Jsn.Encoder, only: [:a]}\nend\n",
+         "Elixir.Jsn.Encoder.Money", :probe_definer},
+        {"Protocol.derive(Jsn.Encoder, Money)\n", "Elixir.Jsn.Encoder.Money", :probe_unknown},
+        {"defmodule M do\n  @derive unquote(p)\nend\n# Encoder\n", "Elixir.Jsn.Encoder.M",
+         :probe_unknown}
+      ]
+
+      for {body, name, code} <- cases do
+        sub = Path.join(dir, "#{System.unique_integer([:positive])}")
+        v = view(sub, [{"dsl", %{"lib/d.ex" => body}}])
+        assert {:miss, %{code: ^code}} = check(module(name), v), body
+      end
+
+      # A plain call with the module, or a def, defines nothing.
+      for body <- [
+            "defmodule U do\n  def f, do: Poison.encode!(1)\n  defdelegate g, to: Poison\nend\n",
+            "if Code.ensure_loaded?(Poison) do\n  :ok\nend\n"
+          ] do
+        sub = Path.join(dir, "#{System.unique_integer([:positive])}")
+        assert check(module("Elixir.Poison"), view(sub, [{"user", %{"lib/u.ex" => body}}])) == :ok
+      end
+    end
+
+    # Mix evaluates every dep's mix.exs before it compiles one, in the same
+    # VM: a module defined there is loaded when the prober compiles.
+    test "a module a dep's mix.exs defines is found", %{tmp_dir: dir} do
+      body = "defmodule Poison do\nend\ndefmodule X.MixProject do\nend\n"
+      v = view(dir, [{"odd", %{"mix.exs" => body}}])
+
+      assert {:miss, %{code: :probe_definer, args: ["Poison", "odd"]}} =
+               check(module("Elixir.Poison"), v)
+    end
+
+    # The project's own mix.exs and config are evaluated before the deps
+    # compile: a module loaded in this VM now is one a dep's compile finds.
+    test "a module loaded in this VM, off the code path, is one the project supplies",
+         %{tmp_dir: dir} do
+      name = "Elixir.ProbeInputsTest.Loaded#{System.unique_integer([:positive])}"
+
+      {:module, _, _, _} =
+        Module.create(String.to_atom(name), quote(do: nil), Macro.Env.location(__ENV__))
+
+      assert {:miss, %{code: :probe_definer, args: [_, "code_path"]}} =
+               check(module(name), view(dir, []))
+    end
+
     test "a definition inside a quote is named where the macro expands", %{tmp_dir: dir} do
       body =
         "defmacro __using__(_) do\n  quote do\n    defmodule Encoder do\n    end\n  end\nend\n"
@@ -251,6 +310,14 @@ defmodule Precompiled.ProbeInputsTest do
     test "misses when this VM finds it", %{tmp_dir: dir} do
       assert {:miss, %{code: :probe_definer, args: ["stdlib", "code_path"]}} =
                check(app("stdlib"), view(dir, []))
+    end
+
+    test "misses when an application of that name is loaded in this VM", %{tmp_dir: dir} do
+      name = "probe_inputs_loaded_#{System.unique_integer([:positive])}"
+      :ok = :application.load({:application, String.to_atom(name), [vsn: ~c"1.0.0"]})
+
+      assert {:miss, %{code: :probe_definer, args: [^name, "code_path"]}} =
+               check(app(name), view(dir, []))
     end
   end
 

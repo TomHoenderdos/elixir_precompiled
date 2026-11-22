@@ -195,10 +195,14 @@ compares the whole tree. Releases before 0.7.0 do not read it at all.
     knows defines it, no dependency outside the build's
     own closure defines it in its sources, and your code path has no beam
     of it. Otherwise `built where Poison is absent; poison can supply it
-    here` (`probe_definer`). The sources are read without compiling them:
-    every literal `defmodule`, `defprotocol` and `defimpl` name, through
-    nesting and aliases, every `-module` of an Erlang file, and each leex
-    and yecc file's name. A file that names the module and defines a module
+    here` (`probe_definer`). The sources, and each dependency's `mix.exs`,
+    are read without compiling them: every literal `defmodule`,
+    `defprotocol` and `defimpl` name, through nesting and aliases, a module
+    another macro may define from a literal alias (`defenum Name`,
+    `defmock(Name, ...)`, an inline `embeds_one :x, Name do`), each
+    implementation an `@derive` defines, every `-module` of an Erlang file,
+    and each leex and yecc file's name. A module loaded in this VM counts
+    too. A file that names the module and defines a module
     under a name it computes (a `defmodule` of anything but a literal
     alias, one inside a `quote`, `Module.create/3`, a `Code` compile or
     eval call), a symlink, a file that does not parse or a dependency
