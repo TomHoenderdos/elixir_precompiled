@@ -92,7 +92,10 @@ defmodule Precompiled.Reason do
     relocated_path_envelope:
       "relocated build: this project's {0} path is outside the paths it was proven at",
     config_all_differs: "built with a different compile-time config of {0}",
-    closure_source: "built against {0} {1} from Hex, not the {0} Mix loads here"
+    closure_source: "built against {0} {1} from Hex, not the {0} Mix loads here",
+    probe_definer: "built where {0} is absent; {1} can supply it here",
+    probe_otp_app: "built where OTP application {0} is absent; it is installed here",
+    probe_unknown: "built where {0} is absent; cannot tell whether this project supplies it"
   ]
 
   @codes Keyword.keys(@templates)

@@ -21,11 +21,23 @@ defmodule Precompiled.ReasonTest do
              foreign_priv_target_missing foreign_priv_target_linked foreign_priv_conflict
              foreign_priv_rule_unknown foreign_priv_device relocated_paths relocated_otp
              relocation_refused relocated_path_spelling relocated_path_ascii
-             relocated_path_envelope config_all_differs closure_source)a
+             relocated_path_envelope config_all_differs closure_source probe_definer
+             probe_otp_app probe_unknown)a
 
   test "the codes are exactly the table shared with the portal" do
     assert Reason.codes() == @shared
-    assert length(Reason.codes()) == 65
+    assert length(Reason.codes()) == 68
+  end
+
+  test "the probe codes render the probed name and what supplies it" do
+    assert Reason.new(:probe_definer, ["Poison", "poison"]).text ==
+             "built where Poison is absent; poison can supply it here"
+
+    assert Reason.new(:probe_otp_app, ["wx"]).text ==
+             "built where OTP application wx is absent; it is installed here"
+
+    assert Reason.new(:probe_unknown, ["Poison"]).text ==
+             "built where Poison is absent; cannot tell whether this project supplies it"
   end
 
   # The device report tests' copy of the portal's check accepts exactly
