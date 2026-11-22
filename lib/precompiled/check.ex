@@ -1095,19 +1095,28 @@ defmodule Precompiled.Check do
 
   @doc false
   # 0.9.0: the project as a build's probe items are checked against
-  # (Precompiled.ProbeInputs.view/3): every lock entry's app and Hex package
-  # name and every dep Mix loads with its children; each loaded dep's source
-  # dir (nil when Mix's deps were not read); the run's memo table.
+  # (Precompiled.ProbeInputs.view/3): every dep Mix loads in this env and
+  # target, by app and Hex package name (a lock entry it leaves out, a
+  # dev-only dep in prod, never compiles here and is on no code path), or
+  # every lock entry when Mix's deps were not read; each loaded dep's source
+  # dir (nil when they were not); the run's memo table.
   @spec probe_view(Env.t() | map(), :ets.tid() | atom() | nil) :: Precompiled.ProbeInputs.view()
   def probe_view(env, memo) do
     lock = Map.get(env, :lock) || %{}
-    tree = Map.get(env, :present_deps) || %{}
+
+    apps =
+      case Map.get(env, :present_deps) do
+        %{} = tree -> Enum.flat_map(tree, fn {app, children} -> [app | children] end)
+        _ -> Map.keys(lock)
+      end
 
     names =
-      Enum.flat_map(lock, fn
-        {app, {:hex, package, _, _, _, _, _, _}} -> [app, package]
-        {app, _entry} -> [app]
-      end) ++ Enum.flat_map(tree, fn {app, children} -> [app | children] end)
+      Enum.flat_map(Enum.uniq(apps), fn app ->
+        case lock[app] do
+          {:hex, package, _, _, _, _, _, _} -> [app, package]
+          _ -> [app]
+        end
+      end)
 
     dirs =
       case Map.get(env, :dep_dirs) do

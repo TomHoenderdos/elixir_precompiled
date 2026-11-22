@@ -190,8 +190,9 @@ compares the whole tree. Releases before 0.7.0 do not read it at all.
   when your code path holds it (an archive, your OTP, an editor's VM such
   as ElixirLS). So the build matches only when your project cannot supply
   it either:
-  - a module: no dependency of your project, or entry of your lock, is a
-    package the portal knows defines it, no dependency outside the build's
+  - a module: no dependency Mix loads in this env and target (every lock
+    entry, when the dependencies did not load) is a package the portal
+    knows defines it, no dependency outside the build's
     own closure defines it in its sources, and your code path has no beam
     of it. Otherwise `built where Poison is absent; poison can supply it
     here` (`probe_definer`). The sources are read without compiling them:

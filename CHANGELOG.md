@@ -25,7 +25,7 @@
   `:wx`), and its dependents, can now install precompiled. The portal records each such
   question the builder answered "absent" as a `probe` compile input, and this client takes the
   build only when nothing in this project can supply the module or application either: no
-  dependency or lock entry the portal knows defines it, no dependency outside the build's
+  dependency Mix loads in this env that the portal knows defines it, no dependency outside the build's
   closure that defines it in its sources (read, not compiled), nothing on this VM's code path,
   and for an OTP application, nothing installed here. Otherwise it misses as `probe_definer`,
   `probe_otp_app` or, when it cannot tell, `probe_unknown`. `Mix.install` checks the install

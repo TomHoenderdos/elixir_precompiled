@@ -14,8 +14,9 @@ defmodule Precompiled.ProbeInputs do
   # path holds it, or when an archive, the OTP install or an editor's VM
   # (ElixirLS) has it on the code path. So an item holds when:
   #
-  #   * `of: "module"`: no dep of the project, by app or Hex package name,
-  #     is in `definers` (the packages the portal knows define it); no dep
+  #   * `of: "module"`: no dep Mix loads in the project, by app or Hex
+  #     package name, is in `definers` (the packages the portal knows define
+  #     it; a lock entry Mix leaves out of this env never compiles here); no dep
   #     outside the build's closure defines it in its sources (read below);
   #     and this VM's code path has no `<name>.beam`;
   #   * `of: "app"`: no dep of the project is that application, and this VM

@@ -256,15 +256,20 @@ defmodule Precompiled.CheckTest do
     memo = :ets.new(:probe_memo, [:set, :public])
     view = Check.probe_view(env, memo)
 
-    assert view.names ==
-             MapSet.new(~w(ash poisonous poison gitdep spark))
-
+    # The deps Mix loads in this env, with their Hex package names: a lock
+    # entry it leaves out (a dev-only dep in prod) never compiles here.
+    assert view.names == MapSet.new(~w(ash spark))
     assert view.dirs == %{"ash" => "/d/ash", "spark" => "/d/spark"}
     assert view.memo == memo
     assert ctx_of(config, %{env | probe: view}).probe == view
 
-    # Deps that did not load leave the dirs unknown.
-    assert Check.probe_view(%{env | dep_dirs: nil}, nil).dirs == nil
+    loaded = %{env | present_deps: %{ash: [:poisonous], poisonous: []}}
+    assert Check.probe_view(loaded, nil).names == MapSet.new(~w(ash poisonous poison))
+
+    # Deps that did not load: every lock entry counts, and the dirs are unknown.
+    unknown = Check.probe_view(%{env | present_deps: nil, dep_dirs: nil}, nil)
+    assert unknown.names == MapSet.new(~w(ash poisonous poison gitdep))
+    assert unknown.dirs == nil
   end
 
   # The env's compile order reaches the compile_inputs rule through
