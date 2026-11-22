@@ -32,7 +32,9 @@ defmodule Precompiled.Env do
           present_deps: present_deps() | nil,
           config_unreadable: String.t() | nil,
           compiled_ok: MapSet.t(atom()) | nil,
-          dep_sources: dep_sources() | nil
+          dep_sources: dep_sources() | nil,
+          dep_dirs: %{optional(atom()) => Path.t() | nil} | nil,
+          probe: map() | nil
         }
 
   @typedoc """
@@ -127,7 +129,15 @@ defmodule Precompiled.Env do
             # 0.9.0: this project's slots for a relocated build
             # (Precompiled.Relocate.user_slots/2), taken once per run by
             # Precompiled.Check; :unset until then.
-            relocate: :unset
+            relocate: :unset,
+            # 0.9.0: each dep Mix loads (in the project or in Mix.install/2's
+            # install project) by the dir it compiles its sources from, for a
+            # build's probe items (Precompiled.ProbeInputs); nil when Mix's
+            # deps were not read, and then every module probe misses.
+            dep_dirs: nil,
+            # 0.9.0: the run's view of the project for probe items
+            # (Precompiled.Check.probe_view/2), nil until Check takes it.
+            probe: nil
 
   @doc """
   The locked Hex entries among `apps`, in the order given. `envs` names each

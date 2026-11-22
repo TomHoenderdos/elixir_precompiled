@@ -1290,6 +1290,31 @@ defmodule Precompiled.MatchTest do
                Match.select_reason(inputs_doc([linux]), ctx(os_type: {:unix, :darwin}))
     end
 
+    # 0.9.0: the package's closure probed a module nothing on the builder
+    # defined; this project gets the build only when nothing in it can
+    # supply the module either (Precompiled.ProbeInputs).
+    test "a probe item hits when the project cannot supply the module, else misses" do
+      probe = %{
+        "kind" => "probe",
+        "of" => "module",
+        "name" => "Elixir.NoSuchPoison",
+        "answer" => "absent",
+        "definers" => ["no_such_poison"]
+      }
+
+      view = fn names -> Precompiled.ProbeInputs.view(MapSet.new(names), %{}, nil) end
+
+      assert {:ok, _, _} =
+               Match.select(inputs_doc([probe]), ctx(probe: view.(["ash", "spark"])))
+
+      assert {:miss, %Reason{code: :probe_definer, args: ["NoSuchPoison", "no_such_poison"]}} =
+               Match.select_reason(inputs_doc([probe]), ctx(probe: view.(["no_such_poison"])))
+
+      # No view of the project: this client cannot tell.
+      assert {:miss, %Reason{code: :probe_unknown, args: ["NoSuchPoison"]}} =
+               Match.select_reason(inputs_doc([probe]), ctx())
+    end
+
     test "the user's value and the builder's value are never in the reason" do
       item = host_item("GITHUB_ACTIONS", ienc({:ok, "builder-value"}))
 

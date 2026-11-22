@@ -34,6 +34,7 @@ defmodule Precompiled.Env.MixProject do
       mix_target: Atom.to_string(Mix.target()),
       build_methods: build_methods_from(deps),
       present_deps: present_deps_from(deps),
+      dep_dirs: dep_dirs_from(deps),
       compiled_ok: compiled_ok_from(deps),
       dep_sources: dep_sources_from(deps),
       compile_order:
@@ -110,6 +111,11 @@ defmodule Precompiled.Env.MixProject do
   end
 
   defp hex_source(_lock, _hex), do: :other
+
+  # 0.9.0: each dep by the dir Mix compiles it from (its :dest), for a
+  # build's probe items.
+  @spec dep_dirs_from([Mix.Dep.t()]) :: %{optional(atom()) => Path.t() | nil}
+  def dep_dirs_from(deps), do: Map.new(deps, &{&1.app, &1.opts[:dest]})
 
   @doc "The apps Mix loaded as compiled (`{:ok, _}`), which Phase B may place archives into."
   @spec compiled_ok_from([Mix.Dep.t()]) :: MapSet.t(atom())

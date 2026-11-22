@@ -48,6 +48,17 @@ defmodule Precompiled.Check do
   #   (`HostNative.host/0`) in place of this one. Test only.
   @spec check(map(), Env.t(), keyword()) :: :nothing_to_do | {:ok, report()}
   def check(config, %Env{} = env, opts \\ []) do
+    # 0.9.0: each dep's answer for a probed name, kept for the run.
+    memo = :ets.new(Precompiled.ProbeInputs, [:set, :public])
+
+    try do
+      run_with_memo(config, %{env | probe: probe_view(env, memo)}, opts)
+    after
+      :ets.delete(memo)
+    end
+  end
+
+  defp run_with_memo(config, env, opts) do
     started = System.monotonic_time(:millisecond)
     env = %{env | relocate: relocate_slots(env)}
     {candidates, skipped} = candidates(env.candidates, env.lock, config.except, env.tooling)
@@ -1077,8 +1088,34 @@ defmodule Precompiled.Check do
       build_method_unknown: Map.get(method, :unknown),
       systems: Map.get(config, :systems_table),
       host_native: host_native(config, env),
-      relocate: relocate_slots(env)
+      relocate: relocate_slots(env),
+      probe: Map.get(env, :probe)
     }
+  end
+
+  @doc false
+  # 0.9.0: the project as a build's probe items are checked against
+  # (Precompiled.ProbeInputs.view/3): every lock entry's app and Hex package
+  # name and every dep Mix loads with its children; each loaded dep's source
+  # dir (nil when Mix's deps were not read); the run's memo table.
+  @spec probe_view(Env.t() | map(), :ets.tid() | atom() | nil) :: Precompiled.ProbeInputs.view()
+  def probe_view(env, memo) do
+    lock = Map.get(env, :lock) || %{}
+    tree = Map.get(env, :present_deps) || %{}
+
+    names =
+      Enum.flat_map(lock, fn
+        {app, {:hex, package, _, _, _, _, _, _}} -> [app, package]
+        {app, _entry} -> [app]
+      end) ++ Enum.flat_map(tree, fn {app, children} -> [app | children] end)
+
+    dirs =
+      case Map.get(env, :dep_dirs) do
+        %{} = dirs -> Map.new(dirs, fn {app, dir} -> {Atom.to_string(app), dir} end)
+        _ -> nil
+      end
+
+    Precompiled.ProbeInputs.view(MapSet.new(names, &to_string/1), dirs, memo)
   end
 
   # 0.9.0: this project's slots for a relocated build (Precompiled.Relocate):

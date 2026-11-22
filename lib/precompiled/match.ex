@@ -46,6 +46,10 @@ defmodule Precompiled.Match do
           # (Precompiled.HostNative.host/0) and its deps dir; nil or absent
           # otherwise, and builds_host_native is never read.
           optional(:host_native) => map() | nil,
+          # 0.9.0: what this project holds, for a build's probe items
+          # (Precompiled.ProbeInputs.view/3); nil when unknown, and then
+          # every probe item misses.
+          optional(:probe) => Precompiled.ProbeInputs.view() | nil,
           name: String.t(),
           version: String.t(),
           lock_entry: tuple(),
@@ -757,6 +761,10 @@ defmodule Precompiled.Match do
               user_config: Map.get(ctx, :user_config, &Precompiled.CompileInputs.user_config/2)
             },
             Map.take(ctx, [:rebar3_arch, :endian, :os_type, :mix_target, :user_config_all])
+            |> Map.put(
+              :probe,
+              &Precompiled.ProbeInputs.check(&1, b["deps"], ctx.name, Map.get(ctx, :probe))
+            )
           )
         )
       end

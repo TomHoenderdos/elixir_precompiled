@@ -234,6 +234,39 @@ defmodule Precompiled.CheckTest do
     assert ctx_of(config, %{env | present_deps: %{}}).env_closure == nil
   end
 
+  # 0.9.0: what the project holds reaches the probe items through
+  # Check.ctx/5: every lock and dep name, and each loaded dep's source dir.
+  test "the project's names and dep dirs reach Match for probe items", %{
+    config: config,
+    env: env
+  } do
+    lock = %{
+      ash: {:hex, :ash, "3.5.2", "i", [:mix], [], "hexpm", "A"},
+      poisonous: {:hex, :poison, "6.0.0", "i", [:mix], [], "hexpm", "P"},
+      gitdep: {:git, "https://example.test/x.git", "abc", []}
+    }
+
+    env = %{
+      env
+      | lock: lock,
+        present_deps: %{ash: [:spark], spark: []},
+        dep_dirs: %{ash: "/d/ash", spark: "/d/spark"}
+    }
+
+    memo = :ets.new(:probe_memo, [:set, :public])
+    view = Check.probe_view(env, memo)
+
+    assert view.names ==
+             MapSet.new(~w(ash poisonous poison gitdep spark))
+
+    assert view.dirs == %{"ash" => "/d/ash", "spark" => "/d/spark"}
+    assert view.memo == memo
+    assert ctx_of(config, %{env | probe: view}).probe == view
+
+    # Deps that did not load leave the dirs unknown.
+    assert Check.probe_view(%{env | dep_dirs: nil}, nil).dirs == nil
+  end
+
   # The env's compile order reaches the compile_inputs rule through
   # Check.ctx/5: precompiled_wiring_cfg compiles before ash, so ash saw its
   # .app default, which nothing configures here.

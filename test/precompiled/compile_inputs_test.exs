@@ -33,6 +33,32 @@ defmodule Precompiled.CompileInputsTest do
     assert :ok = CompileInputs.device(nil)
   end
 
+  describe "probe items (0.9.0)" do
+    @probe %{"kind" => "probe", "of" => "app", "name" => "poison", "answer" => "absent"}
+
+    test "the host check asks the order's probe fun, and without one cannot tell" do
+      seen = self()
+
+      ok = fn item ->
+        send(seen, {:asked, item})
+        :ok
+      end
+
+      assert :ok = CompileInputs.host([@probe], fn _ -> nil end, %{probe: ok, compile_order: nil})
+      assert_received {:asked, @probe}
+
+      assert {:miss, %{code: :probe_unknown, args: ["poison"]}} =
+               CompileInputs.host([@probe], fn _ -> nil end)
+    end
+
+    test "a device cannot check its project: a miss that says so" do
+      assert {:miss, %{code: :probe_unknown, args: ["poison"], text: text}} =
+               CompileInputs.device([@probe])
+
+      assert text =~ "a device cannot check"
+    end
+  end
+
   describe "on a device" do
     defp env_item(value),
       do: %{"kind" => "env", "name" => @name, "value" => value, "set_by" => "host"}

@@ -26,8 +26,10 @@ defmodule Precompiled.EnvDepsTest do
     # the client's Env.closure/2.
     code = """
     Code.prepend_path(#{inspect(ebin)})
-    tree = Precompiled.Env.MixProject.load().present_deps
+    loaded = Precompiled.Env.MixProject.load()
+    tree = loaded.present_deps
     client = Map.new([:parent, :top], &{&1, Precompiled.Env.closure(tree, &1)})
+    dirs = Map.new(loaded.dep_dirs, fn {app, dir} -> {app, Path.relative_to(dir, File.cwd!())} end)
     by_app = Map.new(Mix.Dep.load_and_cache(), &{&1.app, &1})
     walk = fn walk, apps, seen ->
       Enum.reduce(apps, seen, fn app, seen ->
@@ -37,7 +39,7 @@ defmodule Precompiled.EnvDepsTest do
     mix = Map.new([:parent, :top], fn app ->
       {app, Enum.sort(walk.(walk, Enum.map(by_app[app].deps, & &1.app), []))}
     end)
-    IO.puts("VIEWS " <> Base.encode64(:erlang.term_to_binary({client, mix})))
+    IO.puts("VIEWS " <> Base.encode64(:erlang.term_to_binary({client, mix, dirs})))
     """
 
     {out, status} =
@@ -118,14 +120,22 @@ defmodule Precompiled.EnvDepsTest do
   test "the client's env closures are Mix's in dev and in test", %{tmp_dir: tmp} do
     File.cp_r!(@fixture, tmp)
 
-    {client, mix} = views(tmp, "dev")
+    {client, mix, dirs} = views(tmp, "dev")
     assert client == mix
     assert client == %{parent: [], top: [:link]}
+
+    # 0.9.0: each dep Mix loads, by the source dir it compiles from.
+    assert dirs == %{
+             parent: "deps_src/parent",
+             top: "deps_src/top",
+             link: "deps_src/link"
+           }
+
     assert decide(:parent, client.parent) == %{with: :miss, without: :ok}
     # Two levels down: link's optional opt.
     assert decide(:top, client.top) == %{with: :miss, without: :ok}
 
-    {client, mix} = views(tmp, "test")
+    {client, mix, _dirs} = views(tmp, "test")
     assert client == mix
     assert client == %{parent: [:opt], top: [:link, :opt]}
     assert decide(:parent, client.parent) == %{with: :ok, without: :miss}

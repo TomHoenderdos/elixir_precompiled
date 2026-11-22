@@ -23,6 +23,23 @@ defmodule Precompiled.Env.MixInstallTest do
     assert env.deps_path == Path.join(dir, "deps")
   end
 
+  # 0.9.0: each dep of the install project by its source dir, for a build's
+  # probe items: the install's deps dir, or the path a path dep names.
+  test "load names each present dep's source dir", %{tmp_dir: dir} do
+    Mix.Dep.Lock.write(%{jason: @jason, decimal: @decimal}, file: Path.join(dir, "mix.lock"))
+    present = %{jason: [:decimal], decimal: [], mine: []}
+
+    env = MixInstall.load(dir, [{:jason, "1.4.5"}, {:mine, path: "rel/mine"}], %{}, present)
+
+    assert env.dep_dirs == %{
+             jason: Path.join([dir, "deps", "jason"]),
+             decimal: Path.join([dir, "deps", "decimal"]),
+             mine: Path.expand("rel/mine")
+           }
+
+    assert MixInstall.load(dir, []).dep_dirs == nil
+  end
+
   test "load skips a dep the install project has already compiled", %{tmp_dir: dir} do
     Mix.Dep.Lock.write(%{jason: @jason, decimal: @decimal}, file: Path.join(dir, "mix.lock"))
     jason = Path.join([dir, "_build", Atom.to_string(Mix.env()), "lib", "jason"])

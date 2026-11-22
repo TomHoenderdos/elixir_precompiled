@@ -25,6 +25,11 @@ defmodule Precompiled.CompileInputs do
   # config_all item is the builder's whole config of one app, which the
   # build's compile read with Application.get_all_env/1 (tz): this project's
   # config of that app must be the same map; only the app reaches a reason.
+  # A probe item (0.10.0) is a probe the build's closure made of a module or
+  # an application that nothing on the builder could supply: the order's
+  # :probe fun checks it against this project (Precompiled.ProbeInputs);
+  # without one, and on a device, which has no project to check, it is a
+  # miss.
 
   alias Precompiled.{CompileOrder, Reason, Rebar3Arch}
 
@@ -52,7 +57,8 @@ defmodule Precompiled.CompileInputs do
           optional(:endian) => :little | :big,
           optional(:os_type) => {atom(), atom()},
           optional(:mix_target) => String.t(),
-          optional(:user_config_all) => (String.t() -> {:ok, map()} | :unknown)
+          optional(:user_config_all) => (String.t() -> {:ok, map()} | :unknown),
+          optional(:probe) => (map() -> :ok | {:miss, Reason.t()})
         }
 
   @spec host(term(), (String.t() -> String.t() | nil)) :: :ok | {:miss, Reason.t()}
@@ -220,7 +226,18 @@ defmodule Precompiled.CompileInputs do
     end
   end
 
+  defp host_item(%{"kind" => "probe"} = item, _getenv, order) do
+    case Map.get(order, :probe) do
+      check when is_function(check, 1) -> check.(item)
+      _ -> {:miss, Reason.new(:probe_unknown, [probe_name(item)])}
+    end
+  end
+
   defp host_item(item, _getenv, _order), do: whole(item)
+
+  defp probe_name(%{"name" => "Elixir." <> name}), do: name
+  defp probe_name(%{"name" => name}) when is_binary(name), do: name
+  defp probe_name(_item), do: "?"
 
   defp nerves_value(getenv, name) do
     case getenv.(name) do
@@ -475,6 +492,15 @@ defmodule Precompiled.CompileInputs do
 
       {:miss, Reason.new(:config_all_differs, [app], text)}
     end
+  end
+
+  # A device has the firmware's deps, not the project they were compiled
+  # in: whether that project could supply what the build probed is not
+  # known here.
+  defp device_item(%{"kind" => "probe"} = item, _decidable?) do
+    name = probe_name(item)
+    text = "built where #{name} is absent; a device cannot check its firmware's project"
+    {:miss, Reason.new(:probe_unknown, [name], text)}
   end
 
   defp device_item(item, _decidable?), do: whole(item)
