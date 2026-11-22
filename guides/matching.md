@@ -181,6 +181,41 @@ compares the whole tree. Releases before 0.7.0 do not read it at all.
 - A build whose compile read the whole environment (`System.get_env/0`),
   or whose compile-time config reads could not all be recorded, never
   matches.
+- 0.9.0: a build whose compile asked whether a module or an application is
+  there (`Code.ensure_loaded?(Poison)`, `Application.spec(:phoenix_html)`,
+  `Code.ensure_loaded?(:wx)`), where the builder had nothing that supplies
+  it, records the question as a `probe` input. Mix answers "present" for
+  you when a dependency compiled before it defines the module (its modules
+  stay loaded), when `Mix.install` has it on its unpruned code path, or
+  when your code path holds it (an archive, your OTP, an editor's VM such
+  as ElixirLS). So the build matches only when your project cannot supply
+  it either:
+  - a module: no dependency of your project, or entry of your lock, is a
+    package the portal knows defines it, no dependency outside the build's
+    own closure defines it in its sources, and your code path has no beam
+    of it. Otherwise `built where Poison is absent; poison can supply it
+    here` (`probe_definer`). The sources are read without compiling them:
+    every literal `defmodule`, `defprotocol` and `defimpl` name, through
+    nesting and aliases, every `-module` of an Erlang file, and each leex
+    and yecc file's name. A file that names the module and defines a module
+    under a name it computes (a `defmodule` of anything but a literal
+    alias, one inside a `quote`, `Module.create/3`, a `Code` compile or
+    eval call), a symlink, a file that does not parse or a dependency
+    whose dir cannot be read means this client cannot tell:
+    `... cannot tell whether this project supplies it` (`probe_unknown`);
+  - an application: no dependency of your project is that application, and
+    your code path and your OTP and Elixir install hold no `.app` of it
+    (`probe_definer`);
+  - an OTP application no package of the build lists (vega_lite's `:wx`):
+    it is not installed here at all (`built where OTP application wx is
+    absent; it is installed here`, `probe_otp_app`).
+
+  Under `Precompiled.Host.install/2` your project is the install's: its
+  lock, its dependencies and its `deps` dir. A device cannot check the
+  project its firmware was compiled in, and never takes such a build.
+  What this cannot see: a dependency outside the build's closure that
+  builds the module's name from parts no file naming its last segment
+  shows, in a release the portal does not list as a definer.
 - A build made before builds recorded their inputs has none: for it, a
   dependency that reads an environment variable at module level in `lib/`
   never matches, as before.

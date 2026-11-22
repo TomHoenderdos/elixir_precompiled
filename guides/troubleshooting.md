@@ -262,6 +262,20 @@ A `MISS` line names the rule that the closest build broke, then that build
 | `MISS  ERL_COMPILER_OPTIONS changed after this VM's first Elixir compile, ...` | Rule 8: Elixir 1.18+ reads the variable once, on the VM's first compile, so one set in `project/0` or `config/config.exs` (or cleared there) reaches rebar3 and `compile.erlang` but not your Elixir deps. Set it in the shell, or in `mix.exs` outside any function. |
 | `MISS  no ERL_COMPILER_OPTIONS=deterministic build of VERSION yet` | Rule 8 (`deterministic_not_built`): your project sets `ERL_COMPILER_OPTIONS=deterministic`, and the portal has builds of this version, but none compiled with that option yet. It compiles from source until one is published. If you set it for delta firmware updates (nerves_livebook), a precompiled build is already the same bytes in every firmware, so a run without it installs builds. |
 
+### Dependencies that probe for a module at compile time
+
+A build whose compile asked whether a module or an application is there,
+and found nothing on the builder (see Rule 8 in
+[What matches](matching.md)), misses on lines of its own. Each leaves it
+compiling from source; the code in brackets is the `reason_code` a report
+carries.
+
+| Line | Meaning | What to do |
+| --- | --- | --- |
+| `MISS  built where Poison is absent; poison can supply it here` (`probe_definer`) | Your project has a dependency (or lock entry) that defines the module, or `code_path`: your code path holds it. Your own compile finds it, and builds other code than the build. | Nothing to fix; it compiles from source. |
+| `MISS  built where OTP application wx is absent; it is installed here` (`probe_otp_app`) | The build was compiled without the OTP application in reach, and your install has it. | Nothing to fix; it compiles from source. |
+| `MISS  built where Poison is absent; cannot tell whether this project supplies it` (`probe_unknown`) | A dependency's sources could not be read in full, or define a module under a computed name in a file that names it; or the dependencies did not load; or on a device. | Nothing to fix; it compiles from source. |
+
 ### Dependencies that write into kino's priv
 
 A Kino.JS writer (see

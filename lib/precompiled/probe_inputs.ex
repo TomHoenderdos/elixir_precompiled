@@ -195,18 +195,16 @@ defmodule Precompiled.ProbeInputs do
   defp scan_file(path, name, needle) do
     ext = Path.extname(path)
 
-    cond do
-      ext in [".xrl", ".yrl"] ->
-        if Path.basename(path, ext) == name, do: :defines, else: {:clear, 0}
+    if ext in [".xrl", ".yrl"] do
+      if Path.basename(path, ext) == name, do: :defines, else: {:clear, 0}
+    else
+      case File.read(path) do
+        {:ok, body} when byte_size(body) <= @max_file_bytes ->
+          body_answer(ext, body, name, needle)
 
-      true ->
-        case File.read(path) do
-          {:ok, body} when byte_size(body) <= @max_file_bytes ->
-            body_answer(ext, body, name, needle)
-
-          _ ->
-            :unknown
-        end
+        _ ->
+          :unknown
+      end
     end
   end
 
@@ -388,17 +386,19 @@ defmodule Precompiled.ProbeInputs do
   # out could be anything; a `for:` that cannot is some module under the
   # protocol.
   defp impl_answer(proto_ast, rest, outers, name, scope) do
-    with protos when is_list(protos) <- names_anywhere(proto_ast, scope.all) do
-      fors =
-        case rest |> Enum.filter(&is_list/1) |> Enum.flat_map(&for_option/1) do
-          [] when outers != [] -> outers
-          [] -> :unknown
-          given -> given |> Enum.map(&names_anywhere(&1, scope.all)) |> flat_or_unknown()
-        end
+    case names_anywhere(proto_ast, scope.all) do
+      :unknown ->
+        :unknown
 
-      impl_names(protos, fors, name)
-    else
-      :unknown -> :unknown
+      protos ->
+        fors =
+          case rest |> Enum.filter(&is_list/1) |> Enum.flat_map(&for_option/1) do
+            [] when outers != [] -> outers
+            [] -> :unknown
+            given -> given |> Enum.map(&names_anywhere(&1, scope.all)) |> flat_or_unknown()
+          end
+
+        impl_names(protos, fors, name)
     end
   end
 
@@ -466,15 +466,17 @@ defmodule Precompiled.ProbeInputs do
 
   defp alias_pairs({{:., _, [base, multi]}, _, children}, _opts)
        when multi in [:{}, {:atom, "{}"}] do
-    with {:absolute_or_relative, base} <- alias_target(base) do
-      Enum.flat_map(children, fn child ->
-        case segments(child) do
-          {:relative, segs} -> [{List.last(segs), Enum.join([base | segs], ".")}]
-          _ -> [{:any, :unknown}]
-        end
-      end)
-    else
-      _ -> [{:any, :unknown}]
+    case alias_target(base) do
+      {:absolute_or_relative, base} ->
+        Enum.flat_map(children, fn child ->
+          case segments(child) do
+            {:relative, segs} -> [{List.last(segs), Enum.join([base | segs], ".")}]
+            _ -> [{:any, :unknown}]
+          end
+        end)
+
+      :error ->
+        [{:any, :unknown}]
     end
   end
 
