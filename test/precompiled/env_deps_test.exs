@@ -30,6 +30,15 @@ defmodule Precompiled.EnvDepsTest do
     tree = loaded.present_deps
     client = Map.new([:parent, :top], &{&1, Precompiled.Env.closure(tree, &1)})
     dirs = Map.new(loaded.dep_dirs, fn {app, dir} -> {app, Path.relative_to(dir, File.cwd!())} end)
+    view = Precompiled.Check.probe_view(loaded, nil)
+    probe = fn name ->
+      item = %{"kind" => "probe", "of" => "module", "name" => name, "answer" => "absent", "definers" => []}
+      case Precompiled.ProbeInputs.check(item, %{}, "parent", view) do
+        :ok -> :ok
+        {:miss, reason} -> {reason.code, reason.args}
+      end
+    end
+    dirs = Map.put(dirs, :probes, Map.new(~w(Elixir.EnvDepsLink.Codec Elixir.NoSuch.Mod), &{&1, probe.(&1)}))
     by_app = Map.new(Mix.Dep.load_and_cache(), &{&1.app, &1})
     walk = fn walk, apps, seen ->
       Enum.reduce(apps, seen, fn app, seen ->
@@ -119,16 +128,29 @@ defmodule Precompiled.EnvDepsTest do
 
   test "the client's env closures are Mix's in dev and in test", %{tmp_dir: tmp} do
     File.cp_r!(@fixture, tmp)
+    File.mkdir_p!(Path.join(tmp, "deps_src/link/lib"))
+
+    File.write!(
+      Path.join(tmp, "deps_src/link/lib/link.ex"),
+      "defmodule EnvDepsLink do\n  defmodule Codec do\n  end\nend\n"
+    )
 
     {client, mix, dirs} = views(tmp, "dev")
     assert client == mix
     assert client == %{parent: [], top: [:link]}
 
-    # 0.9.0: each dep Mix loads, by the source dir it compiles from.
-    assert dirs == %{
+    # 0.9.0: each dep Mix loads, by the source dir it compiles from; a probe
+    # item misses for a module link's sources define, and holds for one no
+    # dep of the project does.
+    assert Map.delete(dirs, :probes) == %{
              parent: "deps_src/parent",
              top: "deps_src/top",
              link: "deps_src/link"
+           }
+
+    assert dirs.probes == %{
+             "Elixir.EnvDepsLink.Codec" => {:probe_definer, ["EnvDepsLink.Codec", "link"]},
+             "Elixir.NoSuch.Mod" => :ok
            }
 
     assert decide(:parent, client.parent) == %{with: :miss, without: :ok}
