@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.9.0)
+## v0.9.0 - 2026-11-22
 
 * Security: the device API's test seams (`:root`, `:env`, `:clock_synchronized?`, `:lib_roots` and a
   per-call network `:source`, and `mix precompiled.report`'s `:gets` and `:interactive?`) are now
