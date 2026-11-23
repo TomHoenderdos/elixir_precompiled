@@ -240,15 +240,21 @@ defmodule Precompiled.RelocateTest do
       assert {:refuse, _} =
                Relocate.relocate(served, occs, slots(builder), slots(Path.join(base, marks)))
 
+      # Padded to 249 or 250 bytes at the builder's root, whatever the tmp
+      # dir's length (macOS's is long, Linux's /tmp short), so the user's
+      # root, 9 bytes longer, takes it over the short table's 255.
+      dir = Path.join(builder, "deps/fx/lib")
+      pad = div(250 - byte_size(dir), 2)
+
       short =
         compile(
           builder,
           Short,
-          "@compile :no_long_atoms\n@a String.to_atom(__DIR__ <> String.duplicate(\"\u00e9\", 80))\ndef a, do: @a"
+          "@compile :no_long_atoms\n@a String.to_atom(__DIR__ <> String.duplicate(\"\u00e9\", #{pad}))\ndef a, do: @a"
         )
 
       {:ok, occs} = Relocate.occurrences(short, slots(builder))
-      longer = Path.join(base, String.duplicate("b", 40))
+      longer = Path.join(base, String.duplicate("b", 10))
 
       assert {:refuse, _} = Relocate.relocate(short, occs, slots(builder), slots(longer))
     end
