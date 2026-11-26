@@ -45,7 +45,7 @@ defmodule Precompiled.PortalPayload do
                   foreign_priv_device
                   relocated_paths relocated_otp relocation_refused
                   relocated_path_spelling relocated_path_ascii relocated_path_envelope
-                  config_all_differs)
+                  config_all_differs closure_source)
 
   @top ~w(format client built_at elixir otp os target system system_version lines lock contact)
   @os_keys ~w(family arch)

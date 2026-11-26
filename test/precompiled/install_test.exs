@@ -77,7 +77,7 @@ defmodule Precompiled.InstallTest do
     loaded = fn -> [dep.(:pkg, [here]), here] end
     project = Path.join(dir, "loaded")
 
-    assert {methods, present, order, compiled_ok} =
+    assert {methods, present, order, compiled_ok, _sources} =
              quiet(fn -> Install.resolve(project, [], [], loaded) end)
 
     assert present == %{pkg: [:here], here: []}
@@ -91,19 +91,81 @@ defmodule Precompiled.InstallTest do
     other = Path.join(dir, "broken")
 
     assert quiet(fn -> Install.resolve(other, [], [], boom) end) ==
-             {{:unknown, "lock is broken"}, nil, nil, nil}
+             {{:unknown, "lock is broken"}, nil, nil, nil, nil}
 
     # A dep whose children are not the shape Mix gives: the tree is unknown
     # (lock-only matching), the build methods are still read.
     odd = fn -> [%{dep.(:pkg, []) | deps: :nope}] end
     third = Path.join(dir, "odd")
-    assert {%{pkg: _}, nil, nil, _ok} = quiet(fn -> Install.resolve(third, [], [], odd) end)
+
+    assert {%{pkg: _}, nil, nil, _ok, _sources} =
+             quiet(fn -> Install.resolve(third, [], [], odd) end)
+  end
+
+  # 0.9.1, the client review's B1: Mix keeps a lock entry in each dep's
+  # opts whatever its SCM, so a path dep can carry a stale Hex entry.
+  test "resolve/4 reads where Mix loads each dep from", %{tmp_dir: dir} do
+    hex = {:hex, :pkg, "1.0.0", "i", [:mix], [], "hexpm", "POUTER"}
+    stale = {:hex, :fork, "1.0.0", "i", [:mix], [], "hexpm", "FOUTER"}
+
+    loaded = fn ->
+      [
+        %Mix.Dep{app: :pkg, scm: Hex.SCM, opts: [hex: "pkg", lock: hex], manager: :mix},
+        %Mix.Dep{app: :fork, scm: Mix.SCM.Path, opts: [path: "../f", lock: stale], manager: :mix}
+      ]
+    end
+
+    assert {_methods, _present, _order, _ok, sources} =
+             quiet(fn -> Install.resolve(Path.join(dir, "s"), [], [], loaded) end)
+
+    assert sources == %{pkg: hex, fork: :path}
+  end
+
+  # With real Mix: an install whose lock (a lockfile: merge, or an earlier
+  # Hex install of the same deps) has a Hex entry for what is now a path dep.
+  test "a path dep with a stale Hex entry in the install's lock is no Hex dependency", %{
+    tmp_dir: dir
+  } do
+    here = Path.expand("../fixtures/mix_install/mi_here", __DIR__)
+    stale = {:hex, :mi_here, "0.1.0", "i", [:mix], [], "hexpm", "MIOUTER"}
+    project = Path.join(dir, "install")
+    File.mkdir_p!(project)
+    Mix.Dep.Lock.write(%{mi_here: stale}, file: Path.join(project, "mix.lock"))
+    deps = [{:mi_here, path: here, override: true}]
+
+    {methods, present, order, ok, sources} = quiet(fn -> Install.resolve(project, deps, []) end)
+
+    assert sources == %{mi_here: :path}
+    # deps.get kept the entry: by the lock alone, mi_here is Hex.
+    assert Mix.Dep.Lock.read(Path.join(project, "mix.lock")) == %{mi_here: stale}
+
+    env = Precompiled.Env.MixInstall.load(project, deps, methods, present, order, ok, sources)
+    assert env.candidates == []
+    assert env.dep_sources == sources
+  end
+
+  test "a configured install hands Check each dep's source", %{config: config} do
+    parent = self()
+    lock = {:hex, :here, "1.0.0", "i", [:mix], [], "hexpm", "HOUTER"}
+    here = %Mix.Dep{app: :here, scm: Hex.SCM, opts: [hex: "here", lock: lock], manager: :mix}
+    fork = %Mix.Dep{app: :fork, scm: Mix.SCM.Git, opts: [git: "g", lock: lock], manager: :mix}
+
+    capture_io(fn ->
+      assert Install.run([], [], config,
+               installer: fn _, _ -> :ok end,
+               in_project?: false,
+               check: &send(parent, {:env, &1}),
+               load: fn -> [here, fork] end
+             ) == :ok
+    end)
+
+    assert_received {:env, %Precompiled.Env{dep_sources: %{here: ^lock, fork: :git}}}
   end
 
   test "a child that is not an atom leaves the tree unknown", %{tmp_dir: dir} do
     pkg = %Mix.Dep{app: :pkg, scm: Hex.SCM, opts: [], manager: :mix, deps: [%{app: "here"}]}
 
-    assert {%{pkg: _}, nil, _order, _ok} =
+    assert {%{pkg: _}, nil, _order, _ok, _sources} =
              quiet(fn -> Install.resolve(Path.join(dir, "p"), [], [], fn -> [pkg] end) end)
   end
 
@@ -176,7 +238,7 @@ defmodule Precompiled.InstallTest do
     File.mkdir_p!(project)
     Mix.Dep.Lock.write(%{x: @x, y: @y2, z: @z}, file: Path.join(project, "mix.lock"))
 
-    {_methods, present, _order, _ok} =
+    {_methods, present, _order, _ok, _sources} =
       quiet(fn -> Install.resolve(project, [], [lockfile: external], lock_load()) end)
 
     # The lock Mix.install/2 compiles from, and the marker that makes it skip
@@ -195,7 +257,7 @@ defmodule Precompiled.InstallTest do
     File.mkdir_p!(other)
     Mix.Dep.Lock.write(%{x: @x, y: @y2, z: @z}, file: Path.join(other, "mix.lock"))
 
-    {_methods, unpinned, _order, _ok} =
+    {_methods, unpinned, _order, _ok, _sources} =
       quiet(fn -> Install.resolve(other, [], [], lock_load()) end)
 
     assert unpinned.x == [:z]
@@ -218,7 +280,7 @@ defmodule Precompiled.InstallTest do
     Mix.Dep.Lock.write(%{x: @x, y: @y2, z: @z}, file: Path.join(project, "mix.lock"))
     deps = [{:pinner, path: src}]
 
-    {_methods, present, _order, _ok} =
+    {_methods, present, _order, _ok, _sources} =
       quiet(fn -> Install.resolve(project, deps, [lockfile: :pinner], lock_load()) end)
 
     assert present.x == []

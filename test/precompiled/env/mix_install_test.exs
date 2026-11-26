@@ -100,6 +100,29 @@ defmodule Precompiled.Env.MixInstallTest do
     assert {:unknown, _} = MixInstall.load(dir, []).build_methods
   end
 
+  # 0.9.1: with the sources Mix loaded the install project's deps from, a
+  # lock entry is a candidate only for a dep Mix loads from Hex with it.
+  test "load takes as candidates only the Hex deps Mix loads there as locked", %{tmp_dir: dir} do
+    Mix.Dep.Lock.write(%{jason: @jason, decimal: @decimal}, file: Path.join(dir, "mix.lock"))
+    load = &MixInstall.load(dir, [], %{}, nil, nil, nil, &1)
+
+    assert Enum.map(load.(%{jason: @jason, decimal: @decimal}).candidates, & &1.name) ==
+             [:decimal, :jason]
+
+    # decimal is a path fork whose Hex entry the lock kept; another
+    # decimal entry, or none at all, is no candidate either.
+    for decimal <- [:path, :git, :other, put_elem(@decimal, 7, "OTHER")] do
+      env = load.(%{jason: @jason, decimal: decimal})
+      assert Enum.map(env.candidates, & &1.name) == [:jason]
+      assert env.dep_sources.decimal == decimal
+    end
+
+    assert Enum.map(load.(%{jason: @jason}).candidates, & &1.name) == [:jason]
+    # Sources unknown (deps that did not load): the lock's entries, as before.
+    assert Enum.map(MixInstall.load(dir, []).candidates, & &1.name) == [:decimal, :jason]
+    assert MixInstall.load(dir, []).dep_sources == nil
+  end
+
   test "system falls back to the loaded nerves_system_* application, or nil" do
     loaded = [{:kernel, ~c"ERTS", ~c"10.0"}, {:nerves_system_rpi4, ~c"rpi4", ~c"1.31.0"}]
     assert MixInstall.system([], loaded) == {"nerves_system_rpi4", "1.31.0"}
