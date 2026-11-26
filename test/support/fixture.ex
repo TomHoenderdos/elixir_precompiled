@@ -176,6 +176,35 @@ defmodule Precompiled.Fixture do
     s
   end
 
+  # 0.10.0 (S10 round 5): a release index for a batch's `release_index`.
+  # `read` is `%{package => [version]}` (the read releases, sharded as the
+  # portal shards them), `definers` is `%{module => %{package => [version]}}`.
+  # Each document is served at release-index/by-sha/<sha>.json; returns the
+  # batch's `release_index` object.
+  @spec release_index(map(), map()) :: map()
+  def release_index(read, definers) do
+    shards =
+      read
+      |> Enum.group_by(fn {pkg, _} -> Precompiled.Check.release_shard(pkg) end)
+      |> Map.new(fn {shard, pkgs} ->
+        {shard, release_doc(%{"format" => 1, "shard" => shard, "read" => Map.new(pkgs)})}
+      end)
+
+    modules =
+      Map.new(definers, fn {module, set} ->
+        {module, release_doc(%{"format" => 1, "module" => module, "definers" => set})}
+      end)
+
+    %{"format" => 1, "shards" => shards, "modules" => modules}
+  end
+
+  defp release_doc(doc) do
+    bytes = doc |> :json.encode() |> IO.iodata_to_binary()
+    s = sha(bytes)
+    put_in_map(:release_docs, s, bytes)
+    s
+  end
+
   @spec tamper_manifest(map(), String.t()) :: :ok
   def tamper_manifest(_fixture, name) do
     store =
@@ -262,7 +291,7 @@ defmodule Precompiled.Fixture do
   defp reset(),
     do:
       Agent.update(__MODULE__, fn _ ->
-        %{manifests: %{}, manifests_v2: %{}, files: %{}, systems: %{}}
+        %{manifests: %{}, manifests_v2: %{}, files: %{}, systems: %{}, release_docs: %{}}
       end)
 
   @spec put(atom(), term()) :: :ok

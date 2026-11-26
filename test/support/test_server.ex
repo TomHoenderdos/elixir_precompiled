@@ -158,6 +158,18 @@ defmodule Precompiled.TestServer do
     end
   end
 
+  get "/precompiled/release-index/by-sha/:file" do
+    sha = String.replace_suffix(file, ".json", "")
+
+    case get_in(Precompiled.Fixture.get(:release_docs) || %{}, [sha]) do
+      nil ->
+        send_resp(conn, 404, "not found")
+
+      bytes ->
+        conn |> put_resp_content_type("application/json") |> send_resp(200, corrupt(conn, bytes))
+    end
+  end
+
   get "/precompiled/files/:sha" do
     case get_in(Precompiled.Fixture.get(:files) || %{}, [sha]) do
       nil ->

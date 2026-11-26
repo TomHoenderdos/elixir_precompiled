@@ -454,7 +454,19 @@ defmodule Precompiled.Trust do
           required(:manifests) => %{String.t() => String.t()},
           required(:manifests_v2) => %{String.t() => String.t()} | nil,
           required(:content) => [String.t()] | nil,
-          required(:systems) => String.t() | nil
+          required(:systems) => String.t() | nil,
+          optional(:release_index) => release_index() | nil
+        }
+
+  @typedoc """
+  0.10.0 (S10 round 5): the batch's module index per release. `shards`:
+  each of 256 shards (`"00"` to `"ff"`, the first byte of the SHA-256 of a
+  package name) to the sha of its document of read releases; `modules`:
+  each probed module to the sha of its definer set (Fetch.release_doc/2).
+  """
+  @type release_index :: %{
+          shards: %{String.t() => String.t()},
+          modules: %{String.t() => String.t()}
         }
 
   @type conditional_fetch ::
@@ -722,7 +734,8 @@ defmodule Precompiled.Trust do
       v2 when is_map(v2) or is_nil(v2) ->
         extra = %{
           content: content(Map.get(decoded, "content")),
-          systems: systems(Map.get(decoded, "systems"))
+          systems: systems(Map.get(decoded, "systems")),
+          release_index: release_index(Map.get(decoded, "release_index"))
         }
 
         {:ok, seq, issued, exp, manifests, v2, extra}
@@ -748,6 +761,19 @@ defmodule Precompiled.Trust do
   # widens matching, and a batch without one still installs exact builds.
   defp systems(sha) when is_binary(sha), do: if(sha =~ ~r/\A[0-9a-f]{64}\z/, do: sha)
   defp systems(_), do: nil
+
+  # 0.10.0: the release index (release_index/0). One of any other shape is
+  # ignored: a declared probe item then misses, as with none.
+  defp release_index(%{"format" => 1, "shards" => shards, "modules" => modules})
+       when is_map(shards) and is_map(modules) do
+    sha? = &(is_binary(&1) and &1 =~ ~r/\A[0-9a-f]{64}\z/)
+
+    if Enum.all?(shards, fn {k, v} -> is_binary(k) and k =~ ~r/\A[0-9a-f]{2}\z/ and sha?.(v) end) and
+         Enum.all?(modules, fn {k, v} -> is_binary(k) and sha?.(v) end),
+       do: %{shards: shards, modules: modules}
+  end
+
+  defp release_index(_), do: nil
 
   defp https_origin?(o) when is_binary(o) do
     match?(%URI{scheme: "https", host: h} when is_binary(h) and h != "", URI.parse(o))

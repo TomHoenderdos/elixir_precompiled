@@ -231,7 +231,16 @@ defmodule Precompiled.Check do
 
         # 0.10.0: what the project holds, for a build's probe items, the
         # installed ones' recheck included.
-        env = %{env | probe: probe_view(env, module_provider(config, batch, env, config_fun))}
+        env = %{
+          env
+          | probe:
+              probe_view(
+                env,
+                module_provider(config, batch, env, config_fun),
+                release_lookup(config, batch, env)
+              )
+        }
+
         {revoked, replaced} = recheck(installed, batch, env)
         todo = candidates ++ replaced
         removed = removed ++ Enum.map(revoked, & &1.name)
@@ -1104,8 +1113,9 @@ defmodule Precompiled.Check do
   # every lock entry when Mix's deps were not read; the deps Mix loads and
   # those of them that are no Hex dep (nil when the deps were not read);
   # and `modules_of`, each dep's exact module list (module_provider/4).
-  @spec probe_view(Env.t() | map(), function()) :: Precompiled.ProbeInputs.view()
-  def probe_view(env, modules_of) do
+  @spec probe_view(Env.t() | map(), function(), Precompiled.ProbeInputs.index() | nil) ::
+          Precompiled.ProbeInputs.view()
+  def probe_view(env, modules_of, index \\ nil) do
     lock = Map.get(env, :lock) || %{}
     tree = Map.get(env, :present_deps)
 
@@ -1137,9 +1147,65 @@ defmodule Precompiled.Check do
       deps,
       non_hex,
       modules_of,
-      inert_apps(env)
+      inert_apps(env),
+      index
     )
   end
+
+  @doc false
+  # 0.10.0 (S10 round 5): the batch's module index per release as a
+  # declared probe item reads it (Precompiled.ProbeInputs.index/0), each
+  # document fetched once per run (Fetch.release_doc/2), or nil when the
+  # batch names none. Only a hex.pm lock entry is a release of it.
+  @spec release_lookup(map(), map(), Env.t() | map()) :: Precompiled.ProbeInputs.index() | nil
+  def release_lookup(config, batch, env) do
+    case Map.get(batch, :release_index) do
+      %{shards: shards, modules: modules} ->
+        memo = Map.get(config, :probe_memo)
+        lock = Map.get(env, :lock) || %{}
+        doc = &memoised(memo, {:release_doc, &1}, fn -> Fetch.release_doc(config, &1) end)
+
+        %{
+          read?: fn app ->
+            with {pkg, v} <- hexpm_release(lock, app),
+                 sha when is_binary(sha) <- Map.get(shards, release_shard(pkg)) || :unknown,
+                 {:ok, %{"read" => read}} <- doc.(sha) || :unknown do
+              v in Map.get(read, pkg, [])
+            else
+              nil -> false
+              _ -> :unknown
+            end
+          end,
+          defines?: fn module, app ->
+            with {pkg, v} <- hexpm_release(lock, app),
+                 sha when is_binary(sha) <- Map.get(modules, module),
+                 {:ok, %{"definers" => definers}} <- doc.(sha) do
+              v in Map.get(definers, pkg, [])
+            else
+              _ -> :unknown
+            end
+          end
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp hexpm_release(lock, app) do
+    with {:ok, atom} <- existing_atom(app),
+         {:hex, pkg, v, _, _, _, "hexpm", _} when is_atom(pkg) and is_binary(v) <- lock[atom] do
+      {Atom.to_string(pkg), v}
+    else
+      _ -> nil
+    end
+  end
+
+  @doc false
+  # The portal's shard of a package (Portal.Catalog.ReleaseIndex.shard/1).
+  @spec release_shard(String.t()) :: String.t()
+  def release_shard(pkg),
+    do: :crypto.hash(:sha256, pkg) |> binary_part(0, 1) |> Base.encode16(case: :lower)
 
   defp inert_apps(env) do
     case Map.get(env, :inert_deps) do
@@ -1320,7 +1386,10 @@ defmodule Precompiled.Check do
          ctx =
            candidate
            |> ctx(env, config, run.config_fun, reads)
-           |> Map.put(:probe, probe_view(env, provider(run, path))),
+           |> Map.put(
+             :probe,
+             probe_view(env, provider(run, path), release_lookup(config, run.batch, env))
+           ),
          {:ok, build, _target} <- Match.select_reason(manifest, ctx) do
       {Precompiled.ProbeInputs.module_set(build), probe_free?}
     else

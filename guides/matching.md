@@ -222,13 +222,22 @@ compares the whole tree. Releases before 0.7.0 do not read it at all.
     `Postgrex`, ecto's `Jason.Encoder`): when the portal marks the item
     with that dependency (`declared`: the module is in its own namespace,
     defined in its own tarball, and is no protocol implementation), the
-    build matches when no dependency of your project is in `definers` (the
-    declared package and every package the portal's module index of all
-    Hex packages shows defining the module), your code path and this VM
-    have no such module, and every dependency is a Hex one (an inert one
-    aside). No other dependency's module list is needed. What this cannot
-    see: a module another dependency defines by a macro or at compile time,
-    which no tarball parse and no build list shows;
+    build matches when that dependency is not in your project, your code
+    path and this VM have no such module, no inert dependency's `ebin`
+    holds it, every dependency is a Hex one from hex.pm (an inert one
+    aside), and each dependency outside the build's closure, at the very
+    release your lock holds, is one the portal's module index has read and
+    does not define the module. The index reads every release of every Hex
+    package (the sources Mix or rebar3 compiles, and the modules our builds
+    of it wrote); the signed batch names it (`release_index`), and the
+    client fetches only the documents for your lock's packages. A locked
+    release the index has not read (a release published within the hour,
+    one it could not read, a private organisation's) is a miss
+    (`probe_unknown`). No other dependency's module list is needed. What
+    this cannot see: a module another dependency defines by a macro or at
+    compile time, which no tarball parse and no build list shows, from files
+    no index reads among them (an inert dependency's sources that a Hex
+    dependency's compile loads);
   - an application: no dependency of your project is that application, and
     your code path and your OTP and Elixir install hold no `.app` of it,
     nor is one loaded (`probe_definer`);

@@ -21,7 +21,7 @@ defmodule Precompiled.Cache do
   # wrong build; a temp file younger than an hour is another run's write
   # in progress and is kept.
 
-  @dirs [["files"], ["manifests"], ["systems"], ["scan", "v1"], ["probe", "v1"]]
+  @dirs [["files"], ["manifests"], ["systems"], ["scan", "v1"], ["probe", "v1"], ["release"]]
   @tmp ~r/\.tmp-[0-9-]+\z/
   @day 86_400
   @tmp_age 3600

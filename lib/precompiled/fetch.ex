@@ -499,6 +499,90 @@ defmodule Precompiled.Fetch do
 
   defp systems_cache_path(config, sha), do: Path.join([config.home, "systems", sha <> ".json"])
 
+  @doc """
+  0.10.0 (S10 round 5): a release index document the batch names by `sha`
+  (`release_index`): a shard of read releases, `{"format": 1, "shard",
+  "read": {package => [version]}}`, or a probed module's definer set,
+  `{"format": 1, "module", "definers": {package => [version]}}`. Looked up
+  as the systems table is: the cache (`<home>/release/<sha>.json`), then
+  each content origin and the source at `release-index/by-sha/<sha>.json`;
+  used only when the bytes hash to `sha`, are at most 4 MiB and decode to
+  one of those shapes. Anything else is `:none`, and a declared probe item
+  that needed it misses.
+  """
+  @spec release_doc(map(), String.t()) :: {:ok, map()} | :none
+  def release_doc(config, sha) do
+    with true <- sha256?(sha),
+         {:ok, _dir} <- cache_dir(config, "release"),
+         {:ok, doc} <- cached_release_doc(config, sha) do
+      {:ok, doc}
+    else
+      :absent -> uncached_release_doc(config, sha)
+      _ -> :none
+    end
+  end
+
+  defp cached_release_doc(config, sha) do
+    path = Path.join([config.home, "release", sha <> ".json"])
+
+    with true <- cache?(config),
+         {:ok, bytes} <- read_cached(path, @max_systems_bytes),
+         ^sha <- sha256(bytes),
+         {:ok, doc} <- decode_release_doc(bytes) do
+      used(path, {:ok, doc})
+    else
+      {:fail, _} -> :none
+      _ -> :absent
+    end
+  end
+
+  defp uncached_release_doc(config, sha) do
+    if Map.get(config, :offline, false) do
+      :none
+    else
+      content = Map.get(config, :content)
+      origins = if(is_list(content), do: content, else: []) ++ [config.source]
+
+      Enum.find_value(origins, :none, fn origin ->
+        url = "#{origin}/release-index/by-sha/#{sha}.json"
+
+        with {:ok, bytes} <-
+               get_body(url, [max_bytes: @max_systems_bytes] ++ content_opts(config)),
+             ^sha <- sha256(bytes),
+             {:ok, doc} <- decode_release_doc(bytes) do
+          if cache?(config),
+            do:
+              _ =
+                FileUtil.write_atomic(Path.join([config.home, "release", sha <> ".json"]), bytes)
+
+          {:ok, doc}
+        else
+          _ -> nil
+        end
+      end)
+    end
+  end
+
+  defp decode_release_doc(bytes) do
+    case :json.decode(bytes, :ok, %{null: nil}) do
+      {%{"format" => 1} = doc, :ok, rest} ->
+        if rest =~ ~r/\A[ \t\r\n]*\z/ and release_doc?(doc), do: {:ok, doc}, else: :none
+
+      _ ->
+        :none
+    end
+  rescue
+    _ -> :none
+  end
+
+  defp release_doc?(%{"read" => read}) when is_map(read), do: versions_map?(read)
+  defp release_doc?(%{"definers" => definers}) when is_map(definers), do: versions_map?(definers)
+  defp release_doc?(_doc), do: false
+
+  defp versions_map?(map),
+    do:
+      Enum.all?(map, fn {k, v} -> is_binary(k) and is_list(v) and Enum.all?(v, &is_binary/1) end)
+
   defp decode_manifest(bytes), do: with({:ok, map} <- decode(bytes), do: Manifest.normalize(map))
 
   defp cached_manifest(config, sha) do

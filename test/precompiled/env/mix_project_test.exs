@@ -277,7 +277,10 @@ defmodule Precompiled.Env.MixProjectTest do
     assert {:miss, %{code: :probe_unknown}} =
              Precompiled.ProbeInputs.check(item, %{}, "pkg", view)
 
-    # The same project with the dep from hex.pm itself holds it.
-    assert Precompiled.ProbeInputs.check(item, %{}, "pkg", %{view | non_hex: []}) == :ok
+    # The same project with the dep from hex.pm itself holds it, its release
+    # read by the index and defining nothing.
+    index = %{read?: fn _app -> true end, defines?: fn _module, _app -> false end}
+    hexpm = %{view | non_hex: [], index: index}
+    assert Precompiled.ProbeInputs.check(item, %{}, "pkg", hexpm) == :ok
   end
 end

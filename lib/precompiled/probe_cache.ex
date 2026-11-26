@@ -38,6 +38,7 @@ defmodule Precompiled.ProbeCache do
       inert(env),
       Map.get(batch, :sequence),
       Map.get(batch, :manifests_v2),
+      Map.get(batch, :release_index),
       Map.take(config, [:toolchain, :source, :native_host]),
       System.get_env() |> Map.to_list() |> Enum.sort(),
       app_config(lock),

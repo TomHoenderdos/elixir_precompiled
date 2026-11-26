@@ -72,7 +72,20 @@ defmodule Precompiled.ProbeInputs do
           deps: [String.t()] | nil,
           non_hex: [String.t()] | nil,
           modules_of: (String.t() -> {:ok, MapSet.t(String.t())} | :unknown),
-          inert: [String.t()]
+          inert: [String.t()],
+          index: index() | nil
+        }
+
+  @typedoc """
+  0.10.0 (S10 round 5): the batch's module index per release, as
+  Precompiled.Check.release_lookup/3 reads it. `read?`: whether a dep's
+  locked release is one the index has read (`false` for a dep from no
+  hex.pm release, `:unknown` when a document cannot be had); `defines?`:
+  whether a dep's locked release defines a module.
+  """
+  @type index :: %{
+          read?: (String.t() -> boolean() | :unknown),
+          defines?: (String.t(), String.t() -> boolean() | :unknown)
         }
 
   @doc false
@@ -81,22 +94,31 @@ defmodule Precompiled.ProbeInputs do
   # were not read); `non_hex`, those that are no Hex dep (nil when unknown);
   # `modules_of`, a dep's exact module list (`{:ok, set}`) or `:unknown`;
   # `inert`, the inert deps (Env.inert_deps), whose lists are their beams.
+  # `index`, the batch's module index per release (index/0), nil without one.
   @spec view(
           MapSet.t(String.t()),
           [String.t()] | nil,
           [String.t()] | nil,
           function(),
-          [String.t()]
+          [String.t()],
+          index() | nil
         ) :: view()
-  def view(names, deps, non_hex, modules_of, inert \\ []),
-    do: %{names: names, deps: deps, non_hex: non_hex, modules_of: modules_of, inert: inert}
+  def view(names, deps, non_hex, modules_of, inert \\ [], index \\ nil),
+    do: %{
+      names: names,
+      deps: deps,
+      non_hex: non_hex,
+      modules_of: modules_of,
+      inert: inert,
+      index: index
+    }
 
   @doc false
   @spec check(term(), map() | nil, String.t(), view() | nil) :: :ok | {:miss, Reason.t()}
   def check(item, closure, package, view) do
     case parse(item) do
       {:module, name, definers} -> module_check(name, definers, closure, package, view)
-      {:declared, name, definers} -> declared_check(name, definers, view)
+      {:declared, name, definers} -> declared_check(name, definers, closure, package, view)
       {:app, name} -> app_check(name, view)
       {:otp_app, name} -> otp_check(name, view)
       :error -> malformed()
@@ -185,22 +207,26 @@ defmodule Precompiled.ProbeInputs do
     end
   end
 
-  # The declared-optional-dependency rule (S10 round 3). The portal
-  # recorded the module as one only its declared packages define in their
-  # own namespace (the review gate, worker and portal), and `definers` holds
-  # those packages and every package the module index of every Hex release
-  # (its last and latest stable) and our builds' lists show defining it.
-  # The project supplies it only if one of those is a dep, or the code path
-  # or this VM has it: no other dep's module list is needed. A dep that is
+  # The declared-optional-dependency rule (S10 round 3, per release since
+  # round 5). The portal recorded the module as one only its declared
+  # packages define in their own namespace (the review gate, worker and
+  # portal), and `definers` holds those packages and their apps. The project
+  # supplies it only if one of those is a dep, the code path or this VM has
+  # it, an inert dep's ebin holds it, or a dep outside the build's closure
+  # defines it at its locked release, which the batch's module index per
+  # release says (every release of every Hex package, read from its compiled
+  # sources and our builds' lists). A locked release the index has not read
+  # is one this client cannot tell: a miss. No other dep's module list is
+  # needed. A dep that is
   # no Hex dep (an inert one aside) is in no index: a miss; an inert dep's
   # beams on disk are read here (re-review R4). The residual: a module
   # defined by a macro or at compile time outside any tarball parse or
   # build list, by a dep other than the declared ones, from files no index
   # reads among them (an inert dep's sources, which a Hex dep's compile may
   # load: `Code.require_file/2`).
-  defp declared_check(name, _definers, nil), do: unknown(name)
+  defp declared_check(name, _definers, _closure, _package, nil), do: unknown(name)
 
-  defp declared_check(name, definers, view) do
+  defp declared_check(name, definers, closure, package, view) do
     shown = shown(name)
 
     cond do
@@ -208,8 +234,26 @@ defmodule Precompiled.ProbeInputs do
       on_code_path?(name <> ".beam") or loaded?(name) -> definer(shown, "code_path")
       not is_list(view.deps) or view.non_hex != [] -> unknown(name)
       found = inert_definer(name, view) -> definer(shown, found)
-      true -> :ok
+      true -> by_release(name, shown, closure, package, view)
     end
+  end
+
+  # S10 round 5: each dep outside the build's closure (not the package), at
+  # its locked release, against the batch's module index per release: the
+  # release must be one the index has read, and must not define the module.
+  defp by_release(name, _shown, _closure, _package, %{index: nil}), do: unknown(name)
+
+  defp by_release(name, shown, closure, package, view) do
+    view.deps
+    |> Enum.reject(&(&1 == package or in_closure?(closure, &1)))
+    |> Enum.sort()
+    |> Enum.reduce_while(:ok, fn app, :ok ->
+      case {view.index.read?.(app), view.index.defines?.(name, app)} do
+        {true, false} -> {:cont, :ok}
+        {true, true} -> {:halt, definer(shown, app)}
+        _ -> {:halt, unknown(name)}
+      end
+    end)
   end
 
   # Re-review R4: an inert dep's beams on disk, which no index reads.

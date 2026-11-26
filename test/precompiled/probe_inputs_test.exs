@@ -138,72 +138,125 @@ defmodule Precompiled.ProbeInputsTest do
   # the namespace of a package the prober declares as an optional
   # dependency; that package and every indexed definer are the definers,
   # and no other dep's module list is needed.
+  # S10 round 3, the declared-optional-dependency rule, per release since
+  # round 5: the module lies in the namespace of a package the prober
+  # declares as an optional dependency; that package's presence decides,
+  # and each dep outside the closure at its locked release, against the
+  # batch's module index per release (`index`). No module list is asked for.
   describe "a module its declared packages decide" do
     defp declared(name, definers, declared),
       do: Map.put(module(name, definers), "declared", declared)
 
-    test "hits when no definer is a dep, with no module list asked for" do
-      v = view(%{"vendor" => :unknown, "jason" => ["Elixir.Postgrex"]})
-      assert check(declared("Elixir.Postgrex", ["postgrex"], ["postgrex"]), v) == :ok
-      refute_received {:asked, _}
+    # `read`: the apps whose locked release the index read; `defines`:
+    # `{module, app}` pairs whose locked release defines the module.
+    defp indexed(deps, opts \\ []) do
+      read = Keyword.get(opts, :read, deps)
+      defines = Keyword.get(opts, :defines, [])
+
+      index = %{
+        read?: fn app -> app in read end,
+        defines?: fn module, app -> {module, app} in defines end
+      }
+
+      ProbeInputs.view(
+        MapSet.new(deps ++ Keyword.get(opts, :names, [])),
+        deps,
+        Keyword.get(opts, :non_hex, []),
+        fn _ -> raise "no module list is asked for" end,
+        Keyword.get(opts, :inert, []),
+        index
+      )
     end
 
-    test "misses when the declared package, or another definer, is a dep" do
-      v = view(%{"jason" => []}, names: ["postgrex"])
+    @pg "Elixir.Postgrex"
 
+    test "hits when no dep at its locked release defines it, and every one was read" do
+      assert check(declared(@pg, ["postgrex"], ["postgrex"]), indexed(["vendor", "jason"])) == :ok
+    end
+
+    # The review's U1: jason_uo 1.4.98 defines Jason and Jason.Encoder; its
+    # last release does not. Locked at 1.4.98 it is a definer. (The same
+    # shape under a name this test VM does not have loaded.)
+    test "misses when a dep at its locked release defines it" do
+      v = indexed(["jsn_uo"], defines: [{"Elixir.JsnR5.Encoder", "jsn_uo"}])
+
+      assert {:miss, %{code: :probe_definer, args: ["JsnR5.Encoder", "jsn_uo"]}} =
+               check(declared("Elixir.JsnR5.Encoder", ["jsn"], ["jsn"]), v)
+    end
+
+    test "misses as unknown when a dep's locked release was not read, or no index" do
+      v = indexed(["fresh_pkg", "jason"], read: ["jason"])
+
+      assert {:miss, %{code: :probe_unknown, args: ["Postgrex"]}} =
+               check(declared(@pg, ["postgrex"], ["postgrex"]), v)
+
+      no_index = %{indexed(["jason"]) | index: nil}
+
+      assert {:miss, %{code: :probe_unknown}} =
+               check(declared(@pg, ["postgrex"], ["postgrex"]), no_index)
+
+      unknown = put_in(indexed(["jason"]).index.read?, fn _ -> :unknown end)
+
+      assert {:miss, %{code: :probe_unknown}} =
+               check(declared(@pg, ["postgrex"], ["postgrex"]), unknown)
+    end
+
+    test "a dep of the build's closure, and the package itself, are the build's: not asked" do
+      v = indexed(["pkg", "dep"], read: [], defines: [{@pg, "dep"}])
+      closure = %{"dep" => %{"version" => "1.0.0", "checksum" => "x"}}
+      assert check(declared(@pg, ["postgrex"], ["postgrex"]), v, closure) == :ok
+    end
+
+    test "misses when the declared package, or another named definer, is a dep" do
       assert {:miss, %{code: :probe_definer, args: ["Postgrex", "postgrex"]}} =
-               check(declared("Elixir.Postgrex", ["postgrex"], ["postgrex"]), v)
-
-      v = view(%{"jason" => []}, names: ["glazer"])
+               check(
+                 declared(@pg, ["postgrex"], ["postgrex"]),
+                 indexed(["jason"], names: ["postgrex"])
+               )
 
       assert {:miss, %{code: :probe_definer, args: ["Jason.Encoder", "glazer"]}} =
-               check(declared("Elixir.Jason.Encoder", ["glazer", "jason"], ["jason"]), v)
+               check(
+                 declared("Elixir.Jason.Encoder", ["glazer", "jason"], ["jason"]),
+                 indexed(["jason_dep"], names: ["glazer"])
+               )
     end
 
     test "misses when the module is on the code path, or a dep is no Hex dep" do
       assert {:miss, %{code: :probe_definer, args: ["lists", "code_path"]}} =
-               check(declared("lists", ["stdlib_fork"], ["stdlib_fork"]), view(%{}))
-
-      v = view(%{"jason" => []}, non_hex: ["my_fork"])
+               check(declared("lists", ["stdlib_fork"], ["stdlib_fork"]), indexed([]))
 
       assert {:miss, %{code: :probe_unknown, args: ["Postgrex"]}} =
-               check(declared("Elixir.Postgrex", ["postgrex"], ["postgrex"]), v)
+               check(
+                 declared(@pg, ["postgrex"], ["postgrex"]),
+                 indexed(["jason"], non_hex: ["my_fork"])
+               )
 
       assert {:miss, %{code: :probe_unknown}} =
-               check(declared("Elixir.Postgrex", ["postgrex"], ["postgrex"]), nil)
+               check(declared(@pg, ["postgrex"], ["postgrex"]), nil)
     end
 
     # Re-review R4: an inert dep's beams on disk, which no index reads.
     test "misses when an inert dep's ebin holds the module" do
       modules_of = fn
-        "heroicons" -> {:ok, MapSet.new(["Elixir.Postgrex"])}
+        "heroicons" -> {:ok, MapSet.new([@pg])}
         _ -> {:ok, MapSet.new()}
       end
 
-      v =
-        ProbeInputs.view(MapSet.new(["heroicons"]), ["heroicons"], [], modules_of, ["heroicons"])
+      v = %{indexed(["heroicons"], inert: ["heroicons"]) | modules_of: modules_of}
 
       assert {:miss, %{code: :probe_definer, args: ["Postgrex", "heroicons"]}} =
-               check(declared("Elixir.Postgrex", ["postgrex"], ["postgrex"]), v)
+               check(declared(@pg, ["postgrex"], ["postgrex"]), v)
 
-      empty =
-        ProbeInputs.view(
-          MapSet.new(["heroicons"]),
-          ["heroicons"],
-          [],
-          fn _ -> {:ok, MapSet.new()} end,
-          ["heroicons"]
-        )
-
-      assert check(declared("Elixir.Postgrex", ["postgrex"], ["postgrex"]), empty) == :ok
+      empty = %{v | modules_of: fn _ -> {:ok, MapSet.new()} end}
+      assert check(declared(@pg, ["postgrex"], ["postgrex"]), empty) == :ok
     end
 
     test "a declared package that is no definer, or a malformed list, is malformed" do
       for bad <- [
-            declared("Elixir.Postgrex", ["postgrex"], ["jason"]),
-            declared("Elixir.Postgrex", ["postgrex"], []),
-            declared("Elixir.Postgrex", ["postgrex"], "postgrex"),
-            Map.put(declared("Elixir.Postgrex", ["postgrex"], ["postgrex"]), "extra", 1)
+            declared(@pg, ["postgrex"], ["jason"]),
+            declared(@pg, ["postgrex"], []),
+            declared(@pg, ["postgrex"], "postgrex"),
+            Map.put(declared(@pg, ["postgrex"], ["postgrex"]), "extra", 1)
           ] do
         assert {:miss, %{code: :malformed_entry}} = check(bad, view(%{})), inspect(bad)
       end

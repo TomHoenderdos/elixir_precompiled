@@ -368,38 +368,90 @@ defmodule Precompiled.CheckTest do
                Enum.find(report.lines, &(&1.name == "ash"))
     end
 
-    # S10 round 3: an item its declared packages decide needs no list of
-    # jason, which has no build at all here.
-    test "a declared item hits with no list of the other deps", %{f: f, config: config, env: env} do
-      item = %{
-        "kind" => "probe",
-        "of" => "module",
-        "name" => "Elixir.Postgrex",
-        "answer" => "absent",
-        "definers" => ["postgrex"],
-        "declared" => ["postgrex"]
-      }
+    # S10 round 3, per release since round 5: an item its declared packages
+    # decide needs no list of jason, which has no build at all here; the
+    # batch's release index says whether jason 1.4.5 was read and defines it.
+    @pg_item %{
+      "kind" => "probe",
+      "of" => "module",
+      "name" => "Elixir.Postgrex",
+      "answer" => "absent",
+      "definers" => ["postgrex"],
+      "declared" => ["postgrex"]
+    }
 
+    defp declared_batch(f, read, definers) do
       ash =
         f
         |> good_entry("ash", nil, "pure_elixir")
-        |> put_in(["build", "compile_inputs"], [item])
+        |> put_in(["build", "compile_inputs"], [@pg_item])
 
-      F.publish(f, %{
-        "ash" => %{"versions" => %{"3.5.2" => %{"builds" => [], "builds_with_inputs" => [ash]}}}
-      })
+      F.publish(
+        f,
+        %{
+          "ash" => %{"versions" => %{"3.5.2" => %{"builds" => [], "builds_with_inputs" => [ash]}}}
+        },
+        batch_extra: %{"release_index" => F.release_index(read, definers)}
+      )
+    end
 
-      assert %{status: :hit} = ash_line(config, env)
-
-      run_capturing(config, %{
-        host_env(env)
-        | present_deps: %{ash: [], jason: [], postgrex: []}
-      })
-
+    defp ash_of(config, env) do
+      run_capturing(config, env)
       assert_received {:report, {:ok, report}}
+      Enum.find(report.lines, &(&1.name == "ash"))
+    end
+
+    test "a declared item hits by the release index, with no list of the other deps", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      declared_batch(f, %{"jason" => ["1.4.5"], "ash" => ["3.5.2"]}, %{
+        "Elixir.Postgrex" => %{"postgrex" => ["0.20.0"]}
+      })
+
+      assert %{status: :hit} = ash_of(config, host_env(env))
+
+      # The declared package in the project decides.
+      with_postgrex = %{host_env(env) | present_deps: %{ash: [], jason: [], postgrex: []}}
 
       assert %{status: :miss, reason: {:probe_definer, ["Postgrex", "postgrex"]}} =
-               Enum.find(report.lines, &(&1.name == "ash"))
+               ash_of(config, with_postgrex)
+    end
+
+    test "a declared item misses on a dep whose locked release defines it, or one not read", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      declared_batch(f, %{"jason" => ["1.4.5"]}, %{"Elixir.Postgrex" => %{"jason" => ["1.4.5"]}})
+
+      assert %{status: :miss, reason: {:probe_definer, ["Postgrex", "jason"]}} =
+               ash_of(config, host_env(env))
+
+      declared_batch(f, %{"jason" => ["1.4.4"]}, %{"Elixir.Postgrex" => %{}})
+
+      assert %{status: :miss, reason: {:probe_unknown, ["Postgrex"]}} =
+               ash_of(config, host_env(env))
+
+      # A batch with no release index: every declared item misses.
+      F.publish(f, %{
+        "ash" => %{
+          "versions" => %{
+            "3.5.2" => %{
+              "builds" => [],
+              "builds_with_inputs" => [
+                put_in(good_entry(f, "ash", nil, "pure_elixir"), ["build", "compile_inputs"], [
+                  @pg_item
+                ])
+              ]
+            }
+          }
+        }
+      })
+
+      assert %{status: :miss, reason: {:probe_unknown, ["Postgrex"]}} =
+               ash_of(config, host_env(env))
     end
 
     # Fix round 2, proposal C: jason is served only by a probe build. Its own
