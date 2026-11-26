@@ -27,7 +27,7 @@ end
 
 defp deps do
   [
-    {:precompiled, "~> 0.9.1", runtime: false},
+    {:precompiled, "~> 0.10.0", runtime: false},
     ...
   ]
 end

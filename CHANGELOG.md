@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.10.0)
+## v0.10.0 - 2026-11-27
 
 * Probe inputs: a dependency whose compile asks whether a module or an application is there
   (jose's `Code.ensure_loaded?(Poison)`, websock_adapter's `:cowboy_websocket`, vega_lite's
