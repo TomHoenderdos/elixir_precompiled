@@ -41,6 +41,9 @@ defmodule Precompiled.ProbeInputs do
   #     path or git dep, or one switched to it, 0.9.1's source rule), a
   #     release with no matching build, or a build
   #     without the list is one this client cannot tell: a miss;
+  #   * `of: "module"` with `declared` (round 3): the declared-optional-
+  #     dependency rule (declared_check/3): no dep is a definer, the code
+  #     path and this VM lack it, every dep is a Hex one; no list needed;
   #   * `of: "app"`: no dep is that application, and this VM finds no
   #     `<name>.app` on its code path, under OTP's or Elixir's lib dir, or
   #     loaded;
@@ -61,6 +64,7 @@ defmodule Precompiled.ProbeInputs do
   @module_name ~r/\A[A-Za-z_][A-Za-z0-9_.@]{0,254}\z/
   @app_name ~r/\A[a-z][a-z0-9_]{0,254}\z/
   @max_definers 64
+  @max_declared 8
 
   @type view :: %{
           names: MapSet.t(String.t()),
@@ -83,6 +87,7 @@ defmodule Precompiled.ProbeInputs do
   def check(item, closure, package, view) do
     case parse(item) do
       {:module, name, definers} -> module_check(name, definers, closure, package, view)
+      {:declared, name, definers} -> declared_check(name, definers, view)
       {:app, name} -> app_check(name, view)
       {:otp_app, name} -> otp_check(name, view)
       :error -> malformed()
@@ -112,6 +117,25 @@ defmodule Precompiled.ProbeInputs do
     if Regex.match?(@module_name, name) and Enum.all?(d, &app_name?/1),
       do: {:module, name, d},
       else: :error
+  end
+
+  # Round 3: a module item whose declared packages (each a definer) decide
+  # it, the declared-optional-dependency rule.
+  defp parse(
+         %{
+           "of" => "module",
+           "name" => name,
+           "answer" => "absent",
+           "definers" => d,
+           "declared" => declared
+         } = item
+       )
+       when map_size(item) == 6 and is_list(d) and length(d) <= @max_definers and
+              is_list(declared) and declared != [] and length(declared) <= @max_declared do
+    if Regex.match?(@module_name, name) and Enum.all?(d, &app_name?/1) and
+         Enum.all?(declared, &(&1 in d)),
+       do: {:declared, name, d},
+       else: :error
   end
 
   defp parse(%{"of" => of, "name" => name, "answer" => "absent"} = item)
@@ -149,6 +173,29 @@ defmodule Precompiled.ProbeInputs do
         |> Enum.reject(&(&1 == package or in_closure?(closure, &1)))
         |> Enum.sort()
         |> listed(name, shown, view)
+    end
+  end
+
+  # The declared-optional-dependency rule (S10 round 3). The portal
+  # recorded the module as one only its declared packages define in their
+  # own namespace (the review gate, worker and portal), and `definers` holds
+  # those packages and every package the module index of every Hex release
+  # (its last and latest stable) and our builds' lists show defining it.
+  # The project supplies it only if one of those is a dep, or the code path
+  # or this VM has it: no other dep's module list is needed. A dep that is
+  # no Hex dep (an inert one aside) is in no index: a miss. The residual:
+  # a module defined by a macro or at compile time outside any tarball
+  # parse or build list, by a dep other than the declared ones.
+  defp declared_check(name, _definers, nil), do: unknown(name)
+
+  defp declared_check(name, definers, view) do
+    shown = shown(name)
+
+    cond do
+      found = Enum.find(definers, &MapSet.member?(view.names, &1)) -> definer(shown, found)
+      on_code_path?(name <> ".beam") or loaded?(name) -> definer(shown, "code_path")
+      not is_list(view.deps) or view.non_hex != [] -> unknown(name)
+      true -> :ok
     end
   end
 

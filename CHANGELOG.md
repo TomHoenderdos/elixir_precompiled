@@ -16,7 +16,10 @@
   `rebar.config` or `Makefile`, `compile: false` and `app: false` (phx.new's `heroicons`) lists
   the beams in its `ebin` dirs, in a Mix project (not under `Mix.install`). Any other dependency Mix does not load from Hex as locked (a path
   or git dependency, as 0.9.1's `closure_source` rule checks), or a release with no such build,
-  makes every module probe miss. Otherwise it misses as `probe_definer`, `probe_otp_app` or,
+  makes every module probe miss. An item the portal marks with the optional dependency it belongs to
+  (`declared`: ecto_sql's `Postgrex`, ecto's `Jason.Encoder`) needs no module list: it holds when
+  none of its definers (that dependency and every package the portal's index of all Hex packages
+  shows defining the module) is a dependency here. Otherwise it misses as `probe_definer`, `probe_otp_app` or,
   when it cannot tell, `probe_unknown`. `Mix.install` checks the install project's own
   dependencies. The lists are kept across runs under the cache. A device never takes such a
   build. Clients up to 0.9.1 treat the input as malformed and miss.

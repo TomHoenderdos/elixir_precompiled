@@ -134,6 +134,57 @@ defmodule Precompiled.ProbeInputsTest do
     end
   end
 
+  # S10 round 3, the declared-optional-dependency rule: the module lies in
+  # the namespace of a package the prober declares as an optional
+  # dependency; that package and every indexed definer are the definers,
+  # and no other dep's module list is needed.
+  describe "a module its declared packages decide" do
+    defp declared(name, definers, declared),
+      do: Map.put(module(name, definers), "declared", declared)
+
+    test "hits when no definer is a dep, with no module list asked for" do
+      v = view(%{"vendor" => :unknown, "jason" => ["Elixir.Postgrex"]})
+      assert check(declared("Elixir.Postgrex", ["postgrex"], ["postgrex"]), v) == :ok
+      refute_received {:asked, _}
+    end
+
+    test "misses when the declared package, or another definer, is a dep" do
+      v = view(%{"jason" => []}, names: ["postgrex"])
+
+      assert {:miss, %{code: :probe_definer, args: ["Postgrex", "postgrex"]}} =
+               check(declared("Elixir.Postgrex", ["postgrex"], ["postgrex"]), v)
+
+      v = view(%{"jason" => []}, names: ["glazer"])
+
+      assert {:miss, %{code: :probe_definer, args: ["Jason.Encoder", "glazer"]}} =
+               check(declared("Elixir.Jason.Encoder", ["glazer", "jason"], ["jason"]), v)
+    end
+
+    test "misses when the module is on the code path, or a dep is no Hex dep" do
+      assert {:miss, %{code: :probe_definer, args: ["lists", "code_path"]}} =
+               check(declared("lists", ["stdlib_fork"], ["stdlib_fork"]), view(%{}))
+
+      v = view(%{"jason" => []}, non_hex: ["my_fork"])
+
+      assert {:miss, %{code: :probe_unknown, args: ["Postgrex"]}} =
+               check(declared("Elixir.Postgrex", ["postgrex"], ["postgrex"]), v)
+
+      assert {:miss, %{code: :probe_unknown}} =
+               check(declared("Elixir.Postgrex", ["postgrex"], ["postgrex"]), nil)
+    end
+
+    test "a declared package that is no definer, or a malformed list, is malformed" do
+      for bad <- [
+            declared("Elixir.Postgrex", ["postgrex"], ["jason"]),
+            declared("Elixir.Postgrex", ["postgrex"], []),
+            declared("Elixir.Postgrex", ["postgrex"], "postgrex"),
+            Map.put(declared("Elixir.Postgrex", ["postgrex"], ["postgrex"]), "extra", 1)
+          ] do
+        assert {:miss, %{code: :malformed_entry}} = check(bad, view(%{})), inspect(bad)
+      end
+    end
+  end
+
   describe "an application" do
     test "hits when no dep is it and nothing installed is" do
       assert check(app("phoenix_html"), view(%{"jason" => []})) == :ok

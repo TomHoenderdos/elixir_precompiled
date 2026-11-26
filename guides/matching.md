@@ -218,6 +218,17 @@ compares the whole tree. Releases before 0.7.0 do not read it at all.
     portal serves no matching build of, a build from before the lists, or
     a cycle means this client cannot tell: `... cannot tell whether this
     project supplies it` (`probe_unknown`);
+  - a module of an optional dependency the asker declares (ecto_sql's
+    `Postgrex`, ecto's `Jason.Encoder`): when the portal marks the item
+    with that dependency (`declared`: the module is in its own namespace,
+    defined in its own tarball, and is no protocol implementation), the
+    build matches when no dependency of your project is in `definers` (the
+    declared package and every package the portal's module index of all
+    Hex packages shows defining the module), your code path and this VM
+    have no such module, and every dependency is a Hex one (an inert one
+    aside). No other dependency's module list is needed. What this cannot
+    see: a module another dependency defines by a macro or at compile time,
+    which no tarball parse and no build list shows;
   - an application: no dependency of your project is that application, and
     your code path and your OTP and Elixir install hold no `.app` of it,
     nor is one loaded (`probe_definer`);

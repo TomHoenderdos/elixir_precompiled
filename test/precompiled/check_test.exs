@@ -368,6 +368,40 @@ defmodule Precompiled.CheckTest do
                Enum.find(report.lines, &(&1.name == "ash"))
     end
 
+    # S10 round 3: an item its declared packages decide needs no list of
+    # jason, which has no build at all here.
+    test "a declared item hits with no list of the other deps", %{f: f, config: config, env: env} do
+      item = %{
+        "kind" => "probe",
+        "of" => "module",
+        "name" => "Elixir.Postgrex",
+        "answer" => "absent",
+        "definers" => ["postgrex"],
+        "declared" => ["postgrex"]
+      }
+
+      ash =
+        f
+        |> good_entry("ash", nil, "pure_elixir")
+        |> put_in(["build", "compile_inputs"], [item])
+
+      F.publish(f, %{
+        "ash" => %{"versions" => %{"3.5.2" => %{"builds" => [], "builds_with_inputs" => [ash]}}}
+      })
+
+      assert %{status: :hit} = ash_line(config, env)
+
+      run_capturing(config, %{
+        host_env(env)
+        | present_deps: %{ash: [], jason: [], postgrex: []}
+      })
+
+      assert_received {:report, {:ok, report}}
+
+      assert %{status: :miss, reason: {:probe_definer, ["Postgrex", "postgrex"]}} =
+               Enum.find(report.lines, &(&1.name == "ash"))
+    end
+
     # Fix round 2, proposal C: jason is served only by a probe build. Its own
     # item is checked against this same project, so its list counts when
     # the item holds here. `jason_deps` is its build's closure.
