@@ -91,7 +91,8 @@ defmodule Precompiled.Reason do
     relocated_path_ascii: "relocated build: this project's {0} path is not printable ASCII",
     relocated_path_envelope:
       "relocated build: this project's {0} path is outside the paths it was proven at",
-    config_all_differs: "built with a different compile-time config of {0}"
+    config_all_differs: "built with a different compile-time config of {0}",
+    closure_source: "built against {0} {1} from Hex, not the {0} Mix loads here"
   ]
 
   @codes Keyword.keys(@templates)

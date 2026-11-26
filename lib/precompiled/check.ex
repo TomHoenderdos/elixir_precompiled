@@ -1059,6 +1059,7 @@ defmodule Precompiled.Check do
       lock_entry: candidate.lock_entry,
       lock: env.lock,
       env_closure: Env.closure(Map.get(env, :present_deps), candidate.name),
+      dep_sources: Map.get(env, :dep_sources),
       system: env.system || {"host", ""},
       elixir: elixir,
       otp: otp,

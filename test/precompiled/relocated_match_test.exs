@@ -91,6 +91,7 @@ defmodule Precompiled.RelocatedMatchTest do
       },
       over
     )
+    |> Precompiled.Fixture.from_hex()
   end
 
   test "a relocated build is taken after the other lists missed" do

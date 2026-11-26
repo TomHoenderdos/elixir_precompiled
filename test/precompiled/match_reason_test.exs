@@ -26,6 +26,7 @@ defmodule Precompiled.MatchReasonTest do
       },
       Map.new(over)
     )
+    |> Precompiled.Fixture.from_hex()
   end
 
   defp build(over) do

@@ -66,6 +66,7 @@ defmodule Precompiled.DeterministicMatchTest do
       },
       Map.new(over)
     )
+    |> Precompiled.Fixture.from_hex()
   end
 
   defp sha({:ok, %{"ebin" => [%{"sha256" => sha}]}, _target}), do: sha

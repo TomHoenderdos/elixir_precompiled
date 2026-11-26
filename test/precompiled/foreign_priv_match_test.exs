@@ -90,6 +90,7 @@ defmodule Precompiled.ForeignPrivMatchTest do
       },
       over
     )
+    |> Precompiled.Fixture.from_hex()
   end
 
   test "a foreign build is taken after the regular lists missed" do

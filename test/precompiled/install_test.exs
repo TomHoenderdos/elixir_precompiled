@@ -217,6 +217,7 @@ defmodule Precompiled.InstallTest do
       version: "1.0.0",
       lock_entry: @x,
       lock: %{x: @x, y: @y1, z: @z},
+      dep_sources: %{x: @x, y: @y1, z: @z},
       env_closure: Precompiled.Env.closure(present, :x),
       system: {"host", ""},
       elixir: "1.20.3",

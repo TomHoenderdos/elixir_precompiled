@@ -67,7 +67,7 @@ defmodule Precompiled.Install do
     # Mix.install/2's config: may hold the opt-in (`precompiled: [host_native: true]`).
     config = Config.with_host_native(config)
 
-    {methods, present, order, compiled_ok} =
+    {methods, present, order, compiled_ok, sources} =
       resolve(dir, deps, mix_opts, Keyword.get(test_opts, :load, &Mix.Dep.load_and_cache/0))
 
     with {:unknown, why} <- methods do
@@ -83,7 +83,7 @@ defmodule Precompiled.Install do
 
     # Mix.install/2 runs whatever happened here; it compiles what is missing.
     try do
-      env = Env.MixInstall.load(dir, deps, methods, present, order, compiled_ok)
+      env = Env.MixInstall.load(dir, deps, methods, present, order, compiled_ok, sources)
       _ = run_check(check, %{env | config_unreadable: unreadable}, config)
     rescue
       e -> internal_error(Exception.message(e))
@@ -294,11 +294,15 @@ defmodule Precompiled.Install do
   # the same lock, env and target: its deps.loadpaths runs deps.compile over
   # Mix.Dep.load_and_cache/0, as in a Mix project. `load` stands in for
   # Mix.Dep.load_and_cache/0 in tests. The fourth element is the deps Mix
-  # loaded as compiled and current (Env.MixProject.compiled_ok_from/1), nil
-  # when they did not load.
+  # loaded as compiled and current (Env.MixProject.compiled_ok_from/1), the
+  # fifth where Mix loads each dep from (Env.MixProject.dep_sources_from/1):
+  # a lockfile: merge, or an earlier run in the same install project (whose
+  # path dep has since moved a dep of its own to a path), can leave a Hex
+  # entry in its lock for what is now a path or git dep. Both nil when the
+  # deps did not load.
   @spec resolve(Path.t(), [term()], keyword(), (-> [Mix.Dep.t()])) ::
           {Env.build_methods(), Env.present_deps() | nil, Env.compile_order() | nil,
-           MapSet.t(atom()) | nil}
+           MapSet.t(atom()) | nil, Env.dep_sources() | nil}
   def resolve(dir, deps, mix_opts, load \\ &Mix.Dep.load_and_cache/0) do
     System.put_env(Keyword.get(mix_opts, :system_env, []))
     File.mkdir_p!(dir)
@@ -375,7 +379,7 @@ defmodule Precompiled.Install do
     do: dir |> in_install_project(deps, mix_opts, fn -> load_deps(load) end) |> elem(0)
 
   # Never cached past this call: Mix.install/2 loads its own deps. Deps that
-  # do not load leave all four unknown: every candidate misses on rule 9.
+  # do not load leave all five unknown: every candidate misses on rule 9.
   # The partition count is read after resolve/4 put the system_env: Mix.install/2
   # partitions its deps.compile by it as a Mix project does.
   defp load_deps(load) do
@@ -384,12 +388,12 @@ defmodule Precompiled.Install do
 
     {Env.MixProject.build_methods_from(deps), present_deps(deps),
      compile_order(deps, System.get_env("MIX_OS_DEPS_COMPILE_PARTITION_COUNT")),
-     compiled_ok(deps)}
+     compiled_ok(deps), dep_sources(deps)}
   rescue
-    e -> {{:unknown, Exception.message(e)}, nil, nil, nil}
+    e -> {{:unknown, Exception.message(e)}, nil, nil, nil, nil}
   catch
     :exit, reason when stop?(reason) -> exit(reason)
-    kind, reason -> {{:unknown, Exception.format_banner(kind, reason)}, nil, nil, nil}
+    kind, reason -> {{:unknown, Exception.format_banner(kind, reason)}, nil, nil, nil, nil}
   after
     Mix.Dep.clear_cached()
   end
@@ -413,6 +417,14 @@ defmodule Precompiled.Install do
   # unknown, nil, and Phase B places nothing into a kino Mix built there.
   defp compiled_ok(deps) do
     Env.MixProject.compiled_ok_from(deps)
+  rescue
+    _ -> nil
+  end
+
+  # As present_deps/1: deps in a shape the sources cannot be read from
+  # leave them unknown, nil, and no build that names a dependency matches.
+  defp dep_sources(deps) do
+    Env.MixProject.dep_sources_from(deps)
   rescue
     _ -> nil
   end

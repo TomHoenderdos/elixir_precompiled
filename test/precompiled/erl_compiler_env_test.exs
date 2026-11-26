@@ -47,6 +47,7 @@ defmodule Precompiled.ErlCompilerEnvTest do
       },
       Map.new(over)
     )
+    |> Precompiled.Fixture.from_hex()
   end
 
   defp check(env), do: ErlCompilerEnv.check(&Map.get(env, &1))

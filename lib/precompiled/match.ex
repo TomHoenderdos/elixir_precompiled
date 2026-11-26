@@ -36,6 +36,9 @@ defmodule Precompiled.Match do
           # The package's transitive deps as Mix loads them in the current
           # env (Env.closure/2), nil when unknown: then the lock decides.
           optional(:env_closure) => [atom()] | nil,
+          # Where Mix loads each dep from (Env.dep_sources/0), nil or absent
+          # when unknown: then no build that names a dependency matches.
+          optional(:dep_sources) => Precompiled.Env.dep_sources() | nil,
           optional(:user_config) => (String.t(), String.t() -> term()),
           # The project's whole config of an app (CompileInputs.user_config_all/1).
           optional(:user_config_all) => (String.t() -> term()),
@@ -741,6 +744,7 @@ defmodule Precompiled.Match do
       fn -> present_reason(b, "deps") end,
       fn -> deps_ok(b["deps"], ctx.lock) end,
       fn -> closure_ok(ctx.lock_entry, b["deps"], ctx.lock, Map.get(ctx, :env_closure)) end,
+      fn -> sources_ok(ctx, b["deps"]) end,
       fn -> present_reason(b, "compile_env") end,
       fn -> compile_env_reason(b["compile_env"], ctx.config) end,
       fn ->
@@ -1265,6 +1269,59 @@ defmodule Precompiled.Match do
         do: {:cont, :ok},
         else: {:halt, {:miss, without(Atom.to_string(name), entry)}}
     end)
+  end
+
+  # 0.9.1 (the client review's B1): every dependency the rules above
+  # compared by its lock entry must be one Mix loads here from Hex with that
+  # same entry: the package itself, each dep the build was made against,
+  # and each dep of the env's closure. A dep changed to `path:` or `git:`
+  # with `override: true` keeps its old Hex entry in mix.lock (`mix
+  # deps.get` leaves it), so a build made against the Hex release passed
+  # every rule that reads the lock, while Mix compiles the package against
+  # the fork. Under Mix.install/2 a lockfile: merge brings the same stale
+  # entry. `dep_sources` comes from the deps Mix loads (Env.dep_sources/0);
+  # without it no build that names a dependency matches. The device layer
+  # does not use this rule: a device has no Mix and no path deps
+  # (Precompiled.Device.Rules).
+  defp sources_ok(ctx, built) do
+    sources = Map.get(ctx, :dep_sources)
+    closure = Enum.map(Map.get(ctx, :env_closure) || [], &Atom.to_string/1)
+    deps = (Map.keys(built) ++ closure) |> Enum.uniq() |> Enum.sort()
+
+    [{ctx.name, ctx.lock_entry} | Enum.map(deps, &{&1, ctx.lock[existing_atom(&1)]})]
+    |> Enum.reduce_while(:ok, fn {name, entry}, :ok ->
+      case source_reason(name, entry, sources) do
+        :ok -> {:cont, :ok}
+        miss -> {:halt, miss}
+      end
+    end)
+  end
+
+  # The entry compared must be the one Mix loaded the dep with: the same
+  # package, version and outer checksum. The rules above leave only Hex
+  # entries here; anything else misses all the same.
+  defp source_reason(name, {:hex, pkg, v, _, _, _, _, outer}, sources) do
+    case if(is_map(sources), do: Map.get(sources, existing_atom(name))) do
+      {:hex, ^pkg, ^v, _, _, _, _, ^outer} -> :ok
+      loaded -> {:miss, source_miss(name, v, loaded)}
+    end
+  end
+
+  defp source_reason(name, entry, _sources),
+    do: {:miss, source_miss(name, locked_version(entry), nil)}
+
+  defp source_miss(name, v, loaded) do
+    reason = Reason.new(:closure_source, [name, v])
+
+    if loaded in [:path, :git],
+      do: %{reason | text: "#{reason.text} (a #{loaded} dependency)"},
+      else: reason
+  end
+
+  defp existing_atom(name) do
+    String.to_existing_atom(name)
+  rescue
+    ArgumentError -> nil
   end
 
   defp without(name, nil),

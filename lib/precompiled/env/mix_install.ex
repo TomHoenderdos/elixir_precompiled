@@ -35,14 +35,20 @@ defmodule Precompiled.Env.MixInstall do
   # the install project's deps in (Install.resolve/4); nil leaves every
   # config_order item unknown. `compiled_ok`: the deps Mix loaded there as
   # compiled and current (Install.resolve/4); nil, and Phase B places no
-  # archive into a kino this run did not install.
+  # archive into a kino this run did not install. `sources`: where Mix
+  # loads each dep from there (Install.resolve/4, 0.9.1); a lock entry is a
+  # candidate only for a dep Mix loads from Hex with that entry, as in a Mix
+  # project only Hex deps are, and Match checks every dep a build names
+  # against it. nil: every Hex entry of the lock is a candidate, and none
+  # matches a build that names a dependency.
   @spec load(
           Path.t(),
           [term()],
           Env.build_methods(),
           Env.present_deps() | nil,
           Env.compile_order() | nil,
-          MapSet.t(atom()) | nil
+          MapSet.t(atom()) | nil,
+          Env.dep_sources() | nil
         ) :: Env.t()
   def load(
         project_dir,
@@ -50,7 +56,8 @@ defmodule Precompiled.Env.MixInstall do
         methods \\ {:unknown, "not loaded"},
         present \\ nil,
         order \\ nil,
-        compiled_ok \\ nil
+        compiled_ok \\ nil,
+        sources \\ nil
       ) do
     lock = Mix.Dep.Lock.read(Path.join(project_dir, "mix.lock"))
     build_lib = Path.join([project_dir, "_build", Atom.to_string(Mix.env()), "lib"])
@@ -66,7 +73,7 @@ defmodule Precompiled.Env.MixInstall do
     %Env{
       system: system,
       mix_target: mix_target(system),
-      candidates: Env.hex_candidates(lock, apps, envs),
+      candidates: Env.hex_candidates(lock, loaded_from_hex(apps, lock, sources), envs),
       lock: lock,
       build_lib: build_lib,
       deps_path: Path.join(project_dir, "deps"),
@@ -75,9 +82,18 @@ defmodule Precompiled.Env.MixInstall do
       build_methods: methods,
       present_deps: present,
       compile_order: order,
-      compiled_ok: compiled_ok
+      compiled_ok: compiled_ok,
+      dep_sources: sources
     }
   end
+
+  defp loaded_from_hex(apps, _lock, nil), do: apps
+
+  defp loaded_from_hex(apps, lock, sources) when is_map(sources),
+    do: Enum.filter(apps, &same_hex?(lock[&1], sources[&1]))
+
+  defp same_hex?({:hex, pkg, v, _, _, _, _, outer}, {:hex, pkg, v, _, _, _, _, outer}), do: true
+  defp same_hex?(_locked, _loaded), do: false
 
   @doc false
   # Mix.install on a device compiles as :host, but a build for the device's

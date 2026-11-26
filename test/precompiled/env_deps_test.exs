@@ -80,6 +80,7 @@ defmodule Precompiled.EnvDepsTest do
       version: version,
       lock_entry: @lock[app],
       lock: @lock,
+      dep_sources: @lock,
       env_closure: env_closure,
       system: {"host", ""},
       elixir: "1.20.3",

@@ -40,6 +40,7 @@ defmodule Precompiled.HexPackageTest do
       env: %Env{
         candidates: [%{name: :eini, version: "2.2.5", lock_entry: @lock_entry}],
         lock: %{eini: @lock_entry},
+        dep_sources: %{eini: @lock_entry},
         system: {"nerves_system_rpi4", "1.31.0"},
         build_lib: lib,
         deps_path: Path.join(dir, "deps")
@@ -143,6 +144,7 @@ defmodule Precompiled.HexPackageTest do
       version: "2.2.5",
       lock_entry: @lock_entry,
       lock: %{eini: @lock_entry},
+      dep_sources: %{eini: @lock_entry},
       env_closure: nil,
       system: {"nerves_system_rpi4", "1.31.0"},
       elixir: System.version(),

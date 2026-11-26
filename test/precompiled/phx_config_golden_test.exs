@@ -116,6 +116,7 @@ defmodule Precompiled.PhxConfigGoldenTest do
       version: "1.0.0",
       lock_entry: entry,
       lock: %{lib: entry},
+      dep_sources: %{lib: entry},
       system: {"pure_elixir", nil},
       elixir: System.version(),
       otp: to_string(:erlang.system_info(:otp_release)),

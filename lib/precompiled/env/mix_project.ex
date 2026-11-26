@@ -35,6 +35,7 @@ defmodule Precompiled.Env.MixProject do
       build_methods: build_methods_from(deps),
       present_deps: present_deps_from(deps),
       compiled_ok: compiled_ok_from(deps),
+      dep_sources: dep_sources_from(deps),
       compile_order:
         Precompiled.CompileOrder.from_deps(
           deps,
@@ -73,6 +74,42 @@ defmodule Precompiled.Env.MixProject do
   @spec present_deps_from([Mix.Dep.t()]) :: Env.present_deps()
   def present_deps_from(deps),
     do: Map.new(deps, &{&1.app, &1.deps |> Enum.map(fn child -> child.app end) |> Enum.sort()})
+
+  @doc false
+  # Where Mix loads each dep from (Env.dep_sources/0), for the closure
+  # rule's source check (Match): a Hex dep as the lock entry Mix loaded it
+  # with (Mix.Dep.Converger puts it in the dep's opts, whatever the SCM),
+  # anything else as :path, :git or :other. A dep changed to `path:` or
+  # `git:` with `override: true` still carries its old Hex entry there and
+  # in mix.lock, which `mix deps.get` leaves in place; its SCM says what Mix
+  # compiles. Plain data, as present_deps_from/1.
+  @spec dep_sources_from([Mix.Dep.t()]) :: Env.dep_sources()
+  def dep_sources_from(deps), do: Map.new(deps, &{&1.app, dep_source(&1)})
+
+  defp dep_source(%Mix.Dep{scm: scm, opts: opts}) do
+    cond do
+      scm == Mix.SCM.Path or Keyword.has_key?(opts, :path) ->
+        :path
+
+      scm == Mix.SCM.Git or Keyword.has_key?(opts, :git) or Keyword.has_key?(opts, :github) ->
+        :git
+
+      scm == Hex.SCM ->
+        hex_source(opts[:lock], opts[:hex])
+
+      true ->
+        :other
+    end
+  end
+
+  # The entry must be a Hex entry of the package the dep names (`hex:`,
+  # which Hex.SCM defaults to the app's name).
+  defp hex_source({:hex, pkg, _, _, _, _, _, outer} = lock, hex)
+       when is_atom(pkg) and is_binary(outer) and (is_binary(hex) or is_atom(hex)) do
+    if Atom.to_string(pkg) == to_string(hex), do: lock, else: :other
+  end
+
+  defp hex_source(_lock, _hex), do: :other
 
   @doc "The apps Mix loaded as compiled (`{:ok, _}`), which Phase B may place archives into."
   @spec compiled_ok_from([Mix.Dep.t()]) :: MapSet.t(atom())

@@ -145,6 +145,18 @@ defmodule Precompiled.Fixture do
   end
 
   # The source has no batch to serve: batch.json answers 503.
+  @doc """
+  A hand-built Match ctx in which Mix loads every lock entry from Hex as
+  locked (0.9.1's closure source rule), unless it names its own
+  `:dep_sources`.
+  """
+  @spec from_hex(map()) :: map()
+  def from_hex(ctx) do
+    if Map.get(ctx, :dep_sources) == nil,
+      do: Map.put(ctx, :dep_sources, Map.get(ctx, :lock, %{})),
+      else: ctx
+  end
+
   @spec withdraw_batch() :: :ok
   def withdraw_batch(), do: put(:batch, nil)
 

@@ -53,6 +53,7 @@ defmodule Precompiled.HostNativeCheckTest do
       env: %Env{
         candidates: [%{name: :x, version: "1.0.0", lock_entry: @x}],
         lock: %{x: @x},
+        dep_sources: %{x: @x},
         system: nil,
         build_lib: lib,
         deps_path: deps

@@ -31,8 +31,19 @@ defmodule Precompiled.Env do
           compile_order: compile_order() | nil,
           present_deps: present_deps() | nil,
           config_unreadable: String.t() | nil,
-          compiled_ok: MapSet.t(atom()) | nil
+          compiled_ok: MapSet.t(atom()) | nil,
+          dep_sources: dep_sources() | nil
         }
+
+  @typedoc """
+  Where Mix loads each dependency of this project from: for a Hex
+  dependency (`Hex.SCM`, no `:path` or `:git` option), the lock entry Mix
+  loaded it with, when that is a Hex entry of the package it names;
+  otherwise `:path`, `:git` or `:other`. A dependency changed to `path:` or
+  `git:` with `override: true` keeps its old Hex entry in `mix.lock`, so
+  the lock alone cannot tell. Read only by this library.
+  """
+  @type dep_sources :: %{optional(atom()) => tuple() | :path | :git | :other}
 
   @typedoc """
   How Mix builds a dependency in this project: the manager it resolved
@@ -108,6 +119,11 @@ defmodule Precompiled.Env do
             # Phase B may place a writer's archives into (0.8.0). nil when
             # Mix's deps were not read: then none is.
             compiled_ok: nil,
+            # 0.9.1: where Mix loads each dep from (dep_sources/0), in the
+            # project or in Mix.install/2's install project; nil when Mix's
+            # deps were not read, and then no build that names a dependency
+            # matches (Match's closure source rule).
+            dep_sources: nil,
             # 0.9.0: this project's slots for a relocated build
             # (Precompiled.Relocate.user_slots/2), taken once per run by
             # Precompiled.Check; :unset until then.

@@ -47,6 +47,7 @@ defmodule Precompiled.Rebar3ConfigTest do
       },
       Map.new(over)
     )
+    |> Precompiled.Fixture.from_hex()
   end
 
   # A tmp HOME with `content` as its global rebar3 config.

@@ -42,6 +42,7 @@ defmodule Precompiled.ForeignPrivCheckTest do
         %{name: :kino_vega_lite, version: "0.1.13", lock_entry: @writer}
       ],
       lock: %{kino: @kino, kino_vega_lite: @writer},
+      dep_sources: %{kino: @kino, kino_vega_lite: @writer},
       system: {"host", ""},
       build_lib: lib,
       deps_path: Path.join(dir, "deps"),
@@ -346,7 +347,8 @@ defmodule Precompiled.ForeignPrivCheckTest do
     env = %{
       env
       | candidates: env.candidates ++ [%{name: :kino_twin, version: "1.0.0", lock_entry: @twin}],
-        lock: Map.put(env.lock, :kino_twin, @twin)
+        lock: Map.put(env.lock, :kino_twin, @twin),
+        dep_sources: Map.put(env.dep_sources, :kino_twin, @twin)
     }
 
     {{:ok, report}, out} = run(env)
@@ -416,7 +418,8 @@ defmodule Precompiled.ForeignPrivCheckTest do
     env = %{
       env
       | candidates: env.candidates ++ [%{name: :kino_twin, version: "1.0.0", lock_entry: @twin}],
-        lock: Map.put(env.lock, :kino_twin, @twin)
+        lock: Map.put(env.lock, :kino_twin, @twin),
+        dep_sources: Map.put(env.dep_sources, :kino_twin, @twin)
     }
 
     {{:ok, report}, out} = run(env)

@@ -40,6 +40,7 @@ defmodule Precompiled.CheckReasonTest do
           %{name: :jason, version: "1.4.5", lock_entry: @jason}
         ],
         lock: %{ash: @ash, jason: @jason},
+        dep_sources: %{ash: @ash, jason: @jason},
         system: {"nerves_system_rpi4", "1.31.0"},
         mix_target: "rpi4",
         build_lib: lib,

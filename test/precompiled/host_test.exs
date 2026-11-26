@@ -147,6 +147,7 @@ defmodule Precompiled.HostTest do
     env = %Env{
       candidates: [%{name: :jason, version: "1.4.5", lock_entry: jason, dep_env: "prod"}],
       lock: %{jason: jason},
+      dep_sources: %{jason: jason},
       build_lib: lib,
       deps_path: Path.join(dir, "deps")
     }
@@ -195,6 +196,7 @@ defmodule Precompiled.HostTest do
     env = %Env{
       candidates: [],
       lock: %{ash: ash},
+      dep_sources: %{ash: ash},
       build_lib: lib,
       deps_path: dir,
       installed: [:ash]

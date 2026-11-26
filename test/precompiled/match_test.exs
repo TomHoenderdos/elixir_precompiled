@@ -38,6 +38,7 @@ defmodule Precompiled.MatchTest do
       },
       Map.new(over)
     )
+    |> Precompiled.Fixture.from_hex()
   end
 
   @build %{

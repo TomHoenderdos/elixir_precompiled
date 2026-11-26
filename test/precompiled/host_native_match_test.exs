@@ -55,6 +55,7 @@ defmodule Precompiled.HostNativeMatchTest do
       },
       Map.new(over)
     )
+    |> Precompiled.Fixture.from_hex()
   end
 
   defp hn(over \\ %{}) do
