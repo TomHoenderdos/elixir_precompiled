@@ -11,7 +11,10 @@
   dependency outside the build's closure that holds it, nothing on this VM's code path or
   loaded, and for an OTP application, nothing installed here. A dependency's exact module list
   is that of its own served build that matches this project (its ebin and the modules its
-  traced compile defined in memory). A dependency Mix does not load from Hex as locked (a path
+  traced compile defined in memory); a build of it with probe items of its own counts when those
+  hold here too (no cycle, at most eight deep). A path or git dependency with no `mix.exs`,
+  `rebar.config` or `Makefile`, `compile: false` and `app: false` (phx.new's `heroicons`) lists
+  the beams in its `ebin` dirs, in a Mix project (not under `Mix.install`). Any other dependency Mix does not load from Hex as locked (a path
   or git dependency, as 0.9.1's `closure_source` rule checks), or a release with no such build,
   makes every module probe miss. Otherwise it misses as `probe_definer`, `probe_otp_app` or,
   when it cannot tell, `probe_unknown`. `Mix.install` checks the install project's own

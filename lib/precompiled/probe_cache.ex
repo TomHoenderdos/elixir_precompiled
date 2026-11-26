@@ -11,10 +11,13 @@ defmodule Precompiled.ProbeCache do
   #
   # The key is everything a dep's match reads: the lock, the batch it was
   # matched against, the toolchain, the Nerves system and Mix target, each
-  # dep's tree and compile env, this machine's environment, every locked
+  # dep's tree and compile env, the non-Hex and inert deps (with the beams
+  # in an inert dep's ebin dirs), this machine's environment, every locked
   # app's config and the compiler options. Any change is another key, so a
   # stale list is never read; the cache's gc bounds the files. A file that
-  # does not read back as lists of names is no cache.
+  # does not read back as lists of names is no cache. Check stores only a
+  # list whose match read no probe item, which also reads the VM's code
+  # path, and none built on a cut cycle.
 
   @version 1
 
@@ -34,6 +37,7 @@ defmodule Precompiled.ProbeCache do
       Map.get(env, :present_deps),
       Map.get(env, :dep_envs),
       Map.get(env, :non_hex_deps),
+      inert(env),
       Map.get(env, :config_unreadable),
       System.get_env() |> Map.to_list() |> Enum.sort(),
       for(app <- lock |> Map.keys() |> Enum.sort(), do: {app, Application.get_all_env(app)}),
@@ -41,6 +45,13 @@ defmodule Precompiled.ProbeCache do
     }
 
     :sha256 |> :crypto.hash(:erlang.term_to_binary(term)) |> Base.encode16(case: :lower)
+  end
+
+  # Each inert dep with its ebin dirs and the beams in them now (a list
+  # resting on one is decided by what is on disk).
+  defp inert(env) do
+    for {app, dirs} <- Enum.sort(Map.get(env, :inert_deps) || %{}),
+        do: {app, dirs, dirs |> Precompiled.Check.beams_in() |> Enum.sort()}
   end
 
   @spec load(map(), String.t()) :: %{optional(String.t()) => {:ok, MapSet.t()} | :unknown}

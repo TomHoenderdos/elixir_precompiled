@@ -194,4 +194,50 @@ defmodule Precompiled.Env.MixProjectTest do
 
     assert Enum.sort(MixProject.non_hex_from(deps)) == [:ash, :fork, :gitdep, :nolock]
   end
+
+  # 0.10.0, fix round 2 (proposal B): exactly a path or git dep with no
+  # manager, `compile: false`, and `app: false` or no .app in its ebin dirs.
+  @tag :tmp_dir
+  test "inert_from keeps only the deps that compile and evaluate nothing", %{tmp_dir: tmp} do
+    dep = fn app, scm, manager, opts ->
+      dest = Path.join([tmp, "deps", Atom.to_string(app)])
+      build = Path.join([tmp, "_build/dev/lib", Atom.to_string(app)])
+
+      %Mix.Dep{
+        app: app,
+        scm: scm,
+        manager: manager,
+        opts: [dest: dest, build: build] ++ opts
+      }
+    end
+
+    git = [git: "https://example.test/x.git"]
+
+    deps = [
+      dep.(:icons, Mix.SCM.Git, nil, git ++ [app: false, compile: false]),
+      dep.(:assets, Mix.SCM.Path, nil, path: "a", compile: false),
+      dep.(:with_app, Mix.SCM.Path, nil, path: "b", compile: false),
+      dep.(:mixed, Mix.SCM.Git, :mix, git ++ [app: false, compile: false]),
+      dep.(:made, Mix.SCM.Git, nil, git ++ [app: false, compile: "make"]),
+      dep.(:compiled, Mix.SCM.Git, nil, git ++ [app: false]),
+      dep.(:hexy, Hex.SCM, nil, lock: @jason, hex: :hexy, app: false, compile: false)
+    ]
+
+    app_file = Path.join([tmp, "_build/dev/lib/with_app/ebin/with_app.app"])
+    File.mkdir_p!(Path.dirname(app_file))
+    File.write!(app_file, "{application, with_app, []}.")
+
+    inert = MixProject.inert_from(deps)
+    assert Map.keys(inert) |> Enum.sort() == [:assets, :icons]
+
+    assert inert.icons == [
+             Path.join([tmp, "_build/dev/lib/icons/ebin"]),
+             Path.join([tmp, "deps/icons/ebin"])
+           ]
+
+    # An inert dep is not one with no module list.
+    assert :icons not in MixProject.non_hex_from(deps)
+    assert :mixed in MixProject.non_hex_from(deps)
+    assert :with_app in MixProject.non_hex_from(deps)
+  end
 end

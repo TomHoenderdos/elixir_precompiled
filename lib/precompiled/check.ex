@@ -1138,70 +1138,179 @@ defmodule Precompiled.Check do
   @doc false
   # 0.10.0: a dep's exact module list, `{:ok, set}` or `:unknown`: the one of
   # its served build that matches this project, by every rule a candidate's
-  # build is matched by (Match.select_reason/2), with no probe item of its
-  # own (no view: such a build misses, so no list rests on another).
-  # Where a build matches, this project's own compile of the dep is that
-  # build, so its modules are the build's ebin and the modules its compile
-  # defined in memory (Precompiled.ProbeInputs.module_set/1). A dep that is
-  # not a Hex entry of the lock, not in the batch, whose manifest does not
-  # verify, with no matching build or a build without the list is
-  # `:unknown`. Kept for the run (`config.probe_memo`) and across runs
-  # (Precompiled.ProbeCache, keyed by the lock and everything a match reads).
+  # build is matched by (Match.select_reason/2), its own probe items
+  # included. Where a build matches, this project's own compile of the dep
+  # is that build, so its modules are the build's ebin and the modules its
+  # compile defined in memory (Precompiled.ProbeInputs.module_set/1). A dep
+  # that is not a Hex entry of the lock, not in the batch, whose manifest
+  # does not verify, with no matching build or a build without the list is
+  # `:unknown`.
+  #
+  # A dep build's own probe items (fix round 2, proposal C) are checked
+  # against this same project view, so a list may rest on other deps'
+  # lists. A dep asked for again while its own list is being decided (a
+  # cycle), or deeper than @probe_depth, is `:unknown`: its items miss, and
+  # no answer built on such a cut is kept. Inert deps (Env.inert_deps,
+  # proposal B) are the beams on disk in their ebin dirs.
+  #
+  # Kept for the run (`config.probe_memo`), and across runs
+  # (Precompiled.ProbeCache, keyed by the lock and everything a match reads)
+  # only when no cut was made and no build of the dep's release has a probe
+  # item: such a match also reads this VM's code path and loaded modules,
+  # which the key does not hold.
+  @probe_depth 8
+
   @spec module_provider(map(), Trust.batch(), Env.t(), function()) :: function()
   def module_provider(config, batch, env, config_fun) do
-    memo = Map.get(config, :probe_memo)
-    key = Precompiled.ProbeCache.key(env, config, batch)
+    run = %{
+      config: config,
+      batch: batch,
+      env: env,
+      config_fun: config_fun,
+      memo: Map.get(config, :probe_memo),
+      key: Precompiled.ProbeCache.key(env, config, batch)
+    }
 
-    fn app ->
-      memoised(memo, {:modules, app}, fn ->
-        cached = memoised(memo, :probe_cache, fn -> Precompiled.ProbeCache.load(config, key) end)
+    provider(run, [])
+  end
+
+  defp provider(run, path), do: fn app -> modules_of(run, path, app) end
+
+  defp modules_of(run, path, app) do
+    cond do
+      dirs = inert_dirs(run.env, app) ->
+        memoised(run.memo, {:inert, app}, fn -> {:ok, beams_in(dirs)} end)
+
+      app in path or length(path) >= @probe_depth ->
+        cut()
+
+      true ->
+        listed_modules(run, path, app)
+    end
+  end
+
+  defp listed_modules(run, path, app) do
+    case lookup(run.memo, {:modules, app}) do
+      {:ok, known} ->
+        known
+
+      :none ->
+        cached =
+          memoised(run.memo, :probe_cache, fn ->
+            Precompiled.ProbeCache.load(run.config, run.key)
+          end)
 
         case Map.fetch(cached, app) do
           {:ok, known} ->
-            known
+            remember(run.memo, {:modules, app}, known)
 
           :error ->
-            modules = dep_modules(app, config, batch, env, config_fun)
-            Precompiled.ProbeCache.store(config, key, app, modules)
-            modules
+            cuts = cuts()
+            {modules, probe_free?} = dep_modules(app, run, [app | path])
+
+            if cuts() == cuts do
+              if probe_free?, do: Precompiled.ProbeCache.store(run.config, run.key, app, modules)
+              remember(run.memo, {:modules, app}, modules)
+            else
+              modules
+            end
         end
-      end)
     end
   end
 
-  defp memoised(nil, _key, fun), do: fun.()
+  # The cuts made so far in this process: an answer whose computation made
+  # one is used once and never kept.
+  defp cuts(), do: Process.get({__MODULE__, :probe_cuts}, 0)
 
-  defp memoised(table, key, fun) do
+  defp cut() do
+    Process.put({__MODULE__, :probe_cuts}, cuts() + 1)
+    :unknown
+  end
+
+  defp lookup(nil, _key), do: :none
+
+  defp lookup(table, key) do
     case :ets.lookup(table, key) do
-      [{^key, value}] ->
-        value
-
-      [] ->
-        value = fun.()
-        :ets.insert(table, {key, value})
-        value
+      [{^key, value}] -> {:ok, value}
+      [] -> :none
     end
   rescue
-    ArgumentError -> fun.()
+    ArgumentError -> :none
   end
 
-  defp dep_modules(app, config, batch, env, config_fun) do
+  defp remember(nil, _key, value), do: value
+
+  defp remember(table, key, value) do
+    :ets.insert(table, {key, value})
+    value
+  rescue
+    ArgumentError -> value
+  end
+
+  defp memoised(table, key, fun) do
+    case lookup(table, key) do
+      {:ok, value} -> value
+      :none -> remember(table, key, fun.())
+    end
+  end
+
+  defp inert_dirs(env, app) do
+    with %{} = inert <- Map.get(env, :inert_deps),
+         {:ok, atom} <- existing_atom(app),
+         dirs when is_list(dirs) <- Map.get(inert, atom) do
+      dirs
+    else
+      _ -> nil
+    end
+  end
+
+  # The module names of the beams in `dirs` now, not following links.
+  @doc false
+  @spec beams_in([Path.t()]) :: MapSet.t(String.t())
+  def beams_in(dirs) do
+    for dir <- dirs,
+        {:ok, files} <- [File.ls(dir)],
+        file <- files,
+        Path.extname(file) == ".beam",
+        into: MapSet.new(),
+        do: Path.basename(file, ".beam")
+  end
+
+  # `{modules, probe_free?}`: probe_free? when no build of the dep's
+  # release in its manifest has a probe item.
+  defp dep_modules(app, run, path) do
+    %{config: config, env: env} = run
+
     with {:ok, atom} <- existing_atom(app),
          {:hex, _, _, _, _, _, _, _} = entry <- env.lock[atom],
          [candidate] <- Env.hex_candidates(env.lock, [atom], Map.get(env, :dep_envs) || %{}),
-         {sha, path} when is_binary(sha) <- manifest_ref(batch, package(candidate)),
-         {:ok, manifest} <- Fetch.manifest(config, package(candidate), sha, path),
-         reads = scan_reads(config, env, app, entry),
-         :ok <- scan_in_time(reads),
-         ctx = candidate |> ctx(env, config, config_fun, reads) |> Map.put(:probe, nil),
-         {:ok, build, _target} <- Match.select_reason(manifest, ctx) do
-      Precompiled.ProbeInputs.module_set(build)
+         {sha, mpath} when is_binary(sha) <- manifest_ref(run.batch, package(candidate)),
+         {:ok, manifest} <- Fetch.manifest(config, package(candidate), sha, mpath) do
+      probe_free? = not probe_items?(get_in(manifest, ["versions", candidate.version]))
+      reads = scan_reads(config, env, app, entry)
+
+      with :ok <- scan_in_time(reads),
+           ctx =
+             candidate
+             |> ctx(env, config, run.config_fun, reads)
+             |> Map.put(:probe, probe_view(env, provider(run, path))),
+           {:ok, build, _target} <- Match.select_reason(manifest, ctx) do
+        {Precompiled.ProbeInputs.module_set(build), probe_free?}
+      else
+        _ -> {:unknown, probe_free?}
+      end
     else
-      _ -> :unknown
+      _ -> {:unknown, true}
     end
   rescue
-    _ -> :unknown
+    _ -> {:unknown, false}
   end
+
+  defp probe_items?(%{} = term),
+    do: Map.get(term, "kind") == "probe" or Enum.any?(Map.values(term), &probe_items?/1)
+
+  defp probe_items?(list) when is_list(list), do: Enum.any?(list, &probe_items?/1)
+  defp probe_items?(_term), do: false
 
   defp existing_atom(name) do
     {:ok, String.to_existing_atom(name)}

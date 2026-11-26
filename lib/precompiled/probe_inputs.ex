@@ -33,9 +33,13 @@ defmodule Precompiled.ProbeInputs do
   #     matches, this project's own compile of the dep is that build, so
   #     its modules are the build's ebin and the modules its compile
   #     defined in memory (`build.defined_modules`, from the builder's
-  #     trace). A dep Mix does not load from Hex as locked (a path or git
-  #     dep, or one switched to it, 0.9.1's source rule), a release with no
-  #     matching build, or a build
+  #     trace). That build's own probe items are checked against this
+  #     same view (Check.module_provider/4; a cycle or a chain deeper than
+  #     eight is unknown). An inert dep (no manager, `compile: false`,
+  #     `app: false` or no .app: Env.inert_deps) lists the beams in its
+  #     ebin dirs. Any other dep Mix does not load from Hex as locked (a
+  #     path or git dep, or one switched to it, 0.9.1's source rule), a
+  #     release with no matching build, or a build
   #     without the list is one this client cannot tell: a miss;
   #   * `of: "app"`: no dep is that application, and this VM finds no
   #     `<name>.app` on its code path, under OTP's or Elixir's lib dir, or

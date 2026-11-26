@@ -35,6 +35,7 @@ defmodule Precompiled.Env.MixProject do
       build_methods: build_methods_from(deps),
       present_deps: present_deps_from(deps),
       non_hex_deps: non_hex_from(deps),
+      inert_deps: inert_from(deps),
       dep_envs: dep_envs_from(deps),
       compiled_ok: compiled_ok_from(deps),
       dep_sources: dep_sources_from(deps),
@@ -120,12 +121,38 @@ defmodule Precompiled.Env.MixProject do
   # `override: true`, which keeps its stale Hex lock entry. Not an
   # umbrella's own apps (`from_umbrella`), which Mix compiles after every
   # Hex dep.
+  # An inert dep (inert_from/1) is no such dep: it has a module list.
   @spec non_hex_from([Mix.Dep.t()]) :: [atom()]
   def non_hex_from(deps) do
+    inert = inert_from(deps)
+
     for %Mix.Dep{app: app, opts: opts} = dep <- deps,
         opts[:from_umbrella] != true,
+        not Map.has_key?(inert, app),
         not match?({:hex, _, _, _, _, _, _, _}, dep_source(dep)),
         do: app
+  end
+
+  @doc false
+  # 0.10.0 (fix round 2, proposal B): the path and git deps that compile and
+  # evaluate nothing, each with its ebin dirs. Mix evaluates a dep's
+  # mix.exs only when its manager is Mix, and infers the manager from the
+  # files in its dir (mix.exs, rebar.config, rebar, Makefile): with none, no
+  # code of it runs. With `compile: false` nothing compiles it, and with
+  # `app: false` (or no .app in its ebin dirs) Mix loads no application of
+  # it. What it can supply is then only the beams on disk in its build's or
+  # its source's ebin dir, which Check reads as its module list. Exactly
+  # that shape: any other path or git dep stays a non-Hex dep.
+  @spec inert_from([Mix.Dep.t()]) :: %{optional(atom()) => [Path.t()]}
+  def inert_from(deps) do
+    for %Mix.Dep{app: app, manager: nil, opts: opts} = dep <- deps,
+        dep_source(dep) in [:path, :git],
+        opts[:compile] == false,
+        is_binary(opts[:dest]) and is_binary(opts[:build]),
+        dirs = [Path.join(opts[:build], "ebin"), Path.join(opts[:dest], "ebin")],
+        opts[:app] == false or not Enum.any?(dirs, &File.exists?(Path.join(&1, "#{app}.app"))),
+        into: %{},
+        do: {app, dirs}
   end
 
   @doc false

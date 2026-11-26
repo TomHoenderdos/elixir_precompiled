@@ -203,12 +203,20 @@ compares the whole tree. Releases before 0.7.0 do not read it at all.
     project, by every rule here: then your compile of it is that build, so
     its modules are the build's `ebin` and the modules its compile defined
     in memory (a `.exs` its `mix.exs` loads, `Module.create/3`), which the
-    portal recorded from its traced build (`build.defined_modules`). A
-    dependency Mix does not load from Hex as locked (a path or git
-    dependency, or one switched to it with `override: true`, as rule 6
-    checks the closure), a release
-    the portal serves no matching build of, or a build from before the
-    lists means this client cannot tell: `... cannot tell whether this
+    portal recorded from its traced build (`build.defined_modules`). That
+    build may have probe items of its own: they are checked against your
+    project in the same way, so one dependency's list can rest on
+    another's; a cycle of such builds, or a chain deeper than eight, is
+    one this client does not decide. A path or git dependency with no
+    `mix.exs`, `rebar.config` or `Makefile`, `compile: false`, and
+    `app: false` (or no `.app`), as `mix phx.new` declares `heroicons`, has
+    nothing Mix evaluates or compiles: in a Mix project its list is the
+    beams on disk in its `ebin` dirs, normally none (under `Mix.install`
+    such a dependency stays one with no list). Any other dependency Mix does not load
+    from Hex as locked (a path or git dependency, or one switched to it
+    with `override: true`, as rule 6 checks the closure), a release the
+    portal serves no matching build of, a build from before the lists, or
+    a cycle means this client cannot tell: `... cannot tell whether this
     project supplies it` (`probe_unknown`);
   - an application: no dependency of your project is that application, and
     your code path and your OTP and Elixir install hold no `.app` of it,

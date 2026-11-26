@@ -34,6 +34,7 @@ defmodule Precompiled.Env do
           compiled_ok: MapSet.t(atom()) | nil,
           dep_sources: dep_sources() | nil,
           non_hex_deps: [atom()] | nil,
+          inert_deps: %{optional(atom()) => [Path.t()]} | nil,
           dep_envs: %{optional(atom()) => String.t()},
           probe: map() | nil
         }
@@ -138,6 +139,15 @@ defmodule Precompiled.Env do
             # while there is one, as no exact module list exists for it
             # (Precompiled.ProbeInputs); nil when Mix's deps were not read.
             non_hex_deps: nil,
+            # 0.10.0 (fix round 2, proposal B): the non-Hex deps that compile
+            # and evaluate nothing: no manager (no mix.exs, rebar.config or
+            # Makefile), `compile: false`, and `app: false` or no `.app` in
+            # their ebin dirs (Phoenix's `heroicons`). Each with its ebin dirs
+            # (its build's and its source's), whose beams on disk are its
+            # whole module list. They are not in non_hex_deps. nil when
+            # Mix's deps were not read, and under Mix.install/2, where such
+            # a dep stays in non_hex_deps.
+            inert_deps: nil,
             # 0.10.0: each Hex dep's own compile env, as Mix loads it (`env:`
             # in its declaration, else prod), for matching a dep outside a
             # probe build's closure to its own build.

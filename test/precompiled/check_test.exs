@@ -368,6 +368,119 @@ defmodule Precompiled.CheckTest do
                Enum.find(report.lines, &(&1.name == "ash"))
     end
 
+    # Fix round 2, proposal C: jason is served only by a probe build. Its own
+    # item is checked against this same project, so its list counts when
+    # the item holds here. `jason_deps` is its build's closure.
+    @cowboy %{
+      "kind" => "probe",
+      "of" => "module",
+      "name" => "Elixir.Cowboy",
+      "answer" => "absent",
+      "definers" => []
+    }
+
+    defp probe_dep_batch(f, jason_item, jason_deps) do
+      ash =
+        f
+        |> good_entry("ash", nil, "pure_elixir")
+        |> put_in(["build", "compile_inputs"], [@poison])
+
+      jason =
+        f
+        |> good_entry("jason", nil, "pure_elixir")
+        |> put_in(["build", "compile_inputs"], [jason_item])
+        |> put_in(["build", "defined_modules"], ["Elixir.Jason.Helper"])
+        |> put_in(["build", "deps"], jason_deps)
+
+      F.publish(f, %{
+        "ash" => %{"versions" => %{"3.5.2" => %{"builds" => [], "builds_with_inputs" => [ash]}}},
+        "jason" => %{
+          "versions" => %{"1.4.5" => %{"builds" => [], "builds_with_inputs" => [jason]}}
+        }
+      })
+    end
+
+    @ash_dep %{"ash" => %{"version" => "3.5.2", "checksum" => elem(@ash, 7)}}
+
+    defp report_of(config, env) do
+      run_capturing(config, env)
+      assert_received {:report, {:ok, report}}
+      Map.new(report.lines, &{&1.name, &1})
+    end
+
+    test "a dep served only by a probe build gives its list when its own items hold here", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      probe_dep_batch(f, @cowboy, @ash_dep)
+      env = %{host_env(env) | present_deps: %{ash: [], jason: [:ash]}}
+      lines = report_of(config, env)
+      assert %{status: :hit} = lines["ash"]
+      assert %{status: :hit} = lines["jason"]
+
+      # Its match read a probe item, which also reads this VM's code path:
+      # its list is kept for the run, not across runs.
+      for file <- Path.wildcard(Path.join([config.home, "probe", "v1", "*.etf"])),
+          do: refute(Map.has_key?(:erlang.binary_to_term(File.read!(file)), "jason"))
+    end
+
+    test "a dep whose own probe item misses here gives no list", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      probe_dep_batch(f, %{@cowboy | "definers" => ["ash"]}, @ash_dep)
+      env = %{host_env(env) | present_deps: %{ash: [], jason: [:ash]}}
+      lines = report_of(config, env)
+      assert %{status: :miss, reason: {:probe_unknown, ["Poison"]}} = lines["ash"]
+      assert %{status: :miss, reason: {:probe_definer, ["Cowboy", "ash"]}} = lines["jason"]
+    end
+
+    # ash's list needs jason's and jason's needs ash's: a cycle, which this
+    # client does not decide.
+    test "a cycle of probe builds is a miss, and nothing built on it is kept", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      probe_dep_batch(f, @cowboy, %{})
+      lines = report_of(config, host_env(env))
+      assert %{status: :miss, reason: {:probe_unknown, ["Poison"]}} = lines["ash"]
+      assert %{status: :miss, reason: {:probe_unknown, ["Cowboy"]}} = lines["jason"]
+
+      for file <- Path.wildcard(Path.join([config.home, "probe", "v1", "*.etf"])) do
+        kept = :erlang.binary_to_term(File.read!(file))
+        refute Map.has_key?(kept, "jason") or Map.has_key?(kept, "ash")
+      end
+    end
+
+    # Fix round 2, proposal B: an inert dep's list is the beams on disk in
+    # its ebin dirs.
+    test "an inert dep's list is the beams in its ebin dirs", %{
+      f: f,
+      config: config,
+      env: env,
+      tmp_dir: tmp
+    } do
+      probe_batch(f, %{"defined_modules" => []})
+      icons = Path.join(tmp, "icons/ebin")
+
+      env = %{
+        host_env(env)
+        | present_deps: %{ash: [], jason: [], heroicons: []},
+          inert_deps: %{heroicons: [icons, Path.join(tmp, "icons/none")]}
+      }
+
+      assert %{status: :hit} = report_of(config, env)["ash"]
+
+      File.mkdir_p!(icons)
+      File.write!(Path.join(icons, "Elixir.Poison.beam"), "")
+
+      assert %{status: :miss, reason: {:probe_definer, ["Poison", "heroicons"]}} =
+               report_of(config, env)["ash"]
+    end
+
     # The review's S1: the lists are kept across runs, keyed by the lock and
     # everything a match reads.
     test "the lists are kept under the home for the next run", %{f: f, config: config, env: env} do
