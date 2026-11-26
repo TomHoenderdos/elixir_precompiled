@@ -113,16 +113,18 @@ defmodule Precompiled.Env.MixProject do
 
   defp hex_source(_lock, _hex), do: :other
 
-  # 0.10.0: the deps that are no Hex deps, for a build's probe items: a
-  # path or git dep (a closure dep switched to one with `override: true`
-  # keeps its stale Hex lock entry, so the lock alone cannot tell). Not an
+  # 0.10.0: the deps that are no Hex deps, for a build's probe items (no
+  # exact module list exists for one): every dep Mix does not load from Hex
+  # with a Hex lock entry of the package it names (dep_source/1, 0.9.1's
+  # B1): a path or git dep, and a closure dep switched to one with
+  # `override: true`, which keeps its stale Hex lock entry. Not an
   # umbrella's own apps (`from_umbrella`), which Mix compiles after every
   # Hex dep.
   @spec non_hex_from([Mix.Dep.t()]) :: [atom()]
   def non_hex_from(deps) do
-    for %Mix.Dep{app: app, scm: scm, opts: opts} <- deps,
-        scm != Hex.SCM,
+    for %Mix.Dep{app: app, opts: opts} = dep <- deps,
         opts[:from_umbrella] != true,
+        not match?({:hex, _, _, _, _, _, _, _}, dep_source(dep)),
         do: app
   end
 

@@ -172,4 +172,26 @@ defmodule Precompiled.Env.MixProjectTest do
 
     assert MixProject.compiled_ok_from(deps) == MapSet.new([:kino, :git_dep])
   end
+
+  # 0.10.0 on 0.9.1: a dep counts as a Hex dep for a probe item only when
+  # Mix loads it from Hex with a Hex lock entry of the package it names
+  # (dep_sources_from/1, B1). An umbrella's own apps are the project's.
+  test "non_hex_from names every dep Mix does not load from Hex as locked" do
+    hex = fn app, opts -> %Mix.Dep{app: app, scm: Hex.SCM, opts: opts} end
+
+    deps = [
+      hex.(:jason, lock: @jason, hex: :jason),
+      hex.(:ash, lock: @jason, hex: :ash),
+      hex.(:nolock, hex: :nolock),
+      %Mix.Dep{app: :fork, scm: Mix.SCM.Path, opts: [path: "../fork", lock: @ash]},
+      %Mix.Dep{app: :gitdep, scm: Mix.SCM.Git, opts: [git: "https://example.test/x.git"]},
+      %Mix.Dep{
+        app: :sibling,
+        scm: Mix.SCM.Path,
+        opts: [path: "apps/sibling", from_umbrella: true]
+      }
+    ]
+
+    assert Enum.sort(MixProject.non_hex_from(deps)) == [:ash, :fork, :gitdep, :nolock]
+  end
 end

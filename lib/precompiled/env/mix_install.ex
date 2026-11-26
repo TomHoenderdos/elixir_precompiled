@@ -81,7 +81,7 @@ defmodule Precompiled.Env.MixInstall do
       installed_envs: Map.new(installed, &{&1, Map.get(envs, &1, "prod")}),
       build_methods: methods,
       present_deps: present,
-      non_hex_deps: non_hex(present, methods),
+      non_hex_deps: non_hex(present, methods, lock, sources),
       dep_envs: envs,
       compile_order: order,
       compiled_ok: compiled_ok,
@@ -98,13 +98,19 @@ defmodule Precompiled.Env.MixInstall do
   defp same_hex?(_locked, _loaded), do: false
 
   # 0.10.0: the deps of the install project's tree that are no Hex deps:
-  # every dep Mix loaded there (the tree) less the Hex ones (the build
-  # methods, which Install.build_methods/4 reads for Hex deps only). nil
-  # when either is unknown.
-  defp non_hex(present, methods) when is_map(present) and is_map(methods),
-    do: Map.keys(present) -- Map.keys(methods)
+  # every dep Mix loaded there (the tree) less those it loads from Hex with
+  # their lock entry (the build methods, which Install.build_methods/4
+  # reads for Hex deps only, and the sources, 0.9.1's B1). nil when any of
+  # them is unknown.
+  defp non_hex(present, methods, lock, sources)
+       when is_map(present) and is_map(methods) and is_map(sources) do
+    present
+    |> Map.keys()
+    |> Enum.reject(&(Map.has_key?(methods, &1) and same_hex?(lock[&1], sources[&1])))
+    |> Enum.sort()
+  end
 
-  defp non_hex(_present, _methods), do: nil
+  defp non_hex(_present, _methods, _lock, _sources), do: nil
 
   @doc false
   # Mix.install on a device compiles as :host, but a build for the device's

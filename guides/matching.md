@@ -204,8 +204,9 @@ compares the whole tree. Releases before 0.7.0 do not read it at all.
     its modules are the build's `ebin` and the modules its compile defined
     in memory (a `.exs` its `mix.exs` loads, `Module.create/3`), which the
     portal recorded from its traced build (`build.defined_modules`). A
-    dependency that is no Hex dependency (a path or git dependency, or a
-    closure dependency switched to one with `override: true`), a release
+    dependency Mix does not load from Hex as locked (a path or git
+    dependency, or one switched to it with `override: true`, as rule 6
+    checks the closure), a release
     the portal serves no matching build of, or a build from before the
     lists means this client cannot tell: `... cannot tell whether this
     project supplies it` (`probe_unknown`);

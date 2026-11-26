@@ -35,11 +35,36 @@ defmodule Precompiled.Env.MixInstallTest do
     }
 
     deps = [{:jason, "1.4.5", env: :dev}, {:mine, path: "rel/mine"}]
-    env = MixInstall.load(dir, deps, methods, present)
+    sources = %{jason: @jason, decimal: @decimal, mine: :path}
+    env = MixInstall.load(dir, deps, methods, present, nil, nil, sources)
 
     assert env.non_hex_deps == [:mine]
     assert env.dep_envs == %{jason: "dev"}
     assert MixInstall.load(dir, []).non_hex_deps == nil
+  end
+
+  # 0.10.0 on 0.9.1: a dep counts as a Hex dep for a probe item only when
+  # Mix loads it from Hex with its lock entry (B1); without the sources no
+  # dep can be told.
+  test "a dep Mix does not load from Hex as locked is no Hex dep for a probe", %{tmp_dir: dir} do
+    Mix.Dep.Lock.write(%{jason: @jason, decimal: @decimal}, file: Path.join(dir, "mix.lock"))
+    present = %{jason: [:decimal], decimal: []}
+
+    methods = %{
+      jason: %{manager: "mix", overrides: []},
+      decimal: %{manager: "mix", overrides: []}
+    }
+
+    load = &MixInstall.load(dir, [], methods, present, nil, nil, &1)
+
+    assert load.(%{jason: @jason, decimal: @decimal}).non_hex_deps == []
+
+    for decimal <- [:path, :git, :other, put_elem(@decimal, 7, "OTHER")] do
+      assert load.(%{jason: @jason, decimal: decimal}).non_hex_deps == [:decimal]
+    end
+
+    assert load.(%{jason: @jason}).non_hex_deps == [:decimal]
+    assert load.(nil).non_hex_deps == nil
   end
 
   test "load skips a dep the install project has already compiled", %{tmp_dir: dir} do

@@ -11,11 +11,12 @@
   dependency outside the build's closure that holds it, nothing on this VM's code path or
   loaded, and for an OTP application, nothing installed here. A dependency's exact module list
   is that of its own served build that matches this project (its ebin and the modules its
-  traced compile defined in memory). A path or git dependency, or a release with no such build,
+  traced compile defined in memory). A dependency Mix does not load from Hex as locked (a path
+  or git dependency, as 0.9.1's `closure_source` rule checks), or a release with no such build,
   makes every module probe miss. Otherwise it misses as `probe_definer`, `probe_otp_app` or,
   when it cannot tell, `probe_unknown`. `Mix.install` checks the install project's own
   dependencies. The lists are kept across runs under the cache. A device never takes such a
-  build. Clients up to 0.9.0 treat the input as malformed and miss.
+  build. Clients up to 0.9.1 treat the input as malformed and miss.
 
 ## v0.9.1 - 2026-11-26
 
