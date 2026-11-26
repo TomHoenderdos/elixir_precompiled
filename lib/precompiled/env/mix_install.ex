@@ -96,7 +96,7 @@ defmodule Precompiled.Env.MixInstall do
   defp same_hex?({:hex, pkg, v, _, _, _, _, outer}, {:hex, pkg, v, _, _, _, _, outer}), do: true
   defp same_hex?(_locked, _loaded), do: false
 
-  # 0.9.0: each dep of the install project's tree by its source dir: the
+  # 0.10.0: each dep of the install project's tree by its source dir: the
   # path a path dep of the install names, else the install's deps dir,
   # where deps.get put a Hex or git dep. A transitive path dep is not there,
   # so its probe check cannot read it and misses. nil without the tree.

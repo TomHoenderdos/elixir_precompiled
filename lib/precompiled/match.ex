@@ -46,7 +46,7 @@ defmodule Precompiled.Match do
           # (Precompiled.HostNative.host/0) and its deps dir; nil or absent
           # otherwise, and builds_host_native is never read.
           optional(:host_native) => map() | nil,
-          # 0.9.0: what this project holds, for a build's probe items
+          # 0.10.0: what this project holds, for a build's probe items
           # (Precompiled.ProbeInputs.view/3); nil when unknown, and then
           # every probe item misses.
           optional(:probe) => Precompiled.ProbeInputs.view() | nil,

@@ -139,7 +139,7 @@ defmodule Precompiled.EnvDepsTest do
     assert client == mix
     assert client == %{parent: [], top: [:link]}
 
-    # 0.9.0: each dep Mix loads, by the source dir it compiles from; a probe
+    # 0.10.0: each dep Mix loads, by the source dir it compiles from; a probe
     # item misses for a module link's sources define, and holds for one no
     # dep of the project does.
     assert Map.delete(dirs, :probes) == %{

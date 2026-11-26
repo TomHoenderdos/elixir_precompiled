@@ -1290,7 +1290,7 @@ defmodule Precompiled.MatchTest do
                Match.select_reason(inputs_doc([linux]), ctx(os_type: {:unix, :darwin}))
     end
 
-    # 0.9.0: the package's closure probed a module nothing on the builder
+    # 0.10.0: the package's closure probed a module nothing on the builder
     # defined; this project gets the build only when nothing in it can
     # supply the module either (Precompiled.ProbeInputs).
     test "a probe item hits when the project cannot supply the module, else misses" do

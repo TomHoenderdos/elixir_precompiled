@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased (0.10.0)
+
+* Probe inputs: a dependency whose compile asks whether a module or an application is there
+  (jose's `Code.ensure_loaded?(Poison)`, websock_adapter's `:cowboy_websocket`, vega_lite's
+  `:wx`), and its dependents, can now install precompiled. The portal records each such
+  question the builder answered "absent" as a `probe` compile input, and this client takes the
+  build only when nothing in this project can supply the module or application either: no
+  dependency Mix loads in this env that the portal knows defines it, no dependency outside the build's
+  closure that defines it in its sources (read, not compiled), nothing on this VM's code path,
+  and for an OTP application, nothing installed here. Otherwise it misses as `probe_definer`,
+  `probe_otp_app` or, when it cannot tell, `probe_unknown`. `Mix.install` checks the install
+  project's own dependencies. A device never takes such a build. Clients up to 0.9.0 treat
+  the input as malformed and miss.
+
 ## v0.9.1 - 2026-11-26
 
 * Security: the closure check now verifies each dependency's source. A
@@ -19,18 +33,6 @@
   0.9.1 replaces it.
 
 ## v0.9.0 - 2026-11-22
-
-* Probe inputs: a dependency whose compile asks whether a module or an application is there
-  (jose's `Code.ensure_loaded?(Poison)`, websock_adapter's `:cowboy_websocket`, vega_lite's
-  `:wx`), and its dependents, can now install precompiled. The portal records each such
-  question the builder answered "absent" as a `probe` compile input, and this client takes the
-  build only when nothing in this project can supply the module or application either: no
-  dependency Mix loads in this env that the portal knows defines it, no dependency outside the build's
-  closure that defines it in its sources (read, not compiled), nothing on this VM's code path,
-  and for an OTP application, nothing installed here. Otherwise it misses as `probe_definer`,
-  `probe_otp_app` or, when it cannot tell, `probe_unknown`. `Mix.install` checks the install
-  project's own dependencies. A device never takes such a build. Earlier clients treat the
-  input as malformed and miss.
 
 * Security: the device API's test seams (`:root`, `:env`, `:clock_synchronized?`, `:lib_roots` and a
   per-call network `:source`, and `mix precompiled.report`'s `:gets` and `:interactive?`) are now

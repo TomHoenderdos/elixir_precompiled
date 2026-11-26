@@ -33,7 +33,7 @@ defmodule Precompiled.CompileInputsTest do
     assert :ok = CompileInputs.device(nil)
   end
 
-  describe "probe items (0.9.0)" do
+  describe "probe items (0.10.0)" do
     @probe %{"kind" => "probe", "of" => "app", "name" => "poison", "answer" => "absent"}
 
     test "the host check asks the order's probe fun, and without one cannot tell" do

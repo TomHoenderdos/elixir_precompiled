@@ -23,7 +23,7 @@ defmodule Precompiled.Env.MixInstallTest do
     assert env.deps_path == Path.join(dir, "deps")
   end
 
-  # 0.9.0: each dep of the install project by its source dir, for a build's
+  # 0.10.0: each dep of the install project by its source dir, for a build's
   # probe items: the install's deps dir, or the path a path dep names.
   test "load names each present dep's source dir", %{tmp_dir: dir} do
     Mix.Dep.Lock.write(%{jason: @jason, decimal: @decimal}, file: Path.join(dir, "mix.lock"))

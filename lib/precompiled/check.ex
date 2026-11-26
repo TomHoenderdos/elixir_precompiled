@@ -48,7 +48,7 @@ defmodule Precompiled.Check do
   #   (`HostNative.host/0`) in place of this one. Test only.
   @spec check(map(), Env.t(), keyword()) :: :nothing_to_do | {:ok, report()}
   def check(config, %Env{} = env, opts \\ []) do
-    # 0.9.0: each dep's answer for a probed name, kept for the run.
+    # 0.10.0: each dep's answer for a probed name, kept for the run.
     memo = :ets.new(Precompiled.ProbeInputs, [:set, :public])
 
     try do
@@ -1094,7 +1094,7 @@ defmodule Precompiled.Check do
   end
 
   @doc false
-  # 0.9.0: the project as a build's probe items are checked against
+  # 0.10.0: the project as a build's probe items are checked against
   # (Precompiled.ProbeInputs.view/3): every dep Mix loads in this env and
   # target, by app and Hex package name (a lock entry it leaves out, a
   # dev-only dep in prod, never compiles here and is on no code path), or

@@ -130,12 +130,12 @@ defmodule Precompiled.Env do
             # (Precompiled.Relocate.user_slots/2), taken once per run by
             # Precompiled.Check; :unset until then.
             relocate: :unset,
-            # 0.9.0: each dep Mix loads (in the project or in Mix.install/2's
+            # 0.10.0: each dep Mix loads (in the project or in Mix.install/2's
             # install project) by the dir it compiles its sources from, for a
             # build's probe items (Precompiled.ProbeInputs); nil when Mix's
             # deps were not read, and then every module probe misses.
             dep_dirs: nil,
-            # 0.9.0: the run's view of the project for probe items
+            # 0.10.0: the run's view of the project for probe items
             # (Precompiled.Check.probe_view/2), nil until Check takes it.
             probe: nil
 

@@ -112,7 +112,7 @@ defmodule Precompiled.Env.MixProject do
 
   defp hex_source(_lock, _hex), do: :other
 
-  # 0.9.0: each dep by the dir Mix compiles it from (its :dest), for a
+  # 0.10.0: each dep by the dir Mix compiles it from (its :dest), for a
   # build's probe items.
   @spec dep_dirs_from([Mix.Dep.t()]) :: %{optional(atom()) => Path.t() | nil}
   def dep_dirs_from(deps), do: Map.new(deps, &{&1.app, &1.opts[:dest]})

@@ -234,7 +234,7 @@ defmodule Precompiled.CheckTest do
     assert ctx_of(config, %{env | present_deps: %{}}).env_closure == nil
   end
 
-  # 0.9.0: what the project holds reaches the probe items through
+  # 0.10.0: what the project holds reaches the probe items through
   # Check.ctx/5: every lock and dep name, and each loaded dep's source dir.
   test "the project's names and dep dirs reach Match for probe items", %{
     config: config,

@@ -181,7 +181,7 @@ compares the whole tree. Releases before 0.7.0 do not read it at all.
 - A build whose compile read the whole environment (`System.get_env/0`),
   or whose compile-time config reads could not all be recorded, never
   matches.
-- 0.9.0: a build whose compile asked whether a module or an application is
+- 0.10.0: a build whose compile asked whether a module or an application is
   there (`Code.ensure_loaded?(Poison)`, `Application.spec(:phoenix_html)`,
   `Code.ensure_loaded?(:wx)`), where the builder had nothing that supplies
   it, records the question as a `probe` input. Mix answers "present" for

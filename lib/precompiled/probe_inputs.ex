@@ -4,7 +4,7 @@
 #
 defmodule Precompiled.ProbeInputs do
   @moduledoc false
-  # 0.9.0: a build's `probe` compile inputs. The package's closure asked at
+  # 0.10.0: a build's `probe` compile inputs. The package's closure asked at
   # compile time whether a module or an application is there, and on the
   # builder nothing could supply it, so the answer was "absent". This
   # project's own compile answers the same only when nothing in it can
