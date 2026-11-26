@@ -19,7 +19,7 @@ the library ships in the firmware, and `castore` when the system has no
 CA certificates of its own (see [CA certificates](trust.md#ca-certificates)):
 
 ```elixir
-{:precompiled, "~> 0.3", targets: @all_targets},
+{:precompiled, "~> 0.9.1", targets: @all_targets},
 {:castore, "~> 1.0", targets: @all_targets}
 ```
 

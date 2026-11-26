@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.9.1 - 2026-11-26
+
+* Security: the closure check now verifies each dependency's source. A
+  dependency changed to `path:` or `git:` with `override: true` keeps its
+  old Hex entry in `mix.lock` (`mix deps.get` leaves it there), and 0.9.0
+  and earlier compared that entry only: a build made against the Hex
+  release was installed where Mix compiles the package against your fork.
+  Now the package itself, each dependency its build was made against and
+  each one Mix compiles it with must be a dependency Mix loads from Hex
+  (`Hex.SCM`, no `path:` or `git:` option), with the package, version and
+  outer checksum that the rules compared. Anything else misses with the new
+  reason code `closure_source`. The same holds under
+  `Precompiled.Host.install/2`, which reads the dependencies from the
+  install project's own resolution, where a `lockfile:` merge can bring
+  the same stale entry; there the lock entry of a dependency Mix loads
+  from a path or git is no candidate. 0.9.0 is not published on Hex:
+  0.9.1 replaces it.
+
 ## v0.9.0 - 2026-11-22
 
 * Security: the device API's test seams (`:root`, `:env`, `:clock_synchronized?`, `:lib_roots` and a
