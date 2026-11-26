@@ -1148,7 +1148,8 @@ defmodule Precompiled.Check do
       non_hex,
       modules_of,
       inert_apps(env),
-      index
+      index,
+      umbrella_apps(env)
     )
   end
 
@@ -1156,7 +1157,10 @@ defmodule Precompiled.Check do
   # 0.10.0 (S10 round 5): the batch's module index per release as a
   # declared probe item reads it (Precompiled.ProbeInputs.index/0), each
   # document fetched once per run (Fetch.release_doc/2), or nil when the
-  # batch names none. Only a hex.pm lock entry is a release of it.
+  # batch names none. Only a hex.pm lock entry is a release of it, and a
+  # release is read only at the outer checksum the index read it at: a
+  # lock of a tarball replaced since (`mix hex.publish --replace`) is a
+  # release the index has not read (review F2).
   @spec release_lookup(map(), map(), Env.t() | map()) :: Precompiled.ProbeInputs.index() | nil
   def release_lookup(config, batch, env) do
     case Map.get(batch, :release_index) do
@@ -1167,17 +1171,17 @@ defmodule Precompiled.Check do
 
         %{
           read?: fn app ->
-            with {pkg, v} <- hexpm_release(lock, app),
+            with {pkg, v, outer} <- hexpm_release(lock, app),
                  sha when is_binary(sha) <- Map.get(shards, release_shard(pkg)) || :unknown,
                  {:ok, %{"read" => read}} <- doc.(sha) || :unknown do
-              v in Map.get(read, pkg, [])
+              [v, outer] in Map.get(read, pkg, [])
             else
               nil -> false
               _ -> :unknown
             end
           end,
           defines?: fn module, app ->
-            with {pkg, v} <- hexpm_release(lock, app),
+            with {pkg, v, _outer} <- hexpm_release(lock, app),
                  sha when is_binary(sha) <- Map.get(modules, module),
                  {:ok, %{"definers" => definers}} <- doc.(sha) do
               v in Map.get(definers, pkg, [])
@@ -1194,8 +1198,9 @@ defmodule Precompiled.Check do
 
   defp hexpm_release(lock, app) do
     with {:ok, atom} <- existing_atom(app),
-         {:hex, pkg, v, _, _, _, "hexpm", _} when is_atom(pkg) and is_binary(v) <- lock[atom] do
-      {Atom.to_string(pkg), v}
+         {:hex, pkg, v, _, _, _, "hexpm", outer}
+         when is_atom(pkg) and is_binary(v) and is_binary(outer) <- lock[atom] do
+      {Atom.to_string(pkg), v, outer}
     else
       _ -> nil
     end
@@ -1210,6 +1215,13 @@ defmodule Precompiled.Check do
   defp inert_apps(env) do
     case Map.get(env, :inert_deps) do
       %{} = inert -> inert |> Map.keys() |> Enum.map(&Atom.to_string/1) |> Enum.sort()
+      _ -> []
+    end
+  end
+
+  defp umbrella_apps(env) do
+    case Map.get(env, :umbrella_apps) do
+      apps when is_list(apps) -> apps |> Enum.map(&Atom.to_string/1) |> Enum.sort()
       _ -> []
     end
   end

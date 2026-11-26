@@ -406,7 +406,7 @@ defmodule Precompiled.CheckTest do
       config: config,
       env: env
     } do
-      declared_batch(f, %{"jason" => ["1.4.5"], "ash" => ["3.5.2"]}, %{
+      declared_batch(f, %{"jason" => [["1.4.5", "JOUTER"]], "ash" => [["3.5.2", "ASHOUTER"]]}, %{
         "Elixir.Postgrex" => %{"postgrex" => ["0.20.0"]}
       })
 
@@ -424,15 +424,35 @@ defmodule Precompiled.CheckTest do
       config: config,
       env: env
     } do
-      declared_batch(f, %{"jason" => ["1.4.5"]}, %{"Elixir.Postgrex" => %{"jason" => ["1.4.5"]}})
+      declared_batch(f, %{"jason" => [["1.4.5", "JOUTER"]]}, %{
+        "Elixir.Postgrex" => %{"jason" => ["1.4.5"]}
+      })
 
       assert %{status: :miss, reason: {:probe_definer, ["Postgrex", "jason"]}} =
                ash_of(config, host_env(env))
 
-      declared_batch(f, %{"jason" => ["1.4.4"]}, %{"Elixir.Postgrex" => %{}})
+      declared_batch(f, %{"jason" => [["1.4.4", "JOUTER"]]}, %{"Elixir.Postgrex" => %{}})
 
       assert %{status: :miss, reason: {:probe_unknown, ["Postgrex"]}} =
                ash_of(config, host_env(env))
+
+      # Review F2: jason 1.4.5 replaced (`mix hex.publish --replace`) after
+      # the portal read it. The index read another tarball than the one
+      # this lock names, so its module list says nothing of this one.
+      declared_batch(f, %{"jason" => [["1.4.5", "REPLACEDOUTER"]]}, %{"Elixir.Postgrex" => %{}})
+
+      assert %{status: :miss, reason: {:probe_unknown, ["Postgrex"]}} =
+               ash_of(config, host_env(env))
+
+      # A shard of versions alone (no outer checksum) is no document.
+      declared_batch(f, %{"jason" => ["1.4.5"]}, %{"Elixir.Postgrex" => %{}})
+
+      assert %{status: :miss, reason: {:probe_unknown, ["Postgrex"]}} =
+               ash_of(config, host_env(env))
+
+      # The same index with the lock's tarball holds.
+      declared_batch(f, %{"jason" => [["1.4.5", "JOUTER"]]}, %{"Elixir.Postgrex" => %{}})
+      assert %{status: :hit} = ash_of(config, host_env(env))
 
       # A batch with no release index: every declared item misses.
       F.publish(f, %{
@@ -452,6 +472,51 @@ defmodule Precompiled.CheckTest do
 
       assert %{status: :miss, reason: {:probe_unknown, ["Postgrex"]}} =
                ash_of(config, host_env(env))
+    end
+
+    # Re-review F1 of round 5, through the real release lookup: no index
+    # reads an inert dep (`mix phx.new`'s heroicons, a git dep) or an
+    # umbrella's own app at its root, so neither is asked of it. The inert
+    # dep's beams decide, and the umbrella's apps compile after every Hex
+    # dep. Only jason, read at its locked tarball, is asked.
+    test "a declared item asks the index of no inert dep and no umbrella app", %{
+      f: f,
+      config: config,
+      env: env,
+      tmp_dir: tmp
+    } do
+      declared_batch(f, %{"jason" => [["1.4.5", "JOUTER"]]}, %{"Elixir.Postgrex" => %{}})
+      icons = Path.join(tmp, "heroicons/ebin")
+      heroicons = {:git, "https://github.com/tailwindlabs/heroicons.git", "0123abc", []}
+
+      phx = %{
+        host_env(env)
+        | lock: Map.put(env.lock, :heroicons, heroicons),
+          present_deps: %{ash: [], jason: [], heroicons: []},
+          inert_deps: %{heroicons: [icons, Path.join(tmp, "heroicons/none")]}
+      }
+
+      assert %{status: :hit} = ash_of(config, phx)
+
+      # Its beams on disk still decide.
+      File.mkdir_p!(icons)
+      File.write!(Path.join(icons, "Elixir.Postgrex.beam"), "")
+
+      assert %{status: :miss, reason: {:probe_definer, ["Postgrex", "heroicons"]}} =
+               ash_of(config, phx)
+
+      # An umbrella root: its own apps are in no index and are not asked.
+      root = %{
+        host_env(env)
+        | present_deps: %{ash: [], jason: [], my_app: [:ash], my_web: [:my_app]},
+          umbrella_apps: [:my_app, :my_web]
+      }
+
+      assert %{status: :hit} = ash_of(config, root)
+
+      # The same apps as deps of no umbrella: no index reads them.
+      assert %{status: :miss, reason: {:probe_unknown, ["Postgrex"]}} =
+               ash_of(config, %{root | umbrella_apps: nil})
     end
 
     # Fix round 2, proposal C: jason is served only by a probe build. Its own

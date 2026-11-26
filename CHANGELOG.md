@@ -18,10 +18,13 @@
   or git dependency, as 0.9.1's `closure_source` rule checks), or a release with no such build,
   makes every module probe miss. An item the portal marks with the optional dependency it belongs to
   (`declared`: ecto_sql's `Postgrex`, ecto's `Jason.Encoder`) needs no module list: it holds when
-  that dependency is not here and no other dependency, at the very release your lock holds,
-  defines the module, by the portal's module index of every release of every Hex package, which
-  the signed batch names (`release_index`); a locked release the index has not read (a new one, a
-  private organisation's) misses. Otherwise it misses as `probe_definer`, `probe_otp_app` or,
+  that dependency is not here and no other dependency, at the very release and outer checksum
+  your lock holds, defines the module, by the portal's module index of every release of every
+  Hex package, which the signed batch names (`release_index`); a locked release the index has
+  not read (a new one, a private organisation's, or one read from another tarball: a release
+  replaced with `mix hex.publish --replace`) misses. An inert dependency (its beams decide) and,
+  at an umbrella's root, the umbrella's own apps (Mix compiles them after every Hex dependency)
+  are not asked of the index. Otherwise it misses as `probe_definer`, `probe_otp_app` or,
   when it cannot tell, `probe_unknown`. `Mix.install` checks the install project's own
   dependencies. The lists are kept across runs under the cache. A device never takes such a
   build. Clients up to 0.9.1 treat the input as malformed and miss.

@@ -195,6 +195,21 @@ defmodule Precompiled.Env.MixProjectTest do
     assert Enum.sort(MixProject.non_hex_from(deps)) == [:ash, :fork, :gitdep, :nolock]
   end
 
+  # Re-review F1 of round 5: at an umbrella's root, its own apps, which Mix
+  # compiles after every Hex dep. A sibling an app declares `in_umbrella`
+  # (a path dep, compiled from inside that app) is not one.
+  test "umbrella_from names the umbrella's own apps, not an in_umbrella sibling" do
+    deps = [
+      %Mix.Dep{app: :jason, scm: Hex.SCM, opts: [lock: @jason, hex: :jason]},
+      %Mix.Dep{app: :my_app, scm: Mix.SCM.Path, opts: [path: "apps/my_app", from_umbrella: true]},
+      %Mix.Dep{app: :my_web, scm: Mix.SCM.Path, opts: [path: "apps/my_web", from_umbrella: true]},
+      %Mix.Dep{app: :sibling, scm: Mix.SCM.Path, opts: [path: "../sibling", in_umbrella: true]}
+    ]
+
+    assert MixProject.umbrella_from(deps) == [:my_app, :my_web]
+    assert :sibling in MixProject.non_hex_from(deps)
+  end
+
   # 0.10.0, fix round 2 (proposal B): exactly a path or git dep with no
   # manager, `compile: false`, and `app: false` or no .app in its ebin dirs.
   @tag :tmp_dir

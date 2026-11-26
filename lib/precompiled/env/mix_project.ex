@@ -36,6 +36,7 @@ defmodule Precompiled.Env.MixProject do
       present_deps: present_deps_from(deps),
       non_hex_deps: non_hex_from(deps),
       inert_deps: inert_from(deps),
+      umbrella_apps: umbrella_from(deps),
       dep_envs: dep_envs_from(deps),
       compiled_ok: compiled_ok_from(deps),
       dep_sources: dep_sources_from(deps),
@@ -163,6 +164,16 @@ defmodule Precompiled.Env.MixProject do
         into: %{},
         do: {app, dirs}
   end
+
+  @doc false
+  # 0.10.0 (re-review F1 of round 5): at an umbrella's root, the umbrella's
+  # own apps (Mix.Dep.Umbrella marks them `from_umbrella`), which Mix
+  # compiles after every Hex dep. A sibling an app declares `in_umbrella`,
+  # compiled from inside that app, is a path dep Mix may compile before a
+  # Hex dep: it stays in non_hex_from/1.
+  @spec umbrella_from([Mix.Dep.t()]) :: [atom()]
+  def umbrella_from(deps),
+    do: for(%Mix.Dep{app: app, opts: opts} <- deps, opts[:from_umbrella] == true, do: app)
 
   @doc false
   # 0.10.0: each Hex dep's own compile env, as candidates_from/2 reads it.

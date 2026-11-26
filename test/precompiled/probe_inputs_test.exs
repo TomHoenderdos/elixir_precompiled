@@ -235,22 +235,6 @@ defmodule Precompiled.ProbeInputsTest do
                check(declared(@pg, ["postgrex"], ["postgrex"]), nil)
     end
 
-    # Re-review R4: an inert dep's beams on disk, which no index reads.
-    test "misses when an inert dep's ebin holds the module" do
-      modules_of = fn
-        "heroicons" -> {:ok, MapSet.new([@pg])}
-        _ -> {:ok, MapSet.new()}
-      end
-
-      v = %{indexed(["heroicons"], inert: ["heroicons"]) | modules_of: modules_of}
-
-      assert {:miss, %{code: :probe_definer, args: ["Postgrex", "heroicons"]}} =
-               check(declared(@pg, ["postgrex"], ["postgrex"]), v)
-
-      empty = %{v | modules_of: fn _ -> {:ok, MapSet.new()} end}
-      assert check(declared(@pg, ["postgrex"], ["postgrex"]), empty) == :ok
-    end
-
     test "a declared package that is no definer, or a malformed list, is malformed" do
       for bad <- [
             declared(@pg, ["postgrex"], ["jason"]),

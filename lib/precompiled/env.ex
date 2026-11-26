@@ -35,6 +35,7 @@ defmodule Precompiled.Env do
           dep_sources: dep_sources() | nil,
           non_hex_deps: [atom()] | nil,
           inert_deps: %{optional(atom()) => [Path.t()]} | nil,
+          umbrella_apps: [atom()] | nil,
           dep_envs: %{optional(atom()) => String.t()},
           probe: map() | nil
         }
@@ -148,6 +149,11 @@ defmodule Precompiled.Env do
             # Mix's deps were not read, and under Mix.install/2, where such
             # a dep stays in non_hex_deps.
             inert_deps: nil,
+            # 0.10.0 (re-review F1 of round 5): at an umbrella's root, the
+            # umbrella's own apps (`from_umbrella`), which Mix compiles after
+            # every Hex dep, so no Hex dep's compile can see their modules.
+            # nil when Mix's deps were not read, and under Mix.install/2.
+            umbrella_apps: nil,
             # 0.10.0: each Hex dep's own compile env, as Mix loads it (`env:`
             # in its declaration, else prod), for matching a dep outside a
             # probe build's closure to its own build.

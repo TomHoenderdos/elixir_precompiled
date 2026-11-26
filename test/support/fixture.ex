@@ -177,8 +177,10 @@ defmodule Precompiled.Fixture do
   end
 
   # 0.10.0 (S10 round 5): a release index for a batch's `release_index`.
-  # `read` is `%{package => [version]}` (the read releases, sharded as the
-  # portal shards them), `definers` is `%{module => %{package => [version]}}`.
+  # `read` is `%{package => [[version, outer checksum]]}` (the read releases,
+  # each with the outer checksum of the tarball the portal read, sharded as
+  # the portal shards them), `definers` is `%{module => %{package =>
+  # [version]}}`.
   # Each document is served at release-index/by-sha/<sha>.json; returns the
   # batch's `release_index` object.
   @spec release_index(map(), map()) :: map()

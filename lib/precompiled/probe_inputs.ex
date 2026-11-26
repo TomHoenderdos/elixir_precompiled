@@ -73,7 +73,8 @@ defmodule Precompiled.ProbeInputs do
           non_hex: [String.t()] | nil,
           modules_of: (String.t() -> {:ok, MapSet.t(String.t())} | :unknown),
           inert: [String.t()],
-          index: index() | nil
+          index: index() | nil,
+          umbrella: [String.t()]
         }
 
   @typedoc """
@@ -95,22 +96,26 @@ defmodule Precompiled.ProbeInputs do
   # `modules_of`, a dep's exact module list (`{:ok, set}`) or `:unknown`;
   # `inert`, the inert deps (Env.inert_deps), whose lists are their beams.
   # `index`, the batch's module index per release (index/0), nil without one.
+  # `umbrella`, at an umbrella's root its own apps (Env.umbrella_apps), which
+  # Mix compiles after every Hex dep.
   @spec view(
           MapSet.t(String.t()),
           [String.t()] | nil,
           [String.t()] | nil,
           function(),
           [String.t()],
-          index() | nil
+          index() | nil,
+          [String.t()]
         ) :: view()
-  def view(names, deps, non_hex, modules_of, inert \\ [], index \\ nil),
+  def view(names, deps, non_hex, modules_of, inert \\ [], index \\ nil, umbrella \\ []),
     do: %{
       names: names,
       deps: deps,
       non_hex: non_hex,
       modules_of: modules_of,
       inert: inert,
-      index: index
+      index: index,
+      umbrella: umbrella
     }
 
   @doc false
@@ -241,11 +246,16 @@ defmodule Precompiled.ProbeInputs do
   # S10 round 5: each dep outside the build's closure (not the package), at
   # its locked release, against the batch's module index per release: the
   # release must be one the index has read, and must not define the module.
+  # No index reads an inert dep, whose beams inert_definer/2 read, or an
+  # umbrella's own app at its root, which Mix compiles after every Hex dep
+  # (re-review F1): neither is asked.
   defp by_release(name, _shown, _closure, _package, %{index: nil}), do: unknown(name)
 
   defp by_release(name, shown, closure, package, view) do
+    own = MapSet.new(Map.get(view, :inert, []) ++ Map.get(view, :umbrella, []))
+
     view.deps
-    |> Enum.reject(&(&1 == package or in_closure?(closure, &1)))
+    |> Enum.reject(&(&1 == package or in_closure?(closure, &1) or MapSet.member?(own, &1)))
     |> Enum.sort()
     |> Enum.reduce_while(:ok, fn app, :ok ->
       case {view.index.read?.(app), view.index.defines?.(name, app)} do

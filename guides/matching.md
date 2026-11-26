@@ -226,13 +226,19 @@ compares the whole tree. Releases before 0.7.0 do not read it at all.
     path and this VM have no such module, no inert dependency's `ebin`
     holds it, every dependency is a Hex one from hex.pm (an inert one
     aside), and each dependency outside the build's closure, at the very
-    release your lock holds, is one the portal's module index has read and
-    does not define the module. The index reads every release of every Hex
+    release and outer checksum your lock holds, is one the portal's module
+    index has read and does not define the module. An inert dependency is
+    not asked (its beams decide), nor, at an umbrella's root, the
+    umbrella's own apps, which Mix compiles after every Hex dependency; an
+    app's `in_umbrella` sibling, compiled from inside that app, is a path
+    dependency and misses. The index reads every release of every Hex
     package (the sources Mix or rebar3 compiles, and the modules our builds
     of it wrote); the signed batch names it (`release_index`), and the
     client fetches only the documents for your lock's packages. A locked
     release the index has not read (a release published within the hour,
-    one it could not read, a private organisation's) is a miss
+    one it could not read, a private organisation's, or one your lock names
+    by another outer checksum than the tarball the index read: a release
+    replaced with `mix hex.publish --replace`) is a miss
     (`probe_unknown`). No other dependency's module list is needed. What
     this cannot see: a module another dependency defines by a macro or at
     compile time, which no tarball parse and no build list shows, from files

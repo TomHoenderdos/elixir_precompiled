@@ -575,13 +575,20 @@ defmodule Precompiled.Fetch do
     _ -> :none
   end
 
-  defp release_doc?(%{"read" => read}) when is_map(read), do: versions_map?(read)
-  defp release_doc?(%{"definers" => definers}) when is_map(definers), do: versions_map?(definers)
+  # A shard lists each read release as `[version, outer checksum]` (the
+  # tarball it was read from); a definer set lists versions.
+  defp release_doc?(%{"read" => read}) when is_map(read), do: by_package?(read, &release?/1)
+
+  defp release_doc?(%{"definers" => definers}) when is_map(definers),
+    do: by_package?(definers, &is_binary/1)
+
   defp release_doc?(_doc), do: false
 
-  defp versions_map?(map),
-    do:
-      Enum.all?(map, fn {k, v} -> is_binary(k) and is_list(v) and Enum.all?(v, &is_binary/1) end)
+  defp by_package?(map, entry?),
+    do: Enum.all?(map, fn {k, v} -> is_binary(k) and is_list(v) and Enum.all?(v, entry?) end)
+
+  defp release?([version, outer]), do: is_binary(version) and is_binary(outer)
+  defp release?(_entry), do: false
 
   defp decode_manifest(bytes), do: with({:ok, map} <- decode(bytes), do: Manifest.normalize(map))
 
