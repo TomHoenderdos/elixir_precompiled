@@ -240,4 +240,44 @@ defmodule Precompiled.Env.MixProjectTest do
     assert :mixed in MixProject.non_hex_from(deps)
     assert :with_app in MixProject.non_hex_from(deps)
   end
+
+  # S10 re-review R1, the reviewer's measured case: a dependency from a
+  # private Hex organisation (or a self-hosted repo) is in no module index,
+  # which reads hex.pm only, so for the probe rules it is no Hex dependency:
+  # a declared item misses, as it does with a path or git dependency.
+  test "a dependency from a repo other than hexpm is no Hex dependency for a probe" do
+    acme = {:hex, :acme_json, "1.0.0", "i", [:mix], [], "hexpm:acme", "ACMEOUTER"}
+    org = %Mix.Dep{app: :acme_json, scm: Hex.SCM, opts: [lock: acme, hex: :acme_json]}
+    public = %Mix.Dep{app: :jason, scm: Hex.SCM, opts: [lock: @jason, hex: :jason]}
+
+    assert MixProject.non_hex_from([org, public]) == [:acme_json]
+
+    env = %Precompiled.Env{
+      candidates: [],
+      build_lib: "/x/_build/dev/lib",
+      deps_path: "/x/deps",
+      lock: %{acme_json: acme, jason: @jason},
+      present_deps: %{acme_json: [], jason: []},
+      non_hex_deps: MixProject.non_hex_from([org, public])
+    }
+
+    view = Precompiled.Check.probe_view(env, fn _app -> {:ok, MapSet.new()} end)
+
+    # The reviewer's item was Jason.Encoder, which this test VM has loaded;
+    # the same shape under a name no VM here holds.
+    item = %{
+      "kind" => "probe",
+      "of" => "module",
+      "name" => "Elixir.NoSuchJsonR1.Encoder",
+      "answer" => "absent",
+      "definers" => ["glazer", "no_such_json_r1"],
+      "declared" => ["no_such_json_r1"]
+    }
+
+    assert {:miss, %{code: :probe_unknown}} =
+             Precompiled.ProbeInputs.check(item, %{}, "pkg", view)
+
+    # The same project with the dep from hex.pm itself holds it.
+    assert Precompiled.ProbeInputs.check(item, %{}, "pkg", %{view | non_hex: []}) == :ok
+  end
 end

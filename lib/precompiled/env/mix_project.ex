@@ -118,7 +118,8 @@ defmodule Precompiled.Env.MixProject do
   # exact module list exists for one): every dep Mix does not load from Hex
   # with a Hex lock entry of the package it names (dep_source/1, 0.9.1's
   # B1): a path or git dep, and a closure dep switched to one with
-  # `override: true`, which keeps its stale Hex lock entry. Not an
+  # `override: true`, which keeps its stale Hex lock entry; and one whose
+  # entry is from a repo other than hexpm (re-review R1). Not an
   # umbrella's own apps (`from_umbrella`), which Mix compiles after every
   # Hex dep.
   # An inert dep (inert_from/1) is no such dep: it has a module list.
@@ -129,9 +130,17 @@ defmodule Precompiled.Env.MixProject do
     for %Mix.Dep{app: app, opts: opts} = dep <- deps,
         opts[:from_umbrella] != true,
         not Map.has_key?(inert, app),
-        not match?({:hex, _, _, _, _, _, _, _}, dep_source(dep)),
+        not hexpm_entry?(dep_source(dep)),
         do: app
   end
+
+  @doc false
+  # S10 re-review R1: a Hex entry of hex.pm itself. A private organisation
+  # (`"hexpm:acme"`) or a self-hosted repo is in no module index, which
+  # reads hex.pm only: for the probe rules it is no Hex dep.
+  @spec hexpm_entry?(term()) :: boolean()
+  def hexpm_entry?({:hex, _, _, _, _, _, "hexpm", _}), do: true
+  def hexpm_entry?(_entry), do: false
 
   @doc false
   # 0.10.0 (fix round 2, proposal B): the path and git deps that compile and

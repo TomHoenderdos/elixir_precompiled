@@ -173,6 +173,31 @@ defmodule Precompiled.ProbeInputsTest do
                check(declared("Elixir.Postgrex", ["postgrex"], ["postgrex"]), nil)
     end
 
+    # Re-review R4: an inert dep's beams on disk, which no index reads.
+    test "misses when an inert dep's ebin holds the module" do
+      modules_of = fn
+        "heroicons" -> {:ok, MapSet.new(["Elixir.Postgrex"])}
+        _ -> {:ok, MapSet.new()}
+      end
+
+      v =
+        ProbeInputs.view(MapSet.new(["heroicons"]), ["heroicons"], [], modules_of, ["heroicons"])
+
+      assert {:miss, %{code: :probe_definer, args: ["Postgrex", "heroicons"]}} =
+               check(declared("Elixir.Postgrex", ["postgrex"], ["postgrex"]), v)
+
+      empty =
+        ProbeInputs.view(
+          MapSet.new(["heroicons"]),
+          ["heroicons"],
+          [],
+          fn _ -> {:ok, MapSet.new()} end,
+          ["heroicons"]
+        )
+
+      assert check(declared("Elixir.Postgrex", ["postgrex"], ["postgrex"]), empty) == :ok
+    end
+
     test "a declared package that is no definer, or a malformed list, is malformed" do
       for bad <- [
             declared("Elixir.Postgrex", ["postgrex"], ["jason"]),

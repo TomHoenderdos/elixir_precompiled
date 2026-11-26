@@ -515,6 +515,102 @@ defmodule Precompiled.CheckTest do
                report_of(config, env)["ash"]
     end
 
+    # Re-review R5: a manifest this run could not fetch (here one that does
+    # not verify) is no answer for the next run: nothing is kept for it.
+    test "an unknown from a manifest that did not verify is not kept", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      probe_batch(f, %{"defined_modules" => []})
+      F.tamper_manifest(f, "jason")
+      assert %{status: :miss, reason: {:probe_unknown, ["Poison"]}} = ash_line(config, env)
+
+      for file <- Path.wildcard(Path.join([config.home, "probe", "v1", "*.etf"])),
+          do: refute(Map.has_key?(:erlang.binary_to_term(File.read!(file)), "jason"))
+    end
+
+    # Re-review R6: a chain of probe builds deeper than eight is not decided.
+    # d_k's closure holds ash and d_1..d_k-1, so its item needs the lists of
+    # d_k+1..d_n: deciding ash asks d_1, d_1 asks d_2, and so on.
+    defp chain!(f, n) do
+      deps = for k <- 1..n, do: String.to_atom("chain_dep_#{k}")
+
+      lock =
+        Map.new(deps, fn d ->
+          {d, {:hex, d, "1.0.0", "i", [:mix], [], "hexpm", "OUTER_#{d}"}}
+        end)
+
+      locked = fn d ->
+        {Atom.to_string(d), %{"version" => "1.0.0", "checksum" => "OUTER_#{d}"}}
+      end
+
+      packages =
+        for {d, k} <- Enum.with_index(deps, 1), into: %{} do
+          closure = Enum.take(deps, k - 1)
+
+          build =
+            f
+            |> good_entry("ash", nil, "pure_elixir")
+            |> put_in(["build", "package_checksum"], "OUTER_#{d}")
+            |> put_in(
+              ["build", "deps"],
+              Map.new([:ash | closure], fn
+                :ash -> {"ash", %{"version" => "3.5.2", "checksum" => elem(@ash, 7)}}
+                c -> locked.(c)
+              end)
+            )
+            |> put_in(["build", "compile_inputs"], [@cowboy])
+            |> put_in(["build", "defined_modules"], [])
+
+          {Atom.to_string(d),
+           %{"versions" => %{"1.0.0" => %{"builds" => [], "builds_with_inputs" => [build]}}}}
+        end
+
+      ash =
+        f
+        |> good_entry("ash", nil, "pure_elixir")
+        |> put_in(["build", "compile_inputs"], [@poison])
+
+      F.publish(
+        f,
+        Map.put(packages, "ash", %{
+          "versions" => %{"3.5.2" => %{"builds" => [], "builds_with_inputs" => [ash]}}
+        })
+      )
+
+      tree =
+        deps
+        |> Enum.with_index(1)
+        |> Map.new(fn {d, k} -> {d, [:ash | Enum.take(deps, k - 1)]} end)
+        |> Map.put(:ash, [])
+
+      {lock, tree}
+    end
+
+    test "a chain of probe builds is decided to depth 8, not beyond", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      for {n, expected} <- [{8, :hit}, {9, :miss}] do
+        {lock, tree} = chain!(f, n)
+        lock = Map.put(lock, :ash, @ash)
+
+        e = %{
+          host_env(env)
+          | candidates: [hd(env.candidates)],
+            lock: lock,
+            dep_sources: lock,
+            present_deps: tree,
+            dep_envs: Map.new(Map.keys(lock), &{&1, "prod"})
+        }
+
+        File.rm_rf!(Path.join(config.home, "probe"))
+        assert %{status: ^expected} = report_of(config, e)["ash"], "chain of #{n}"
+      end
+    end
+
     # The review's S1: the lists are kept across runs, keyed by the lock and
     # everything a match reads.
     test "the lists are kept under the home for the next run", %{f: f, config: config, env: env} do

@@ -43,7 +43,8 @@ defmodule Precompiled.ProbeInputs do
   #     without the list is one this client cannot tell: a miss;
   #   * `of: "module"` with `declared` (round 3): the declared-optional-
   #     dependency rule (declared_check/3): no dep is a definer, the code
-  #     path and this VM lack it, every dep is a Hex one; no list needed;
+  #     path and this VM lack it, every dep is a Hex one, no inert dep's
+  #     ebin holds it; no other list needed;
   #   * `of: "app"`: no dep is that application, and this VM finds no
   #     `<name>.app` on its code path, under OTP's or Elixir's lib dir, or
   #     loaded;
@@ -70,17 +71,25 @@ defmodule Precompiled.ProbeInputs do
           names: MapSet.t(String.t()),
           deps: [String.t()] | nil,
           non_hex: [String.t()] | nil,
-          modules_of: (String.t() -> {:ok, MapSet.t(String.t())} | :unknown)
+          modules_of: (String.t() -> {:ok, MapSet.t(String.t())} | :unknown),
+          inert: [String.t()]
         }
 
   @doc false
   # The project as an item is checked against: `names`, every dep's app and
   # Hex package name; `deps`, the apps of the deps Mix loads (nil when they
   # were not read); `non_hex`, those that are no Hex dep (nil when unknown);
-  # `modules_of`, a dep's exact module list (`{:ok, set}`) or `:unknown`.
-  @spec view(MapSet.t(String.t()), [String.t()] | nil, [String.t()] | nil, function()) :: view()
-  def view(names, deps, non_hex, modules_of),
-    do: %{names: names, deps: deps, non_hex: non_hex, modules_of: modules_of}
+  # `modules_of`, a dep's exact module list (`{:ok, set}`) or `:unknown`;
+  # `inert`, the inert deps (Env.inert_deps), whose lists are their beams.
+  @spec view(
+          MapSet.t(String.t()),
+          [String.t()] | nil,
+          [String.t()] | nil,
+          function(),
+          [String.t()]
+        ) :: view()
+  def view(names, deps, non_hex, modules_of, inert \\ []),
+    do: %{names: names, deps: deps, non_hex: non_hex, modules_of: modules_of, inert: inert}
 
   @doc false
   @spec check(term(), map() | nil, String.t(), view() | nil) :: :ok | {:miss, Reason.t()}
@@ -183,9 +192,12 @@ defmodule Precompiled.ProbeInputs do
   # (its last and latest stable) and our builds' lists show defining it.
   # The project supplies it only if one of those is a dep, or the code path
   # or this VM has it: no other dep's module list is needed. A dep that is
-  # no Hex dep (an inert one aside) is in no index: a miss. The residual:
-  # a module defined by a macro or at compile time outside any tarball
-  # parse or build list, by a dep other than the declared ones.
+  # no Hex dep (an inert one aside) is in no index: a miss; an inert dep's
+  # beams on disk are read here (re-review R4). The residual: a module
+  # defined by a macro or at compile time outside any tarball parse or
+  # build list, by a dep other than the declared ones, from files no index
+  # reads among them (an inert dep's sources, which a Hex dep's compile may
+  # load: `Code.require_file/2`).
   defp declared_check(name, _definers, nil), do: unknown(name)
 
   defp declared_check(name, definers, view) do
@@ -195,8 +207,19 @@ defmodule Precompiled.ProbeInputs do
       found = Enum.find(definers, &MapSet.member?(view.names, &1)) -> definer(shown, found)
       on_code_path?(name <> ".beam") or loaded?(name) -> definer(shown, "code_path")
       not is_list(view.deps) or view.non_hex != [] -> unknown(name)
+      found = inert_definer(name, view) -> definer(shown, found)
       true -> :ok
     end
+  end
+
+  # Re-review R4: an inert dep's beams on disk, which no index reads.
+  defp inert_definer(name, view) do
+    Enum.find(Map.get(view, :inert, []), fn app ->
+      case view.modules_of.(app) do
+        {:ok, modules} -> MapSet.member?(modules, name)
+        _ -> false
+      end
+    end)
   end
 
   defp in_closure?(closure, app) when is_map(closure), do: Map.has_key?(closure, app)

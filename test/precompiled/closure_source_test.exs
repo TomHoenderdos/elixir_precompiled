@@ -65,6 +65,21 @@ defmodule Precompiled.ClosureSourceTest do
     assert {:ok, _, "pure_elixir"} = select([])
   end
 
+  # S10 re-review R1, the closure side: a dependency from a private Hex
+  # organisation or another repo is compared by its outer checksum, which
+  # names the tarball's bytes. Our builds are made against hex.pm's
+  # releases, so an org release with other contents misses; only a tarball
+  # byte for byte the one the build used matches, and that is the same code.
+  test "a closure dependency from another Hex repo matches only by the same tarball" do
+    same = put_elem(@spark, 6, "hexpm:acme")
+    lock = %{@lock | spark: same}
+    assert {:ok, _, "pure_elixir"} = select(lock: lock, dep_sources: lock)
+
+    other = same |> put_elem(7, "ACMEOUTER")
+    lock = %{@lock | spark: other}
+    assert {:miss, %{code: :closure_checksum}} = select(lock: lock, dep_sources: lock)
+  end
+
   describe "each loaded dependency's source" do
     test "a Hex dependency is the lock entry Mix loaded it with" do
       ash = dep(:ash, Hex.SCM, hex: "ash", repo: "hexpm", lock: @ash)

@@ -67,6 +67,22 @@ defmodule Precompiled.Env.MixInstallTest do
     assert load.(nil).non_hex_deps == nil
   end
 
+  # S10 re-review R1: a lock entry from a repo other than hexpm is in no
+  # module index, so it is no Hex dep for a probe, even loaded as locked.
+  test "a dep from a repo other than hexpm is no Hex dep for a probe", %{tmp_dir: dir} do
+    acme = put_elem(@decimal, 6, "hexpm:acme")
+    Mix.Dep.Lock.write(%{jason: @jason, decimal: acme}, file: Path.join(dir, "mix.lock"))
+    present = %{jason: [:decimal], decimal: []}
+
+    methods = %{
+      jason: %{manager: "mix", overrides: []},
+      decimal: %{manager: "mix", overrides: []}
+    }
+
+    env = MixInstall.load(dir, [], methods, present, nil, nil, %{jason: @jason, decimal: acme})
+    assert env.non_hex_deps == [:decimal]
+  end
+
   test "load skips a dep the install project has already compiled", %{tmp_dir: dir} do
     Mix.Dep.Lock.write(%{jason: @jason, decimal: @decimal}, file: Path.join(dir, "mix.lock"))
     jason = Path.join([dir, "_build", Atom.to_string(Mix.env()), "lib", "jason"])

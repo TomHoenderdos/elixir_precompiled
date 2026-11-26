@@ -9,17 +9,24 @@ defmodule Precompiled.ProbeCache do
   # probe/v1/, one file per key, so a project that keeps probe builds
   # installed does not match every dep's build again on every `mix compile`.
   #
-  # The key is everything a dep's match reads: the lock, the batch it was
-  # matched against, the toolchain, the Nerves system and Mix target, each
-  # dep's tree and compile env, the non-Hex and inert deps (with the beams
-  # in an inert dep's ebin dirs), this machine's environment, every locked
-  # app's config and the compiler options. Any change is another key, so a
-  # stale list is never read; the cache's gc bounds the files. A file that
-  # does not read back as lists of names is no cache. Check stores only a
-  # list whose match read no probe item, which also reads the VM's code
-  # path, and none built on a cut cycle.
+  # The key is a hash of everything a dep's match reads (re-review R2):
+  # the whole Env the run took (the lock, each dep's tree, source, compile
+  # env and build method, which carries the `system_env:`, `compile:` and
+  # `manager:` a dep's declaration sets, the non-Hex and inert deps, the
+  # project's paths, the target and the Nerves system), the beams in each
+  # inert dep's ebin dirs, the batch matched against, the toolchain, source
+  # and host the config names, this machine's environment, the config of
+  # every application this VM holds config for or has loaded (not only the
+  # locked ones: a build's compile_env items name any app), which of them
+  # are loaded and at what version, the compiler options, and the global
+  # rebar3 config's bytes (and its `.script`). Any change is another key,
+  # so a stale list is never read; the cache's gc bounds the files. A file
+  # that does not read back as lists of names is no cache. Check stores
+  # only a list whose match read no probe item, which also reads the VM's
+  # code path, none built on a cut cycle, and no unknown from a manifest it
+  # could not fetch.
 
-  @version 1
+  @version 2
 
   @spec key(map(), map(), map()) :: String.t()
   def key(env, config, batch) do
@@ -27,31 +34,59 @@ defmodule Precompiled.ProbeCache do
 
     term = {
       @version,
-      lock |> Map.to_list() |> Enum.sort(),
+      env |> plain() |> Map.drop([:probe]) |> Enum.sort(),
+      inert(env),
       Map.get(batch, :sequence),
       Map.get(batch, :manifests_v2),
-      Map.get(config, :toolchain),
-      Map.get(config, :source),
-      Map.get(env, :system),
-      Map.get(env, :mix_target),
-      Map.get(env, :present_deps),
-      Map.get(env, :dep_envs),
-      Map.get(env, :non_hex_deps),
-      inert(env),
-      Map.get(env, :config_unreadable),
+      Map.take(config, [:toolchain, :source, :native_host]),
       System.get_env() |> Map.to_list() |> Enum.sort(),
-      for(app <- lock |> Map.keys() |> Enum.sort(), do: {app, Application.get_all_env(app)}),
-      Code.compiler_options()
+      app_config(lock),
+      Code.compiler_options(),
+      rebar3_global()
     }
 
-    :sha256 |> :crypto.hash(:erlang.term_to_binary(term)) |> Base.encode16(case: :lower)
+    :sha256
+    |> :crypto.hash(:erlang.term_to_binary(term, [:deterministic]))
+    |> Base.encode16(case: :lower)
   end
+
+  defp plain(%{__struct__: _} = struct), do: Map.from_struct(struct)
+  defp plain(map) when is_map(map), do: map
 
   # Each inert dep with its ebin dirs and the beams in them now (a list
   # resting on one is decided by what is on disk).
   defp inert(env) do
     for {app, dirs} <- Enum.sort(Map.get(env, :inert_deps) || %{}),
         do: {app, dirs, dirs |> Precompiled.Check.beams_in() |> Enum.sort()}
+  end
+
+  # Every application this VM holds config for (the config files set it,
+  # loaded or not) or has loaded, and the locked ones: its config, and its
+  # version when it is loaded.
+  defp app_config(lock) do
+    apps =
+      (configured_apps() ++
+         Enum.map(Application.loaded_applications(), &elem(&1, 0)) ++ Map.keys(lock))
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    for app <- apps,
+        do: {app, Application.spec(app, :vsn), app |> Application.get_all_env() |> Enum.sort()}
+  end
+
+  # The application controller's table holds one `{{:env, app, key}, value}`
+  # row per configured key.
+  defp configured_apps() do
+    :ac_tab |> :ets.match({{:env, :"$1", :_}, :_}) |> List.flatten() |> Enum.uniq()
+  rescue
+    _ -> []
+  end
+
+  defp rebar3_global() do
+    case Precompiled.Rebar3Config.path(&System.get_env/1) do
+      path when is_binary(path) -> {File.read(path), File.read(path <> ".script")}
+      nil -> nil
+    end
   end
 
   @spec load(map(), String.t()) :: %{optional(String.t()) => {:ok, MapSet.t()} | :unknown}

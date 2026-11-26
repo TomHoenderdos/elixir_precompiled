@@ -100,13 +100,17 @@ defmodule Precompiled.Env.MixInstall do
   # 0.10.0: the deps of the install project's tree that are no Hex deps:
   # every dep Mix loaded there (the tree) less those it loads from Hex with
   # their lock entry (the build methods, which Install.build_methods/4
-  # reads for Hex deps only, and the sources, 0.9.1's B1). nil when any of
+  # reads for Hex deps only, and the sources, 0.9.1's B1), from hex.pm
+  # itself (re-review R1: another repo is in no module index). nil when any of
   # them is unknown.
   defp non_hex(present, methods, lock, sources)
        when is_map(present) and is_map(methods) and is_map(sources) do
     present
     |> Map.keys()
-    |> Enum.reject(&(Map.has_key?(methods, &1) and same_hex?(lock[&1], sources[&1])))
+    |> Enum.reject(
+      &(Map.has_key?(methods, &1) and same_hex?(lock[&1], sources[&1]) and
+          Precompiled.Env.MixProject.hexpm_entry?(lock[&1]))
+    )
     |> Enum.sort()
   end
 

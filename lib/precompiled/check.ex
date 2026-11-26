@@ -1132,7 +1132,20 @@ defmodule Precompiled.Check do
         _ -> nil
       end
 
-    Precompiled.ProbeInputs.view(MapSet.new(names, &to_string/1), deps, non_hex, modules_of)
+    Precompiled.ProbeInputs.view(
+      MapSet.new(names, &to_string/1),
+      deps,
+      non_hex,
+      modules_of,
+      inert_apps(env)
+    )
+  end
+
+  defp inert_apps(env) do
+    case Map.get(env, :inert_deps) do
+      %{} = inert -> inert |> Map.keys() |> Enum.map(&Atom.to_string/1) |> Enum.sort()
+      _ -> []
+    end
   end
 
   @doc false
@@ -1284,26 +1297,35 @@ defmodule Precompiled.Check do
     with {:ok, atom} <- existing_atom(app),
          {:hex, _, _, _, _, _, _, _} = entry <- env.lock[atom],
          [candidate] <- Env.hex_candidates(env.lock, [atom], Map.get(env, :dep_envs) || %{}),
-         {sha, mpath} when is_binary(sha) <- manifest_ref(run.batch, package(candidate)),
-         {:ok, manifest} <- Fetch.manifest(config, package(candidate), sha, mpath) do
-      probe_free? = not probe_items?(get_in(manifest, ["versions", candidate.version]))
-      reads = scan_reads(config, env, app, entry)
-
-      with :ok <- scan_in_time(reads),
-           ctx =
-             candidate
-             |> ctx(env, config, run.config_fun, reads)
-             |> Map.put(:probe, probe_view(env, provider(run, path))),
-           {:ok, build, _target} <- Match.select_reason(manifest, ctx) do
-        {Precompiled.ProbeInputs.module_set(build), probe_free?}
-      else
-        _ -> {:unknown, probe_free?}
+         {sha, mpath} when is_binary(sha) <- manifest_ref(run.batch, package(candidate)) do
+      case Fetch.manifest(config, package(candidate), sha, mpath) do
+        {:ok, manifest} -> matched_modules(app, entry, candidate, manifest, run, path)
+        # Re-review R5: a manifest this run could not fetch is no answer
+        # for the next run.
+        _ -> {:unknown, false}
       end
     else
       _ -> {:unknown, true}
     end
   rescue
     _ -> {:unknown, false}
+  end
+
+  defp matched_modules(app, entry, candidate, manifest, run, path) do
+    %{config: config, env: env} = run
+    probe_free? = not probe_items?(get_in(manifest, ["versions", candidate.version]))
+    reads = scan_reads(config, env, app, entry)
+
+    with :ok <- scan_in_time(reads),
+         ctx =
+           candidate
+           |> ctx(env, config, run.config_fun, reads)
+           |> Map.put(:probe, probe_view(env, provider(run, path))),
+         {:ok, build, _target} <- Match.select_reason(manifest, ctx) do
+      {Precompiled.ProbeInputs.module_set(build), probe_free?}
+    else
+      _ -> {:unknown, probe_free?}
+    end
   end
 
   defp probe_items?(%{} = term),
