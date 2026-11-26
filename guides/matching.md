@@ -26,7 +26,7 @@ A build of a candidate is installed only when **every** rule holds.
 | 3 | OTP | have the same OTP major | record layouts from OTP headers are inlined at compile time |
 | 4 | Dependency env | be compiled in the env the dependency compiles in here (`prod`, unless your `deps` entry sets `env:`) | env changes what gets compiled |
 | 5 | Checksum | have the package checksum in your `mix.lock` | it is the exact same release |
-| 6 | Dependencies | be compiled against the versions and checksums in your `mix.lock` | macros and inlined code from dependencies are baked in |
+| 6 | Dependencies | be compiled against the versions and checksums in your `mix.lock`, of dependencies Mix loads from Hex here | macros and inlined code from dependencies are baked in |
 | 7 | `compile_env` | have read the same `Application.compile_env` values as your config | those values are baked into the beams |
 | 8 | Compile-time inputs | have read the same environment variables your environment gives, and not depend on build-machine facts it can't record (see below) | otherwise it could differ from your build |
 | 9 | Build method | be built the way Mix builds the dependency here: no declaration of it (yours or a package's) sets any of `:manager`, `:compile` or `:system_env`, a manager the build records is the one Mix uses here, and, for a rebar3 dependency, your global rebar3 config changes nothing it compiles | an override, another manager, or a global rebar3 config builds other files |
@@ -92,10 +92,17 @@ and then the device checks its own libraries too: see
 - a 1.21.0-rc.0 build is served to 1.21.0;
 - a 1.21.0 build is *not* served to 1.21.0-rc.0.
 
-**Rule 6, dependencies.** Two directions:
+**Rule 6, dependencies.** Three parts:
 
 - every dependency the build was compiled against is in your `mix.lock`,
   at the same version and checksum;
+- every one of them, and the package itself, is a dependency Mix loads
+  from Hex in your project, with that same lock entry. One Mix loads from
+  a path or git here misses with `built against NAME VERSION from Hex, not
+  the NAME Mix loads here`. This holds also when `mix.lock` still has its
+  old Hex entry: after you change a dependency to `path:` or `git:` with
+  `override: true`, `mix deps.get` keeps that entry, and Mix compiles the
+  package against your fork;
 - on your build machine, the build was compiled with exactly the
   dependencies Mix compiles the package with in your project, at any
   depth: its whole dependency tree for the current `MIX_ENV` and
@@ -112,16 +119,19 @@ in its lock in dev and prod too, yet Mix gives `phoenix_live_view` (which
 lists it as optional) no lazy_html there. So in dev and prod the build
 without lazy_html matches, and in test the one with it; the same holds for
 a package that gets lazy_html further down its tree. A dependency Mix
-loads but the lock has no Hex entry for (a path dependency with
-`override: true`) is in no build, so every build of a package that has it
-in its tree misses. Versions and checksums are still compared against the
-lock.
+loads from a path or git (`path:` or `git:` with `override: true`) is in
+no build, so every build of a package that has it in its tree misses,
+whatever entry the lock has for it. Versions and checksums are still
+compared against the lock.
 
 `Precompiled.Host.install/2` makes the same whole-tree comparison. It
 reads the tree from the dependencies Mix loads in the project
 `Mix.install/2` then uses, from the same lock and for the same env:
 the tree `Mix.install/2` compiles. With the `lockfile:` option, that lock
 is merged into the install project first, as `Mix.install/2` merges it.
+A Hex entry the merged lock has for a dependency your install loads from
+a path or git makes no candidate of it, and every build of a package that
+has it in its tree misses, as in a Mix project.
 An optional dependency your install brings in counts as present at any
 depth; one it has only for another env (`{:lazy_html, ">= 0.1.0", only:
 :test}` in a script run in dev) does not. When Mix cannot load those
