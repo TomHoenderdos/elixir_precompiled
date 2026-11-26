@@ -34,7 +34,8 @@ defmodule Precompiled.Env.MixProject do
       mix_target: Atom.to_string(Mix.target()),
       build_methods: build_methods_from(deps),
       present_deps: present_deps_from(deps),
-      dep_dirs: dep_dirs_from(deps),
+      non_hex_deps: non_hex_from(deps),
+      dep_envs: dep_envs_from(deps),
       compiled_ok: compiled_ok_from(deps),
       dep_sources: dep_sources_from(deps),
       compile_order:
@@ -112,10 +113,27 @@ defmodule Precompiled.Env.MixProject do
 
   defp hex_source(_lock, _hex), do: :other
 
-  # 0.10.0: each dep by the dir Mix compiles it from (its :dest), for a
-  # build's probe items.
-  @spec dep_dirs_from([Mix.Dep.t()]) :: %{optional(atom()) => Path.t() | nil}
-  def dep_dirs_from(deps), do: Map.new(deps, &{&1.app, &1.opts[:dest]})
+  # 0.10.0: the deps that are no Hex deps, for a build's probe items: a
+  # path or git dep (a closure dep switched to one with `override: true`
+  # keeps its stale Hex lock entry, so the lock alone cannot tell). Not an
+  # umbrella's own apps (`from_umbrella`), which Mix compiles after every
+  # Hex dep.
+  @spec non_hex_from([Mix.Dep.t()]) :: [atom()]
+  def non_hex_from(deps) do
+    for %Mix.Dep{app: app, scm: scm, opts: opts} <- deps,
+        scm != Hex.SCM,
+        opts[:from_umbrella] != true,
+        do: app
+  end
+
+  @doc false
+  # 0.10.0: each Hex dep's own compile env, as candidates_from/2 reads it.
+  @spec dep_envs_from([Mix.Dep.t()]) :: %{optional(atom()) => String.t()}
+  def dep_envs_from(deps) do
+    for %Mix.Dep{app: app, scm: Hex.SCM, opts: opts} <- deps,
+        into: %{},
+        do: {app, Atom.to_string(Keyword.get(opts, :env, :prod))}
+  end
 
   @doc "The apps Mix loaded as compiled (`{:ok, _}`), which Phase B may place archives into."
   @spec compiled_ok_from([Mix.Dep.t()]) :: MapSet.t(atom())

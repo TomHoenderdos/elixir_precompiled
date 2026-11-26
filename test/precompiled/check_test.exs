@@ -235,8 +235,9 @@ defmodule Precompiled.CheckTest do
   end
 
   # 0.10.0: what the project holds reaches the probe items through
-  # Check.ctx/5: every lock and dep name, and each loaded dep's source dir.
-  test "the project's names and dep dirs reach Match for probe items", %{
+  # Check.ctx/5: every lock and dep name, the deps Mix loads, those that are
+  # no Hex deps, and each dep's exact module list.
+  test "the project's names, deps and module lists reach Match for probe items", %{
     config: config,
     env: env
   } do
@@ -250,26 +251,132 @@ defmodule Precompiled.CheckTest do
       env
       | lock: lock,
         present_deps: %{ash: [:spark], spark: []},
-        dep_dirs: %{ash: "/d/ash", spark: "/d/spark"}
+        non_hex_deps: [:spark]
     }
 
-    memo = :ets.new(:probe_memo, [:set, :public])
-    view = Check.probe_view(env, memo)
+    modules_of = fn _app -> :unknown end
+    view = Check.probe_view(env, modules_of)
 
     # The deps Mix loads in this env, with their Hex package names: a lock
     # entry it leaves out (a dev-only dep in prod) never compiles here.
     assert view.names == MapSet.new(~w(ash spark))
-    assert view.dirs == %{"ash" => "/d/ash", "spark" => "/d/spark"}
-    assert view.memo == memo
+    assert view.deps == ["ash", "spark"]
+    assert view.non_hex == ["spark"]
+    assert view.modules_of == modules_of
     assert ctx_of(config, %{env | probe: view}).probe == view
 
     loaded = %{env | present_deps: %{ash: [:poisonous], poisonous: []}}
-    assert Check.probe_view(loaded, nil).names == MapSet.new(~w(ash poisonous poison))
+    assert Check.probe_view(loaded, modules_of).names == MapSet.new(~w(ash poisonous poison))
 
-    # Deps that did not load: every lock entry counts, and the dirs are unknown.
-    unknown = Check.probe_view(%{env | present_deps: nil, dep_dirs: nil}, nil)
+    # Deps that did not load: every lock entry counts, and the deps are unknown.
+    unknown = Check.probe_view(%{env | present_deps: nil, non_hex_deps: nil}, modules_of)
     assert unknown.names == MapSet.new(~w(ash poisonous poison gitdep))
-    assert unknown.dirs == nil
+    assert unknown.deps == nil
+    assert unknown.non_hex == nil
+  end
+
+  # 0.10.0: a probe build of ash, with jason outside its closure: jason's
+  # own served build, the one that matches this project, is jason's exact
+  # module list (its ebin and its defined_modules).
+  describe "a probe build, decided by the served lists of the deps outside its closure" do
+    @poison %{
+      "kind" => "probe",
+      "of" => "module",
+      "name" => "Elixir.Poison",
+      "answer" => "absent",
+      "definers" => []
+    }
+
+    defp probe_batch(f, jason_build) do
+      ash =
+        f
+        |> good_entry("ash", nil, "pure_elixir")
+        |> put_in(["build", "compile_inputs"], [@poison])
+
+      jason =
+        case jason_build do
+          nil ->
+            []
+
+          extra ->
+            [
+              Map.update!(
+                good_entry(f, "jason", nil, "pure_elixir"),
+                "build",
+                &Map.merge(&1, extra)
+              )
+            ]
+        end
+
+      packages = %{
+        "ash" => %{"versions" => %{"3.5.2" => %{"builds" => [], "builds_with_inputs" => [ash]}}}
+      }
+
+      packages =
+        if jason == [],
+          do: packages,
+          else: Map.put(packages, "jason", %{"versions" => %{"1.4.5" => %{"builds" => jason}}})
+
+      F.publish(f, packages)
+    end
+
+    defp host_env(env),
+      do: %{
+        env
+        | system: nil,
+          present_deps: %{ash: [], jason: []},
+          non_hex_deps: [],
+          dep_envs: %{ash: "prod", jason: "prod"}
+      }
+
+    defp ash_line(config, env) do
+      run_capturing(config, host_env(env))
+      assert_received {:report, {:ok, report}}
+      Enum.find(report.lines, &(&1.name == "ash"))
+    end
+
+    test "hits when jason's list does not hold the module", %{f: f, config: config, env: env} do
+      probe_batch(f, %{"defined_modules" => ["Elixir.Jason.Helper"]})
+      assert %{status: :hit} = ash_line(config, env)
+    end
+
+    test "misses when jason's list holds it", %{f: f, config: config, env: env} do
+      probe_batch(f, %{"defined_modules" => ["Elixir.Poison"]})
+
+      assert %{status: :miss, reason: {:probe_definer, ["Poison", "jason"]}} =
+               ash_line(config, env)
+    end
+
+    test "misses as unknown when jason has no list, or no build", %{
+      f: f,
+      config: config,
+      env: env
+    } do
+      probe_batch(f, %{})
+      assert %{status: :miss, reason: {:probe_unknown, ["Poison"]}} = ash_line(config, env)
+
+      probe_batch(f, nil)
+      assert %{status: :miss, reason: {:probe_unknown, ["Poison"]}} = ash_line(config, env)
+    end
+
+    test "misses as unknown with a non-Hex dep", %{f: f, config: config, env: env} do
+      probe_batch(f, %{"defined_modules" => []})
+      run_capturing(config, %{host_env(env) | non_hex_deps: [:my_fork]})
+      assert_received {:report, {:ok, report}}
+
+      assert %{status: :miss, reason: {:probe_unknown, ["Poison"]}} =
+               Enum.find(report.lines, &(&1.name == "ash"))
+    end
+
+    # The review's S1: the lists are kept across runs, keyed by the lock and
+    # everything a match reads.
+    test "the lists are kept under the home for the next run", %{f: f, config: config, env: env} do
+      probe_batch(f, %{"defined_modules" => ["Elixir.Poison"]})
+      assert %{status: :miss} = ash_line(config, env)
+      assert [file] = Path.wildcard(Path.join([config.home, "probe", "v1", "*.etf"]))
+      assert %{"jason" => {:ok, set}} = :erlang.binary_to_term(File.read!(file))
+      assert "Elixir.Poison" in set
+    end
   end
 
   # The env's compile order reaches the compile_inputs rule through

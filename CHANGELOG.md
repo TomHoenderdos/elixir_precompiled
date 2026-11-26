@@ -7,12 +7,15 @@
   `:wx`), and its dependents, can now install precompiled. The portal records each such
   question the builder answered "absent" as a `probe` compile input, and this client takes the
   build only when nothing in this project can supply the module or application either: no
-  dependency Mix loads in this env that the portal knows defines it, no dependency outside the build's
-  closure that defines it in its sources (read, not compiled), nothing on this VM's code path,
-  and for an OTP application, nothing installed here. Otherwise it misses as `probe_definer`,
-  `probe_otp_app` or, when it cannot tell, `probe_unknown`. `Mix.install` checks the install
-  project's own dependencies. A device never takes such a build. Clients up to 0.9.0 treat
-  the input as malformed and miss.
+  dependency Mix loads in this env that the portal knows defines it, no exact module list of a
+  dependency outside the build's closure that holds it, nothing on this VM's code path or
+  loaded, and for an OTP application, nothing installed here. A dependency's exact module list
+  is that of its own served build that matches this project (its ebin and the modules its
+  traced compile defined in memory). A path or git dependency, or a release with no such build,
+  makes every module probe miss. Otherwise it misses as `probe_definer`, `probe_otp_app` or,
+  when it cannot tell, `probe_unknown`. `Mix.install` checks the install project's own
+  dependencies. The lists are kept across runs under the cache. A device never takes such a
+  build. Clients up to 0.9.0 treat the input as malformed and miss.
 
 ## v0.9.1 - 2026-11-26
 

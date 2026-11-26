@@ -33,7 +33,8 @@ defmodule Precompiled.Env do
           config_unreadable: String.t() | nil,
           compiled_ok: MapSet.t(atom()) | nil,
           dep_sources: dep_sources() | nil,
-          dep_dirs: %{optional(atom()) => Path.t() | nil} | nil,
+          non_hex_deps: [atom()] | nil,
+          dep_envs: %{optional(atom()) => String.t()},
           probe: map() | nil
         }
 
@@ -130,11 +131,17 @@ defmodule Precompiled.Env do
             # (Precompiled.Relocate.user_slots/2), taken once per run by
             # Precompiled.Check; :unset until then.
             relocate: :unset,
-            # 0.10.0: each dep Mix loads (in the project or in Mix.install/2's
-            # install project) by the dir it compiles its sources from, for a
-            # build's probe items (Precompiled.ProbeInputs); nil when Mix's
-            # deps were not read, and then every module probe misses.
-            dep_dirs: nil,
+            # 0.10.0: the deps Mix loads (in the project or in Mix.install/2's
+            # install project) that are no Hex deps: path and git deps, a
+            # closure dep switched to one, not an umbrella's own apps, which
+            # Mix compiles after every Hex dep. A build's module probe misses
+            # while there is one, as no exact module list exists for it
+            # (Precompiled.ProbeInputs); nil when Mix's deps were not read.
+            non_hex_deps: nil,
+            # 0.10.0: each Hex dep's own compile env, as Mix loads it (`env:`
+            # in its declaration, else prod), for matching a dep outside a
+            # probe build's closure to its own build.
+            dep_envs: %{},
             # 0.10.0: the run's view of the project for probe items
             # (Precompiled.Check.probe_view/2), nil until Check takes it.
             probe: nil

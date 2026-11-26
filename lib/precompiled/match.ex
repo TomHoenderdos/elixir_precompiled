@@ -49,7 +49,7 @@ defmodule Precompiled.Match do
           # 0.10.0: what this project holds, for a build's probe items
           # (Precompiled.ProbeInputs.view/3); nil when unknown, and then
           # every probe item misses.
-          optional(:probe) => Precompiled.ProbeInputs.view() | nil,
+          optional(:probe) => map() | nil,
           name: String.t(),
           version: String.t(),
           lock_entry: tuple(),

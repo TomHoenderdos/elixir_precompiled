@@ -184,43 +184,43 @@ compares the whole tree. Releases before 0.7.0 do not read it at all.
 - 0.10.0: a build whose compile asked whether a module or an application is
   there (`Code.ensure_loaded?(Poison)`, `Application.spec(:phoenix_html)`,
   `Code.ensure_loaded?(:wx)`), where the builder had nothing that supplies
-  it, records the question as a `probe` input. Mix answers "present" for
-  you when a dependency compiled before it defines the module (its modules
-  stay loaded), when `Mix.install` has it on its unpruned code path, or
-  when your code path holds it (an archive, your OTP, an editor's VM such
-  as ElixirLS). So the build matches only when your project cannot supply
-  it either:
+  it, records the question as a `probe` input. Mix evaluates every
+  dependency's `mix.exs` before any dependency compiles, so what a `mix.exs`
+  defines is loaded when the asker compiles. In a regular project Mix
+  prunes the code path to the compiling dependency's own closure, so a
+  dependency outside it is visible only through what its compile loaded;
+  `Mix.install` does not prune, so every dependency compiled earlier is on
+  the path with all its modules. Your code path may hold the module too
+  (an archive, your OTP, an editor's VM such as ElixirLS). So the build
+  matches only when your project cannot supply it either:
   - a module: no dependency Mix loads in this env and target (every lock
     entry, when the dependencies did not load) is a package the portal
-    knows defines it, no dependency outside the build's
-    own closure defines it in its sources, and your code path has no beam
-    of it. Otherwise `built where Poison is absent; poison can supply it
-    here` (`probe_definer`). The sources, and each dependency's `mix.exs`,
-    are read without compiling them: every literal `defmodule`,
-    `defprotocol` and `defimpl` name, through nesting and aliases, a module
-    another macro may define from a literal alias (`defenum Name`,
-    `defmock(Name, ...)`, an inline `embeds_one :x, Name do`), each
-    implementation an `@derive` defines, every `-module` of an Erlang file,
-    and each leex and yecc file's name. A module loaded in this VM counts
-    too. A file that names the module and defines a module
-    under a name it computes (a `defmodule` of anything but a literal
-    alias, one inside a `quote`, `Module.create/3`, a `Code` compile or
-    eval call), a symlink, a file that does not parse or a dependency
-    whose dir cannot be read means this client cannot tell:
-    `... cannot tell whether this project supplies it` (`probe_unknown`);
+    knows defines it; the module is in no exact module list of a
+    dependency outside the build's own closure; and your code path and
+    this VM have no such module. Otherwise `built where Poison is absent;
+    poison can supply it here` (`probe_definer`). A dependency's exact
+    module list is that of its own served build that matches your
+    project, by every rule here: then your compile of it is that build, so
+    its modules are the build's `ebin` and the modules its compile defined
+    in memory (a `.exs` its `mix.exs` loads, `Module.create/3`), which the
+    portal recorded from its traced build (`build.defined_modules`). A
+    dependency that is no Hex dependency (a path or git dependency, or a
+    closure dependency switched to one with `override: true`), a release
+    the portal serves no matching build of, or a build from before the
+    lists means this client cannot tell: `... cannot tell whether this
+    project supplies it` (`probe_unknown`);
   - an application: no dependency of your project is that application, and
-    your code path and your OTP and Elixir install hold no `.app` of it
-    (`probe_definer`);
+    your code path and your OTP and Elixir install hold no `.app` of it,
+    nor is one loaded (`probe_definer`);
   - an OTP application no package of the build lists (vega_lite's `:wx`):
     it is not installed here at all (`built where OTP application wx is
     absent; it is installed here`, `probe_otp_app`).
 
   Under `Precompiled.Host.install/2` your project is the install's: its
-  lock, its dependencies and its `deps` dir. A device cannot check the
-  project its firmware was compiled in, and never takes such a build.
-  What this cannot see: a dependency outside the build's closure that
-  builds the module's name from parts no file naming its last segment
-  shows, in a release the portal does not list as a definer.
+  lock and the dependencies Mix loads there. A device cannot check the
+  project its firmware was compiled in, and never takes such a build. The
+  lists are kept across runs under the cache, keyed by your lock and
+  everything a match reads.
 - A build made before builds recorded their inputs has none: for it, a
   dependency that reads an environment variable at module level in `lib/`
   never matches, as before.

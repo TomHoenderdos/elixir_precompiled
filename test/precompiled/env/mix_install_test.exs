@@ -23,21 +23,23 @@ defmodule Precompiled.Env.MixInstallTest do
     assert env.deps_path == Path.join(dir, "deps")
   end
 
-  # 0.10.0: each dep of the install project by its source dir, for a build's
-  # probe items: the install's deps dir, or the path a path dep names.
-  test "load names each present dep's source dir", %{tmp_dir: dir} do
+  # 0.10.0: the install's deps that are no Hex deps, for a build's probe
+  # items (no exact module list exists for one), and each Hex dep's env.
+  test "load names the deps that are no Hex deps, and each dep's env", %{tmp_dir: dir} do
     Mix.Dep.Lock.write(%{jason: @jason, decimal: @decimal}, file: Path.join(dir, "mix.lock"))
     present = %{jason: [:decimal], decimal: [], mine: []}
 
-    env = MixInstall.load(dir, [{:jason, "1.4.5"}, {:mine, path: "rel/mine"}], %{}, present)
+    methods = %{
+      jason: %{manager: "mix", overrides: []},
+      decimal: %{manager: "mix", overrides: []}
+    }
 
-    assert env.dep_dirs == %{
-             jason: Path.join([dir, "deps", "jason"]),
-             decimal: Path.join([dir, "deps", "decimal"]),
-             mine: Path.expand("rel/mine")
-           }
+    deps = [{:jason, "1.4.5", env: :dev}, {:mine, path: "rel/mine"}]
+    env = MixInstall.load(dir, deps, methods, present)
 
-    assert MixInstall.load(dir, []).dep_dirs == nil
+    assert env.non_hex_deps == [:mine]
+    assert env.dep_envs == %{jason: "dev"}
+    assert MixInstall.load(dir, []).non_hex_deps == nil
   end
 
   test "load skips a dep the install project has already compiled", %{tmp_dir: dir} do

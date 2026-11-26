@@ -29,8 +29,8 @@ defmodule Precompiled.EnvDepsTest do
     loaded = Precompiled.Env.MixProject.load()
     tree = loaded.present_deps
     client = Map.new([:parent, :top], &{&1, Precompiled.Env.closure(tree, &1)})
-    dirs = Map.new(loaded.dep_dirs, fn {app, dir} -> {app, Path.relative_to(dir, File.cwd!())} end)
-    view = Precompiled.Check.probe_view(loaded, nil)
+    dirs = %{non_hex: Enum.sort(loaded.non_hex_deps)}
+    view = Precompiled.Check.probe_view(loaded, fn _app -> :unknown end)
     probe = fn name ->
       item = %{"kind" => "probe", "of" => "module", "name" => name, "answer" => "absent", "definers" => []}
       case Precompiled.ProbeInputs.check(item, %{}, "parent", view) do
@@ -139,18 +139,14 @@ defmodule Precompiled.EnvDepsTest do
     assert client == mix
     assert client == %{parent: [], top: [:link]}
 
-    # 0.10.0: each dep Mix loads, by the source dir it compiles from; a probe
-    # item misses for a module link's sources define, and holds for one no
-    # dep of the project does.
-    assert Map.delete(dirs, :probes) == %{
-             parent: "deps_src/parent",
-             top: "deps_src/top",
-             link: "deps_src/link"
-           }
+    # 0.10.0: these deps are path deps, which have no exact module list, so
+    # every module probe misses as one this client cannot tell (in `dev`,
+    # opt is not loaded and is no dep here).
+    assert dirs.non_hex == [:link, :parent, :top]
 
     assert dirs.probes == %{
-             "Elixir.EnvDepsLink.Codec" => {:probe_definer, ["EnvDepsLink.Codec", "link"]},
-             "Elixir.NoSuch.Mod" => :ok
+             "Elixir.EnvDepsLink.Codec" => {:probe_unknown, ["EnvDepsLink.Codec"]},
+             "Elixir.NoSuch.Mod" => {:probe_unknown, ["NoSuch.Mod"]}
            }
 
     assert decide(:parent, client.parent) == %{with: :miss, without: :ok}

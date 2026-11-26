@@ -48,11 +48,11 @@ defmodule Precompiled.Check do
   #   (`HostNative.host/0`) in place of this one. Test only.
   @spec check(map(), Env.t(), keyword()) :: :nothing_to_do | {:ok, report()}
   def check(config, %Env{} = env, opts \\ []) do
-    # 0.10.0: each dep's answer for a probed name, kept for the run.
+    # 0.10.0: each dep's exact module list, kept for the run.
     memo = :ets.new(Precompiled.ProbeInputs, [:set, :public])
 
     try do
-      run_with_memo(config, %{env | probe: probe_view(env, memo)}, opts)
+      run_with_memo(Map.put(config, :probe_memo, memo), env, opts)
     after
       :ets.delete(memo)
     end
@@ -229,6 +229,9 @@ defmodule Precompiled.Check do
           |> Map.put(:content, Map.get(config, :content_override) || batch.content)
           |> Map.put(:by_sha, is_list(batch.content))
 
+        # 0.10.0: what the project holds, for a build's probe items, the
+        # installed ones' recheck included.
+        env = %{env | probe: probe_view(env, module_provider(config, batch, env, config_fun))}
         {revoked, replaced} = recheck(installed, batch, env)
         todo = candidates ++ replaced
         removed = removed ++ Enum.map(revoked, & &1.name)
@@ -1095,18 +1098,20 @@ defmodule Precompiled.Check do
 
   @doc false
   # 0.10.0: the project as a build's probe items are checked against
-  # (Precompiled.ProbeInputs.view/3): every dep Mix loads in this env and
+  # (Precompiled.ProbeInputs.view/4): every dep Mix loads in this env and
   # target, by app and Hex package name (a lock entry it leaves out, a
   # dev-only dep in prod, never compiles here and is on no code path), or
-  # every lock entry when Mix's deps were not read; each loaded dep's source
-  # dir (nil when they were not); the run's memo table.
-  @spec probe_view(Env.t() | map(), :ets.tid() | atom() | nil) :: Precompiled.ProbeInputs.view()
-  def probe_view(env, memo) do
+  # every lock entry when Mix's deps were not read; the deps Mix loads and
+  # those of them that are no Hex dep (nil when the deps were not read);
+  # and `modules_of`, each dep's exact module list (module_provider/4).
+  @spec probe_view(Env.t() | map(), function()) :: Precompiled.ProbeInputs.view()
+  def probe_view(env, modules_of) do
     lock = Map.get(env, :lock) || %{}
+    tree = Map.get(env, :present_deps)
 
     apps =
-      case Map.get(env, :present_deps) do
-        %{} = tree -> Enum.flat_map(tree, fn {app, children} -> [app | children] end)
+      case tree do
+        %{} -> Enum.flat_map(tree, fn {app, children} -> [app | children] end)
         _ -> Map.keys(lock)
       end
 
@@ -1118,13 +1123,90 @@ defmodule Precompiled.Check do
         end
       end)
 
-    dirs =
-      case Map.get(env, :dep_dirs) do
-        %{} = dirs -> Map.new(dirs, fn {app, dir} -> {Atom.to_string(app), dir} end)
+    deps =
+      if is_map(tree), do: apps |> Enum.uniq() |> Enum.map(&Atom.to_string/1) |> Enum.sort()
+
+    non_hex =
+      case Map.get(env, :non_hex_deps) do
+        list when is_list(list) -> list |> Enum.map(&Atom.to_string/1) |> Enum.sort()
         _ -> nil
       end
 
-    Precompiled.ProbeInputs.view(MapSet.new(names, &to_string/1), dirs, memo)
+    Precompiled.ProbeInputs.view(MapSet.new(names, &to_string/1), deps, non_hex, modules_of)
+  end
+
+  @doc false
+  # 0.10.0: a dep's exact module list, `{:ok, set}` or `:unknown`: the one of
+  # its served build that matches this project, by every rule a candidate's
+  # build is matched by (Match.select_reason/2), with no probe item of its
+  # own (no view: such a build misses, so no list rests on another).
+  # Where a build matches, this project's own compile of the dep is that
+  # build, so its modules are the build's ebin and the modules its compile
+  # defined in memory (Precompiled.ProbeInputs.module_set/1). A dep that is
+  # not a Hex entry of the lock, not in the batch, whose manifest does not
+  # verify, with no matching build or a build without the list is
+  # `:unknown`. Kept for the run (`config.probe_memo`) and across runs
+  # (Precompiled.ProbeCache, keyed by the lock and everything a match reads).
+  @spec module_provider(map(), Trust.batch(), Env.t(), function()) :: function()
+  def module_provider(config, batch, env, config_fun) do
+    memo = Map.get(config, :probe_memo)
+    key = Precompiled.ProbeCache.key(env, config, batch)
+
+    fn app ->
+      memoised(memo, {:modules, app}, fn ->
+        cached = memoised(memo, :probe_cache, fn -> Precompiled.ProbeCache.load(config, key) end)
+
+        case Map.fetch(cached, app) do
+          {:ok, known} ->
+            known
+
+          :error ->
+            modules = dep_modules(app, config, batch, env, config_fun)
+            Precompiled.ProbeCache.store(config, key, app, modules)
+            modules
+        end
+      end)
+    end
+  end
+
+  defp memoised(nil, _key, fun), do: fun.()
+
+  defp memoised(table, key, fun) do
+    case :ets.lookup(table, key) do
+      [{^key, value}] ->
+        value
+
+      [] ->
+        value = fun.()
+        :ets.insert(table, {key, value})
+        value
+    end
+  rescue
+    ArgumentError -> fun.()
+  end
+
+  defp dep_modules(app, config, batch, env, config_fun) do
+    with {:ok, atom} <- existing_atom(app),
+         {:hex, _, _, _, _, _, _, _} = entry <- env.lock[atom],
+         [candidate] <- Env.hex_candidates(env.lock, [atom], Map.get(env, :dep_envs) || %{}),
+         {sha, path} when is_binary(sha) <- manifest_ref(batch, package(candidate)),
+         {:ok, manifest} <- Fetch.manifest(config, package(candidate), sha, path),
+         reads = scan_reads(config, env, app, entry),
+         :ok <- scan_in_time(reads),
+         ctx = candidate |> ctx(env, config, config_fun, reads) |> Map.put(:probe, nil),
+         {:ok, build, _target} <- Match.select_reason(manifest, ctx) do
+      Precompiled.ProbeInputs.module_set(build)
+    else
+      _ -> :unknown
+    end
+  rescue
+    _ -> :unknown
+  end
+
+  defp existing_atom(name) do
+    {:ok, String.to_existing_atom(name)}
+  rescue
+    ArgumentError -> :error
   end
 
   # 0.9.0: this project's slots for a relocated build (Precompiled.Relocate):

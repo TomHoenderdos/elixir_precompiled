@@ -1302,7 +1302,9 @@ defmodule Precompiled.MatchTest do
         "definers" => ["no_such_poison"]
       }
 
-      view = fn names -> Precompiled.ProbeInputs.view(MapSet.new(names), %{}, nil) end
+      view = fn names ->
+        Precompiled.ProbeInputs.view(MapSet.new(names), [], [], fn _ -> :unknown end)
+      end
 
       assert {:ok, _, _} =
                Match.select(inputs_doc([probe]), ctx(probe: view.(["ash", "spark"])))

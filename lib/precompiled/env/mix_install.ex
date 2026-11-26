@@ -81,7 +81,8 @@ defmodule Precompiled.Env.MixInstall do
       installed_envs: Map.new(installed, &{&1, Map.get(envs, &1, "prod")}),
       build_methods: methods,
       present_deps: present,
-      dep_dirs: dep_dirs(project_dir, deps, present),
+      non_hex_deps: non_hex(present, methods),
+      dep_envs: envs,
       compile_order: order,
       compiled_ok: compiled_ok,
       dep_sources: sources
@@ -96,27 +97,14 @@ defmodule Precompiled.Env.MixInstall do
   defp same_hex?({:hex, pkg, v, _, _, _, _, outer}, {:hex, pkg, v, _, _, _, _, outer}), do: true
   defp same_hex?(_locked, _loaded), do: false
 
-  # 0.10.0: each dep of the install project's tree by its source dir: the
-  # path a path dep of the install names, else the install's deps dir,
-  # where deps.get put a Hex or git dep. A transitive path dep is not there,
-  # so its probe check cannot read it and misses. nil without the tree.
-  defp dep_dirs(_project_dir, _deps, nil), do: nil
+  # 0.10.0: the deps of the install project's tree that are no Hex deps:
+  # every dep Mix loaded there (the tree) less the Hex ones (the build
+  # methods, which Install.build_methods/4 reads for Hex deps only). nil
+  # when either is unknown.
+  defp non_hex(present, methods) when is_map(present) and is_map(methods),
+    do: Map.keys(present) -- Map.keys(methods)
 
-  defp dep_dirs(project_dir, deps, present) when is_map(present) do
-    paths =
-      for d <- deps,
-          {app, opts} <- [dep_opts(d)],
-          is_atom(app) and app != nil,
-          path = Keyword.get(opts, :path),
-          is_binary(path),
-          into: %{},
-          do: {app, Path.expand(path)}
-
-    Map.new(Map.keys(present), fn app ->
-      {app,
-       Map.get_lazy(paths, app, fn -> Path.join([project_dir, "deps", Atom.to_string(app)]) end)}
-    end)
-  end
+  defp non_hex(_present, _methods), do: nil
 
   @doc false
   # Mix.install on a device compiles as :host, but a build for the device's
